@@ -3,15 +3,16 @@ import {detectFormat, formats} from './formats.js';
 
 const hasWails = !!(window.go && window.go.main && window.go.main.App);
 
-const sampleJson = {
-    name: '时空纪元', version: '1.0.0', enabled: true, count: 42, nothing: null,
-    tags: ['模组', '网易', 'JSON'],
-    author: {name: 'CandySweet', role: 'owner'},
-    items: [
-        {id: 'spacetime:cable', count: 64},
-        {id: 'spacetime:machine', count: 1},
-    ],
-};
+const sampleJson = `{
+  "name": "时空纪元",
+  "version": "1.0.0",
+  "enabled": true,
+  "count": 42,
+  "nothing": null,
+  "tags": ["模组", "网易", "JSON"],
+  "author": {"name": "CandySweet", "role": "owner"},
+  "items": [{"id": "spacetime:cable", "count": 64}, {"id": "spacetime:machine", "count": 1}]
+}`;
 
 const sampleYaml = `name: 时空纪元
 version: 1.0.0
@@ -53,7 +54,7 @@ const mockFiles = {
     xml: {name: 'sample.xml', content: sampleXml},
     csv: {name: 'sample.csv', content: sampleCsv},
     text: {name: 'notes.md', content: sampleText},
-    json: {name: 'sample.json', content: JSON.stringify(sampleJson, null, 2)},
+    json: {name: 'sample.json', content: sampleJson},
 };
 
 const mockBackend = {
@@ -1140,6 +1141,7 @@ function createDoc(data) {
             parseError: null,
             mode: 'code',
             text: null,
+            rawText: null,
             dirty: false,
             untitled: false,
             binary: true,
@@ -1175,6 +1177,7 @@ function createDoc(data) {
         parseError,
         mode: treeAvailable ? (fs.view === 'code' || fs.view === 'text' ? fs.view : 'tree') : 'code',
         text: null,
+        rawText: treeAvailable ? data.content : null,
         dirty: false,
         untitled: false,
         binary: false,
@@ -1475,7 +1478,9 @@ async function saveDoc(doc, opts = {}) {
     const savedMode = doc.mode;
     const snapshot = doc.editor.getText();
     let text;
-    if (savedMode === 'code' || savedMode === 'text' || fmt.rawOnly) {
+    if (!doc.dirty && doc.rawText != null) {
+        text = doc.rawText;
+    } else if (savedMode === 'code' || savedMode === 'text' || fmt.rawOnly) {
         text = snapshot;
         if (!fmt.rawOnly) {
             try {
@@ -1512,6 +1517,7 @@ async function saveDoc(doc, opts = {}) {
         doc.mode = savedMode;
         doc.text = snapshot;
         doc.bases[savedMode] = snapshot;
+        if (doc.treeAvailable) doc.rawText = text;
         if (doc.parseError) {
             doc.parseError = null;
             if (file === doc) els.banner.classList.add('hidden');
@@ -1658,15 +1664,27 @@ function clickEditorButton(sel) {
 
 function switchMode(mode) {
     if (!editor || currentMode === mode) return;
-    if (currentMode === 'text' && mode === 'tree' && file && file.treeAvailable) {
+    const doc = file;
+    if ((mode === 'code' || mode === 'text') && currentMode === 'tree' && doc && !dirty && doc.rawText != null) {
+        doc.loading = true;
+        try {
+            editor.setMode(mode);
+            editor.setText(doc.rawText);
+        } catch (e) {
+            console.warn('switch mode failed', e);
+        } finally {
+            doc.loading = false;
+        }
+        return;
+    }
+    if (mode === 'tree' && (currentMode === 'code' || currentMode === 'text') && doc && doc.format.id !== 'json') {
         let value;
         try {
-            value = file.format.parse(editor.getText());
+            value = doc.format.parse(editor.getText());
         } catch (e) {
-            flash(file.format.name + ' 解析失败：' + e.message, true);
+            flash(doc.format.name + ' 解析失败：' + e.message, true);
             return;
         }
-        const doc = file;
         doc.loading = true;
         try {
             editor.setText(JSON.stringify(value, null, 2));
