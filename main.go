@@ -6,6 +6,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
 //go:embed all:frontend/dist
@@ -15,7 +16,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:            "JsonLens",
+		Title:            "CaDt-DataLens",
 		Width:            1280,
 		Height:           800,
 		MinWidth:         720,
@@ -25,12 +26,17 @@ func main() {
 		AssetServer:      &assetserver.Options{Assets: assets},
 		OnStartup:        app.startup,
 		OnBeforeClose:    app.beforeClose,
+		Windows: &windows.Options{
+			IsZoomControlEnabled: false,
+			DisablePinchZoom:     true,
+			ZoomFactor:           1.0,
+		},
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,
-			DisableWebViewDrop: true,
+			DisableWebViewDrop: false,
 		},
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               "jsonlens-7f3a9c21",
+			UniqueId:               uniqueIDForLaunch(),
 			OnSecondInstanceLaunch: app.secondInstance,
 		},
 		Bind: []interface{}{app},

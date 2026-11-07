@@ -2,3 +2,9 @@ node_modules/
 frontend/dist/
 build/bin/
 frontend/wailsjs/
+
+# local IDE / stray builds
+.idea/
+/datalens.exe
+Thumbs.db
+.DS_Store

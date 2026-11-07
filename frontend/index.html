@@ -3,41 +3,194 @@
 <head>
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-    <title>JsonLens</title>
+    <title>CaDt-DataLens</title>
+    <script>
+        (function () {
+            try {
+                var stored = JSON.parse(localStorage.getItem('datalens-settings') || '{}');
+                document.documentElement.dataset.theme = typeof stored.theme === 'string' ? stored.theme : 'dark';
+            } catch (e) {
+                document.documentElement.dataset.theme = 'dark';
+            }
+        })();
+    </script>
     <link rel="stylesheet" href="/vendor/jsoneditor.min.css"/>
     <script src="/vendor/jsoneditor.min.js"></script>
 </head>
 <body>
 <div id="app">
     <header id="toolbar">
-        <div class="brand">JsonLens</div>
+        <img id="app-logo" src="/icon.png" alt="CaDt-DataLens">
         <div id="filename" class="filename">未打开文件</div>
         <div class="spacer"></div>
-        <button id="btn-open" class="tb-btn" title="打开 (Ctrl+O)">打开</button>
-        <button id="btn-save" class="tb-btn primary" title="保存 (Ctrl+S)" disabled>保存</button>
         <div id="win-controls">
             <button id="wc-min" class="wc-btn" title="最小化">&#xE921;</button>
             <button id="wc-max" class="wc-btn" title="最大化 / 还原">&#xE922;</button>
             <button id="wc-close" class="wc-btn wc-close" title="关闭">&#xE8BB;</button>
         </div>
     </header>
+    <nav id="menubar">
+        <div class="menu" data-menu="file">
+            <button class="menu-label">文件(F)</button>
+            <div class="dropdown hidden"></div>
+        </div>
+        <div class="menu" data-menu="edit">
+            <button class="menu-label">编辑(E)</button>
+            <div class="dropdown hidden"></div>
+        </div>
+        <div class="menu" data-menu="format">
+            <button class="menu-label">格式(O)</button>
+            <div class="dropdown hidden"></div>
+        </div>
+        <div class="menu" data-menu="view">
+            <button class="menu-label">视图(V)</button>
+            <div class="dropdown hidden"></div>
+        </div>
+        <div class="menu" data-menu="theme">
+            <button class="menu-label">主题(T)</button>
+            <div class="dropdown hidden"></div>
+        </div>
+        <div class="menu" data-menu="help">
+            <button class="menu-label">帮助(H)</button>
+            <div class="dropdown hidden"></div>
+        </div>
+        <div class="spacer"></div>
+        <div id="menubar-search">
+            <span class="mdl2">&#xE721;</span>
+            <input id="search-input" type="text" placeholder="搜索节点…" spellcheck="false">
+        </div>
+    </nav>
+    <div id="dialog-mask" class="hidden">
+        <div id="dlg-settings" class="dialog dialog-settings hidden" role="dialog" aria-label="设置">
+            <div class="dialog-head">
+                <span class="dialog-title">设置</span>
+                <button type="button" class="dialog-close" data-close="1" title="关闭">&#xE8BB;</button>
+            </div>
+            <div class="settings-layout">
+                <div class="settings-nav">
+                    <button type="button" class="snav-item active" data-pane="general">通用设置</button>
+                    <button type="button" class="snav-item" data-pane="formats">文件格式</button>
+                    <button type="button" class="snav-item" data-pane="shortcuts">快捷键</button>
+                    <button type="button" class="snav-item" data-pane="about">关于我们</button>
+                </div>
+                <div class="settings-content">
+                    <div class="settings-pane" data-pane="general">
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-fixed-keys" checked>
+                                固定键列（对齐冒号与值）
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-auto-save">
+                                自动保存（停止输入 1 秒后）
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">多文件打开</span>
+                            <select id="opt-open-mode" class="opt-select">
+                                <option value="tab">单窗口标签页</option>
+                                <option value="window">多窗口</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint">多窗口模式下新打开的文件使用独立窗口；单窗口模式在标签栏中打开。</div>
+                        <div class="popover-row">
+                            <span class="popover-label">键列宽度</span>
+                            <input type="range" id="opt-key-width" min="100" max="320" step="10" value="160">
+                            <span id="opt-key-width-val" class="popover-value">160</span>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">界面字体</span>
+                            <select id="opt-ui-font" class="opt-select"></select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">界面中文字体</span>
+                            <select id="opt-ui-cjk-font" class="opt-select"></select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">编辑器字体</span>
+                            <select id="opt-editor-font" class="opt-select"></select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">编辑器中文字体</span>
+                            <select id="opt-editor-cjk-font" class="opt-select"></select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">编辑器字号</span>
+                            <input type="range" id="opt-font-size" min="9" max="24" step="1" value="13">
+                            <span id="opt-font-size-val" class="popover-value">13</span>
+                        </div>
+                        <div class="font-preview" aria-hidden="true">
+                            <span class="fp-ui">界面：糖果超甜@CandySweet · CaDt-DataLens 2026</span>
+                            <span class="fp-editor">编辑器：{"name": "糖果超甜", "count": 42, "ok": true}</span>
+                        </div>
+                        <div class="fmt-hint">字体设置即时生效；中文字体可单独选择，拉丁字母与数字仍使用主字体。</div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="formats">
+                        <div class="fmt-table" id="fmt-table"></div>
+                        <div class="fmt-hint">编码「自动」= UTF-8 有效时用 UTF-8，否则回退 GBK；编码/缩进/换行对之后打开或保存的文件生效，默认视图对当前同类文件立即生效。</div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="shortcuts">
+                        <div class="popover-shortcuts">
+                            <div><span>新建 / 新建窗口</span><span class="kbd">Ctrl+N / Ctrl+Shift+N</span></div>
+                            <div><span>打开</span><span class="kbd">Ctrl+O</span></div>
+                            <div><span>保存 / 另存为</span><span class="kbd">Ctrl+S / Ctrl+Shift+S</span></div>
+                            <div><span>关闭标签</span><span class="kbd">Ctrl+W</span></div>
+                            <div><span>设置</span><span class="kbd">Ctrl+,</span></div>
+                            <div><span>撤销 / 重做</span><span class="kbd">Ctrl+Z / Ctrl+Y</span></div>
+                            <div><span>搜索</span><span class="kbd">Ctrl+F</span></div>
+                            <div><span>展开 / 收起节点</span><span class="kbd">Ctrl+= / Ctrl+-</span></div>
+                            <div><span>全部展开 / 收起</span><span class="kbd">Ctrl+Shift+= / -</span></div>
+                            <div><span>编辑器字号</span><span class="kbd">Ctrl+滚轮</span></div>
+                        </div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="about">
+                        <div class="about-body">
+                            <b>CaDt-DataLens</b><br>
+                            多格式数据查看器<br>
+                            JSON / YAML / XML / CSV / 纯文本<br>
+                            <span class="about-dim">Wails + WebView2 · jsoneditor (Apache-2.0)<br>Inter / JetBrains Mono / Fira Code (OFL-1.1)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="dlg-confirm" class="dialog hidden" role="dialog" aria-label="关闭">
+            <div class="dialog-head">
+                <span class="dialog-title">关闭</span>
+                <button type="button" class="dialog-close" data-close="1" title="关闭">&#xE8BB;</button>
+            </div>
+            <div class="dialog-body">
+                <span id="dlg-confirm-text">有未保存的修改，关闭后将丢弃。</span>
+                <div class="dialog-footer">
+                    <button type="button" id="btn-discard" class="dlg-btn primary">丢弃并关闭</button>
+                    <button type="button" id="btn-cancel-close" class="dlg-btn">取消</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="tabbar" class="hidden"></div>
     <div id="banner" class="banner hidden"></div>
     <div id="editor-wrap">
         <div id="editor" class="hidden"></div>
         <div id="welcome">
-            <div class="welcome-title">JsonLens</div>
-            <div class="welcome-sub">拖入 .json 文件到窗口，或</div>
+            <div class="welcome-title">CaDt-DataLens</div>
+            <div class="welcome-sub">拖入 JSON / YAML / XML / CSV / 文本文件到窗口，或</div>
             <button id="btn-welcome-open" class="tb-btn primary">打开文件 (Ctrl+O)</button>
         </div>
     </div>
+    <div id="enc-popover" class="enc-popover hidden"></div>
     <footer id="statusbar">
-        <span id="st-mode"></span>
-        <span id="st-size"></span>
-        <span id="st-eol"></span>
-        <span id="st-enc"></span>
-        <div class="spacer"></div>
-        <span id="st-message"></span>
+        <div id="breadcrumb"></div>
         <span id="st-dirty"></span>
+        <span id="st-message"></span>
+        <div id="fileinfo">
+            <span id="st-mode"></span>
+            <span id="st-size"></span>
+            <span id="st-eol"></span>
+            <span id="st-enc"></span>
+        </div>
     </footer>
 </div>
 <script src="./src/main.js" type="module"></script>
