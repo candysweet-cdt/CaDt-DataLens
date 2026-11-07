@@ -1122,7 +1122,7 @@ div.jsoneditor-tree td:has(> input[type="checkbox"]) { vertical-align: middle; }
     font-family: var(--editor-font-family);
     font-size: var(--editor-font, 13px);
     line-height: 1.5;
-    padding: 8px 10px;
+    padding: 12px 24px;
     caret-color: var(--text);
 }
 .jsoneditor .ace_editor,
