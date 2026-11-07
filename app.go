@@ -374,6 +374,14 @@ type appConfig struct {
 	OpenMode string `json:"openMode"`
 }
 
+func webviewDataPath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "CaDt-DataLens.exe")
+}
+
 func configFilePath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {

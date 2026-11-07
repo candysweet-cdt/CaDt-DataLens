@@ -30,6 +30,7 @@ func main() {
 			IsZoomControlEnabled: false,
 			DisablePinchZoom:     true,
 			ZoomFactor:           1.0,
+			WebviewUserDataPath:  webviewDataPath(),
 		},
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,
