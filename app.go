@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,8 +23,9 @@ import (
 )
 
 const (
-	largeFileBytes = 10 << 20
-	maxFileBytes   = 100 << 20
+	largeFileBytes    = 10 << 20
+	maxFileBytes      = 100 << 20
+	imagePreviewLimit = 32 << 20
 )
 
 type App struct {
@@ -42,6 +45,7 @@ type FileData struct {
 	Large    bool   `json:"large"`
 	Enc      string `json:"enc"`
 	Binary   bool   `json:"binary"`
+	Image    bool   `json:"image,omitempty"`
 	IsDir    bool   `json:"isDir"`
 	HexShown int64  `json:"hexShown,omitempty"`
 }
@@ -116,7 +120,8 @@ func (a *App) OpenFile(path string, enc string) (*FileData, error) {
 		return nil, err
 	}
 	name := filepath.Base(path)
-	if strings.EqualFold(filepath.Ext(path), ".bin") || isImageFile(path, raw) || looksBinary(raw) {
+	imageFile := isImageFile(path, raw)
+	if strings.EqualFold(filepath.Ext(path), ".bin") || imageFile || looksBinary(raw) {
 		shown := len(raw)
 		if shown > imageHexLimit {
 			shown = imageHexLimit
@@ -129,6 +134,7 @@ func (a *App) OpenFile(path string, enc string) (*FileData, error) {
 			Eol:      "lf",
 			Enc:      "binary",
 			Binary:   true,
+			Image:    imageFile,
 			HexShown: int64(shown),
 		}, nil
 	}
@@ -255,6 +261,64 @@ func imageHexDump(raw []byte) string {
 		b.WriteString("|\n")
 	}
 	return strings.TrimSuffix(b.String(), "\n")
+}
+
+func (a *App) ReadImageDataURL(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("没有图片路径")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("不是图片文件")
+	}
+	if info.Size() > imagePreviewLimit {
+		return "", fmt.Errorf("图片超过 32 MB，无法直接预览")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if !isImageFile(path, raw) {
+		return "", fmt.Errorf("不是可预览的图片")
+	}
+	mime := http.DetectContentType(raw)
+	if !strings.HasPrefix(mime, "image/") {
+		mime = imageMimeByExtension(path)
+	}
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
+}
+
+func imageMimeByExtension(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg", ".jfif":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".bmp":
+		return "image/bmp"
+	case ".webp":
+		return "image/webp"
+	case ".ico":
+		return "image/x-icon"
+	case ".tif", ".tiff":
+		return "image/tiff"
+	case ".avif":
+		return "image/avif"
+	case ".heic", ".heif":
+		return "image/heic"
+	case ".psd":
+		return "image/vnd.adobe.photoshop"
+	}
+	return ""
 }
 
 func (a *App) SaveFile(path, content, eol string, hasBom bool, enc string) error {

@@ -14,7 +14,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 - 结构化格式：JSON / JSONC / JSON5、JSONL / NDJSON、YAML / YML、XML / SVG、CSV / TSV。
 - JSONL 按行解析为数组显示，树视图编辑后仍按“一行一个 JSON 值”保存。
 - 文本格式：txt、log、ini、toml、html、css、js、ts、py、go、java、sql 等。
-- Markdown 文件默认打开预览：标题、列表、表格、引用、代码块和 KaTeX 行内/块级公式；代码块带行号并按当前主题高亮。预览只读，可切回代码/文本视图编辑。原始 HTML 不执行，外部链接交给系统浏览器打开。
+- Markdown 文件默认打开预览：标题、列表、表格、引用、代码块和 KaTeX 行内/块级公式；代码块按当前主题高亮，行号可在设置中开启（默认关闭）。预览只读，可切回代码/文本视图编辑。原始 HTML 不执行，外部链接交给系统浏览器打开。
 - 多种视图：
   - **树视图**：展开/收起节点，直接编辑键和值。
   - **代码视图**：Ace 编辑器，带行号、语法高亮、括号匹配。按扩展名启用 YAML、XML/SVG、JS/TS、Python、Markdown、HTML/CSS、Shell/PowerShell/Batch、Go/Java/Kotlin/Lua/SQL、TOML/INI/Properties 等语法模式。
@@ -23,7 +23,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
   - **表格视图**（CSV / TSV）：冻结表头与行号，拖动表头边缘可调整列宽；点击单元格直接编辑（Enter 确认并下移、Tab 换格、Esc 取消），支持撤销/重做；超过 5000 行时只预览前 5000 行，编辑仍会保留全部行。
 - 每个格式可单独配置默认视图，修改后对当前同类文件立即生效。
 - 代码视图支持自动换行开关（设置 → 通用设置或视图菜单），默认关闭，长行横向滚动。
-- 图片按扩展名/文件头识别；其他含 NUL 或大量控制字符的文件（如 `.bin`）也按二进制处理。均显示为只读十六进制字节视图，超过 1 MB 只显示前 1 MB 并在顶部提示。
+- 图片文件默认显示图片视图，右下角视图菜单可切到二进制视图；按扩展名/文件头识别，直接预览上限 32 MB。其他含 NUL 或大量控制字符的文件（如 `.bin`）按二进制处理，只读十六进制视图超过 1 MB 只显示前 1 MB 并在顶部提示。
 - 未识别的扩展名按纯文本打开。
 - 大于 10 MB 的文件切换为只读代码模式；大于 100 MB 拒绝打开。
 
@@ -91,7 +91,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 | CSV | `.csv` `.tsv` | 表格视图 / 树视图 / 文本视图 |
 | Markdown | `.md` `.markdown` | 预览 / 代码视图 / 文本视图 |
 | 文本 | `.txt` `.log` `.ini` `.toml` `.html` `.css` `.js` `.ts` `.py` `.go` `.java` `.sql` 等 | 代码视图 |
-| 图片 | `.png` `.jpg` `.jpeg` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` `.heic` `.psd` 等 | 只读字节数据 |
+| 图片 | `.png` `.jpg` `.jpeg` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` `.heic` `.psd` 等 | 图片视图 / 二进制视图 |
 | 其他 | 任意扩展名 | 文本按纯文本；含 NUL/大量控制字符按只读十六进制 |
 
 ## 示例数据

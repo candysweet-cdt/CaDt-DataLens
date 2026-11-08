@@ -126,6 +126,14 @@ export const formats = {
         aceMode: 'text',
         rawOnly: true,
     },
+    image: {
+        id: 'image',
+        name: '图片',
+        extensions: [],
+        aceMode: 'text',
+        rawOnly: true,
+        image: true,
+    },
     bytes: {
         id: 'bytes',
         name: '字节数据',

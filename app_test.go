@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,6 +123,41 @@ func TestOpenFileBinaryBytes(t *testing.T) {
 	}
 	if !strings.HasPrefix(data.Content, "00000000  ") || strings.HasPrefix(data.Content, "//") {
 		t.Fatalf("unexpected hex content: %q", data.Content)
+	}
+}
+
+func TestReadImageDataURL(t *testing.T) {
+	const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+	raw, err := base64.StdEncoding.DecodeString(pngBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pixel.png")
+	if err := os.WriteFile(path, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	data, err := app.OpenFile(path, "utf-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !data.Image || !data.Binary {
+		t.Fatalf("expected image binary data, got %+v", data)
+	}
+	url, err := app.ReadImageDataURL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("unexpected data url: %.32s", url)
+	}
+	textPath := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(textPath, []byte("not an image"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ReadImageDataURL(textPath); err == nil {
+		t.Fatal("expected error for non-image file")
 	}
 }
 

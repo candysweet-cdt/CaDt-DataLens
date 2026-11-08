@@ -1237,6 +1237,48 @@ body.csv-col-resizing * {
 .md-preview .hljs-params { color: var(--text); }
 html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 
+.jsoneditor-pane.image-active > .jsoneditor { display: none !important; }
+.image-preview-view {
+    position: absolute;
+    inset: 0;
+    display: none;
+    min-height: 0;
+    background: var(--bg);
+}
+.jsoneditor-pane.image-active .image-preview-view { display: block; }
+.image-preview-scroll {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    padding: 24px;
+}
+.image-preview-img {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 4px;
+    background: var(--panel2);
+    box-shadow: 0 8px 30px var(--shadow);
+}
+.image-preview-img[hidden] { display: none; }
+.image-preview-status {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+    pointer-events: none;
+}
+.image-preview-status.hidden { display: none; }
+
 #sidebar {
     width: 264px;
     flex: none;

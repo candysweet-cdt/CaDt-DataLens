@@ -60,6 +60,7 @@ const sampleJsonl = `{"id":"spacetime:cable","name":"线缆","count":64,"tags":[
 const mockScenario = new URLSearchParams(location.search);
 const mockDir = 'mock://samples/';
 const mockHex = '00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|';
+const mockImageDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAAFjUlEQVR42u3dS0jU+wLA8d84MyTOpmUGRZALD4ExdKiF0CJ6bjwJQQWRVJyKmlUrF+VkT6KzyejdQiuTooVBYkJUKwOppANigtCDCFq0qLB8ztzFXOaGo3O4J7r3lJ/Paob/7zH68zv/mZWR3/7IhqJ6zy6a7lJpPFp87vDYxHSXknv67Gtf+37jviUB+GEJGAQMCBgQMAgYEDAgYEDAIGBAwICAQcCAgAEBAwIGAQMCBgQMCBgEDAgYEDAIGBAwIGBAwCBgQMCAgAEBg4ABAQMCBgEDAgYEDAgYBAwIGBAwCBgQMCBgQMAgYEDAgIABAcPPJPYjvuhffv/z+y2e3NP3f/mh7PtP2Lf/UpU7MCBg4Kf8CJ032PKrI+TbVdQ9dgcGBAwIGAQMCBgQMCBgEDAgYEDAIGBAwICAAQGDgAEBAwIGBAwCBgQMCBgEDAgYEDAgYBAwIGBAwMAP/s/NvoeVK1euXr36y5cvw8PDFy9efP/+feGY1tbWwcHBbDYbi8Xu3bv38OHDEML69evb29v/ctgkhbNyWlpa6urqHAcC/i9UVVVVV1fv379/dHQ0mUymUqnGxsbCYePj4+l0OoQwa9as+vr6kZGRR48e1dbWTkpxymGTliqcBQL+m2pqatra2kZHR0MIvb29S5cujUajc+fO3blzZyKRuH///p07d74ePzIycvXq1W3bts2fP7+0tPTAgQOHDx8uXDY/7M2bN18vtXHjxtys5ubm6bbISSQSO3bsmD17diwWu3LlyuDgYO4ufffu3crKykQicfPmzZ6ennXr1q1YsSKbzba2tj579syB+g48s8ybN+/Fixf5pxcuXJiYmFi7du3169cbGhpqamoKp7x69aq8vPzGjRvDw8NT1vv1sElL5WcV3yKEsHXr1s7OzkOHDjU1Ne3atevf776x2KdPn9Lp9MmTJ7dv3x5C2LBhQ0NDw6lTp5YvX+403YFn3vtZyRTvaNeuXauurl6yZElZWVnh1Wg0Oj4+nn+6efPmysrKjo6Onp6ewmHTLVV8ixDC4sWL58yZk3tcWlpaUlKSyWQikciDBw9CCO/evctNfPr0aSqV6urqOn36tNN0B55x3r59u2DBgtzjSCSSSqVCCPv27QshdHZ2ZjKZwikVFRWvX7/OP21ra0un05PqzQ+bbqniW+T6P3LkSDqdPnjw4Llz53LDxsfHh4aGcgOy2WwI4cyZMx0dHWvWrNm7d6/TFPCM09XVtWnTpng8HkKorq7OPVi4cGF3d3c8Hs89nfTVdMuWLbdv384FH4lEplw2P6xwqdysIlvkPH/+fNmyZSGEZDJZW1v7dbR5ZWVljY2NAwMDTU1NyWTSafoIPeN0d3eXl5efOHHi48ePHz58uHz5cq7qo0ePvnz5cmhoKB6Pj42NxWKxxsbGbDYbjUbb29v7+vpCCP39/fX19cePH//PL7dgWOFSuVlTbpH/Rj0wMNDc3Lx79+5Vq1ZlMpnz589P+eI/f/785MmTY8eOlZSU3Lp1y2nOBJHf/sgWH9F7dtF0l0rj0eJzh8cmpruU3NP3t/fNzx1s+dUR8u0q6h7nHvRfqvrf/z1/S0c+QoPvwICAAQGDgAEBAwIGBAwCBgQMCBgEDAgYEDAgYBAwIGBAwICAQcCAgAEBg4ABAQMCBgQMAgYEDAgYEDAIGBAwIGAQMCBgQMCAgOEnFPuhX31F3WNHiDswIGDAR+i/1H+pqviA4bGJ6S4l9/QVn9t7dtF0l0rjUfvO5H3dgQEBAwIGAQMCBgQMAgYEDAgYEDAIGBAwIGAQMCBgQMCAgEHAgIABAQMCBgEDAgYEDAIGBAwIGBAwCBgQMCBgQMAgYEDAgIBBwICAAQEDAgYBAwIGBAwIGAQMCBgQMAgYEDDwXf0LSiE2qQDYwMoAAAAASUVORK5CYII=';
 const mockFiles = {
     yaml: {name: 'sample.yaml', content: sampleYaml},
     xml: {name: 'sample.xml', content: sampleXml},
@@ -112,7 +113,7 @@ const mockBackend = {
         }
         const base = path.split('/').pop();
         if (base.toLowerCase().endsWith('.png')) {
-            return {path, name: base, content: mockHex, size: 16, eol: 'lf', hasBom: false, large: false, enc: 'binary', binary: true};
+            return {path, name: base, content: mockHex, size: 16, eol: 'lf', hasBom: false, large: false, enc: 'binary', binary: true, image: true};
         }
         const fileEnc = path.includes('gbk') ? 'gbk' : 'utf-8';
         const ext = (base.split('.').pop() || '').toLowerCase();
@@ -150,6 +151,7 @@ const mockBackend = {
         const cap = limit > 0 ? limit : 1000;
         return {entries: entries.slice(0, cap), truncated: entries.length > cap};
     },
+    async ReadImageDataURL() { return mockImageDataUrl; },
     async SaveFileDialog(name) { return 'mock://' + (window.__mockSaveDialogName || name); },
     async SaveFile(path, content, eol, hasBom, enc) {
         window.__mockLastSaveEnc = enc;
@@ -340,6 +342,7 @@ const defaultSettings = {
     sidebarFont: 12.5,
     editorFont: 13,
     codeWrap: false,
+    mdLineNumbers: false,
     theme: 'dark',
     uiFont: 'inter',
     uiCjkFont: 'auto',
@@ -366,6 +369,7 @@ if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
 settings.codeWrap = !!settings.codeWrap;
+settings.mdLineNumbers = !!settings.mdLineNumbers;
 settings.sidebarFont = Number(settings.sidebarFont);
 if (!Number.isFinite(settings.sidebarFont)) settings.sidebarFont = 12.5;
 settings.sidebarFont = Math.min(20, Math.max(10, settings.sidebarFont));
@@ -393,6 +397,7 @@ const elsSettings = {
     sidebarFont: document.getElementById('opt-sidebar-font'),
     sidebarFontVal: document.getElementById('opt-sidebar-font-val'),
     codeWrap: document.getElementById('opt-code-wrap'),
+    mdLineNumbers: document.getElementById('opt-md-line-numbers'),
     autoSave: document.getElementById('opt-auto-save'),
     openMode: document.getElementById('opt-open-mode'),
     uiFont: document.getElementById('opt-ui-font'),
@@ -502,6 +507,7 @@ function applySettings() {
     elsSettings.sidebarFontVal.textContent = String(settings.sidebarFont);
     elsSettings.autoSave.checked = !!settings.autoSave;
     elsSettings.codeWrap.checked = !!settings.codeWrap;
+    elsSettings.mdLineNumbers.checked = !!settings.mdLineNumbers;
     elsSettings.openMode.value = settings.openMode;
     syncOpenMode();
     document.documentElement.style.setProperty('--editor-font', settings.editorFont + 'px');
@@ -665,17 +671,23 @@ const EOLS = [['follow', '跟随原文件'], ['lf', 'LF'], ['crlf', 'CRLF']];
 const VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
 const CSV_VIEWS = [['table', '表格视图'], ['tree', '树视图'], ['text', '文本视图']];
 const MARKDOWN_VIEWS = [['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
+const IMAGE_VIEWS = [['image', '图片视图'], ['binary', '二进制视图']];
+const BINARY_VIEWS = [['binary', '二进制视图']];
 const CSV_TABLE_ROW_LIMIT = 5000;
 const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
 
 function viewOptionsFor(fmt) {
+    if (fmt && fmt.image) return IMAGE_VIEWS;
+    if (fmt && fmt.id === 'bytes') return BINARY_VIEWS;
     if (fmt && fmt.id === 'markdown') return MARKDOWN_VIEWS;
     return fmt && (fmt.table || fmt.id === 'csv') ? CSV_VIEWS : VIEWS;
 }
 
 function viewDisabled(mode) {
     if (!file) return true;
+    if (mode === 'image') return !file.image;
+    if (mode === 'binary') return !file.binary;
     if (mode === 'tree') return !file.treeAvailable;
     if (mode === 'text') return !(file.treeAvailable || (file.format && file.format.preview));
     if (mode === 'preview') return !(file.format && file.format.preview) || !!file.large;
@@ -688,6 +700,8 @@ function viewDisabledTitle(mode) {
 }
 
 function viewLabel(mode) {
+    if (mode === 'image') return '图片视图';
+    if (mode === 'binary') return '二进制视图';
     if (mode === 'preview') return '预览';
     if (mode === 'table') return '表格视图';
     if (mode === 'text') return '文本视图';
@@ -721,9 +735,12 @@ function renderMarkdownCodeBlock(text, info) {
         } catch (e) {}
     }
     if (!highlighted) highlighted = markdownRenderer.utils.escapeHtml(code);
+    const langClass = language ? ' language-' + language.replace(/[^A-Za-z0-9_+.-]/g, '') : '';
+    if (!settings.mdLineNumbers) {
+        return '<pre><code class="hljs' + langClass + '">' + highlighted + '</code></pre>\n';
+    }
     const lineCount = Math.max(1, code.split('\n').length);
     const numbers = Array.from({length: lineCount}, (_, i) => String(i + 1)).join('\n');
-    const langClass = language ? ' language-' + language.replace(/[^A-Za-z0-9_+.-]/g, '') : '';
     return '<div class="md-code-frame">' +
         '<pre class="md-code-gutter" aria-hidden="true">' + numbers + '</pre>' +
         '<pre class="md-code-pre"><code class="hljs' + langClass + '">' + highlighted + '</code></pre>' +
@@ -1179,7 +1196,11 @@ function updateStatus() {
     const fmt = file.format;
     const view = viewLabel(currentMode);
     els.stMode.textContent = fmt.name + ' · ' + view + (file.large || file.binary ? ' · 只读' : '');
-    els.stSize.textContent = fmtSize(file.size);
+    let sizeText = fmtSize(file.size);
+    if (file.image && currentMode === 'image' && file.imageWidth) {
+        sizeText += ' · ' + file.imageWidth + ' × ' + file.imageHeight;
+    }
+    els.stSize.textContent = sizeText;
     if (file.binary) {
         els.stEol.textContent = '';
         els.stEnc.textContent = '';
@@ -1197,6 +1218,10 @@ function updateStatus() {
 
 function showBanner(data, parseError) {
     if (data.binary) {
+        if (data.image && data.mode === 'image') {
+            els.banner.classList.add('hidden');
+            return;
+        }
         const shown = data.hexShown || data.size;
         const truncated = shown < data.size;
         els.banner.textContent = '二进制文件 · ' + data.name + '（' + fmtSize(data.size) + '）：下方从第 0 字节开始，以十六进制字节数据只读展示' +
@@ -1237,7 +1262,7 @@ const countObserver = new MutationObserver(() => {
 countObserver.observe(els.editor, {childList: true, subtree: true, characterData: true});
 
 function applyAceMode() {
-    if (currentMode !== 'code' || !editor || !editor.aceEditor) return;
+    if ((currentMode !== 'code' && currentMode !== 'binary') || !editor || !editor.aceEditor) return;
     const want = aceModeFor(file && file.name, file && file.format);
     try {
         if (editor.aceEditor.session.getMode().$id !== want) {
@@ -1294,6 +1319,8 @@ function createDocEditor(doc) {
     const showJsonErrors = fmt.id === 'json' && /\.json$/i.test(doc.name || '');
     const tableRequested = !!fmt.table && doc.mode === 'table';
     const previewRequested = !!fmt.preview && doc.mode === 'preview';
+    const imageRequested = !!fmt.image && doc.mode === 'image';
+    const binaryMode = !!fmt.image || fmt.id === 'bytes';
     let startMode = !doc.treeAvailable ? 'code' : (doc.mode === 'code' || doc.mode === 'text' ? doc.mode : 'tree');
     if (tableRequested) startMode = 'text';
     if (previewRequested) startMode = 'code';
@@ -1364,12 +1391,14 @@ function createDocEditor(doc) {
             ed.aceEditor.session.setUseWrapMode(!!settings.codeWrap);
         } catch (e) {}
     }
-    doc.mode = previewRequested ? 'preview' : tableRequested ? 'table' : startMode;
+    doc.mode = previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : binaryMode ? 'binary' : startMode;
     doc.text = ed.getText();
     if (fmt.table) createCsvTableView(doc);
     if (fmt.preview) createMarkdownPreview(doc);
+    if (fmt.image) createImageView(doc);
     if (tableRequested) showCsvTableView(doc);
     if (previewRequested) showMarkdownPreview(doc);
+    if (imageRequested) showImageView(doc);
     if (!doc.dirty) doc.bases[doc.mode] = doc.text;
     doc.content = null;
     doc.loading = false;
@@ -1796,6 +1825,135 @@ function leaveMarkdownPreview(doc, mode) {
     updateSearchState();
 }
 
+function createImageView(doc) {
+    if (doc.imageEl || !doc.pane) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'image-preview-view';
+    const scroll = document.createElement('div');
+    scroll.className = 'image-preview-scroll';
+    const status = document.createElement('div');
+    status.className = 'image-preview-status';
+    status.textContent = '正在加载图片…';
+    const img = document.createElement('img');
+    img.className = 'image-preview-img';
+    img.alt = doc.name;
+    img.draggable = false;
+    img.hidden = true;
+    img.addEventListener('load', () => {
+        doc.imageWidth = img.naturalWidth;
+        doc.imageHeight = img.naturalHeight;
+        doc.imageError = null;
+        img.hidden = false;
+        status.classList.add('hidden');
+        if (doc === file) updateStatus();
+    });
+    img.addEventListener('error', () => {
+        img.hidden = true;
+        doc.imageError = '无法解码该图片';
+        status.textContent = '无法预览此图片，可切换到二进制视图';
+        status.classList.remove('hidden');
+        if (doc === file && currentMode === 'image') {
+            flash('图片无法预览，已切换到二进制视图', true);
+            switchMode('binary');
+        }
+    });
+    scroll.append(img, status);
+    wrap.appendChild(scroll);
+    doc.pane.appendChild(wrap);
+    doc.imageEl = wrap;
+    doc.imageScroll = scroll;
+    doc.imageNode = img;
+    doc.imageStatus = status;
+}
+
+function loadImagePreview(doc) {
+    if (!doc || !doc.image) return;
+    createImageView(doc);
+    if (!doc.imageNode) return;
+    if (doc.imageUrl) {
+        doc.imageStatus.classList.add('hidden');
+        if (doc.imageNode.getAttribute('src') !== doc.imageUrl) doc.imageNode.src = doc.imageUrl;
+        return;
+    }
+    if (doc.imageLoading) return;
+    doc.imageLoading = true;
+    doc.imageError = null;
+    doc.imageStatus.textContent = '正在加载图片…';
+    doc.imageStatus.classList.remove('hidden');
+    doc.imageNode.hidden = true;
+    const load = backend.ReadImageDataURL
+        ? backend.ReadImageDataURL(doc.path)
+        : Promise.reject(new Error('当前后端不支持图片预览'));
+    Promise.resolve(load).then((url) => {
+        doc.imageLoading = false;
+        if (!url || !doc.imageNode) throw new Error('图片数据为空');
+        doc.imageUrl = url;
+        doc.imageNode.src = url;
+    }).catch((err) => {
+        doc.imageLoading = false;
+        doc.imageError = (err && err.message) || String(err);
+        if (!doc.imageStatus) return;
+        doc.imageStatus.textContent = '无法预览此图片：' + doc.imageError;
+        doc.imageStatus.classList.remove('hidden');
+        if (doc === file && currentMode === 'image') {
+            flash('图片无法预览，已切换到二进制视图', true);
+            switchMode('binary');
+        }
+    });
+}
+
+function showImageView(doc) {
+    if (!doc || !doc.image) return;
+    createImageView(doc);
+    if (doc.pane) doc.pane.classList.add('image-active');
+    loadImagePreview(doc);
+}
+
+function hideImageView(doc) {
+    if (!doc || !doc.pane) return;
+    doc.pane.classList.remove('image-active');
+}
+
+function enterImageView(doc) {
+    if (!doc || !doc.image || !doc.editor) return;
+    doc.loading = true;
+    try {
+        doc.editor.setMode('code');
+        doc.mode = 'image';
+        currentMode = 'image';
+        showImageView(doc);
+        showBanner(doc, doc.parseError);
+        updateStatus();
+        updateSearchState();
+    } finally {
+        doc.loading = false;
+    }
+}
+
+function enterBinaryView(doc) {
+    if (!doc || !doc.binary || !doc.editor) return;
+    hideImageView(doc);
+    doc.mode = 'binary';
+    currentMode = 'binary';
+    const loading = doc.loading;
+    doc.loading = true;
+    try {
+        doc.editor.setMode('code');
+    } catch (e) {
+        flash('切换二进制视图失败：' + e.message, true);
+    } finally {
+        doc.loading = loading;
+    }
+    if (doc.pane) doc.pane.classList.add('active');
+    applyAceMode();
+    showBanner(doc, doc.parseError);
+    updateStatus();
+    updateSearchState();
+    try {
+        if (doc.editor.aceEditor) doc.editor.aceEditor.resize();
+    } catch (e) {}
+}
+
 function showCsvTableView(doc) {
     if (!doc || !doc.format.table) return;
     createCsvTableView(doc);
@@ -1894,10 +2052,11 @@ function createDoc(data) {
             large: false,
             enc: 'binary',
             content: data.content,
-            format: formats.bytes,
+            format: data.image ? formats.image : formats.bytes,
+            image: !!data.image,
             treeAvailable: false,
             parseError: null,
-            mode: 'code',
+            mode: data.image ? 'image' : 'binary',
             text: null,
             rawText: null,
             dirty: false,
@@ -2295,7 +2454,8 @@ function initContextMenus() {
             showBlankMenu(e.clientX, e.clientY);
             return;
         }
-        if (currentMode === 'tree' || currentMode === 'table' || currentMode === 'preview') return;
+        if (currentMode === 'tree' || currentMode === 'table' || currentMode === 'preview' ||
+            currentMode === 'image' || currentMode === 'binary') return;
         e.preventDefault();
         e.stopPropagation();
         showEditorMenu(e.clientX, e.clientY);
@@ -2563,10 +2723,21 @@ async function reloadActive() {
         doc.previewEl = null;
         doc.previewScroll = null;
         doc.previewBody = null;
+        doc.imageEl = null;
+        doc.imageScroll = null;
+        doc.imageNode = null;
+        doc.imageStatus = null;
+        doc.imageUrl = null;
+        doc.imageLoading = false;
+        doc.imageError = null;
+        doc.imageWidth = 0;
+        doc.imageHeight = 0;
         doc.loading = false;
         Object.assign(doc, fresh, {id: doc.id, dirty: false, untitled: false, text: null, content: data.content});
         let nextMode = keepMode;
-        if (doc.format.preview) {
+        if (doc.binary) {
+            nextMode = doc.image && keepMode === 'image' ? 'image' : 'binary';
+        } else if (doc.format.preview) {
             if (doc.large) nextMode = 'code';
             else if (!['preview', 'code', 'text'].includes(nextMode)) nextMode = 'preview';
         } else if (!doc.treeAvailable) {
@@ -2712,6 +2883,11 @@ elsSettings.codeWrap.addEventListener('change', () => {
     settings.codeWrap = elsSettings.codeWrap.checked;
     applySettings();
 });
+elsSettings.mdLineNumbers.addEventListener('change', () => {
+    settings.mdLineNumbers = elsSettings.mdLineNumbers.checked;
+    applySettings();
+    if (currentMode === 'preview' && file) renderMarkdownPreview(file);
+});
 elsSettings.openMode.addEventListener('change', () => {
     settings.openMode = elsSettings.openMode.value;
     applySettings();
@@ -2838,6 +3014,14 @@ function formatDocument() {
 function switchMode(mode) {
     if (!editor || currentMode === mode) return;
     const doc = file;
+    if (mode === 'image') {
+        if (doc && doc.image) enterImageView(doc);
+        return;
+    }
+    if (mode === 'binary') {
+        if (doc && doc.binary) enterBinaryView(doc);
+        return;
+    }
     if (mode === 'preview') {
         if (doc && doc.format.preview) enterMarkdownPreview(doc);
         return;
@@ -3120,7 +3304,8 @@ els.searchInput.addEventListener('keydown', (e) => {
 function updateSearchState() {
     const tree = currentMode === 'tree' && !!file && !(file.format && file.format.rawOnly);
     els.searchInput.disabled = !tree;
-    els.searchInput.placeholder = tree ? '搜索节点…' : '代码模式按 Ctrl+F 查找';
+    els.searchInput.placeholder = tree ? '搜索节点…'
+        : (currentMode === 'image' || currentMode === 'binary' ? '只读视图' : '代码模式按 Ctrl+F 查找');
     if (!tree) {
         els.searchInput.value = '';
         if (editor && editor.searchBox) editor.searchBox.clear();
