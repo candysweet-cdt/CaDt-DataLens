@@ -223,6 +223,7 @@ export function createExplorer(options) {
         body.appendChild(frag);
         body.scrollTop = prevTop;
         updateTitle();
+        updateSelectionBoundaries();
         if (focused) {
             const row = body.querySelector('.sb-row.anchor') || body.querySelector('.sb-row.selected');
             if (row) row.focus({preventScroll: true});
@@ -377,11 +378,29 @@ export function createExplorer(options) {
         updateSelectionHighlight();
     }
 
+    function updateSelectionBoundaries() {
+        const rows = [...body.querySelectorAll('.sb-row')];
+        for (const row of rows) row.classList.remove('sel-first', 'sel-last');
+        let index = 0;
+        while (index < rows.length) {
+            if (!rows[index].classList.contains('selected')) {
+                index++;
+                continue;
+            }
+            const start = index;
+            while (index + 1 < rows.length && rows[index + 1].classList.contains('selected')) index++;
+            rows[start].classList.add('sel-first');
+            rows[index].classList.add('sel-last');
+            index++;
+        }
+    }
+
     function updateSelectionHighlight() {
         for (const row of body.querySelectorAll('.sb-row[data-path]')) {
             row.classList.toggle('selected', selectionHas(row.dataset.path));
             row.classList.toggle('anchor', samePath(row.dataset.path, anchorPath));
         }
+        updateSelectionBoundaries();
     }
 
     function updateCutHighlight() {
@@ -522,6 +541,7 @@ export function createExplorer(options) {
             for (const entry of listState.entries) frag.appendChild(listRow(entry));
             body.appendChild(frag);
             body.scrollTop = prevTop;
+            updateSelectionBoundaries();
             if (focused) {
                 const row = body.querySelector('.sb-row.anchor') || body.querySelector('.sb-row.selected');
                 if (row) row.focus({preventScroll: true});

@@ -1445,7 +1445,22 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 .sb-row > * { position: relative; z-index: 1; }
 .sb-row:hover::before { background: var(--hover); }
 .sb-row:focus { outline: none; }
-.sb-row.selected::before { background: var(--accent-weak); }
+.sb-row.selected::before {
+    background: var(--accent-weak);
+    top: 0;
+    bottom: 0;
+    border-radius: 0;
+}
+.sb-row.selected.sel-first::before {
+    top: 1px;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+}
+.sb-row.selected.sel-last::before {
+    bottom: 1px;
+    border-bottom-left-radius: 5px;
+    border-bottom-right-radius: 5px;
+}
 .sb-row.cut { opacity: 0.55; }
 .sb-chev {
     flex: none;
