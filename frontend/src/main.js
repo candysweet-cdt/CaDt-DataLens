@@ -401,6 +401,7 @@ const els = {
     stMode: document.getElementById('st-mode'),
     stSize: document.getElementById('st-size'),
     stZoom: document.getElementById('st-zoom'),
+    stPos: document.getElementById('st-pos'),
     stEol: document.getElementById('st-eol'),
     stEnc: document.getElementById('st-enc'),
     stMessage: document.getElementById('st-message'),
@@ -638,6 +639,9 @@ const elsDialogs = {
     nameInput: document.getElementById('dlg-name-input'),
     nameError: document.getElementById('dlg-name-error'),
     nameOk: document.getElementById('btn-name-ok'),
+    goto: document.getElementById('dlg-goto'),
+    gotoInput: document.getElementById('dlg-goto-input'),
+    gotoError: document.getElementById('dlg-goto-error'),
 };
 
 let syncedOpenMode = null;
@@ -860,6 +864,7 @@ function openDialogEl(dlg) {
     elsDialogs.settings.classList.add('hidden');
     elsDialogs.confirm.classList.add('hidden');
     elsDialogs.name.classList.add('hidden');
+    elsDialogs.goto.classList.add('hidden');
     dlg.style.left = '';
     dlg.style.top = '';
     dlg.style.transform = '';
@@ -871,6 +876,7 @@ function closeDialogs() {
     elsDialogs.settings.classList.add('hidden');
     elsDialogs.confirm.classList.add('hidden');
     elsDialogs.name.classList.add('hidden');
+    elsDialogs.goto.classList.add('hidden');
     confirmAction = null;
     nameSubmit = null;
     nameBusy = false;
@@ -989,6 +995,135 @@ elsDialogs.nameInput.addEventListener('keydown', (e) => {
         e.stopPropagation();
         closeDialogs();
     }
+});
+
+function cursorPositionForDoc() {
+    if (!file) return null;
+    if (currentMode === 'code' && file.editor && file.editor.aceEditor) {
+        const pos = file.editor.aceEditor.getCursorPosition();
+        return {line: pos.row + 1, column: pos.column + 1};
+    }
+    if (currentMode === 'text' && file.pane) {
+        const textarea = file.pane.querySelector('textarea.jsoneditor-text');
+        if (textarea) {
+            const lines = textarea.value.slice(0, textarea.selectionEnd).split('\n');
+            return {line: lines.length, column: lines[lines.length - 1].length + 1};
+        }
+    }
+    return null;
+}
+
+function updateCursorPosition() {
+    if (!els.stPos) return;
+    const pos = cursorPositionForDoc();
+    const text = pos ? pos.line + ':' + pos.column : '';
+    if (els.stPos.textContent !== text) els.stPos.textContent = text;
+    els.stPos.title = text ? '当前光标位置（点击或 Ctrl+G 跳转）' : '';
+}
+
+function scheduleCursorPosition() {
+    updateCursorPosition();
+    setTimeout(updateCursorPosition, 0);
+}
+
+function openGotoDialog() {
+    const pos = cursorPositionForDoc() || {line: 1, column: 1};
+    elsDialogs.gotoInput.value = pos.line + ':' + pos.column;
+    elsDialogs.gotoError.textContent = '';
+    elsDialogs.gotoError.classList.add('hidden');
+    openDialogEl(elsDialogs.goto);
+    setTimeout(() => {
+        elsDialogs.gotoInput.focus();
+        elsDialogs.gotoInput.select();
+    }, 0);
+}
+
+function gotoDialogError(message) {
+    elsDialogs.gotoError.textContent = String(message || '');
+    elsDialogs.gotoError.classList.remove('hidden');
+}
+
+function jumpToPosition(line, column) {
+    if (currentMode === 'code' && file && file.editor && file.editor.aceEditor) {
+        const ace = file.editor.aceEditor;
+        const total = ace.session.getLength();
+        const targetLine = Math.min(Math.max(1, line), total);
+        const lineText = ace.session.getLine(targetLine - 1) || '';
+        const targetColumn = Math.min(Math.max(1, column), lineText.length + 1);
+        ace.selection.moveTo(targetLine - 1, targetColumn - 1);
+        ace.clearSelection();
+        ace.scrollToLine(targetLine - 1, true, true);
+        ace.focus();
+        updateCursorPosition();
+        return true;
+    }
+    if (currentMode === 'text' && file && file.pane) {
+        const textarea = file.pane.querySelector('textarea.jsoneditor-text');
+        if (!textarea) return false;
+        const lines = textarea.value.split('\n');
+        const targetLine = Math.min(Math.max(1, line), lines.length);
+        const targetColumn = Math.min(Math.max(1, column), lines[targetLine - 1].length + 1);
+        let index = 0;
+        for (let i = 0; i < targetLine - 1; i++) index += lines[i].length + 1;
+        index += targetColumn - 1;
+        textarea.focus();
+        textarea.setSelectionRange(index, index);
+        const style = getComputedStyle(textarea);
+        const lineHeight = parseFloat(style.lineHeight) || (parseFloat(style.fontSize) || 13) * 1.45;
+        textarea.scrollTop = Math.max(0, (targetLine - 1) * lineHeight - textarea.clientHeight / 2 + lineHeight);
+        updateCursorPosition();
+        return true;
+    }
+    return false;
+}
+
+function submitGotoDialog() {
+    const raw = elsDialogs.gotoInput.value.trim();
+    const match = /^(\d+)(?:\s*[:：]\s*(\d+))?$/.exec(raw);
+    if (!match) {
+        gotoDialogError('请输入「行:列」，例如 12:43');
+        return;
+    }
+    const line = Number(match[1]);
+    const column = match[2] ? Number(match[2]) : 1;
+    if (!Number.isFinite(line) || !Number.isFinite(column) || line < 1 || column < 1) {
+        gotoDialogError('行号和列号必须大于 0');
+        return;
+    }
+    if (!jumpToPosition(line, column)) {
+        gotoDialogError('当前视图不支持跳转');
+        return;
+    }
+    closeDialogs();
+}
+
+document.getElementById('btn-goto-ok').addEventListener('click', submitGotoDialog);
+document.getElementById('btn-goto-cancel').addEventListener('click', closeDialogs);
+elsDialogs.gotoInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        submitGotoDialog();
+    } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeDialogs();
+    }
+});
+if (els.stPos) {
+    els.stPos.addEventListener('click', () => {
+        if ((currentMode === 'code' || currentMode === 'text') && file) openGotoDialog();
+    });
+}
+
+for (const type of ['keyup', 'click', 'input', 'focusin']) {
+    els.editor.addEventListener(type, (e) => {
+        if (e.target && e.target.matches && e.target.matches('textarea.jsoneditor-text')) updateCursorPosition();
+    });
+}
+document.addEventListener('selectionchange', () => {
+    if (currentMode !== 'text') return;
+    const textarea = file && file.pane && file.pane.querySelector('textarea.jsoneditor-text');
+    if (textarea && document.activeElement === textarea) updateCursorPosition();
 });
 
 function openCloseConfirm(message, action, okLabel) {
@@ -1645,6 +1780,7 @@ function updateStatus() {
         els.stEnc.textContent = '';
         els.stEol.style.display = 'none';
         els.stEnc.style.display = 'none';
+        scheduleCursorPosition();
         return;
     }
     els.stEol.style.display = '';
@@ -1653,6 +1789,7 @@ function updateStatus() {
     els.stEol.textContent = (eolSetting === 'follow' ? file.eol : eolSetting).toUpperCase();
     const enc = (file.enc || 'utf-8').toUpperCase();
     els.stEnc.textContent = enc + (file.hasBom && enc === 'UTF-8' ? ' BOM' : '');
+    scheduleCursorPosition();
 }
 
 function hideBanner() {
@@ -1890,6 +2027,7 @@ function applyAceMode() {
         editor.aceEditor.setHighlightIndentGuides(!!settings.codeGuides);
         hookCodeFoldPreviews(editor.aceEditor);
         hookPythonTokenClasses(editor.aceEditor);
+        hookCursorTracking(editor.aceEditor);
         updateCodeFoldPreviews(editor.aceEditor);
     } catch (e) {
         console.warn('ace mode switch failed', e);
@@ -2099,6 +2237,18 @@ function hookCodeFoldPreviews(ace) {
     };
     ace.session.on('changeFold', () => updateCodeFoldPreviews(ace));
     ace.session.on('change', schedule);
+}
+
+function hookCursorTracking(ace) {
+    if (!ace || ace._cursorTracked) return;
+    ace._cursorTracked = true;
+    const update = () => {
+        if (file && currentMode === 'code' && file.editor && file.editor.aceEditor === ace) updateCursorPosition();
+    };
+    try {
+        ace.selection.on('changeCursor', update);
+        ace.on('focus', update);
+    } catch (e) {}
 }
 
 function applyPythonTokenClasses(ace) {
@@ -5054,6 +5204,12 @@ window.addEventListener('keydown', (e) => {
                 if (settings.readOnlyMode) flash('只读模式下不能粘贴', true);
                 else pasteFileClipboard(explorer.getAnchor() || selected[selected.length - 1]);
             }
+        }
+    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && key === 'g') {
+        if ((currentMode === 'code' || currentMode === 'text') && file && !isDialogOpen()) {
+            e.preventDefault();
+            e.stopPropagation();
+            openGotoDialog();
         }
     } else if (e.ctrlKey && e.altKey && (key === 'l' || e.code === 'KeyL')) {
         e.preventDefault();
