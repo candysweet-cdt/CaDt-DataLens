@@ -1642,11 +1642,22 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 12px;
+    gap: 26px;
+    padding: 32px 24px;
+    overflow: auto;
 }
 #welcome.hidden { display: none; }
-.welcome-title { font-size: 28px; font-weight: 600; color: var(--accent); }
-.welcome-sub { color: var(--muted); }
+.welcome-banner {
+    width: min(72%, 960px);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    user-select: none;
+}
+.welcome-shortcuts { display: flex; flex-direction: column; gap: 13px; min-width: 320px; }
+.ws-row { display: flex; align-items: baseline; gap: 16px; font-size: 14px; }
+.ws-label { color: var(--text); }
+.ws-key { color: var(--muted); font-size: 13px; }
+.ws-drag { margin-top: 8px; color: var(--muted); font-size: 13px; }
 
 #statusbar {
     display: flex;
