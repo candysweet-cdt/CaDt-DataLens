@@ -837,7 +837,31 @@ html, body {
 .about-repo-sep { color: var(--faint); }
 .about-link { color: var(--accent); text-decoration: none; cursor: default; }
 .about-link:hover { color: var(--text); text-decoration: underline; }
-.about-formats { color: var(--text); }
+.about-banner {
+    width: 100%;
+    max-width: 480px;
+    margin: 2px 0 12px;
+}
+.about-banner-img {
+    display: none;
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+}
+.about-banner-img.is-dark { display: block; }
+html[data-theme="light"] .about-banner-img.is-dark,
+html[data-theme="idea-light"] .about-banner-img.is-dark,
+html[data-theme="github"] .about-banner-img.is-dark,
+html[data-theme="newsprint"] .about-banner-img.is-dark,
+html[data-theme="pixyll"] .about-banner-img.is-dark,
+html[data-theme="whitey"] .about-banner-img.is-dark { display: none; }
+html[data-theme="light"] .about-banner-img.is-light,
+html[data-theme="idea-light"] .about-banner-img.is-light,
+html[data-theme="github"] .about-banner-img.is-light,
+html[data-theme="newsprint"] .about-banner-img.is-light,
+html[data-theme="pixyll"] .about-banner-img.is-light,
+html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
+.about-lockup { width: 240px; height: auto; margin: 2px 0 10px; }
 .about-dim { color: var(--muted); font-size: 11px; margin-top: 8px; line-height: 1.7; }
 .dialog-footer {
     display: flex;
