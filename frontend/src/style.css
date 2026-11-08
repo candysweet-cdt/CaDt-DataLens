@@ -1075,6 +1075,7 @@ html, body {
 
 #statusbar {
     display: flex;
+    align-items: center;
     gap: 14px;
     padding: 4px 12px;
     background: var(--panel);
