@@ -162,6 +162,10 @@ export function createExplorer(options) {
                 toggleNode(node);
                 return;
             }
+            if (e.shiftKey) {
+                selectRangeTo(node, e.ctrlKey || e.metaKey);
+                return;
+            }
             if (e.ctrlKey || e.metaKey) toggleSelection(node);
             else selectOnly(node);
         });
@@ -169,7 +173,7 @@ export function createExplorer(options) {
             e.preventDefault();
             e.stopPropagation();
             if (e.target && e.target.closest && e.target.closest('.sb-chev')) return;
-            if (e.ctrlKey || e.metaKey) return;
+            if (e.ctrlKey || e.metaKey || e.shiftKey) return;
             if (node.isDir) toggleNode(node);
             else if (typeof openPath === 'function') openPath(node.path);
         });
@@ -378,6 +382,26 @@ export function createExplorer(options) {
         updateSelectionHighlight();
     }
 
+    function selectRangeTo(node, additive) {
+        focused = true;
+        if (!node || !node.path) return;
+        const rows = [...body.querySelectorAll('.sb-row[data-path]')];
+        const targetIndex = rows.findIndex((row) => samePath(row.dataset.path, node.path));
+        const anchorIndex = anchorPath ? rows.findIndex((row) => samePath(row.dataset.path, anchorPath)) : -1;
+        if (targetIndex < 0 || anchorIndex < 0) {
+            selectOnly(node);
+            return;
+        }
+        const start = Math.min(anchorIndex, targetIndex);
+        const end = Math.max(anchorIndex, targetIndex);
+        const range = rows.slice(start, end + 1).map((row) => ({
+            path: row.dataset.path,
+            name: row.querySelector('.sb-name') ? row.querySelector('.sb-name').textContent : baseName(row.dataset.path),
+            isDir: row.dataset.dir === '1',
+        }));
+        setSelection(additive ? [...selection, ...range] : range, anchorPath);
+    }
+
     function updateSelectionBoundaries() {
         const rows = [...body.querySelectorAll('.sb-row')];
         for (const row of rows) row.classList.remove('sel-first', 'sel-last');
@@ -500,13 +524,17 @@ export function createExplorer(options) {
         row.addEventListener('click', (e) => {
             row.focus({preventScroll: true});
             const node = {path: entry.path, name: entry.name, isDir: false};
+            if (e.shiftKey) {
+                selectRangeTo(node, e.ctrlKey || e.metaKey);
+                return;
+            }
             if (e.ctrlKey || e.metaKey) toggleSelection(node);
             else selectOnly(node);
         });
         row.addEventListener('dblclick', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (e.ctrlKey || e.metaKey) return;
+            if (e.ctrlKey || e.metaKey || e.shiftKey) return;
             if (typeof openPath === 'function') openPath(entry.path);
         });
         row.addEventListener('contextmenu', (e) => {
