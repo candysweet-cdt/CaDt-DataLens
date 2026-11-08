@@ -428,3 +428,214 @@ func TestReadDirListsAndTruncates(t *testing.T) {
 		t.Fatalf("ReadDir limit = %+v", part)
 	}
 }
+
+func TestCreateEntryCreatesFileAndDirectory(t *testing.T) {
+	dir := t.TempDir()
+	app := NewApp()
+	filePath, err := app.CreateEntry(dir, "新建.json", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.IsDir() || info.Size() != 0 {
+		t.Fatalf("new file = %+v", info)
+	}
+	subPath, err := app.CreateEntry(dir, "子目录", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subInfo, err := os.Stat(subPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !subInfo.IsDir() {
+		t.Fatalf("new directory = %+v", subInfo)
+	}
+	if _, err := app.CreateEntry(dir, "新建.json", false); err == nil {
+		t.Fatal("duplicate file should fail")
+	}
+}
+
+func TestCreateEntryRejectsInvalidNames(t *testing.T) {
+	dir := t.TempDir()
+	app := NewApp()
+	for _, name := range []string{"", " ", ".", "..", "a/b", `a\b`, "a:b", "a?b", "con", "CON.txt", "name.", "name "} {
+		if _, err := app.CreateEntry(dir, name, false); err == nil {
+			t.Fatalf("name %q should be rejected", name)
+		}
+	}
+}
+
+func TestRenameEntryRenamesFileAndDirectory(t *testing.T) {
+	dir := t.TempDir()
+	app := NewApp()
+	oldFile := filepath.Join(dir, "old.json")
+	if err := os.WriteFile(oldFile, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	newFile, err := app.RenameEntry(oldFile, "new.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newFile != filepath.Join(dir, "new.json") {
+		t.Fatalf("rename file = %s", newFile)
+	}
+	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
+		t.Fatalf("old file still exists: %v", err)
+	}
+	if raw, err := os.ReadFile(newFile); err != nil || string(raw) != "{}" {
+		t.Fatalf("renamed content = %q, %v", raw, err)
+	}
+
+	sub := filepath.Join(dir, "folder")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "a.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	newSub, err := app.RenameEntry(sub, "folder2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(newSub, "a.json")); err != nil {
+		t.Fatalf("directory contents not moved: %v", err)
+	}
+}
+
+func TestRenameEntryRejectsExistingAndInvalid(t *testing.T) {
+	dir := t.TempDir()
+	app := NewApp()
+	src := filepath.Join(dir, "a.json")
+	dst := filepath.Join(dir, "b.json")
+	for _, path := range []string{src, dst} {
+		if err := os.WriteFile(path, []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := app.RenameEntry(src, "b.json"); err == nil {
+		t.Fatal("rename onto existing file should fail")
+	}
+	if _, err := app.RenameEntry(src, "a/b.json"); err == nil {
+		t.Fatal("rename with separator should fail")
+	}
+	same, err := app.RenameEntry(src, "a.json")
+	if err != nil || same != src {
+		t.Fatalf("rename to same name = %s, %v", same, err)
+	}
+}
+
+func TestSuggestCopyName(t *testing.T) {
+	dir := t.TempDir()
+	app := NewApp()
+	if name, err := app.SuggestCopyName(dir, "a.json", false); err != nil || name != "a.json" {
+		t.Fatalf("free name = %q, %v", name, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if name, err := app.SuggestCopyName(dir, "a.json", false); err != nil || name != "a - 副本.json" {
+		t.Fatalf("first copy name = %q, %v", name, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a - 副本.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if name, err := app.SuggestCopyName(dir, "a.json", false); err != nil || name != "a - 副本 2.json" {
+		t.Fatalf("second copy name = %q, %v", name, err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "folder"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if name, err := app.SuggestCopyName(dir, "folder", true); err != nil || name != "folder - 副本" {
+		t.Fatalf("directory copy name = %q, %v", name, err)
+	}
+	if name, err := app.SuggestCopyName(dir, ".gitignore", false); err != nil || name != ".gitignore" {
+		t.Fatalf("dotfile copy name = %q, %v", name, err)
+	}
+}
+
+func TestCopyEntryFileAndDirectory(t *testing.T) {
+	dir := t.TempDir()
+	app := NewApp()
+	srcFile := filepath.Join(dir, "a.json")
+	if err := os.WriteFile(srcFile, []byte(`{"a":1}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	srcDir := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(srcDir, "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "nested", "b.yaml"), []byte("b: 1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dstDir := filepath.Join(dir, "dst")
+	if err := os.Mkdir(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	newFile, err := app.CopyEntry(srcFile, dstDir, "a.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(newFile); err != nil || string(raw) != `{"a":1}` {
+		t.Fatalf("copied file = %q, %v", raw, err)
+	}
+
+	newDir, err := app.CopyEntry(srcDir, dstDir, "src - 副本")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(newDir, "nested", "b.yaml")); err != nil || string(raw) != "b: 1" {
+		t.Fatalf("copied directory content = %q, %v", raw, err)
+	}
+	if _, err := app.CopyEntry(srcFile, dstDir, "a.json"); err == nil {
+		t.Fatal("copy onto existing should fail")
+	}
+	if _, err := app.CopyEntry(srcDir, filepath.Join(srcDir, "nested"), "self"); err == nil {
+		t.Fatal("copy into own subdirectory should fail")
+	}
+}
+
+func TestMoveEntryFileAndDirectory(t *testing.T) {
+	dir := t.TempDir()
+	app := NewApp()
+	srcFile := filepath.Join(dir, "move.json")
+	if err := os.WriteFile(srcFile, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dstDir := filepath.Join(dir, "dst")
+	if err := os.Mkdir(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	newFile, err := app.MoveEntry(srcFile, dstDir, "moved.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(srcFile); !os.IsNotExist(err) {
+		t.Fatalf("source still exists: %v", err)
+	}
+	if raw, err := os.ReadFile(newFile); err != nil || string(raw) != "{}" {
+		t.Fatalf("moved file = %q, %v", raw, err)
+	}
+
+	srcDir := filepath.Join(dir, "folder")
+	if err := os.Mkdir(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "inside.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	newDir, err := app.MoveEntry(srcDir, dstDir, "folder2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(newDir, "inside.txt")); err != nil || string(raw) != "x" {
+		t.Fatalf("moved directory = %q, %v", raw, err)
+	}
+	if _, err := os.Stat(srcDir); !os.IsNotExist(err) {
+		t.Fatalf("source directory still exists: %v", err)
+	}
+}

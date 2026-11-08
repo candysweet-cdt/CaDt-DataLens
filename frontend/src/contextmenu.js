@@ -78,9 +78,13 @@ export function createContextMenu() {
             }
             const row = el('button', 'menu-item ctx-item' + (item.disabled ? ' disabled' : '') + (item.danger ? ' danger' : ''));
             row.type = 'button';
-            const icon = el('span', 'mi-icon' + (item.checked ? ' checked' : ''));
+            const icon = el('span', 'mi-icon' + (item.checked ? ' checked' : '') +
+                (item.iconClass ? ' ' + item.iconClass : ''));
             if (item.checked) icon.textContent = '\uE73E';
-            else if (item.icon) icon.textContent = String.fromCharCode(parseInt(item.icon, 16));
+            else if (item.iconHtml) {
+                icon.innerHTML = item.iconHtml;
+                if (item.iconClass) icon.dataset.fi = item.iconClass.replace(/^fi-/, '');
+            } else if (item.icon) icon.textContent = String.fromCharCode(parseInt(item.icon, 16));
             const label = el('span', 'mi-label', item.label);
             const key = el('span', 'mi-key', item.shortcut || '');
             row.append(icon, label, key);

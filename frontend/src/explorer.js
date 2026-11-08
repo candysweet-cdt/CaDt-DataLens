@@ -36,18 +36,7 @@ function baseName(path) {
     return i >= 0 ? s.slice(i + 1) : s;
 }
 
-function fileKind(name) {
-    const base = String(name || '').toLowerCase();
-    const dot = base.lastIndexOf('.');
-    const ext = dot < 0 ? '' : base.slice(dot + 1);
-    if (['json', 'jsonc', 'json5', 'jsonl', 'ndjson'].includes(ext)) return 'json';
-    if (['yaml', 'yml', 'toml', 'ini', 'properties', 'cfg'].includes(ext)) return 'yaml';
-    if (['xml', 'svg'].includes(ext)) return 'xml';
-    if (['csv', 'tsv'].includes(ext)) return 'csv';
-    if (['png', 'jpg', 'jpeg', 'jfif', 'gif', 'bmp', 'webp', 'ico', 'tif', 'tiff',
-        'avif', 'heic', 'heif', 'psd', 'raw', 'cr2', 'nef', 'arw', 'dng'].includes(ext)) return 'image';
-    return 'text';
-}
+import {createFileIcon} from './fileicons.js';
 
 function compareEntries(a, b) {
     if (!!a.isDir !== !!b.isDir) return a.isDir ? -1 : 1;
@@ -71,6 +60,10 @@ export function createExplorer(options) {
     let visible = false;
     let explicitRoot = null;
     let activePath = null;
+    let selection = [];
+    let anchorPath = null;
+    let cutPaths = [];
+    let focused = false;
     let tree = null;
     let treeSeq = 0;
     let revealSeq = 0;
@@ -135,28 +128,41 @@ export function createExplorer(options) {
 
     function treeRow(node) {
         const row = el('div', 'sb-row sb-tree-row' + (node.root ? ' sb-root' : '') +
-            (node.isDir ? ' sb-dir' : '') + (samePath(node.path, activePath) ? ' current' : ''));
+            (node.isDir ? ' sb-dir' : '') + (samePath(node.path, activePath) ? ' current' : '') +
+            (selectionHas(node.path) ? ' selected' : '') +
+            (samePath(node.path, anchorPath) ? ' anchor' : '') +
+            (cutPaths.some((path) => samePath(node.path, path)) ? ' cut' : ''));
         row.dataset.path = node.path;
         row.dataset.dir = node.isDir ? '1' : '0';
+        row.tabIndex = -1;
         if (node.path) row.title = node.path;
         const chev = el('span', 'sb-chev' + (node.isDir && node.expanded ? ' open' : ''));
         if (node.isDir) chev.innerHTML = ICONS.chevron;
-        const icon = el('span', 'sb-icon' + (node.isDir ? ' sb-dir-icon' : ' sb-ft-' + fileKind(node.name)));
-        icon.innerHTML = node.isDir ? ICONS.folder : ICONS.file;
+        let icon;
+        if (node.isDir) {
+            icon = el('span', 'sb-icon sb-dir-icon');
+            icon.innerHTML = ICONS.folder;
+        } else {
+            icon = createFileIcon(node.name, 'sb-icon');
+        }
         const name = el('span', 'sb-name', node.name);
         row.append(chev, icon, name);
-        row.addEventListener('click', () => {
-            if (node.isDir) {
-                node.expanded = !node.expanded;
-                if (node.expanded && !node.loaded) loadNode(node, treeSeq);
-                else renderTree();
-            } else if (typeof openPath === 'function') {
-                openPath(node.path);
-            }
+        row.addEventListener('click', (e) => {
+            row.focus({preventScroll: true});
+            if (e.ctrlKey || e.metaKey) toggleSelection(node);
+            else selectOnly(node);
+        });
+        row.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.ctrlKey || e.metaKey) return;
+            if (node.isDir) toggleNode(node);
+            else if (typeof openPath === 'function') openPath(node.path);
         });
         row.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            selectForContext(node);
             if (typeof onContextMenu === 'function') {
                 onContextMenu({kind: 'tree', name: node.name, path: node.path, isDir: node.isDir}, e.clientX, e.clientY, node);
             }
@@ -250,6 +256,12 @@ export function createExplorer(options) {
         treeSeq++;
         revealSeq++;
         const root = treeRootPath();
+        if (selection.length) {
+            selection = selection.filter((item) => !!root && isWithin(root, item.path));
+            if (!selection.some((item) => samePath(item.path, anchorPath))) {
+                anchorPath = selection.length ? selection[selection.length - 1].path : null;
+            }
+        }
         if (!root) {
             tree = null;
             return;
@@ -287,6 +299,100 @@ export function createExplorer(options) {
         for (const row of body.querySelectorAll('.sb-row[data-path]')) {
             row.classList.toggle('current', samePath(row.dataset.path, activePath));
         }
+    }
+
+    function normalizeSelectionItem(item) {
+        if (!item || !item.path) return null;
+        return {path: item.path, name: item.name || baseName(item.path), isDir: !!item.isDir};
+    }
+
+    function selectionHas(path) {
+        return selection.some((item) => samePath(item.path, path));
+    }
+
+    function setSelection(items, anchor) {
+        const next = [];
+        for (const item of items || []) {
+            const entry = normalizeSelectionItem(item);
+            if (!entry || next.some((existing) => samePath(existing.path, entry.path))) continue;
+            next.push(entry);
+        }
+        selection = next;
+        const anchorHit = anchor && next.some((item) => samePath(item.path, anchor));
+        anchorPath = anchorHit ? anchor : (next.length ? next[next.length - 1].path : null);
+        updateSelectionHighlight();
+    }
+
+    function selectOnly(node) {
+        focused = true;
+        if (!node || !node.path) {
+            setSelection([], null);
+            return;
+        }
+        setSelection([node], node.path);
+    }
+
+    function toggleSelection(node) {
+        focused = true;
+        if (!node || !node.path) return;
+        const index = selection.findIndex((item) => samePath(item.path, node.path));
+        if (index >= 0) {
+            selection.splice(index, 1);
+            anchorPath = selection.length ? selection[selection.length - 1].path : null;
+        } else {
+            selection.push(normalizeSelectionItem(node));
+            anchorPath = node.path;
+        }
+        updateSelectionHighlight();
+    }
+
+    function selectForContext(node) {
+        focused = true;
+        if (!node || !node.path) return;
+        if (!selectionHas(node.path)) {
+            setSelection([node], node.path);
+            return;
+        }
+        anchorPath = node.path;
+        updateSelectionHighlight();
+    }
+
+    function updateSelectionHighlight() {
+        for (const row of body.querySelectorAll('.sb-row[data-path]')) {
+            row.classList.toggle('selected', selectionHas(row.dataset.path));
+            row.classList.toggle('anchor', samePath(row.dataset.path, anchorPath));
+        }
+    }
+
+    function updateCutHighlight() {
+        for (const row of body.querySelectorAll('.sb-row[data-path]')) {
+            row.classList.toggle('cut', cutPaths.some((path) => samePath(row.dataset.path, path)));
+        }
+    }
+
+    function setCutPaths(paths) {
+        cutPaths = (paths || []).filter(Boolean);
+        updateCutHighlight();
+    }
+
+    function setCutPath(path) {
+        setCutPaths(path ? [path] : []);
+    }
+
+    function selectPath(path, isDir) {
+        if (!path) {
+            setSelection([], null);
+            return;
+        }
+        setSelection([{path, name: baseName(path), isDir: !!isDir}], path);
+        const row = body.querySelector('.sb-row.selected');
+        if (row) row.scrollIntoView({block: 'nearest'});
+    }
+
+    function selectPaths(items) {
+        setSelection(items, items && items.length ? items[items.length - 1].path : null);
+        const row = body.querySelector('.sb-row.anchor') || body.querySelector('.sb-row.selected');
+        if (row) row.scrollIntoView({block: 'nearest'});
     }
 
     async function revealActive() {
@@ -344,18 +450,30 @@ export function createExplorer(options) {
     }
 
     function listRow(entry) {
-        const row = el('div', 'sb-row sb-list-row' + (samePath(entry.path, activePath) ? ' current' : ''));
+        const row = el('div', 'sb-row sb-list-row' + (samePath(entry.path, activePath) ? ' current' : '') +
+            (selectionHas(entry.path) ? ' selected' : '') +
+            (samePath(entry.path, anchorPath) ? ' anchor' : '') +
+            (cutPaths.some((path) => samePath(entry.path, path)) ? ' cut' : ''));
         row.dataset.path = entry.path;
+        row.tabIndex = -1;
         if (entry.path) row.title = entry.path;
-        const icon = el('span', 'sb-icon sb-ft-' + fileKind(entry.name));
-        icon.innerHTML = ICONS.file;
-        row.append(icon, el('span', 'sb-name', entry.name));
-        row.addEventListener('click', () => {
+        row.append(createFileIcon(entry.name, 'sb-icon'), el('span', 'sb-name', entry.name));
+        row.addEventListener('click', (e) => {
+            row.focus({preventScroll: true});
+            const node = {path: entry.path, name: entry.name, isDir: false};
+            if (e.ctrlKey || e.metaKey) toggleSelection(node);
+            else selectOnly(node);
+        });
+        row.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.ctrlKey || e.metaKey) return;
             if (typeof openPath === 'function') openPath(entry.path);
         });
         row.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            selectForContext({path: entry.path, name: entry.name, isDir: false});
             if (typeof onContextMenu === 'function') {
                 onContextMenu({kind: 'list', name: entry.name, path: entry.path, isDir: false}, e.clientX, e.clientY, null);
             }
@@ -392,6 +510,10 @@ export function createExplorer(options) {
     function setMode(next, notify = true) {
         if (next !== 'tree' && next !== 'list') return;
         const changed = mode !== next;
+        if (changed) {
+            selection = [];
+            anchorPath = null;
+        }
         mode = next;
         updateModeButtons();
         if (changed && notify && typeof onModeChange === 'function') onModeChange(mode);
@@ -409,7 +531,10 @@ export function createExplorer(options) {
         const want = !!next;
         if (visible === want) return;
         visible = want;
-        if (!visible) return;
+        if (!visible) {
+            focused = false;
+            return;
+        }
         if (mode === 'list') {
             loadList(false);
         } else {
@@ -422,6 +547,8 @@ export function createExplorer(options) {
     function setRoot(path) {
         explicitRoot = path || null;
         tree = null;
+        selection = [];
+        anchorPath = null;
         treeSeq++;
         revealSeq++;
         if (visible && mode === 'tree') {
@@ -437,6 +564,13 @@ export function createExplorer(options) {
         activePath = path || null;
         if (!visible) return;
         if (mode === 'list') {
+            const root = listRootPath();
+            if (selection.length) {
+                selection = selection.filter((item) => root && samePath(parentPath(item.path), root));
+                if (!selection.some((item) => samePath(item.path, anchorPath))) {
+                    anchorPath = selection.length ? selection[selection.length - 1].path : null;
+                }
+            }
             loadList(false);
         } else {
             const prevRoot = tree ? tree.path : null;
@@ -475,6 +609,114 @@ export function createExplorer(options) {
         else renderTree();
     }
 
+    function findLoadedNode(node, path) {
+        if (!node) return null;
+        if (samePath(node.path, path)) return node;
+        if (!node.isDir || !node.children) return null;
+        for (const child of node.children) {
+            const found = findLoadedNode(child, path);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    function remapPath(path, oldPath, newPath) {
+        if (!path) return path;
+        const target = String(path).replace(/\\/g, '/');
+        const oldNorm = String(oldPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        if (!oldNorm) return path;
+        const lowerTarget = target.toLowerCase();
+        const lowerOld = oldNorm.toLowerCase();
+        if (lowerTarget === lowerOld) return newPath;
+        if (!lowerTarget.startsWith(lowerOld + '/')) return path;
+        const rest = target.slice(oldNorm.length);
+        return String(newPath).replace(/\\/g, '/').replace(/\/+$/, '') + rest;
+    }
+
+    function rewriteSubtree(node, oldPath, newPath) {
+        if (!node) return;
+        if (isWithin(oldPath, node.path)) {
+            node.path = remapPath(node.path, oldPath, newPath);
+            node.name = baseName(node.path);
+        }
+        for (const child of node.children || []) {
+            rewriteSubtree(child, oldPath, newPath);
+        }
+    }
+
+    async function refreshDir(path) {
+        if (!visible || mode !== 'tree' || !tree) return false;
+        const node = findLoadedNode(tree, path);
+        if (!node || !node.isDir) return false;
+        node.expanded = true;
+        node.loaded = false;
+        await loadNode(node, treeSeq);
+        return true;
+    }
+
+    function detachNode(parent, path) {
+        if (!parent || !parent.children) return false;
+        const index = parent.children.findIndex((child) => samePath(child.path, path));
+        if (index >= 0) {
+            parent.children.splice(index, 1);
+            return true;
+        }
+        for (const child of parent.children) {
+            if (detachNode(child, path)) return true;
+        }
+        return false;
+    }
+
+    function dropPathFromSelection(path) {
+        if (!path) return;
+        selection = selection.filter((item) => !isWithin(path, item.path));
+        if (!selection.some((item) => samePath(item.path, anchorPath))) {
+            anchorPath = selection.length ? selection[selection.length - 1].path : null;
+        }
+        cutPaths = cutPaths.filter((cut) => !isWithin(path, cut));
+    }
+
+    function removePath(path) {
+        if (!tree || !path) return false;
+        if (samePath(tree.path, path)) {
+            tree = null;
+            treeSeq++;
+            revealSeq++;
+            dropPathFromSelection(path);
+            if (visible) renderTree();
+            return true;
+        }
+        const removed = detachNode(tree, path);
+        if (removed) {
+            dropPathFromSelection(path);
+            if (visible) renderTree();
+        }
+        return removed;
+    }
+
+    function pathRenamed(oldPath, newPath) {
+        if (!oldPath || !newPath) return;
+        for (const item of selection) {
+            item.path = remapPath(item.path, oldPath, newPath);
+            item.name = baseName(item.path);
+        }
+        if (anchorPath) anchorPath = remapPath(anchorPath, oldPath, newPath);
+        cutPaths = cutPaths.map((path) => remapPath(path, oldPath, newPath));
+        if (mode === 'list') {
+            listState.loaded = false;
+            if (visible) loadList(true);
+            return;
+        }
+        if (!tree) return;
+        rewriteSubtree(tree, oldPath, newPath);
+        if (activePath) activePath = remapPath(activePath, oldPath, newPath);
+        if (explicitRoot) explicitRoot = remapPath(explicitRoot, oldPath, newPath);
+        if (visible) {
+            renderTree();
+            updateTitle();
+        }
+    }
+
     if (refreshBtn) {
         refreshBtn.innerHTML = ICONS.refresh;
         refreshBtn.addEventListener('click', refresh);
@@ -489,6 +731,13 @@ export function createExplorer(options) {
     }
     updateModeButtons();
 
+    document.addEventListener('pointerdown', (e) => {
+        focused = !!(e.target && body.contains(e.target));
+    }, true);
+    document.addEventListener('focusin', (e) => {
+        focused = !!(e.target && body.contains(e.target));
+    }, true);
+
     return {
         setVisible,
         setMode,
@@ -498,5 +747,18 @@ export function createExplorer(options) {
         setActive,
         refresh,
         toggleNode,
+        refreshDir,
+        pathRenamed,
+        removePath,
+        getSelection: () => selection.map((item) => ({...item})),
+        getAnchor: () => {
+            const item = selection.find((entry) => samePath(entry.path, anchorPath));
+            return item ? {...item} : (selection.length ? {...selection[selection.length - 1]} : null);
+        },
+        selectPath,
+        selectPaths,
+        hasFocus: () => focused,
+        setCutPaths,
+        setCutPath,
     };
 }

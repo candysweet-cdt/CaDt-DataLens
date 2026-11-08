@@ -41,7 +41,7 @@
 <div id="app">
     <header id="toolbar">
         <img id="app-logo" src="/icon.png" alt="CaDt-DataLens">
-        <div id="filename" class="filename">未打开文件</div>
+        <div id="filename" class="filename"><span id="filename-icon" class="title-icon"></span><span id="filename-text" class="filename-text">未打开文件</span></div>
         <div class="spacer"></div>
         <div id="win-controls">
             <button id="wc-min" class="wc-btn" title="最小化">&#xE921;</button>
@@ -188,6 +188,10 @@
                             <div><span>撤销 / 重做</span><span class="kbd">Ctrl+Z / Ctrl+Y</span></div>
                             <div><span>格式化</span><span class="kbd">Ctrl+Alt+L</span></div>
                             <div><span>文件侧边栏</span><span class="kbd">Alt+1</span></div>
+                            <div><span>文件树中打开 / 展开</span><span class="kbd">双击</span></div>
+                            <div><span>文件树中多选</span><span class="kbd">Ctrl+单击</span></div>
+                            <div><span>文件树中重命名</span><span class="kbd">F2 / Shift+F6</span></div>
+                            <div><span>文件树中复制 / 剪切 / 粘贴</span><span class="kbd">Ctrl+C / Ctrl+X / Ctrl+V</span></div>
                             <div><span>重新打开关闭的标签页</span><span class="kbd">Ctrl+Shift+T</span></div>
                             <div><span>搜索</span><span class="kbd">Ctrl+F</span></div>
                             <div><span>展开 / 收起节点</span><span class="kbd">Ctrl+= / Ctrl+-</span></div>
@@ -252,6 +256,21 @@
                 <div class="dialog-footer">
                     <button type="button" id="btn-discard" class="dlg-btn primary">丢弃并关闭</button>
                     <button type="button" id="btn-cancel-close" class="dlg-btn">取消</button>
+                </div>
+            </div>
+        </div>
+        <div id="dlg-name" class="dialog dialog-name hidden" role="dialog" aria-label="名称">
+            <div class="dialog-head">
+                <span id="dlg-name-title" class="dialog-title">新建文件</span>
+                <button type="button" class="dialog-close" data-close="1" title="关闭">&#xE8BB;</button>
+            </div>
+            <div class="dialog-body">
+                <label id="dlg-name-label" class="dlg-label" for="dlg-name-input">文件名</label>
+                <input id="dlg-name-input" class="dlg-input" type="text" spellcheck="false" autocomplete="off">
+                <div id="dlg-name-error" class="dlg-error hidden"></div>
+                <div class="dialog-footer">
+                    <button type="button" id="btn-name-ok" class="dlg-btn primary">确定</button>
+                    <button type="button" id="btn-name-cancel" class="dlg-btn">取消</button>
                 </div>
             </div>
         </div>

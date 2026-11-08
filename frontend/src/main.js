@@ -7,6 +7,7 @@ import markdownItKatex from '@vscode/markdown-it-katex';
 import {aceModeFor, detectFormat, formats, isSupportedFile} from './formats.js';
 import {createExplorer} from './explorer.js';
 import {createContextMenu} from './contextmenu.js';
+import {createFileIcon, fileIconSpec} from './fileicons.js';
 
 const UNLOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2.4 2.4 0 0 1 10.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
 const LOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2 2 0 0 1 10 5.6V7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
@@ -122,6 +123,43 @@ const mockTree = {
     ],
 };
 
+function mockFindEntry(path) {
+    for (const entries of Object.values(mockTree)) {
+        const index = entries.findIndex((entry) => entry.path === path);
+        if (index >= 0) return {entries, index, entry: entries[index]};
+    }
+    return null;
+}
+
+function mockPasteNode(entry, destDir, name) {
+    const target = destDir + '/' + name;
+    mockTree[destDir].push({name, path: target, isDir: !!entry.isDir});
+    if (entry.isDir) {
+        mockTree[target] = [];
+        for (const child of (mockTree[entry.path] || []).slice()) {
+            mockPasteNode(child, target, child.name);
+        }
+    } else if (window.__mockCreated && window.__mockCreated[entry.path]) {
+        window.__mockCreated[target] = true;
+    }
+    return target;
+}
+
+function mockDropPath(path) {
+    const found = mockFindEntry(path);
+    if (found) found.entries.splice(found.index, 1);
+    for (const key of Object.keys(mockTree)) {
+        if (key === path || key.startsWith(path + '/')) delete mockTree[key];
+    }
+    if (window.__mockCreated) {
+        for (const key of Object.keys(window.__mockCreated)) {
+            if (key === path || key.startsWith(path + '/')) {
+                delete window.__mockCreated[key];
+            }
+        }
+    }
+}
+
 const mockBackend = {
     async GetStartupFiles() {
         if (mockScenario.has('empty')) return [];
@@ -146,6 +184,9 @@ const mockBackend = {
             return {path: dirKey, name: dirKey.split('/').pop(), isDir: true};
         }
         const base = path.split('/').pop();
+        if (window.__mockCreated && window.__mockCreated[path]) {
+            return {path, name: base, content: '', size: 0, eol: 'lf', hasBom: false, large: false, enc: 'utf-8'};
+        }
         if (base.toLowerCase().endsWith('.png')) {
             return {path, name: base, content: mockHex, size: 16, eol: 'lf', hasBom: false, large: false, enc: 'binary', binary: true, image: true};
         }
@@ -186,6 +227,93 @@ const mockBackend = {
         }
         const cap = limit > 0 ? limit : 1000;
         return {entries: entries.slice(0, cap), truncated: entries.length > cap};
+    },
+    async CreateEntry(dir, name, isDir) {
+        const key = String(dir || '').replace(/\/+$/, '');
+        const entries = mockTree[key];
+        if (!entries) throw new Error('目录不存在');
+        const clean = String(name || '').trim();
+        if (!clean) throw new Error('名称不能为空');
+        if (/[\\/]/.test(clean)) throw new Error('名称不能包含路径分隔符');
+        if (entries.some((e) => e.name.toLowerCase() === clean.toLowerCase())) throw new Error('“' + clean + '”已存在');
+        const path = key + '/' + clean;
+        entries.push({name: clean, path, isDir: !!isDir});
+        if (isDir) mockTree[path] = [];
+        else (window.__mockCreated || (window.__mockCreated = {}))[path] = true;
+        return path;
+    },
+    async RenameEntry(path, newName) {
+        const clean = String(newName || '').trim();
+        if (!clean) throw new Error('名称不能为空');
+        if (/[\\/]/.test(clean)) throw new Error('名称不能包含路径分隔符');
+        const slash = path.lastIndexOf('/');
+        const parent = path.slice(0, slash);
+        const entries = mockTree[parent];
+        if (!entries) throw new Error('目录不存在');
+        const index = entries.findIndex((e) => e.path === path);
+        if (index < 0) throw new Error('文件不存在');
+        if (entries[index].name === clean) return path;
+        if (entries.some((e) => e.path !== path && e.name.toLowerCase() === clean.toLowerCase())) {
+            throw new Error('“' + clean + '”已存在');
+        }
+        const target = parent + '/' + clean;
+        const wasDir = entries[index].isDir;
+        entries[index] = {name: clean, path: target, isDir: wasDir};
+        if (wasDir) {
+            const moved = {};
+            for (const [key, value] of Object.entries(mockTree)) {
+                if (key !== path && !key.startsWith(path + '/')) continue;
+                moved[target + key.slice(path.length)] = value.map((entry) => ({
+                    ...entry,
+                    path: target + entry.path.slice(path.length),
+                }));
+                delete mockTree[key];
+            }
+            Object.assign(mockTree, moved);
+        }
+        if (window.__mockCreated && window.__mockCreated[path]) {
+            window.__mockCreated[target] = true;
+            delete window.__mockCreated[path];
+        }
+        return target;
+    },
+    async SuggestCopyName(dir, name, isDir) {
+        const key = String(dir || '').replace(/\/+$/, '');
+        const entries = mockTree[key];
+        if (!entries) throw new Error('目录不存在');
+        if (!entries.some((e) => e.name.toLowerCase() === String(name).toLowerCase())) return name;
+        let stem = name;
+        let ext = '';
+        if (!isDir) {
+            const dot = name.lastIndexOf('.');
+            if (dot > 0) {
+                stem = name.slice(0, dot);
+                ext = name.slice(dot);
+            }
+        }
+        for (let i = 1; i <= 500; i++) {
+            const candidate = stem + (i === 1 ? ' - 副本' : ' - 副本 ' + i) + ext;
+            if (!entries.some((e) => e.name.toLowerCase() === candidate.toLowerCase())) return candidate;
+        }
+        throw new Error('无法生成可用的名称');
+    },
+    async CopyEntry(src, destDir, name) {
+        const key = String(destDir || '').replace(/\/+$/, '');
+        if (!mockTree[key]) throw new Error('目录不存在');
+        const found = mockFindEntry(src);
+        if (!found) throw new Error('源文件不存在');
+        if (mockTree[key].some((e) => e.name.toLowerCase() === String(name).toLowerCase())) throw new Error('“' + name + '”已存在');
+        return mockPasteNode(found.entry, key, name);
+    },
+    async MoveEntry(src, destDir, name) {
+        const key = String(destDir || '').replace(/\/+$/, '');
+        if (!mockTree[key]) throw new Error('目录不存在');
+        const found = mockFindEntry(src);
+        if (!found) throw new Error('源文件不存在');
+        if (mockTree[key].some((e) => e.name.toLowerCase() === String(name).toLowerCase())) throw new Error('“' + name + '”已存在');
+        const target = mockPasteNode(found.entry, key, name);
+        mockDropPath(src);
+        return target;
     },
     async ReadImageDataURL() { return mockImageDataUrl; },
     async SaveFileDialog(name) { return 'mock://' + (window.__mockSaveDialogName || name); },
@@ -259,6 +387,8 @@ const rt = window.runtime || (mockScenario.has('winctl') ? mockRt : null);
 
 const els = {
     filename: document.getElementById('filename'),
+    filenameIcon: document.getElementById('filename-icon'),
+    filenameText: document.getElementById('filename-text'),
     banner: document.getElementById('banner'),
     bannerText: document.getElementById('banner-text'),
     bannerClose: document.getElementById('banner-close'),
@@ -293,6 +423,7 @@ let docSeq = 0;
 let autoSaveTimer = 0;
 let explorer = null;
 let workspaceFolder = null;
+let fileClipboard = null;
 let ctxMenu = null;
 let closedTabs = [];
 window.__lens = {
@@ -478,6 +609,12 @@ const elsDialogs = {
     confirm: document.getElementById('dlg-confirm'),
     confirmText: document.getElementById('dlg-confirm-text'),
     confirmOk: document.getElementById('btn-discard'),
+    name: document.getElementById('dlg-name'),
+    nameTitle: document.getElementById('dlg-name-title'),
+    nameLabel: document.getElementById('dlg-name-label'),
+    nameInput: document.getElementById('dlg-name-input'),
+    nameError: document.getElementById('dlg-name-error'),
+    nameOk: document.getElementById('btn-name-ok'),
 };
 
 let syncedOpenMode = null;
@@ -665,6 +802,7 @@ function openDialogEl(dlg) {
     elsDialogs.mask.classList.remove('hidden');
     elsDialogs.settings.classList.add('hidden');
     elsDialogs.confirm.classList.add('hidden');
+    elsDialogs.name.classList.add('hidden');
     dlg.style.left = '';
     dlg.style.top = '';
     dlg.style.transform = '';
@@ -675,7 +813,10 @@ function closeDialogs() {
     elsDialogs.mask.classList.add('hidden');
     elsDialogs.settings.classList.add('hidden');
     elsDialogs.confirm.classList.add('hidden');
+    elsDialogs.name.classList.add('hidden');
     confirmAction = null;
+    nameSubmit = null;
+    nameBusy = false;
 }
 
 function selectSettingsPane(pane) {
@@ -733,6 +874,66 @@ function openAbout() {
 }
 
 let confirmAction = null;
+let nameSubmit = null;
+let nameBusy = false;
+
+function openNameDialog(options) {
+    const opts = options || {};
+    elsDialogs.nameTitle.textContent = opts.title || '名称';
+    elsDialogs.nameLabel.textContent = opts.label || '名称';
+    elsDialogs.nameInput.value = opts.value || '';
+    elsDialogs.nameInput.placeholder = opts.placeholder || '';
+    elsDialogs.nameError.textContent = '';
+    elsDialogs.nameError.classList.add('hidden');
+    elsDialogs.nameOk.textContent = opts.okLabel || '确定';
+    nameSubmit = opts.onSubmit || null;
+    nameBusy = false;
+    openDialogEl(elsDialogs.name);
+    setTimeout(() => {
+        const input = elsDialogs.nameInput;
+        input.focus();
+        const dot = input.value.lastIndexOf('.');
+        if (opts.selectStem && dot > 0) input.setSelectionRange(0, dot);
+        else input.select();
+    }, 0);
+}
+
+function nameDialogError(message) {
+    elsDialogs.nameError.textContent = String(message || '');
+    elsDialogs.nameError.classList.remove('hidden');
+}
+
+async function submitNameDialog() {
+    if (!nameSubmit || nameBusy) return;
+    const value = elsDialogs.nameInput.value;
+    nameBusy = true;
+    elsDialogs.nameOk.disabled = true;
+    elsDialogs.nameError.classList.add('hidden');
+    try {
+        await nameSubmit(value);
+        nameBusy = false;
+        elsDialogs.nameOk.disabled = false;
+        closeDialogs();
+    } catch (e) {
+        nameDialogError((e && e.message) || e);
+        nameBusy = false;
+        elsDialogs.nameOk.disabled = false;
+    }
+}
+
+elsDialogs.nameOk.addEventListener('click', submitNameDialog);
+document.getElementById('btn-name-cancel').addEventListener('click', closeDialogs);
+elsDialogs.nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        submitNameDialog();
+    } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeDialogs();
+    }
+});
+
 function openCloseConfirm(message, action, okLabel) {
     elsDialogs.confirmText.textContent = message || '有未保存的修改，关闭后将丢弃。';
     elsDialogs.confirmOk.textContent = okLabel || '丢弃并关闭';
@@ -773,7 +974,7 @@ document.querySelectorAll('.dialog-head').forEach((head) => head.addEventListene
 document.querySelectorAll('.dialog-close').forEach((btn) => btn.addEventListener('click', closeDialogs));
 elsDialogs.mask.addEventListener('click', (e) => {
     if (e.target !== elsDialogs.mask) return;
-    if (!elsDialogs.confirm.classList.contains('hidden')) closeDialogs();
+    if (!elsDialogs.confirm.classList.contains('hidden') || !elsDialogs.name.classList.contains('hidden')) closeDialogs();
 });
 
 document.querySelectorAll('.snav-item').forEach((btn) => {
@@ -1234,6 +1435,7 @@ function renderTabs() {
         tab.className = 'tab' + (doc === file ? ' active' : '') + (doc.dirty ? ' dirty' : '');
         tab.dataset.docId = String(doc.id);
         tab.title = doc.path || doc.name;
+        const icon = createFileIcon(doc.name, 'tab-icon');
         const dot = document.createElement('span');
         dot.className = 'tab-dot';
         const name = document.createElement('span');
@@ -1261,7 +1463,7 @@ function renderTabs() {
                 requestCloseDoc(doc);
             }
         });
-        tab.append(dot, name, close);
+        tab.append(icon, dot, name, close);
         els.tabbar.appendChild(tab);
         if (doc === file) tab.scrollIntoView({block: 'nearest', inline: 'nearest'});
     }
@@ -2327,7 +2529,9 @@ function createDoc(data) {
     const fs = getFormatSettings(format.id);
     let treeAvailable = !(data.large || format.rawOnly);
     let parseError = null;
-    if (treeAvailable) {
+    if (treeAvailable && !String(data.content || '').trim()) {
+        treeAvailable = false;
+    } else if (treeAvailable) {
         try {
             format.parse(data.content);
         } catch (e) {
@@ -2363,10 +2567,23 @@ function createDoc(data) {
     };
 }
 
+function setFilename(name, path) {
+    els.filenameText.textContent = name || '';
+    els.filename.title = path || name || '';
+    const icon = els.filenameIcon;
+    icon.textContent = '';
+    icon.className = 'title-icon';
+    delete icon.dataset.fi;
+    if (!name || name === '未打开文件') return;
+    const spec = fileIconSpec(name);
+    icon.innerHTML = spec.svg;
+    icon.classList.add(spec.className);
+    icon.dataset.fi = spec.id;
+}
+
 function updateDocChrome() {
     if (!file) return;
-    els.filename.textContent = file.name;
-    els.filename.title = file.path || file.name;
+    setFilename(file.name, file.path);
     renderBreadcrumb(file.path);
     showBanner(file, file.parseError);
     els.welcome.classList.add('hidden');
@@ -2390,8 +2607,7 @@ function showWelcome() {
     currentMode = 'tree';
     els.editor.classList.add('hidden');
     els.welcome.classList.remove('hidden');
-    els.filename.textContent = '未打开文件';
-    els.filename.title = '';
+    setFilename('未打开文件', '');
     els.filename.classList.remove('dirty');
     els.breadcrumb.textContent = '';
     els.stDirty.textContent = '';
@@ -2538,10 +2754,425 @@ function showTabMenu(doc, x, y) {
     ], x, y);
 }
 
+const NEW_FILE_TYPES = [
+    {label: 'JSON 文件', name: '新建文件.json'},
+    {label: '文本文件', name: '新建文件.txt'},
+    {label: 'Markdown 文件', name: '新建文件.md'},
+    {label: 'YAML 文件', name: '新建文件.yaml'},
+    {label: 'XML 文件', name: '新建文件.xml'},
+    {label: 'CSV 文件', name: '新建文件.csv'},
+    {label: 'TOML 文件', name: '新建文件.toml'},
+    {label: 'JSONL 文件', name: '新建文件.jsonl'},
+    {label: 'INI 文件', name: '新建文件.ini'},
+    {label: 'Properties 文件', name: '新建文件.properties'},
+    {sep: true},
+    {label: 'JavaScript 文件', name: '新建文件.js'},
+    {label: 'TypeScript 文件', name: '新建文件.ts'},
+    {label: 'HTML 文件', name: '新建文件.html'},
+    {label: 'CSS 文件', name: '新建文件.css'},
+    {label: 'Python 文件', name: '新建文件.py'},
+    {label: 'Shell 脚本', name: '新建文件.sh'},
+    {label: 'PowerShell 脚本', name: '新建文件.ps1'},
+    {label: '批处理文件', name: '新建文件.bat'},
+    {label: 'SQL 文件', name: '新建文件.sql'},
+    {label: 'Go 文件', name: '新建文件.go'},
+    {label: 'Java 文件', name: '新建文件.java'},
+    {label: 'Kotlin 文件', name: '新建文件.kt'},
+    {label: 'Lua 脚本', name: '新建文件.lua'},
+];
+
+function remapPathValue(path, oldPath, newPath) {
+    if (!path) return path;
+    const target = String(path).replace(/\\/g, '/');
+    const oldNorm = String(oldPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!oldNorm) return path;
+    const lowerTarget = target.toLowerCase();
+    const lowerOld = oldNorm.toLowerCase();
+    if (lowerTarget === lowerOld) return newPath;
+    if (!lowerTarget.startsWith(lowerOld + '/')) return path;
+    return String(newPath).replace(/\\/g, '/').replace(/\/+$/, '') + target.slice(oldNorm.length);
+}
+
+function parentFolderOf(path) {
+    const text = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const index = text.lastIndexOf('/');
+    if (index < 0) return '';
+    let dir = text.slice(0, index);
+    if (/^[a-z]:$/i.test(dir)) dir += '/';
+    return dir;
+}
+
+function samePathValue(a, b) {
+    const left = String(a || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const right = String(b || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    return !!left && left === right;
+}
+
+function pathWithinValue(root, target) {
+    const base = String(root || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const child = String(target || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    return !!base && (child === base || child.startsWith(base + '/'));
+}
+
+function clipboardItems(targets) {
+    const list = Array.isArray(targets) ? targets : (targets ? [targets] : []);
+    const out = [];
+    for (const item of list) {
+        if (!item || !item.path) continue;
+        if (out.some((entry) => samePathValue(entry.path, item.path))) continue;
+        out.push({path: item.path, name: item.name || baseNameOf(item.path), isDir: !!item.isDir});
+    }
+    return out;
+}
+
+function setFileClipboard(targets, cut) {
+    const all = clipboardItems(targets);
+    const items = all.filter((item) =>
+        !all.some((other) =>
+            other.isDir && !samePathValue(other.path, item.path) && pathWithinValue(other.path, item.path)));
+    if (!items.length) return;
+    const same = fileClipboard && fileClipboard.cut === !!cut &&
+        fileClipboard.items.length === items.length &&
+        items.every((item) => fileClipboard.items.some((old) => samePathValue(old.path, item.path)));
+    if (same) {
+        if (explorer) explorer.setCutPaths(cut ? items.map((item) => item.path) : []);
+        return;
+    }
+    fileClipboard = {items, cut: !!cut};
+    if (explorer) explorer.setCutPaths(cut ? items.map((item) => item.path) : []);
+    flash(items.length === 1
+        ? (cut ? '已剪切：' : '已复制：') + items[0].name
+        : (cut ? '已剪切 ' : '已复制 ') + items.length + ' 项');
+}
+
+function applyMovedPath(oldPath, newPath) {
+    let activeChanged = false;
+    let rootChanged = false;
+    for (const doc of docs) {
+        if (!doc.path) continue;
+        const next = remapPathValue(doc.path, oldPath, newPath);
+        if (next === doc.path) continue;
+        doc.path = next;
+        doc.name = baseNameOf(next);
+        if (doc === file) activeChanged = true;
+    }
+    if (workspaceFolder) {
+        const next = remapPathValue(workspaceFolder, oldPath, newPath);
+        if (next !== workspaceFolder) {
+            workspaceFolder = next;
+            rootChanged = true;
+        }
+    }
+    for (const entry of closedTabs) {
+        if (entry.path) entry.path = remapPathValue(entry.path, oldPath, newPath);
+    }
+    if (activeChanged && file) {
+        setFilename(file.name, file.path);
+        renderBreadcrumb(file.path);
+        updateWindowTitle();
+    }
+    renderTabs();
+    return {activeChanged, rootChanged};
+}
+
+async function runPasteItems(clip, destDir, names) {
+    if (!clip || !clip.items.length) throw new Error('剪贴板中没有文件');
+    if (!backend.CopyEntry || !backend.MoveEntry) throw new Error('当前版本不支持粘贴');
+    const cut = !!clip.cut;
+    const results = [];
+    const errors = [];
+    for (const item of clip.items) {
+        const name = (names && names[item.path]) || item.name;
+        try {
+            const newPath = cut
+                ? await backend.MoveEntry(item.path, destDir, name)
+                : await backend.CopyEntry(item.path, destDir, name);
+            results.push({...item, newPath});
+        } catch (e) {
+            errors.push({item, error: (e && e.message) || String(e)});
+        }
+    }
+    let activeChanged = false;
+    let rootChanged = false;
+    if (cut && results.length) {
+        for (const result of results) {
+            const flags = applyMovedPath(result.path, result.newPath);
+            activeChanged = activeChanged || flags.activeChanged;
+            rootChanged = rootChanged || flags.rootChanged;
+            if (explorer) explorer.removePath(result.path);
+        }
+        const moved = new Set(results.map((result) => result.path));
+        const remaining = clip.items.filter((item) => !moved.has(item.path));
+        if (remaining.length) {
+            fileClipboard = {items: remaining, cut: true};
+            if (explorer) explorer.setCutPaths(remaining.map((item) => item.path));
+        } else {
+            fileClipboard = null;
+            if (explorer) explorer.setCutPaths([]);
+        }
+    }
+    if (rootChanged && explorer) explorer.setRoot(workspaceFolder);
+    if (explorer && results.length) {
+        await explorer.refreshDir(destDir);
+        explorer.selectPaths(results.map((result) => ({
+            path: result.newPath,
+            name: baseNameOf(result.newPath),
+            isDir: result.isDir,
+        })));
+        if (activeChanged && file) explorer.setActive(file.path);
+    }
+    return {
+        okCount: results.length,
+        failCount: errors.length,
+        firstError: errors.length ? errors[0].error : '',
+        results,
+    };
+}
+
+async function pasteFileClipboard(targetInfo) {
+    if (!fileClipboard || !fileClipboard.items.length) {
+        flash('剪贴板中没有文件', true);
+        return;
+    }
+    if (settings.readOnlyMode) {
+        flash('只读模式下不能粘贴', true);
+        return;
+    }
+    const clip = fileClipboard;
+    const destDir = targetInfo && targetInfo.isDir ? targetInfo.path : parentFolderOf(targetInfo && targetInfo.path);
+    if (!destDir) {
+        flash('无法确定粘贴目录', true);
+        return;
+    }
+    const items = clip.items.filter((item) => {
+        if (item.isDir && pathWithinValue(item.path, destDir)) return false;
+        if (clip.cut && samePathValue(parentFolderOf(item.path), destDir)) return false;
+        return true;
+    });
+    if (!items.length) {
+        flash(clip.cut ? '源文件已经在该目录中' : '不能粘贴到文件夹自身或其子目录', true);
+        return;
+    }
+    const skipped = clip.items.length - items.length;
+    if (items.length === 1 && clip.items.length === 1) {
+        const item = items[0];
+        let suggested;
+        try {
+            suggested = await backend.SuggestCopyName(destDir, item.name, item.isDir);
+        } catch (e) {
+            flash('粘贴失败：' + e, true);
+            return;
+        }
+        if (suggested === item.name) {
+            try {
+                const result = await runPasteItems({items, cut: clip.cut}, destDir);
+                if (result.failCount) flash('粘贴失败：' + result.firstError, true);
+                else flash((clip.cut ? '已移动：' : '已粘贴：') + item.name);
+            } catch (e) {
+                flash('粘贴失败：' + e, true);
+            }
+            return;
+        }
+        openNameDialog({
+            title: clip.cut ? '移动' : '粘贴',
+            label: '新名称',
+            value: suggested,
+            selectStem: !item.isDir,
+            okLabel: clip.cut ? '移动' : '粘贴',
+            onSubmit: async (name) => {
+                const result = await runPasteItems({items, cut: clip.cut}, destDir, {[item.path]: name});
+                if (result.failCount) throw new Error(result.firstError);
+            },
+        });
+        return;
+    }
+    const names = {};
+    let renamed = 0;
+    for (const item of items) {
+        try {
+            const suggested = await backend.SuggestCopyName(destDir, item.name, item.isDir);
+            if (suggested !== item.name) {
+                names[item.path] = suggested;
+                renamed++;
+            }
+        } catch (e) {
+            flash('粘贴失败：' + e, true);
+            return;
+        }
+    }
+    try {
+        const result = await runPasteItems({items, cut: clip.cut}, destDir, names);
+        if (result.failCount) {
+            flash('已粘贴 ' + result.okCount + ' 项，' + result.failCount + ' 项失败：' + result.firstError, true);
+        } else {
+            flash((clip.cut ? '已移动 ' : '已粘贴 ') + result.okCount + ' 项' +
+                (renamed ? '（' + renamed + ' 项自动重命名）' : '') +
+                (skipped ? '，跳过 ' + skipped + ' 项' : ''));
+        }
+    } catch (e) {
+        flash('粘贴失败：' + e, true);
+    }
+}
+
+function openCreateEntryDialog(dirPath, isDir, suggestedName, title) {
+    openNameDialog({
+        title: title || (isDir ? '新建文件夹' : '新建文件'),
+        label: isDir ? '文件夹名称' : '文件名',
+        value: suggestedName || '',
+        placeholder: isDir ? '例如：config' : '例如：data.json',
+        selectStem: !isDir,
+        okLabel: '创建',
+        onSubmit: async (name) => {
+            if (!backend.CreateEntry) throw new Error('当前版本不支持新建');
+            const target = await backend.CreateEntry(dirPath, name, isDir);
+            if (explorer) {
+                await explorer.refreshDir(dirPath);
+                explorer.selectPath(target, isDir);
+            }
+            if (isDir) {
+                flash('已新建文件夹：' + name.trim());
+            } else {
+                await openPath(target);
+            }
+        },
+    });
+}
+
+function newFileMenuItems(dirPath) {
+    const items = [];
+    for (const type of NEW_FILE_TYPES) {
+        if (type.sep) {
+            items.push({sep: true});
+            continue;
+        }
+        const spec = fileIconSpec(type.name);
+        const dot = type.name.lastIndexOf('.');
+        items.push({
+            label: type.label,
+            shortcut: dot >= 0 ? type.name.slice(dot) : '',
+            iconHtml: spec.svg,
+            iconClass: spec.className,
+            action: () => openCreateEntryDialog(dirPath, false, type.name, '新建 ' + type.label),
+        });
+    }
+    items.push({sep: true});
+    items.push({label: '文件…', icon: 'E7C3', action: () => openCreateEntryDialog(dirPath, false, '', '新建文件')});
+    items.push({label: '目录…', icon: 'E8B7', action: () => openCreateEntryDialog(dirPath, true, '新建文件夹', '新建文件夹')});
+    return items;
+}
+
+function applyRenamedPath(oldPath, newPath) {
+    let activeChanged = false;
+    for (const doc of docs) {
+        if (!doc.path) continue;
+        const next = remapPathValue(doc.path, oldPath, newPath);
+        if (next === doc.path) continue;
+        doc.path = next;
+        doc.name = baseNameOf(next);
+        if (doc === file) activeChanged = true;
+    }
+    if (workspaceFolder) workspaceFolder = remapPathValue(workspaceFolder, oldPath, newPath);
+    for (const entry of closedTabs) {
+        if (entry.path) entry.path = remapPathValue(entry.path, oldPath, newPath);
+    }
+    if (fileClipboard) {
+        for (const item of fileClipboard.items) {
+            const next = remapPathValue(item.path, oldPath, newPath);
+            if (next === item.path) continue;
+            item.path = next;
+            item.name = baseNameOf(next);
+        }
+    }
+    if (explorer) {
+        explorer.pathRenamed(oldPath, newPath);
+        if (fileClipboard && fileClipboard.cut) explorer.setCutPaths(fileClipboard.items.map((item) => item.path));
+        if (activeChanged && file) explorer.setActive(file.path);
+    }
+    if (activeChanged && file) {
+        setFilename(file.name, file.path);
+        renderBreadcrumb(file.path);
+        updateWindowTitle();
+    }
+    renderTabs();
+    flash('已重命名为：' + baseNameOf(newPath));
+}
+
+function openRenameEntryDialog(info) {
+    openNameDialog({
+        title: info.isDir ? '重命名文件夹' : '重命名文件',
+        label: '新名称',
+        value: info.name,
+        selectStem: !info.isDir,
+        okLabel: '重命名',
+        onSubmit: async (name) => {
+            if (!backend.RenameEntry) throw new Error('当前版本不支持重命名');
+            const newPath = await backend.RenameEntry(info.path, name);
+            if (newPath && newPath !== info.path) applyRenamedPath(info.path, newPath);
+        },
+    });
+}
+
+function relativePathFrom(path, root) {
+    if (!path || !root) return '';
+    const target = String(path).replace(/\\/g, '/');
+    const base = String(root).replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!base) return '';
+    const lowerTarget = target.toLowerCase();
+    const lowerBase = base.toLowerCase();
+    if (lowerTarget === lowerBase) return '.';
+    if (!lowerTarget.startsWith(lowerBase + '/')) return '';
+    return target.slice(base.length + 1);
+}
+
+function copyPathMenuItems(targets) {
+    const list = clipboardItems(targets);
+    const root = workspaceFolder || (explorer && explorer.getRoot ? explorer.getRoot() : '');
+    const absolute = list.map((item) => item.path).join('\r\n');
+    const relativeParts = list.map((item) => relativePathFrom(item.path, root));
+    const relative = relativeParts.every(Boolean) ? relativeParts.join('\r\n') : '';
+    const names = list.map((item) => item.name).join('\r\n');
+    return [
+        {label: '绝对路径', disabled: !absolute, action: () => copyText(absolute, '绝对路径')},
+        {label: '相对路径', disabled: !relative, action: () => copyText(relative, '相对路径')},
+        {sep: true},
+        {label: '文件名', disabled: !names, action: () => copyText(names, '文件名')},
+    ];
+}
+
 function showExplorerMenu(info, x, y, node) {
     if (!ctxMenu || !info) return;
     const isDir = !!info.isDir;
+    const selected = explorer ? explorer.getSelection() : [];
+    const targets = selected.length ? selected : [{path: info.path, name: info.name, isDir}];
     const items = [];
+    if (isDir) {
+        items.push({
+            label: '新建',
+            icon: 'E710',
+            disabled: !!settings.readOnlyMode,
+            submenu: newFileMenuItems(info.path),
+        });
+    } else {
+        items.push({label: '打开', icon: 'E8E5', action: () => openPath(info.path)});
+        items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => openInNewWindows([info.path])});
+    }
+    items.push({sep: true});
+    items.push({label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', action: () => setFileClipboard(targets, false)});
+    items.push({
+        label: '剪切',
+        shortcut: 'Ctrl+X',
+        icon: 'E8C6',
+        disabled: !!settings.readOnlyMode,
+        action: () => setFileClipboard(targets, true),
+    });
+    items.push({
+        label: '粘贴',
+        shortcut: 'Ctrl+V',
+        icon: 'E77F',
+        disabled: !!settings.readOnlyMode || !fileClipboard || !fileClipboard.items.length,
+        action: () => pasteFileClipboard(info),
+    });
+    items.push({sep: true});
     if (isDir) {
         items.push({
             label: node && node.expanded ? '收起目录' : '展开目录',
@@ -2550,13 +3181,16 @@ function showExplorerMenu(info, x, y, node) {
             action: () => explorer && explorer.toggleNode(node),
         });
         items.push({label: '设为文件树根目录', icon: 'E8B7', action: () => openFolderWorkspace(info.path)});
-    } else {
-        items.push({label: '打开', icon: 'E8E5', action: () => openPath(info.path)});
-        items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => openInNewWindows([info.path])});
+        items.push({sep: true});
     }
-    items.push({sep: true});
-    items.push({label: '复制路径', icon: 'E8C8', action: () => copyText(info.path, '路径')});
-    if (!isDir) items.push({label: '复制文件名', icon: 'E8C8', action: () => copyText(info.name, '文件名')});
+    items.push({
+        label: '重命名…',
+        shortcut: 'F2',
+        icon: 'E8AC',
+        disabled: !!settings.readOnlyMode || targets.length !== 1,
+        action: () => openRenameEntryDialog(info),
+    });
+    items.push({label: '复制路径', icon: 'E8C8', submenu: copyPathMenuItems(targets)});
     items.push({label: '在文件管理器中显示', icon: 'E8B7', action: () => showPathInFolder(info.path)});
     items.push({sep: true});
     items.push({label: '刷新', icon: 'E72C', action: () => explorer && explorer.refresh()});
@@ -3160,8 +3794,7 @@ async function saveDoc(doc, opts = {}) {
                 doc.mode = currentMode;
             }
             updateStatus();
-            els.filename.textContent = doc.name;
-            els.filename.title = doc.path;
+            setFilename(doc.name, doc.path);
             renderBreadcrumb(doc.path);
             renderTabs();
             setDirty(now !== snapshot);
@@ -3665,6 +4298,42 @@ function updateSearchState() {
     }
 }
 
+function isDialogOpen() {
+    return !elsDialogs.mask.classList.contains('hidden');
+}
+
+function isTypingTarget() {
+    const el = document.activeElement;
+    if (!el) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+    if (el.isContentEditable) return true;
+    return !!(el.closest && el.closest('.ace_editor'));
+}
+
+function treeShortcutSelection() {
+    const selected = explorer && explorer.getSelection();
+    if (!selected || !selected.length || !explorer.hasFocus() || isTypingTarget() || isDialogOpen()) return null;
+    return selected;
+}
+
+document.addEventListener('copy', (e) => {
+    const selected = treeShortcutSelection();
+    if (!selected) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setFileClipboard(selected, false);
+}, true);
+
+document.addEventListener('cut', (e) => {
+    const selected = treeShortcutSelection();
+    if (!selected) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (settings.readOnlyMode) flash('只读模式下不能剪切', true);
+    else setFileClipboard(selected, true);
+}, true);
+
 window.addEventListener('keydown', (e) => {
     const key = e.key.toLowerCase();
     if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit1' || e.key === '1')) {
@@ -3675,6 +4344,27 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         if (file && file.path) openInNewWindows([file.path]);
+    } else if ((e.key === 'F2' || (e.shiftKey && e.key === 'F6')) && !e.ctrlKey && !e.altKey) {
+        const selected = explorer && explorer.getSelection();
+        if (selected && selected.length === 1 && !settings.readOnlyMode && !isDialogOpen() && !isTypingTarget()) {
+            e.preventDefault();
+            e.stopPropagation();
+            openRenameEntryDialog(selected[0]);
+        }
+    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && (key === 'c' || key === 'x' || key === 'v')) {
+        const selected = treeShortcutSelection();
+        if (selected) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (key === 'c') setFileClipboard(selected, false);
+            else if (key === 'x') {
+                if (settings.readOnlyMode) flash('只读模式下不能剪切', true);
+                else setFileClipboard(selected, true);
+            } else if (key === 'v') {
+                if (settings.readOnlyMode) flash('只读模式下不能粘贴', true);
+                else pasteFileClipboard(explorer.getAnchor() || selected[selected.length - 1]);
+            }
+        }
     } else if (e.ctrlKey && e.altKey && (key === 'l' || e.code === 'KeyL')) {
         e.preventDefault();
         e.stopPropagation();
