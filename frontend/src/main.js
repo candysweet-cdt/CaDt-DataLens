@@ -1594,6 +1594,19 @@ function switchMode(mode) {
         }
         return;
     }
+    if ((mode === 'code' || mode === 'text') && (currentMode === 'code' || currentMode === 'text') && doc) {
+        const text = editor.getText();
+        doc.loading = true;
+        try {
+            editor.setMode(mode);
+            editor.setText(text);
+        } catch (e) {
+            console.warn('switch mode failed', e);
+        } finally {
+            doc.loading = false;
+        }
+        return;
+    }
     if (mode === 'tree' && (currentMode === 'code' || currentMode === 'text') && doc && doc.format.id !== 'json') {
         let value;
         try {
