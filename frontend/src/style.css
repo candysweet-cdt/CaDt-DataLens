@@ -88,6 +88,9 @@
     --syn-json-key: #c77dbb;
     --syn-function: #56a8f5;
     --syn-heading: #bbbbbb;
+    --py-builtin: #8888c6;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
     --scroll-thumb: #464b57;
     --scroll-thumb-hover: #565c6b;
     --shadow: rgba(0, 0, 0, 0.45);
@@ -154,6 +157,9 @@ html[data-theme="light"] {
     --syn-json-key: #871094;
     --syn-function: #00627a;
     --syn-heading: #000000;
+    --py-builtin: #871094;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
     --scroll-thumb: #c9ced6;
     --scroll-thumb-hover: #aeb5c0;
     --shadow: rgba(15, 23, 42, 0.16);
@@ -216,6 +222,9 @@ html[data-theme="darcula"] {
     --syn-json-key: #9876aa;
     --syn-function: #ffc66d;
     --syn-heading: #bbbbbb;
+    --py-builtin: #8888c6;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
 }
 
 html[data-theme="idea-dark"] {
@@ -270,6 +279,9 @@ html[data-theme="idea-dark"] {
     --syn-json-key: #c77dbb;
     --syn-function: #56a8f5;
     --syn-heading: #bbbbbb;
+    --py-builtin: #8888c6;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
 }
 
 html[data-theme="idea-light"] {
@@ -325,6 +337,9 @@ html[data-theme="idea-light"] {
     --syn-json-key: #871094;
     --syn-function: #00627a;
     --syn-heading: #000000;
+    --py-builtin: #871094;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
 }
 
 html[data-theme="github"] {
@@ -2390,9 +2405,15 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 .jsoneditor .ace_entity.ace_name.ace_function { color: var(--syn-function, var(--accent)); }
 html[data-theme="idea-dark"] .jsoneditor .ace_gutter { background: var(--bg); }
 html[data-theme="idea-dark"] .jsoneditor .ace_gutter-active-line { background: var(--ace-active); }
-html[data-theme="idea-dark"] .jsoneditor .ace-mode-python span[class^="ace_support ace_function"] { color: var(--syn-keyword); }
-html[data-theme="idea-dark"] .jsoneditor .ace-mode-python span[class^="ace_function ace_support"] { color: var(--text); }
-html[data-theme="idea-dark"] .jsoneditor .ace-mode-python .py-kwarg { color: var(--syn-keyword); }
+/* Python：对齐 PyCharm 官方配色
+   PY.BUILTIN_NAME=#8888c6（内置名/类型名/双下划线）· 方法调用=默认文字色 ·
+   关键字参数=关键字色 · 文档字符串=#5f826b 斜体（expUI DEFAULT_DOC_COMMENT）· self=#94558d */
+.jsoneditor .ace-mode-python span[class^="ace_support ace_function"] { color: var(--py-builtin, #8888c6); }
+.jsoneditor .ace-mode-python span[class^="ace_function ace_support"] { color: var(--text); }
+.jsoneditor .ace-mode-python .py-kwarg { color: var(--syn-keyword, var(--accent)); }
+.jsoneditor .ace-mode-python .py-builtin { color: var(--py-builtin, #8888c6); }
+.jsoneditor .ace-mode-python .ace_variable.ace_language { color: var(--py-self, #94558d); }
+.jsoneditor .ace-mode-python .py-doc { color: var(--py-doc, #5f826b); font-style: italic; }
 html[data-theme="idea-dark"] .ace-mode-yaml .ace_meta.ace_tag,
 html[data-theme="idea-light"] .ace-mode-yaml .ace_meta.ace_tag,
 html[data-theme="darcula"] .ace-mode-yaml .ace_meta.ace_tag { color: var(--syn-yaml-key); }

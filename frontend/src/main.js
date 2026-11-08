@@ -111,6 +111,33 @@ github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTqv4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+G2So6ik+0qS4yXaDcB7MSkZKcHbnS8k=
 `;
 
+const samplePy = `#!/usr/bin/env python3
+"""CaDt-DataLens Python 示例。"""
+
+from pathlib import Path
+
+
+def merge_blocks(left: int, right: int) -> int:
+    return left * 60 + right
+
+
+def summarize(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    return {
+        "name": path.stem,
+        "lines": len(lines),
+        "chars": len(text),
+        "preview": lines[:3],
+    }
+
+
+if __name__ == "__main__":
+    print(merge_blocks(3, 7))
+    print(summarize(Path(__file__)))
+    sum(1, 2)
+`;
+
 const mockScenario = new URLSearchParams(location.search);
 const mockDir = 'mock://samples/';
 const mockHex = '00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|';
@@ -128,6 +155,7 @@ const mockFiles = {
     gomod: {name: 'go.mod', content: sampleGoMod},
     gosum: {name: 'go.sum', content: sampleGoSum},
     bak: {name: 'sample.bak', content: sampleJson},
+    py: {name: 'sample.py', content: samplePy},
 };
 const mockTree = {
     'mock://samples': [
@@ -139,6 +167,7 @@ const mockTree = {
         {name: 'sample.json', path: 'mock://samples/sample.json', isDir: false},
         {name: 'diagram.svg', path: 'mock://samples/diagram.svg', isDir: false},
         {name: 'sample.jsonl', path: 'mock://samples/sample.jsonl', isDir: false},
+        {name: 'sample.py', path: 'mock://samples/sample.py', isDir: false},
         {name: 'sample.ini', path: 'mock://samples/sample.ini', isDir: false},
         {name: 'sample.png', path: 'mock://samples/sample.png', isDir: false},
         {name: 'sample.xml', path: 'mock://samples/sample.xml', isDir: false},
@@ -204,7 +233,7 @@ const mockBackend = {
         if (mockScenario.has('image')) return [mockDir + 'sample.png'];
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
         if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
-        for (const key of ['yaml', 'xml', 'svg', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak']) {
+        for (const key of ['yaml', 'xml', 'svg', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak', 'py']) {
             if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
         }
         return [mockDir + 'sample.json'];
@@ -3513,7 +3542,7 @@ function applyPythonTokenClasses(ace) {
     if (!ace || !ace.container || !ace.container.classList.contains('ace-mode-python')) return;
     const layer = ace.container.querySelector('.ace_text-layer');
     if (!layer) return;
-    for (const el of layer.querySelectorAll('.py-kwarg')) el.classList.remove('py-kwarg');
+    for (const el of layer.querySelectorAll('.py-kwarg, .py-builtin, .py-doc')) el.classList.remove('py-kwarg', 'py-builtin', 'py-doc');
     for (const line of layer.querySelectorAll('.ace_line')) {
         const spans = [...line.children];
         let depth = 0;
@@ -3522,6 +3551,17 @@ function applyPythonTokenClasses(ace) {
             if (span.classList.contains('ace_keyword') && /^(def|class)$/.test(span.textContent || '')) isDefinition = true;
         }
         if (isDefinition) continue;
+        // 双下划线预定义名（__name__/__file__…）→ 内置名紫色（PyCharm PY.BUILTIN_NAME）
+        for (const span of spans) {
+            if (span.classList.contains('ace_identifier') && /^__\w+__$/.test((span.textContent || '').trim())) {
+                span.classList.add('py-builtin');
+            }
+        }
+        // 整行都是字符串 → 三引号 docstring（PyCharm 文档字符串：弱绿斜体）
+        const nonEmpty = spans.filter((sp) => (sp.textContent || '').trim());
+        if (nonEmpty.length && nonEmpty.every((sp) => sp.classList.contains('ace_string'))) {
+            for (const sp of nonEmpty) sp.classList.add('py-doc');
+        }
         for (let i = 0; i < spans.length; i++) {
             const span = spans[i];
             const text = span.textContent || '';
