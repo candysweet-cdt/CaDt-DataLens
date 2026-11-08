@@ -54,8 +54,7 @@ const sampleJsonl = `{"id":"spacetime:cable","name":"线缆","count":64,"tags":[
 
 const mockScenario = new URLSearchParams(location.search);
 const mockDir = 'mock://samples/';
-const mockHex = '// 图片文件：sample.png\n// 文件大小：16 字节，以十六进制字节数据只读展示\n\n' +
-    '00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|\n';
+const mockHex = '00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|';
 const mockFiles = {
     yaml: {name: 'sample.yaml', content: sampleYaml},
     xml: {name: 'sample.xml', content: sampleXml},
@@ -1124,7 +1123,10 @@ function updateStatus() {
 
 function showBanner(data, parseError) {
     if (data.binary) {
-        els.banner.textContent = '图片等二进制文件：以十六进制字节数据只读展示。';
+        const shown = data.hexShown || data.size;
+        const truncated = shown < data.size;
+        els.banner.textContent = data.name + '（' + fmtSize(data.size) + '）：下方从第 0 字节开始，以十六进制字节数据只读展示' +
+            (truncated ? '，仅显示前 ' + fmtSize(shown) : '') + '。';
         els.banner.classList.remove('hidden');
     } else if (data.large) {
         els.banner.textContent = '大文件（' + fmtSize(data.size) + '）：已切换为只读代码模式，不可编辑保存。';
@@ -1607,6 +1609,7 @@ function createDoc(data) {
             path: data.path,
             name: data.name,
             size: data.size,
+            hexShown: data.hexShown || data.size,
             eol: data.eol || 'lf',
             hasBom: false,
             large: false,

@@ -33,16 +33,17 @@ type App struct {
 }
 
 type FileData struct {
-	Path    string `json:"path"`
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	Size    int64  `json:"size"`
-	Eol     string `json:"eol"`
-	HasBom  bool   `json:"hasBom"`
-	Large   bool   `json:"large"`
-	Enc     string `json:"enc"`
-	Binary  bool   `json:"binary"`
-	IsDir   bool   `json:"isDir"`
+	Path     string `json:"path"`
+	Name     string `json:"name"`
+	Content  string `json:"content"`
+	Size     int64  `json:"size"`
+	Eol      string `json:"eol"`
+	HasBom   bool   `json:"hasBom"`
+	Large    bool   `json:"large"`
+	Enc      string `json:"enc"`
+	Binary   bool   `json:"binary"`
+	IsDir    bool   `json:"isDir"`
+	HexShown int64  `json:"hexShown,omitempty"`
 }
 
 func NewApp() *App {
@@ -116,14 +117,19 @@ func (a *App) OpenFile(path string, enc string) (*FileData, error) {
 	}
 	name := filepath.Base(path)
 	if isImageFile(path, raw) {
+		shown := len(raw)
+		if shown > imageHexLimit {
+			shown = imageHexLimit
+		}
 		return &FileData{
-			Path:    path,
-			Name:    name,
-			Content: imageHexDump(raw, name),
-			Size:    info.Size(),
-			Eol:     "lf",
-			Enc:     "binary",
-			Binary:  true,
+			Path:     path,
+			Name:     name,
+			Content:  imageHexDump(raw),
+			Size:     info.Size(),
+			Eol:      "lf",
+			Enc:      "binary",
+			Binary:   true,
+			HexShown: int64(shown),
 		}, nil
 	}
 	hasBom := len(raw) >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF
@@ -192,20 +198,12 @@ func isImageFile(path string, raw []byte) bool {
 
 const imageHexLimit = 1 << 20
 
-func imageHexDump(raw []byte, name string) string {
+func imageHexDump(raw []byte) string {
 	shown := len(raw)
-	truncated := false
 	if shown > imageHexLimit {
 		shown = imageHexLimit
-		truncated = true
 	}
 	var b strings.Builder
-	b.WriteString("// 图片文件：" + name + "\n")
-	b.WriteString(fmt.Sprintf("// 文件大小：%d 字节，以十六进制字节数据只读展示\n", len(raw)))
-	if truncated {
-		b.WriteString(fmt.Sprintf("// 仅展示前 %d 字节\n", shown))
-	}
-	b.WriteString("\n")
 	for off := 0; off < shown; off += 16 {
 		end := off + 16
 		if end > shown {
@@ -233,10 +231,7 @@ func imageHexDump(raw []byte, name string) string {
 		}
 		b.WriteString("|\n")
 	}
-	if truncated {
-		b.WriteString("\n// ... 其余字节已截断\n")
-	}
-	return b.String()
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func (a *App) SaveFile(path, content, eol string, hasBom bool, enc string) error {
