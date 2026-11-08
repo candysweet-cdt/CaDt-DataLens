@@ -162,6 +162,18 @@
                         </div>
                         <div class="fmt-hint hint-indent">默认关闭；开启后在目录层级左侧显示对齐线。</div>
                         <div class="popover-row">
+                            <span class="popover-label">文件树自动刷新</span>
+                            <select id="opt-tree-refresh" class="opt-select">
+                                <option value="0">关闭</option>
+                                <option value="1">1 秒</option>
+                                <option value="2">2 秒</option>
+                                <option value="3" selected>3 秒</option>
+                                <option value="5">5 秒</option>
+                                <option value="10">10 秒</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent">切回应用时立即同步；最小化或后台时不轮询。</div>
+                        <div class="popover-row">
                             <label class="popover-label">
                                 <input type="checkbox" id="opt-code-wrap">
                                 代码视图自动换行

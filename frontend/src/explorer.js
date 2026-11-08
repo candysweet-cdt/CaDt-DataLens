@@ -68,6 +68,9 @@ export function createExplorer(options) {
     let treeSeq = 0;
     let revealSeq = 0;
     let listState = {root: null, entries: [], tooMany: false, error: '', loading: false, loaded: false, token: 0};
+    let autoRefreshSeconds = -1;
+    let autoRefreshTimer = 0;
+    let autoRefreshBusy = false;
 
     const canList = (name) => (typeof isSupported === 'function' ? isSupported(name) : true);
 
@@ -220,6 +223,10 @@ export function createExplorer(options) {
         body.appendChild(frag);
         body.scrollTop = prevTop;
         updateTitle();
+        if (focused) {
+            const row = body.querySelector('.sb-row.anchor') || body.querySelector('.sb-row.selected');
+            if (row) row.focus({preventScroll: true});
+        }
         if (scroll) scrollToActive();
     }
 
@@ -246,6 +253,7 @@ export function createExplorer(options) {
                     truncated: false,
                     children: [],
                     loadPromise: null,
+                    refreshing: false,
                 })).sort(compareEntries);
                 node.truncated = !!(result && result.truncated);
                 node.loaded = true;
@@ -289,6 +297,7 @@ export function createExplorer(options) {
             truncated: false,
             children: [],
             loadPromise: null,
+            refreshing: false,
         };
         loadNode(tree, treeSeq);
     }
@@ -513,6 +522,10 @@ export function createExplorer(options) {
             for (const entry of listState.entries) frag.appendChild(listRow(entry));
             body.appendChild(frag);
             body.scrollTop = prevTop;
+            if (focused) {
+                const row = body.querySelector('.sb-row.anchor') || body.querySelector('.sb-row.selected');
+                if (row) row.focus({preventScroll: true});
+            }
             scrollToActive();
         }
         updateTitle();
@@ -544,6 +557,8 @@ export function createExplorer(options) {
         visible = want;
         if (!visible) {
             focused = false;
+            clearTimeout(autoRefreshTimer);
+            autoRefreshTimer = 0;
             return;
         }
         if (mode === 'list') {
@@ -553,6 +568,7 @@ export function createExplorer(options) {
             renderTree();
             revealActive();
         }
+        scheduleAutoRefresh(0);
     }
 
     function setRoot(path) {
@@ -611,13 +627,214 @@ export function createExplorer(options) {
             renderTree();
             revealActive();
         }
+        scheduleAutoRefresh();
+    }
+
+    function isNodeAttached(node) {
+        if (!tree || !node) return false;
+        if (samePath(tree.path, node.path)) return tree === node;
+        return findLoadedNode(tree, node.path) === node;
+    }
+
+    function collectExpanded(node, out) {
+        if (!node || !node.isDir) return;
+        if (node.expanded && node.loaded) out.push(node);
+        for (const child of node.children || []) collectExpanded(child, out);
+    }
+
+    function mergeChildren(node, entries, truncated) {
+        const previous = new Map((node.children || []).map((child) => [normalizePath(child.path), child]));
+        let changed = false;
+        const next = entries.map((entry) => {
+            const key = normalizePath(entry.path);
+            let child = previous.get(key);
+            if (child) {
+                previous.delete(key);
+                if (child.name !== entry.name) {
+                    child.name = entry.name;
+                    changed = true;
+                }
+                if (!!child.isDir !== !!entry.isDir) {
+                    child.isDir = !!entry.isDir;
+                    child.expanded = false;
+                    child.children = [];
+                    child.loaded = !child.isDir;
+                    child.loading = false;
+                    child.error = '';
+                    child.truncated = false;
+                    child.loadPromise = null;
+                    child.refreshing = false;
+                    changed = true;
+                }
+                return child;
+            }
+            changed = true;
+            return {
+                name: entry.name,
+                path: entry.path,
+                isDir: !!entry.isDir,
+                root: false,
+                expanded: false,
+                loaded: !entry.isDir,
+                loading: false,
+                error: '',
+                truncated: false,
+                children: [],
+                loadPromise: null,
+                refreshing: false,
+            };
+        });
+        next.sort(compareEntries);
+        if (!changed) {
+            if (next.length !== node.children.length) changed = true;
+            else if (next.some((child, index) => child !== node.children[index])) changed = true;
+        }
+        if (node.truncated !== !!truncated) changed = true;
+        if (node.error) changed = true;
+        node.children = next;
+        node.truncated = !!truncated;
+        node.loaded = true;
+        node.error = '';
+        return changed;
+    }
+
+    async function refreshNodeChildren(node) {
+        if (!node || !node.isDir || node.loading || node.loadPromise || node.refreshing) return false;
+        node.refreshing = true;
+        const path = node.path;
+        try {
+            if (typeof readDir !== 'function') return false;
+            const result = await readDir(path, readLimit);
+            if (!isNodeAttached(node) || node.loading || node.loadPromise || !samePath(node.path, path)) return false;
+            return mergeChildren(node, (result && result.entries) || [], !!(result && result.truncated));
+        } catch (e) {
+            if (!isNodeAttached(node) || (node.children && node.children.length && !node.root)) return false;
+            const message = String((e && e.message) || e);
+            if (node.error !== message) {
+                node.error = message;
+                return true;
+            }
+            return false;
+        } finally {
+            node.refreshing = false;
+        }
+    }
+
+    async function refreshTreeSilently() {
+        if (!tree) return;
+        const targets = [];
+        collectExpanded(tree, targets);
+        let changed = false;
+        for (const node of targets) {
+            if (!isNodeAttached(node) || !node.expanded) continue;
+            if (await refreshNodeChildren(node)) changed = true;
+        }
+        if (changed && visible && mode === 'tree') renderTree();
+    }
+
+    async function refreshListSilently() {
+        if (!visible || mode !== 'list' || listState.loading) return;
+        const root = listRootPath();
+        if (!root) return;
+        const token = listState.token;
+        let result;
+        try {
+            result = await readDir(root, listReadLimit);
+        } catch (e) {
+            if (token !== listState.token || mode !== 'list' || !samePath(root, listRootPath()) || listState.loading) return;
+            const message = String((e && e.message) || e);
+            if (listState.error !== message) {
+                listState.error = message;
+                listState.loaded = true;
+                if (visible) renderList();
+            }
+            return;
+        }
+        if (token !== listState.token || mode !== 'list' || !samePath(root, listRootPath()) || listState.loading) return;
+        const files = ((result && result.entries) || [])
+            .filter((entry) => !entry.isDir && canList(entry.name))
+            .sort(compareEntries);
+        const tooMany = !!(result && result.truncated) || files.length > listLimit;
+        const previous = listState.entries;
+        let changed = !!listState.error || tooMany !== listState.tooMany ||
+            files.length !== previous.length ||
+            files.some((entry, index) => entry.path !== previous[index].path);
+        listState.root = root;
+        listState.entries = files;
+        listState.tooMany = tooMany;
+        listState.error = '';
+        listState.loaded = true;
+        if (changed) {
+            if (!tooMany && selection.length) {
+                selection = selection.filter((item) => files.some((entry) => samePath(entry.path, item.path)));
+                if (!selection.some((item) => samePath(item.path, anchorPath))) {
+                    anchorPath = selection.length ? selection[selection.length - 1].path : null;
+                }
+            }
+            if (visible) renderList();
+        }
+    }
+
+    function scheduleAutoRefresh(delay) {
+        clearTimeout(autoRefreshTimer);
+        autoRefreshTimer = 0;
+        if (!(autoRefreshSeconds > 0) || !visible) return;
+        const wait = typeof delay === 'number' ? delay : autoRefreshSeconds * 1000;
+        autoRefreshTimer = setTimeout(runAutoRefresh, Math.max(0, wait));
+    }
+
+    async function runAutoRefresh() {
+        autoRefreshTimer = 0;
+        if (!(autoRefreshSeconds > 0) || !visible) return;
+        if (autoRefreshBusy || document.hidden || !document.hasFocus()) {
+            scheduleAutoRefresh();
+            return;
+        }
+        if (document.querySelector('.ctx-menu:not(.hidden)')) {
+            scheduleAutoRefresh();
+            return;
+        }
+        autoRefreshBusy = true;
+        try {
+            if (mode === 'list') await refreshListSilently();
+            else await refreshTreeSilently();
+        } catch (e) {
+        } finally {
+            autoRefreshBusy = false;
+            scheduleAutoRefresh();
+        }
+    }
+
+    function setAutoRefresh(seconds) {
+        const next = Number(seconds);
+        const value = Number.isFinite(next) ? Math.max(0, next) : 0;
+        if (value === autoRefreshSeconds) return;
+        autoRefreshSeconds = value;
+        if (value > 0) {
+            scheduleAutoRefresh(0);
+        } else {
+            clearTimeout(autoRefreshTimer);
+            autoRefreshTimer = 0;
+        }
     }
 
     function toggleNode(node) {
         if (!node || !node.isDir) return;
         node.expanded = !node.expanded;
-        if (node.expanded && !node.loaded) loadNode(node, treeSeq);
-        else renderTree();
+        if (!node.expanded) {
+            renderTree();
+            return;
+        }
+        if (!node.loaded) {
+            loadNode(node, treeSeq);
+            return;
+        }
+        renderTree();
+        if (autoRefreshSeconds > 0) {
+            refreshNodeChildren(node).then((changed) => {
+                if (changed && visible && mode === 'tree' && node.expanded) renderTree();
+            });
+        }
     }
 
     function findLoadedNode(node, path) {
@@ -748,6 +965,12 @@ export function createExplorer(options) {
     document.addEventListener('focusin', (e) => {
         focused = !!(e.target && body.contains(e.target));
     }, true);
+    window.addEventListener('focus', () => {
+        if (autoRefreshSeconds > 0) scheduleAutoRefresh(0);
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && autoRefreshSeconds > 0) scheduleAutoRefresh(0);
+    });
 
     return {
         setVisible,
@@ -771,5 +994,6 @@ export function createExplorer(options) {
         hasFocus: () => focused,
         setCutPaths,
         setCutPath,
+        setAutoRefresh,
     };
 }

@@ -523,6 +523,7 @@ const defaultSettings = {
     keyWidth: 160,
     sidebarFont: 12.5,
     treeGuides: false,
+    treeRefreshInterval: 3,
     editorFont: 13,
     codeWrap: false,
     mdLineNumbers: false,
@@ -554,6 +555,8 @@ if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
 settings.treeGuides = !!settings.treeGuides;
+settings.treeRefreshInterval = Number(settings.treeRefreshInterval);
+if (![0, 1, 2, 3, 5, 10].includes(settings.treeRefreshInterval)) settings.treeRefreshInterval = 3;
 settings.codeWrap = !!settings.codeWrap;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
 settings.showBanners = settings.showBanners !== false;
@@ -585,6 +588,7 @@ const elsSettings = {
     sidebarFont: document.getElementById('opt-sidebar-font'),
     sidebarFontVal: document.getElementById('opt-sidebar-font-val'),
     treeGuides: document.getElementById('opt-tree-guides'),
+    treeRefresh: document.getElementById('opt-tree-refresh'),
     codeWrap: document.getElementById('opt-code-wrap'),
     mdLineNumbers: document.getElementById('opt-md-line-numbers'),
     showBanners: document.getElementById('opt-show-banners'),
@@ -786,6 +790,8 @@ function applySettings() {
     elsSettings.sidebarFont.value = String(settings.sidebarFont);
     elsSettings.sidebarFontVal.textContent = String(settings.sidebarFont);
     elsSettings.treeGuides.checked = !!settings.treeGuides;
+    elsSettings.treeRefresh.value = String(settings.treeRefreshInterval);
+    if (explorer && explorer.setAutoRefresh) explorer.setAutoRefresh(settings.treeRefreshInterval);
     elsSettings.autoSave.checked = !!settings.autoSave;
     elsSettings.codeWrap.checked = !!settings.codeWrap;
     elsSettings.mdLineNumbers.checked = !!settings.mdLineNumbers;
@@ -3808,6 +3814,7 @@ function initExplorer() {
         },
     });
     explorer.setMode(settings.sidebarMode, false);
+    explorer.setAutoRefresh(settings.treeRefreshInterval);
     applySidebarUI();
     if (els.btnSidebar) els.btnSidebar.addEventListener('click', () => toggleSidebar());
     if (els.lock) els.lock.addEventListener('click', () => {
@@ -4107,6 +4114,10 @@ elsSettings.sidebarFont.addEventListener('input', () => {
 });
 elsSettings.treeGuides.addEventListener('change', () => {
     settings.treeGuides = elsSettings.treeGuides.checked;
+    applySettings();
+});
+elsSettings.treeRefresh.addEventListener('change', () => {
+    settings.treeRefreshInterval = Number(elsSettings.treeRefresh.value) || 0;
     applySettings();
 });
 elsSettings.uiFont.addEventListener('change', () => {
