@@ -2549,6 +2549,25 @@ a.jsoneditor-poweredBy { display: none !important; }
 .git-group-block { display: flex; flex-direction: column; gap: 1px; }
 .git-group { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; padding: 4px 2px 2px; cursor: default; }
 .git-group .git-group-cb { flex: none; margin: 0; }
+.git-chev {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: var(--muted);
+    font-family: "Segoe MDL2 Assets", sans-serif;
+    font-size: 9px;
+    cursor: pointer;
+}
+.git-chev:hover { background: var(--hover); color: var(--text); }
+.git-group-rows { display: flex; flex-direction: column; gap: 1px; }
+.git-group-rows.collapsed { display: none; }
 .git-file-row {
     display: flex;
     align-items: center;

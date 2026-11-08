@@ -6201,19 +6201,26 @@ function renderGitPanel() {
         });
         return row;
     };
-    // 分组块：组头勾选框 = 全选/全不选该组文件（JetBrains 式，支持半选态）
-    const makeGroupBlock = (title, rows) => {
+    // 分组块：组头勾选框 = 全选/全不选该组文件（JetBrains 式，支持半选态）；组头箭头 = 展开/收起（跨轮询重渲染保留）
+    const makeGroupBlock = (title, rows, key) => {
         const block = document.createElement('div');
         block.className = 'git-group-block';
         const head = document.createElement('div');
         head.className = 'git-group';
+        const chev = document.createElement('button');
+        chev.type = 'button';
+        chev.className = 'git-chev';
+        chev.title = '展开/收起';
+        chev.textContent = gitGroupCollapsed[key] ? '\uE76C' : '\uE70D';
         const gcb = document.createElement('input');
         gcb.type = 'checkbox';
         gcb.className = 'git-group-cb';
         const label = document.createElement('span');
         label.textContent = title;
-        head.append(gcb, label);
-        const rowCbs = () => [...block.querySelectorAll('.git-file-row input[type="checkbox"]')];
+        head.append(chev, gcb, label);
+        const rowsWrap = document.createElement('div');
+        rowsWrap.className = 'git-group-rows' + (gitGroupCollapsed[key] ? ' collapsed' : '');
+        const rowCbs = () => [...rowsWrap.querySelectorAll('.git-file-row input[type="checkbox"]')];
         const updateGroupState = () => {
             const cbs = rowCbs();
             const checkedCount = cbs.filter((c) => c.checked).length;
@@ -6224,9 +6231,14 @@ function renderGitPanel() {
             for (const c of rowCbs()) c.checked = gcb.checked;
             updateGroupState();
         });
-        block.append(head);
+        chev.addEventListener('click', () => {
+            gitGroupCollapsed[key] = !gitGroupCollapsed[key];
+            rowsWrap.classList.toggle('collapsed', gitGroupCollapsed[key]);
+            chev.textContent = gitGroupCollapsed[key] ? '\uE76C' : '\uE70D';
+        });
+        block.append(head, rowsWrap);
         for (const row of rows) {
-            block.append(row);
+            rowsWrap.append(row);
             row.querySelector('input[type="checkbox"]').addEventListener('change', updateGroupState);
         }
         updateGroupState();
@@ -6239,7 +6251,7 @@ function renderGitPanel() {
             row.addEventListener('dblclick', () => showGitDiff(item.path));
             return row;
         });
-        els.gitChanges.appendChild(makeGroupBlock('更改（' + changes.length + ' 个文件）', rows));
+        els.gitChanges.appendChild(makeGroupBlock('更改（' + changes.length + ' 个文件）', rows, 'changes'));
     }
     if (untracked.length) {
         const rows = untracked.map((path) => {
@@ -6247,7 +6259,7 @@ function renderGitPanel() {
             row.addEventListener('dblclick', () => showGitDiff(path));
             return row;
         });
-        els.gitChanges.appendChild(makeGroupBlock('未进行版本管理的文件（' + untracked.length + ' 个文件）', rows));
+        els.gitChanges.appendChild(makeGroupBlock('未进行版本管理的文件（' + untracked.length + ' 个文件）', rows, 'untracked'));
     }
 }
 
@@ -6600,6 +6612,7 @@ function openVirtualDoc(name, content) {
 
 // ===== git 浅集成 =====
 const gitStateCache = {dir: '', map: new Map(), branch: '', available: false, reason: '', untrackedSet: new Set(), ignoredSet: new Set()};
+const gitGroupCollapsed = {changes: false, untracked: false};
 let gitTimer = null;
 
 function gitRootDir() {
