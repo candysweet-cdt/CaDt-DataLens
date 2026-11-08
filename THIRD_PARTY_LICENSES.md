@@ -65,9 +65,11 @@ The full OFL 1.1 text and attributions are in [frontend/public/fonts/OFL.txt](fr
   https://ace.c9.io/
 - highlight.js — Copyright (c) 2006 Ivan Sagalaev
   https://highlightjs.org/
+- smol-toml — Copyright (c) Squirrel Chat et al.
 
 The Ace license text is in [frontend/public/vendor/ace/LICENSE](frontend/public/vendor/ace/LICENSE).
 The highlight.js license text is in [frontend/public/vendor/licenses/highlight.js.LICENSE](frontend/public/vendor/licenses/highlight.js.LICENSE).
+The smol-toml license text is in [frontend/public/vendor/licenses/smol-toml.LICENSE](frontend/public/vendor/licenses/smol-toml.LICENSE).
 
 ## Other Go dependencies
 

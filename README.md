@@ -11,9 +11,9 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 
 ### 格式与视图
 
-- 结构化格式：JSON / JSONC / JSON5、JSONL / NDJSON、YAML / YML、XML / SVG、CSV / TSV。
+- 结构化格式：JSON / JSONC / JSON5、JSONL / NDJSON、YAML / YML、XML / SVG、CSV / TSV、TOML、INI / Properties。
 - JSONL 按行解析为数组显示，树视图编辑后仍按“一行一个 JSON 值”保存。
-- 文本格式：txt、log、ini、toml、html、css、js、ts、py、go、java、sql 等。
+- 文本格式：txt、log、conf、html、css、js、ts、py、go、java、sql 等。
 - Markdown 文件默认打开预览：标题、列表、表格、引用、代码块和 KaTeX 行内/块级公式；代码块按当前主题高亮，行号可在设置中开启（默认关闭）。预览只读，可切回代码/文本视图编辑。原始 HTML 不执行，外部链接交给系统浏览器打开。
 - 多种视图：
   - **树视图**：展开/收起节点，直接编辑键和值。
@@ -108,14 +108,16 @@ CaDt-DataLens.exe -g "D:\data\sample.json:42"
 | YAML | `.yaml` `.yml` | 树视图 / 代码视图 / 文本视图 |
 | XML | `.xml` `.svg` | 树视图 / 代码视图 / 文本视图 |
 | CSV | `.csv` `.tsv` | 表格视图 / 树视图 / 文本视图 |
+| TOML | `.toml` | 树视图 / 代码视图 / 文本视图 |
+| INI/Properties | `.ini` `.properties` `.cfg` | 树视图 / 代码视图 / 文本视图 |
 | Markdown | `.md` `.markdown` | 预览 / 代码视图 / 文本视图 |
-| 文本 | `.txt` `.log` `.ini` `.toml` `.html` `.css` `.js` `.ts` `.py` `.go` `.java` `.sql` 等 | 代码视图 |
+| 文本 | `.txt` `.log` `.conf` `.html` `.css` `.js` `.ts` `.py` `.go` `.java` `.sql` 等 | 代码视图 |
 | 图片 | `.png` `.jpg` `.jpeg` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` `.heic` `.psd` 等 | 图片视图 / 二进制视图 |
 | 其他 | 任意扩展名 | 文本按纯文本；含 NUL/大量控制字符按只读十六进制 |
 
 ## 示例数据
 
-`docs/samples/` 按格式提供可直接打开的合成示例，说明见 [示例说明](docs/samples/README.md)。包含 12 层嵌套 JSON、JSONL 逐行记录、约 211 KB / 4944 个方块的长蓝图、长日志、CSV、SVG、带代码块和数学公式的 Markdown 示例，以及 PNG/JPEG/GIF/BMP/WebP/ICO/TIFF/AVIF 和原始字节等二进制样本。
+`docs/samples/` 按格式提供可直接打开的合成示例，说明见 [示例说明](docs/samples/README.md)。包含 12 层嵌套 JSON、JSONL 逐行记录、约 211 KB / 4944 个方块的长蓝图、长日志、CSV、SVG、TOML/INI 配置、带代码块和数学公式的 Markdown 示例，以及 PNG/JPEG/GIF/BMP/WebP/ICO/TIFF/AVIF 和原始字节等二进制样本。
 
 ## 构建
 

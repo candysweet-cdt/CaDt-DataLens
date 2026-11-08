@@ -55,6 +55,28 @@ const sampleText = `# 时空纪元 开发笔记
 - 机器：2.10+ 运行时配方
 `;
 
+const sampleToml = `title = "时空纪元"
+version = "1.0.0"
+enabled = true
+
+[server]
+host = "127.0.0.1"
+port = 8080
+tags = ["模组", "网易"]
+
+[limits]
+maxPlayers = 16
+`;
+const sampleIni = `; 示例配置
+[general]
+name=时空纪元
+version=1.0.0
+enabled=true
+
+[server]
+host=127.0.0.1
+port=8080
+`;
 const sampleJsonl = `{"id":"spacetime:cable","name":"线缆","count":64,"tags":["物流","能源"]}
 {"id":"spacetime:machine","name":"机器","count":1,"meta":{"tier":2,"multiblock":true}}
 {"id":"spacetime:tank","name":"储罐","count":4,"meta":{"tier":1,"capacity":8000}}
@@ -71,6 +93,8 @@ const mockFiles = {
     text: {name: 'notes.md', content: sampleText},
     json: {name: 'sample.json', content: sampleJson},
     jsonl: {name: 'sample.jsonl', content: sampleJsonl},
+    toml: {name: 'sample.toml', content: sampleToml},
+    ini: {name: 'sample.ini', content: sampleIni},
 };
 const mockTree = {
     'mock://samples': [
@@ -80,6 +104,8 @@ const mockTree = {
         {name: 'sample.csv', path: 'mock://samples/sample.csv', isDir: false},
         {name: 'sample.json', path: 'mock://samples/sample.json', isDir: false},
         {name: 'sample.jsonl', path: 'mock://samples/sample.jsonl', isDir: false},
+        {name: 'sample.toml', path: 'mock://samples/sample.toml', isDir: false},
+        {name: 'sample.ini', path: 'mock://samples/sample.ini', isDir: false},
         {name: 'sample.png', path: 'mock://samples/sample.png', isDir: false},
         {name: 'sample.xml', path: 'mock://samples/sample.xml', isDir: false},
         {name: 'sample.yaml', path: 'mock://samples/sample.yaml', isDir: false},
@@ -103,7 +129,7 @@ const mockBackend = {
         if (mockScenario.has('image')) return [mockDir + 'sample.png'];
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
         if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
-        for (const key of ['yaml', 'xml', 'csv', 'text', 'jsonl']) {
+        for (const key of ['yaml', 'xml', 'csv', 'text', 'jsonl', 'toml', 'ini']) {
             if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
         }
         return [mockDir + 'sample.json'];
@@ -129,7 +155,9 @@ const mockBackend = {
             : ['xml', 'svg'].includes(ext) ? 'xml'
                 : ['csv', 'tsv'].includes(ext) ? 'csv'
                     : ['jsonl', 'ndjson'].includes(ext) ? 'jsonl'
-                        : ['md', 'txt', 'log'].includes(ext) ? 'text' : 'json';
+                        : ext === 'toml' ? 'toml'
+                            : ['ini', 'properties', 'cfg'].includes(ext) ? 'ini'
+                                : ['md', 'txt', 'log'].includes(ext) ? 'text' : 'json';
         const key = Object.keys(mockFiles).find(k => mockFiles[k].name === base) || byExt;
         let content = mockFiles[key].content;
         let large = false;
@@ -333,6 +361,8 @@ const formatDefs = [
     {id: 'yaml', name: 'YAML'},
     {id: 'xml', name: 'XML'},
     {id: 'csv', name: 'CSV'},
+    {id: 'toml', name: 'TOML'},
+    {id: 'ini', name: 'INI/Properties'},
     {id: 'markdown', name: 'Markdown'},
     {id: 'text', name: '纯文本'},
 ];

@@ -1,4 +1,5 @@
 import {load as yamlLoad, dump as yamlDump} from 'js-yaml';
+import {parse as tomlParse, stringify as tomlStringify} from 'smol-toml';
 import {XMLParser, XMLBuilder, XMLValidator} from 'fast-xml-parser';
 import Papa from 'papaparse';
 
@@ -19,6 +20,69 @@ const xmlBuilderOptions = {
     indentBy: '  ',
     suppressEmptyNode: false,
 };
+
+function isPlainObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeToml(value) {
+    if (value instanceof Date) return value.toISOString();
+    if (Array.isArray(value)) return value.map(normalizeToml);
+    if (isPlainObject(value)) {
+        const out = {};
+        for (const [key, child] of Object.entries(value)) out[key] = normalizeToml(child);
+        return out;
+    }
+    return value;
+}
+
+function parseIni(text) {
+    const root = {};
+    let section = root;
+    for (const raw of String(text || '').split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line || line.startsWith(';') || line.startsWith('#')) continue;
+        const header = line.match(/^\[(.+)\]$/);
+        if (header) {
+            const name = header[1].trim();
+            if (!isPlainObject(root[name])) root[name] = {};
+            section = root[name];
+            continue;
+        }
+        const split = line.search(/[=:]/);
+        const key = (split < 0 ? line : line.slice(0, split)).trim();
+        if (!key) continue;
+        let value = split < 0 ? '' : line.slice(split + 1).trim();
+        if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+            value = value.slice(1, -1);
+        }
+        section[key] = value;
+    }
+    return root;
+}
+
+function iniValue(value) {
+    if (value == null) return '';
+    if (Array.isArray(value) || isPlainObject(value)) return JSON.stringify(value);
+    return String(value);
+}
+
+function stringifyIni(value) {
+    if (!isPlainObject(value)) return '';
+    const lines = [];
+    const sections = [];
+    for (const [key, child] of Object.entries(value)) {
+        if (isPlainObject(child)) sections.push([key, child]);
+        else lines.push(key + '=' + iniValue(child));
+    }
+    if (sections.length && lines.length) lines.push('');
+    sections.forEach(([name, child], index) => {
+        lines.push('[' + name + ']');
+        for (const [key, entry] of Object.entries(child)) lines.push(key + '=' + iniValue(entry));
+        if (index < sections.length - 1) lines.push('');
+    });
+    return lines.length ? lines.join('\n') + '\n' : '';
+}
 
 export const formats = {
     json: {
@@ -110,6 +174,30 @@ export const formats = {
             return Papa.unparse(value, {newline: '\n'});
         },
     },
+    toml: {
+        id: 'toml',
+        name: 'TOML',
+        extensions: ['toml'],
+        aceMode: 'toml',
+        parse(text) {
+            return normalizeToml(tomlParse(text));
+        },
+        stringify(value) {
+            return tomlStringify(value);
+        },
+    },
+    ini: {
+        id: 'ini',
+        name: 'INI/Properties',
+        extensions: ['ini', 'properties', 'cfg'],
+        aceMode: 'ini',
+        parse(text) {
+            return parseIni(text);
+        },
+        stringify(value) {
+            return stringifyIni(value);
+        },
+    },
     markdown: {
         id: 'markdown',
         name: 'Markdown',
@@ -121,7 +209,7 @@ export const formats = {
     text: {
         id: 'text',
         name: '纯文本',
-        extensions: ['txt', 'log', 'ini', 'properties', 'conf', 'cfg', 'toml',
+        extensions: ['txt', 'log', 'conf',
             'html', 'htm', 'css', 'js', 'ts', 'py', 'sh', 'bat', 'ps1', 'go', 'java', 'kt', 'lua', 'sql'],
         aceMode: 'text',
         rawOnly: true,
