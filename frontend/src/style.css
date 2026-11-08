@@ -44,11 +44,19 @@
     --muted: #8a8d94;
     --accent: #4f8cff;
     --on-accent: #ffffff;
-    --val-key: #9cdcfe;
-    --val-string: #ce9178;
-    --val-number: #b5cea8;
-    --val-bool: #569cd6;
-    --val-null: #c586c0;
+    /* 语法高亮：取自 JetBrains expUI_darkScheme.xml（键=INSTANCE_FIELD 粉、串=绿、数=青、true/false/null=橙） */
+    --val-key: #c77dbb;
+    --val-string: #6aab73;
+    --val-number: #2aacb8;
+    --val-bool: #cf8e6d;
+    /* git 状态色：取自 JetBrains 新 UI expUI_darkScheme.xml 的 FILESTATUS_* */
+    --git-added: #73bd79;
+    --git-modified: #70aeff;
+    --git-deleted: #6f737a;
+    --git-untracked: #e88f89;
+    --git-ignored: #d69a6b;
+    --git-conflict: #de6a66;
+    --val-null: #cf8e6d;
     --orange: #d19a66;
     --red: #e06c75;
     --green: #98c379;
@@ -67,8 +75,19 @@
     --ace-selection: #3a4a6b;
     --ace-active: #26272d;
     --ace-indent: #3b404c;
-    --ace-punct: #8b95a5;
+    --ace-punct: #bcbec4;
     --ace-gutter: #6b6e76;
+    /* Ace/Markdown 语法 token：JetBrains expUI dark 官方值 */
+    --syn-keyword: #cf8e6d;
+    --syn-operator: #bcbec4;
+    --syn-comment: #7a7e85;
+    --syn-tag: #d5b778;
+    --syn-attr: #bcbec4;
+    --syn-attr-value: #a5c261;
+    --syn-yaml-key: #cf8e6d;
+    --syn-json-key: #c77dbb;
+    --syn-function: #56a8f5;
+    --syn-heading: #bbbbbb;
     --scroll-thumb: #464b57;
     --scroll-thumb-hover: #565c6b;
     --shadow: rgba(0, 0, 0, 0.45);
@@ -91,11 +110,19 @@ html[data-theme="light"] {
     --muted: #646b77;
     --accent: #2f6fd0;
     --on-accent: #ffffff;
-    --val-key: #0451a5;
-    --val-string: #a31515;
-    --val-number: #098658;
-    --val-bool: #0000ff;
-    --val-null: #af00db;
+    /* git 状态色：取自 JetBrains expUI_lightScheme.xml 的 FILESTATUS_* */
+    --git-added: #067d17;
+    --git-modified: #0033b3;
+    --git-deleted: #6c707e;
+    --git-untracked: #b23247;
+    --git-ignored: #8c4f00;
+    --git-conflict: #de1b2e;
+    /* 语法高亮：取自 JetBrains expUI_lightScheme.xml */
+    --val-key: #871094;
+    --val-string: #067d17;
+    --val-number: #1750eb;
+    --val-bool: #0033b3;
+    --val-null: #0033b3;
     --orange: #b26a00;
     --red: #c62828;
     --green: #2e7d32;
@@ -116,6 +143,17 @@ html[data-theme="light"] {
     --ace-indent: #dadfe6;
     --ace-punct: #5b6472;
     --ace-gutter: #9aa0a8;
+    /* Ace/Markdown 语法 token：JetBrains expUI light 官方值 */
+    --syn-keyword: #0033b3;
+    --syn-operator: #000000;
+    --syn-comment: #8c8c8c;
+    --syn-tag: #e8bf6a;
+    --syn-attr: #bababa;
+    --syn-attr-value: #a5c261;
+    --syn-yaml-key: #0033b3;
+    --syn-json-key: #871094;
+    --syn-function: #00627a;
+    --syn-heading: #000000;
     --scroll-thumb: #c9ced6;
     --scroll-thumb-hover: #aeb5c0;
     --shadow: rgba(15, 23, 42, 0.16);
@@ -224,7 +262,7 @@ html[data-theme="idea-dark"] {
     --banner-fg: #d5b778;
     --syn-keyword: #cf8e6d;
     --syn-operator: #bcbec4;
-    --syn-comment: #7e8084;
+    --syn-comment: #7a7e85;
     --syn-tag: #d5b778;
     --syn-attr: #bcbec4;
     --syn-attr-value: #a5c261;
@@ -244,11 +282,11 @@ html[data-theme="idea-light"] {
     --muted: #6e6e6e;
     --accent: #3574f0;
     --on-accent: #ffffff;
-    --val-key: #0000ff;
+    --val-key: #871094;
     --val-string: #067d17;
     --val-number: #1750eb;
     --val-bool: #0033b3;
-    --val-null: #871094;
+    --val-null: #0033b3;
     --orange: #9e880d;
     --red: #c7222d;
     --green: #067d17;
@@ -2537,22 +2575,22 @@ a.jsoneditor-poweredBy { display: none !important; }
 .term-session { position: absolute; inset: 0; padding: 2px 4px; }
 .term-session.hidden { display: none; }
 /* git 浅集成角标 */
-/* git 状态着色（JetBrains 式）：绿=新增 蓝=修改 红=未版本管理 灰=删除 橙=冲突 棕=忽略 */
-.git-added .sb-name, .git-new .sb-name { color: #57a65a; }
-.git-modified .sb-name { color: #6897bb; }
-.git-renamed .sb-name { color: #6897bb; }
-.git-untracked .sb-name { color: #d86a6a; }
-.git-deleted .sb-name { color: #8c8c8c; text-decoration: line-through; }
-.git-conflict .sb-name { color: #e8912d; }
-.git-ignored .sb-name { color: #a17249; }
+/* git 状态着色（JetBrains 官方 FILESTATUS 色板，随主题切换）：绿=新增 蓝=修改 红=未版本管理 灰=删除 红=冲突 棕=忽略 */
+.git-added .sb-name, .git-new .sb-name { color: var(--git-added); }
+.git-modified .sb-name { color: var(--git-modified); }
+.git-renamed .sb-name { color: var(--git-modified); }
+.git-untracked .sb-name { color: var(--git-untracked); }
+.git-deleted .sb-name { color: var(--git-deleted); text-decoration: line-through; }
+.git-conflict .sb-name { color: var(--git-conflict); }
+.git-ignored .sb-name { color: var(--git-ignored); }
 
 /* 提交面板行：文件名按状态着色 + 淡灰父目录小字 */
-.git-file-row .git-fname.git-st-added { color: #57a65a; }
+.git-file-row .git-fname.git-st-added { color: var(--git-added); }
 .git-file-row .git-fname.git-st-modified,
-.git-file-row .git-fname.git-st-renamed { color: #6897bb; }
-.git-file-row .git-fname.git-st-untracked { color: #d86a6a; }
-.git-file-row .git-fname.git-st-deleted { color: #8c8c8c; text-decoration: line-through; }
-.git-file-row .git-fname.git-st-conflict { color: #e8912d; }
+.git-file-row .git-fname.git-st-renamed { color: var(--git-modified); }
+.git-file-row .git-fname.git-st-untracked { color: var(--git-untracked); }
+.git-file-row .git-fname.git-st-deleted { color: var(--git-deleted); text-decoration: line-through; }
+.git-file-row .git-fname.git-st-conflict { color: var(--git-conflict); }
 .git-file-row .git-fpath {
     color: var(--faint);
     font-size: 11px;
