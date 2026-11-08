@@ -233,6 +233,7 @@ const els = {
     btnWelcomeOpen: document.getElementById('btn-welcome-open'),
     stMode: document.getElementById('st-mode'),
     stSize: document.getElementById('st-size'),
+    stZoom: document.getElementById('st-zoom'),
     stEol: document.getElementById('st-eol'),
     stEnc: document.getElementById('st-enc'),
     stMessage: document.getElementById('st-message'),
@@ -1279,11 +1280,13 @@ function updateStatus() {
     const fmt = file.format;
     const view = viewLabel(currentMode);
     els.stMode.textContent = fmt.name + ' · ' + view + (file.large || file.binary || settings.readOnlyMode ? ' · 只读' : '');
-    let sizeText = fmtSize(file.size);
-    if (file.image && currentMode === 'image' && file.imageWidth) {
-        sizeText += ' · ' + file.imageWidth + ' × ' + file.imageHeight;
-    }
-    els.stSize.textContent = sizeText;
+    els.stSize.textContent = fmtSize(file.size);
+    els.stSize.title = file.image && file.imageWidth ? file.imageWidth + ' × ' + file.imageHeight : '';
+    const zoom = file.image && currentMode === 'image' && file.imageScale
+        ? Math.round(file.imageScale * 100) + '%'
+        : '';
+    els.stZoom.textContent = zoom;
+    els.stZoom.title = zoom ? '图片缩放比例（Ctrl+滚轮调整，双击图片恢复适配）' : '';
     if (file.binary) {
         els.stEol.textContent = '';
         els.stEnc.textContent = '';
@@ -1918,6 +1921,8 @@ function createImageView(doc) {
     wrap.className = 'image-preview-view';
     const scroll = document.createElement('div');
     scroll.className = 'image-preview-scroll';
+    const canvas = document.createElement('div');
+    canvas.className = 'image-preview-canvas';
     const status = document.createElement('div');
     status.className = 'image-preview-status';
     status.textContent = '正在加载图片…';
@@ -1932,6 +1937,7 @@ function createImageView(doc) {
         doc.imageError = null;
         img.hidden = false;
         status.classList.add('hidden');
+        applyImageZoom(doc);
         if (doc === file) updateStatus();
     });
     img.addEventListener('error', () => {
@@ -1944,13 +1950,92 @@ function createImageView(doc) {
             switchMode('binary');
         }
     });
-    scroll.append(img, status);
+    canvas.appendChild(img);
+    scroll.append(canvas, status);
     wrap.appendChild(scroll);
     doc.pane.appendChild(wrap);
     doc.imageEl = wrap;
     doc.imageScroll = scroll;
+    doc.imageCanvas = canvas;
     doc.imageNode = img;
     doc.imageStatus = status;
+
+    scroll.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        if (scroll.scrollWidth <= scroll.clientWidth + 1 && scroll.scrollHeight <= scroll.clientHeight + 1) return;
+        e.preventDefault();
+        doc.imagePan = {id: e.pointerId, x: e.clientX, y: e.clientY, left: scroll.scrollLeft, top: scroll.scrollTop};
+        scroll.classList.add('panning');
+        try {
+            scroll.setPointerCapture(e.pointerId);
+        } catch (err) {}
+    });
+    scroll.addEventListener('pointermove', (e) => {
+        const pan = doc.imagePan;
+        if (!pan || e.pointerId !== pan.id) return;
+        scroll.scrollLeft = pan.left - (e.clientX - pan.x);
+        scroll.scrollTop = pan.top - (e.clientY - pan.y);
+    });
+    const endPan = (e) => {
+        if (!doc.imagePan || (e && e.pointerId !== doc.imagePan.id)) return;
+        doc.imagePan = null;
+        scroll.classList.remove('panning');
+    };
+    scroll.addEventListener('pointerup', endPan);
+    scroll.addEventListener('pointercancel', endPan);
+    scroll.addEventListener('dblclick', () => {
+        if (!doc.imageWidth) return;
+        doc.imageZoom = null;
+        applyImageZoom(doc);
+    });
+    if (typeof ResizeObserver === 'function') {
+        doc.imageResizeObserver = new ResizeObserver(() => {
+            if (doc === file && currentMode === 'image') applyImageZoom(doc);
+        });
+        doc.imageResizeObserver.observe(scroll);
+    }
+}
+
+function applyImageZoom(doc) {
+    if (!doc || !doc.imageNode || !doc.imageScroll || !doc.imageWidth || !doc.imageHeight) return;
+    const scroll = doc.imageScroll;
+    const width = scroll.clientWidth;
+    const height = scroll.clientHeight;
+    if (width < 20 || height < 20) return;
+    const availableWidth = Math.max(1, width - 48);
+    const availableHeight = Math.max(1, height - 48);
+    const scale = doc.imageZoom == null
+        ? Math.min(1, availableWidth / doc.imageWidth, availableHeight / doc.imageHeight)
+        : doc.imageZoom;
+    const previous = doc.imageScale || 0;
+    const centerX = scroll.scrollLeft + width / 2;
+    const centerY = scroll.scrollTop + height / 2;
+    doc.imageScale = scale;
+    doc.imageNode.style.width = Math.max(1, Math.round(doc.imageWidth * scale)) + 'px';
+    doc.imageNode.style.height = Math.max(1, Math.round(doc.imageHeight * scale)) + 'px';
+    if (previous > 0 && Math.abs(scale - previous) > 0.0001) {
+        const ratio = scale / previous;
+        requestAnimationFrame(() => {
+            if (!doc.imageScroll) return;
+            doc.imageScroll.scrollLeft = Math.max(0, centerX * ratio - width / 2);
+            doc.imageScroll.scrollTop = Math.max(0, centerY * ratio - height / 2);
+        });
+    }
+    requestAnimationFrame(() => {
+        if (!doc.imageScroll) return;
+        const canPan = doc.imageScroll.scrollWidth > doc.imageScroll.clientWidth + 1 ||
+            doc.imageScroll.scrollHeight > doc.imageScroll.clientHeight + 1;
+        doc.imageScroll.classList.toggle('can-pan', canPan);
+    });
+    if (doc === file) updateStatus();
+}
+
+function zoomImageBy(doc, deltaY) {
+    if (!doc || !doc.imageWidth || !deltaY) return;
+    const base = doc.imageScale || 1;
+    const factor = deltaY < 0 ? 1.1 : 1 / 1.1;
+    doc.imageZoom = Math.min(8, Math.max(0.05, Math.round(base * factor * 1000) / 1000));
+    applyImageZoom(doc);
 }
 
 function loadImagePreview(doc) {
@@ -1960,6 +2045,7 @@ function loadImagePreview(doc) {
     if (doc.imageUrl) {
         doc.imageStatus.classList.add('hidden');
         if (doc.imageNode.getAttribute('src') !== doc.imageUrl) doc.imageNode.src = doc.imageUrl;
+        applyImageZoom(doc);
         return;
     }
     if (doc.imageLoading) return;
@@ -2820,8 +2906,13 @@ async function reloadActive() {
         doc.previewEl = null;
         doc.previewScroll = null;
         doc.previewBody = null;
+        if (doc.imageResizeObserver) {
+            doc.imageResizeObserver.disconnect();
+            doc.imageResizeObserver = null;
+        }
         doc.imageEl = null;
         doc.imageScroll = null;
+        doc.imageCanvas = null;
         doc.imageNode = null;
         doc.imageStatus = null;
         doc.imageUrl = null;
@@ -2829,6 +2920,9 @@ async function reloadActive() {
         doc.imageError = null;
         doc.imageWidth = 0;
         doc.imageHeight = 0;
+        doc.imageScale = 0;
+        doc.imageZoom = null;
+        doc.imagePan = null;
         doc.loading = false;
         Object.assign(doc, fresh, {id: doc.id, dirty: false, untitled: false, text: null, content: data.content});
         let nextMode = keepMode;
@@ -3027,6 +3121,10 @@ window.addEventListener('wheel', (e) => {
     if (!e.ctrlKey) return;
     e.preventDefault();
     if (!els.editor.contains(e.target)) return;
+    if (currentMode === 'image' && file && file.image) {
+        zoomImageBy(file, e.deltaY);
+        return;
+    }
     const dir = e.deltaY < 0 ? 1 : -1;
     const next = Math.min(24, Math.max(9, settings.editorFont + dir));
     if (next === settings.editorFont) return;

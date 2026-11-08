@@ -1249,17 +1249,26 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 .image-preview-scroll {
     position: absolute;
     inset: 0;
+    display: block;
+    overflow: auto;
+}
+.image-preview-scroll.can-pan { cursor: grab; }
+.image-preview-scroll.panning { cursor: grabbing; user-select: none; }
+.image-preview-canvas {
     display: flex;
     align-items: center;
     justify-content: center;
-    overflow: auto;
+    width: max-content;
+    min-width: 100%;
+    height: max-content;
+    min-height: 100%;
     padding: 24px;
+    box-sizing: border-box;
 }
 .image-preview-img {
     display: block;
-    max-width: 100%;
-    max-height: 100%;
-    object-fit: contain;
+    max-width: none;
+    max-height: none;
     border-radius: 4px;
     background: var(--panel2);
     box-shadow: 0 8px 30px var(--shadow);
@@ -1441,6 +1450,8 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 }
 #st-message.error { color: var(--red); }
 #st-dirty { color: var(--orange); }
+#st-zoom:empty { display: none; }
+#st-zoom { color: var(--muted); font-variant-numeric: tabular-nums; }
 .status-lock {
     flex: none;
     width: 22px;
