@@ -1485,8 +1485,17 @@ div.jsoneditor-tree td:has(> input[type="checkbox"]) { vertical-align: middle; }
 a.jsoneditor-poweredBy { display: none !important; }
 
 /* settings dialog layout */
-.dialog-settings { width: 780px; }
-.settings-layout { display: flex; min-height: 400px; }
+.dialog-settings {
+    width: 780px;
+    height: 580px;
+    max-height: calc(100vh - 40px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.dialog-settings .dialog-head { flex: none; }
+.settings-layout { display: flex; flex: 1; min-height: 0; }
+.dialog-settings .settings-layout { min-height: 0; }
 .settings-nav {
     width: 132px;
     flex: none;
@@ -1495,6 +1504,7 @@ a.jsoneditor-poweredBy { display: none !important; }
     display: flex;
     flex-direction: column;
     gap: 2px;
+    overflow: auto;
 }
 .snav-item {
     text-align: left;
@@ -1508,7 +1518,7 @@ a.jsoneditor-poweredBy { display: none !important; }
 }
 .snav-item:hover { background: var(--hover); }
 .snav-item.active { background: var(--accent); color: var(--on-accent); }
-.settings-content { flex: 1; min-width: 0; padding: 14px 16px; }
+.settings-content { flex: 1; min-width: 0; padding: 14px 16px; overflow: auto; }
 .settings-pane { display: flex; flex-direction: column; gap: 12px; }
 .settings-pane.hidden { display: none; }
 .fmt-table { display: flex; flex-direction: column; gap: 6px; }

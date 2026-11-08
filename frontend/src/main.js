@@ -596,7 +596,8 @@ window.addEventListener('mouseup', () => {
 document.querySelectorAll('.dialog-head').forEach((head) => head.addEventListener('mousedown', startDialogDrag));
 document.querySelectorAll('.dialog-close').forEach((btn) => btn.addEventListener('click', closeDialogs));
 elsDialogs.mask.addEventListener('click', (e) => {
-    if (e.target === elsDialogs.mask) closeDialogs();
+    if (e.target !== elsDialogs.mask) return;
+    if (!elsDialogs.confirm.classList.contains('hidden')) closeDialogs();
 });
 
 document.querySelectorAll('.snav-item').forEach((btn) => {
