@@ -93,7 +93,6 @@ export function createExplorer(options) {
         const root = currentRoot();
         if (titleEl) {
             titleEl.textContent = root ? (baseName(root) || root) : '资源';
-            titleEl.title = root || '文件侧边栏';
         }
         if (refreshBtn) refreshBtn.disabled = !root;
     }
@@ -138,7 +137,6 @@ export function createExplorer(options) {
         row.dataset.path = node.path;
         row.dataset.dir = node.isDir ? '1' : '0';
         row.tabIndex = -1;
-        if (node.path) row.title = node.path;
         const chev = el('span', 'sb-chev' + (node.isDir && node.expanded ? ' open' : ''));
         if (node.isDir) {
             chev.innerHTML = ICONS.chevron;
@@ -519,7 +517,6 @@ export function createExplorer(options) {
             (cutPaths.some((path) => samePath(entry.path, path)) ? ' cut' : ''));
         row.dataset.path = entry.path;
         row.tabIndex = -1;
-        if (entry.path) row.title = entry.path;
         row.append(createFileIcon(entry.name, 'sb-icon'), el('span', 'sb-name', entry.name));
         row.addEventListener('click', (e) => {
             row.focus({preventScroll: true});
