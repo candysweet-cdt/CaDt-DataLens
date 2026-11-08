@@ -2292,28 +2292,45 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 .jsoneditor .ace_custom-widget {
     background: transparent !important;
     border: none !important;
+    box-shadow: none !important;
     border-radius: 3px;
     color: var(--muted) !important;
     height: 14px;
     font-size: 11px;
     text-align: center;
 }
-.jsoneditor .ace_fold-widget.ace_closed,
-.jsoneditor .ace_custom-widget.ace_closed {
-    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M4 2.5L7.5 6L4 9.5' fill='none' stroke='%23959ba8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
-}
 .jsoneditor .ace_fold-widget.ace_start,
 .jsoneditor .ace_custom-widget.ace_start {
     display: none !important;
     background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5L6 8l3.5-3.5' fill='none' stroke='%23959ba8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
 }
+.jsoneditor .ace_fold-widget.ace_start.chev-hover,
+.jsoneditor .ace_custom-widget.ace_start.chev-hover {
+    display: inline-block !important;
+}
 .jsoneditor .ace_gutter-layer.chev-show .ace_fold-widget.ace_start,
 .jsoneditor .ace_gutter-layer.chev-show .ace_custom-widget.ace_start {
     display: inline-block !important;
 }
+/* 折叠态：ace_start/ace_closed 同时存在，本规则在后以覆盖展开态箭头 */
+.jsoneditor .ace_fold-widget.ace_closed,
+.jsoneditor .ace_custom-widget.ace_closed {
+    display: inline-block !important;
+    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M4 2.5L7.5 6L4 9.5' fill='none' stroke='%23959ba8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
+}
 .jsoneditor .ace_fold-widget.ace_end,
 .jsoneditor .ace_custom-widget.ace_end {
     background: transparent !important;
+    display: none !important;
+}
+/* 中和 jsoneditor 自带的 hover 边框/阴影/底色（无 hover 效果，与树视图一致） */
+.jsoneditor .ace_fold-widget:hover,
+.jsoneditor .ace_fold-widget:active,
+.jsoneditor .ace_custom-widget:hover,
+.jsoneditor .ace_custom-widget:active {
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
 }
 .jsoneditor .ace_cursor {
     color: var(--text) !important;
