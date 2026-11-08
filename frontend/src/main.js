@@ -2847,6 +2847,12 @@ function tableHistory(action) {
     const to = action === 'undo' ? doc.tableRedo : doc.tableUndo;
     if (!from.length) return;
     const op = from.pop();
+    if (op.full) {
+        applyCsvTableText(doc, action === 'undo' ? op.before : op.after);
+        to.push(op);
+        renderCsvTableView(doc);
+        return;
+    }
     const row = doc.tableRows[op.row];
     if (!row) {
         from.push(op);
@@ -4815,9 +4821,41 @@ function formatDocument() {
         formatted = doc.format.stringify(value);
     }
     if (formatted === text) return;
+    if (currentMode === 'table') {
+        if (!doc.tableUndo) doc.tableUndo = [];
+        if (!doc.tableRedo) doc.tableRedo = [];
+        doc.tableUndo.push({full: true, before: text, after: formatted});
+        if (doc.tableUndo.length > 100) doc.tableUndo.shift();
+        doc.tableRedo.length = 0;
+    }
     doc.loading = true;
     try {
-        editor.setText(formatted);
+        if (currentMode === 'code' && editor.aceEditor) {
+            const ace = editor.aceEditor;
+            ace.selectAll();
+            ace.session.replace(ace.getSelectionRange(), formatted);
+            ace.selection.moveTo(0, 0);
+            ace.clearSelection();
+        } else if (currentMode === 'text') {
+            const ta = textArea();
+            if (ta) {
+                ta.focus();
+                ta.select();
+                let inserted = false;
+                try {
+                    inserted = document.execCommand('insertText', false, formatted);
+                } catch (e) {}
+                if (!inserted) {
+                    ta.value = formatted;
+                    ta.dispatchEvent(new Event('input', {bubbles: true}));
+                }
+                ta.setSelectionRange(0, 0);
+            } else {
+                editor.setText(formatted);
+            }
+        } else {
+            editor.setText(formatted);
+        }
     } catch (e) {
         flash('格式化失败：' + e.message, true);
         return;
