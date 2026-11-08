@@ -13,11 +13,14 @@ func writeTestPlugin(t *testing.T, dir, id string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := "{\"id\":\"" + id + "\",\"name\":\"测试插件\",\"version\":\"1.0.0\",\"entry\":\"main.js\",\"extensions\":[\"bak\"]}"
+	manifest := "{\"id\":\"" + id + "\",\"name\":\"测试插件\",\"version\":\"1.0.0\",\"author\":\"CandySweet\",\"entry\":\"main.js\",\"extensions\":[\"bak\"],\"license\":\"MIT\",\"keywords\":[\"示例\",\"json\"],\"icon\":\"icon.svg\"}"
 	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "main.js"), []byte("cadt.registerFormat({id:'"+id+"',name:'测试',extensions:['bak'],parse:JSON.parse,stringify:JSON.stringify});"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "icon.svg"), []byte("<svg xmlns='http://www.w3.org/2000/svg'/>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -33,6 +36,12 @@ func TestInstallAndListPlugins(t *testing.T) {
 	}
 	if info.Id != "my-plugin" || !info.Enabled || !info.EntryOK {
 		t.Fatalf("安装结果不符: %+v", info)
+	}
+	if info.Author != "CandySweet" || info.License != "MIT" || len(info.Keywords) != 2 {
+		t.Fatalf("清单扩展字段未解析: %+v", info)
+	}
+	if !strings.HasPrefix(info.IconData, "data:image/svg+xml;base64,") {
+		t.Fatalf("图标未转 data URL: %q", info.IconData)
 	}
 	if _, err := os.Stat(filepath.Join(root, "my-plugin", "main.js")); err != nil {
 		t.Fatalf("入口文件未复制: %v", err)
@@ -60,10 +69,13 @@ func TestReadPluginManifestRejects(t *testing.T) {
 		manifest string
 		want     string
 	}{
-		{"bad id", `{"id":"Bad_ID","name":"x","entry":"main.js"}`, "id 无效"},
-		{"no name", `{"id":"ok-id","entry":"main.js"}`, "缺少名称"},
-		{"missing entry", `{"id":"ok-id","name":"x","entry":"gone.js"}`, "入口文件不存在"},
-		{"escape entry", `{"id":"ok-id","name":"x","entry":"../../x.js"}`, "越界"},
+		{"bad id", `{"id":"Bad_ID","name":"x","author":"a","entry":"main.js"}`, "id 无效"},
+		{"no name", `{"id":"ok-id","author":"a","entry":"main.js"}`, "缺少名称"},
+		{"no author", `{"id":"ok-id","name":"x","entry":"main.js"}`, "缺少作者"},
+		{"bad url", `{"id":"ok-id","name":"x","author":"a","entry":"main.js","homepage":"javascript:alert(1)"}`, "http(s)"},
+		{"bad minver", `{"id":"ok-id","name":"x","author":"a","entry":"main.js","minAppVersion":"v1.x"}`, "minAppVersion"},
+		{"missing entry", `{"id":"ok-id","name":"x","author":"a","entry":"gone.js"}`, "入口文件不存在"},
+		{"escape entry", `{"id":"ok-id","name":"x","author":"a","entry":"../../x.js"}`, "越界"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

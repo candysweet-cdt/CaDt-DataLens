@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,31 +22,47 @@ const (
 	pluginEntryMaxSize = int64(2 << 20)  // 入口 JS 上限 2 MB
 	pluginZipMaxSize   = int64(64 << 20) // 解压总量上限 64 MB
 	pluginZipMaxFiles  = 1000
+	pluginIconMaxSize  = int64(128 << 10) // 图标上限 128 KB
 )
 
-var pluginIdPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+var (
+	pluginIdPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	pluginVersionPattern = regexp.MustCompile(`^\d+(\.\d+){0,2}$`)
+)
 
 type pluginManifest struct {
-	Id          string   `json:"id"`
-	Name        string   `json:"name"`
-	Version     string   `json:"version,omitempty"`
-	Author      string   `json:"author,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Entry       string   `json:"entry,omitempty"`
-	Extensions  []string `json:"extensions,omitempty"`
+	Id            string   `json:"id"`
+	Name          string   `json:"name"`
+	Version       string   `json:"version,omitempty"`
+	Author        string   `json:"author"`
+	Description   string   `json:"description,omitempty"`
+	Entry         string   `json:"entry,omitempty"`
+	Extensions    []string `json:"extensions,omitempty"`
+	Homepage      string   `json:"homepage,omitempty"`
+	Repository    string   `json:"repository,omitempty"`
+	License       string   `json:"license,omitempty"`
+	Keywords      []string `json:"keywords,omitempty"`
+	MinAppVersion string   `json:"minAppVersion,omitempty"`
+	Icon          string   `json:"icon,omitempty"`
 }
 
 type PluginInfo struct {
-	Id          string   `json:"id"`
-	Name        string   `json:"name"`
-	Version     string   `json:"version,omitempty"`
-	Author      string   `json:"author,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Dir         string   `json:"dir"`
-	Entry       string   `json:"entry,omitempty"`
-	Extensions  []string `json:"extensions,omitempty"`
-	Enabled     bool     `json:"enabled"`
-	EntryOK     bool     `json:"entryOk"`
+	Id            string   `json:"id"`
+	Name          string   `json:"name"`
+	Version       string   `json:"version,omitempty"`
+	Author        string   `json:"author"`
+	Description   string   `json:"description,omitempty"`
+	Dir           string   `json:"dir"`
+	Entry         string   `json:"entry,omitempty"`
+	Extensions    []string `json:"extensions,omitempty"`
+	Homepage      string   `json:"homepage,omitempty"`
+	Repository    string   `json:"repository,omitempty"`
+	License       string   `json:"license,omitempty"`
+	Keywords      []string `json:"keywords,omitempty"`
+	MinAppVersion string   `json:"minAppVersion,omitempty"`
+	IconData      string   `json:"iconData,omitempty"`
+	Enabled       bool     `json:"enabled"`
+	EntryOK       bool     `json:"entryOk"`
 }
 
 type PluginSource struct {
@@ -100,7 +117,20 @@ func readPluginManifest(dir string) (*pluginManifest, error) {
 	if strings.TrimSpace(m.Name) == "" {
 		return nil, fmt.Errorf("插件 %s 缺少名称", m.Id)
 	}
+	if strings.TrimSpace(m.Author) == "" {
+		return nil, fmt.Errorf("插件 %s 缺少作者（author）", m.Id)
+	}
+	for _, url := range []string{m.Homepage, m.Repository} {
+		if url != "" && !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			return nil, fmt.Errorf("插件 %s 的链接必须以 http(s):// 开头：%q", m.Id, url)
+		}
+	}
+	if m.MinAppVersion != "" && !pluginVersionPattern.MatchString(strings.TrimSpace(m.MinAppVersion)) {
+		return nil, fmt.Errorf("插件 %s 的 minAppVersion 格式无效（如 1.0.0）：%q", m.Id, m.MinAppVersion)
+	}
 	m.Id = strings.TrimSpace(m.Id)
+	m.Author = strings.TrimSpace(m.Author)
+	m.MinAppVersion = strings.TrimSpace(m.MinAppVersion)
 	m.Entry = strings.TrimSpace(m.Entry)
 	if m.Entry == "" {
 		m.Entry = pluginDefaultEntry
@@ -114,7 +144,46 @@ func readPluginManifest(dir string) (*pluginManifest, error) {
 	if info, err := os.Stat(entryPath); err != nil || info.IsDir() {
 		return nil, fmt.Errorf("插件 %s 的入口文件不存在：%s", m.Id, m.Entry)
 	}
+	// 图标可选：相对路径、目录内、png/jpg/svg、≤128KB
+	if m.Icon != "" {
+		iconPath := filepath.Join(dir, filepath.FromSlash(m.Icon))
+		relIcon, relErr := filepath.Rel(dir, iconPath)
+		if relErr != nil || strings.HasPrefix(relIcon, "..") || filepath.IsAbs(relIcon) {
+			return nil, fmt.Errorf("插件 %s 的图标路径越界：%s", m.Id, m.Icon)
+		}
+		ext := strings.ToLower(filepath.Ext(iconPath))
+		if ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".svg" {
+			return nil, fmt.Errorf("插件 %s 的图标仅支持 png/jpg/svg：%s", m.Id, m.Icon)
+		}
+		if info, err := os.Stat(iconPath); err != nil || info.IsDir() || info.Size() > pluginIconMaxSize {
+			return nil, fmt.Errorf("插件 %s 的图标不存在或超过 %d KB：%s", m.Id, pluginIconMaxSize/(1<<10), m.Icon)
+		}
+	}
 	return &m, nil
+}
+
+// pluginIconData 读取插件图标并转为 data URL；无图标时返回空串。
+func pluginIconData(dir string, m *pluginManifest) string {
+	if m.Icon == "" {
+		return ""
+	}
+	iconPath := filepath.Join(dir, filepath.FromSlash(m.Icon))
+	raw, err := os.ReadFile(iconPath)
+	if err != nil || int64(len(raw)) > pluginIconMaxSize {
+		return ""
+	}
+	var mime string
+	switch strings.ToLower(filepath.Ext(iconPath)) {
+	case ".png":
+		mime = "image/png"
+	case ".jpg", ".jpeg":
+		mime = "image/jpeg"
+	case ".svg":
+		mime = "image/svg+xml"
+	default:
+		return ""
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw)
 }
 
 func listPluginsAt(root string, disabled map[string]bool) ([]*PluginInfo, error) {
@@ -141,16 +210,22 @@ func listPluginsAt(root string, disabled map[string]bool) ([]*PluginInfo, error)
 			entryOK = true
 		}
 		plugins = append(plugins, &PluginInfo{
-			Id:          m.Id,
-			Name:        m.Name,
-			Version:     m.Version,
-			Author:      m.Author,
-			Description: m.Description,
-			Dir:         dir,
-			Entry:       m.Entry,
-			Extensions:  m.Extensions,
-			Enabled:     !disabled[m.Id],
-			EntryOK:     entryOK,
+			Id:            m.Id,
+			Name:          m.Name,
+			Version:       m.Version,
+			Author:        m.Author,
+			Description:   m.Description,
+			Dir:           dir,
+			Entry:         m.Entry,
+			Extensions:    m.Extensions,
+			Homepage:      m.Homepage,
+			Repository:    m.Repository,
+			License:       m.License,
+			Keywords:      m.Keywords,
+			MinAppVersion: m.MinAppVersion,
+			IconData:      pluginIconData(dir, m),
+			Enabled:       !disabled[m.Id],
+			EntryOK:       entryOK,
 		})
 	}
 	sort.Slice(plugins, func(i, j int) bool { return plugins[i].Id < plugins[j].Id })
@@ -182,16 +257,22 @@ func installPluginAt(root, srcDir string) (*PluginInfo, error) {
 		entryOK = stat.Size() <= pluginEntryMaxSize
 	}
 	return &PluginInfo{
-		Id:          m.Id,
-		Name:        m.Name,
-		Version:     m.Version,
-		Author:      m.Author,
-		Description: m.Description,
-		Dir:         dest,
-		Entry:       m.Entry,
-		Extensions:  m.Extensions,
-		Enabled:     true,
-		EntryOK:     entryOK,
+		Id:            m.Id,
+		Name:          m.Name,
+		Version:       m.Version,
+		Author:        m.Author,
+		Description:   m.Description,
+		Dir:           dest,
+		Entry:         m.Entry,
+		Extensions:    m.Extensions,
+		Homepage:      m.Homepage,
+		Repository:    m.Repository,
+		License:       m.License,
+		Keywords:      m.Keywords,
+		MinAppVersion: m.MinAppVersion,
+		IconData:      pluginIconData(dest, m),
+		Enabled:       true,
+		EntryOK:       entryOK,
 	}, nil
 }
 

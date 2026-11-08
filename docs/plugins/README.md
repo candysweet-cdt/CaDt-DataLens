@@ -20,7 +20,13 @@ my-plugin/
     "author": "你的名字",
     "description": "把 .bak 文件按 JSON 解析",
     "entry": "main.js",
-    "extensions": ["bak"]
+    "extensions": ["bak"],
+    "license": "MIT",
+    "homepage": "https://gitee.com/xxx/bak-json",
+    "repository": "https://gitee.com/xxx/bak-json",
+    "keywords": ["json", "备份"],
+    "minAppVersion": "1.0.0",
+    "icon": "icon.svg"
 }
 ```
 
@@ -28,11 +34,17 @@ my-plugin/
 | --- | --- | --- |
 | `id` | ✓ | 小写字母/数字/连字符，≤64 字符；同时是安装目录名，全局唯一 |
 | `name` | ✓ | 显示名称 |
+| `author` | ✓ | 作者，显示在插件列表 |
 | `version` | | 建议语义化版本 |
-| `author` | | 作者 |
 | `description` | | 描述，显示在插件列表 |
 | `entry` | | 入口 JS 文件（相对插件目录），默认 `main.js`，≤2 MB |
 | `extensions` | | 该插件涉及的扩展名，仅作列表展示 |
+| `license` | | 许可证（SPDX 标识，如 `MIT`），显示在插件列表 |
+| `homepage` | | 主页链接（http/https），插件列表可点击 |
+| `repository` | | 源码仓库链接（http/https），插件列表可点击 |
+| `keywords` | | 关键词标签（最多显示 6 个） |
+| `minAppVersion` | | 需要的最低应用版本（如 `1.0.2`）；当前应用版本过低时列表会黄字提醒 |
+| `icon` | | 图标文件（相对路径，png/jpg/svg，≤128 KB），显示在插件列表 |
 
 安装方式（设置 → 插件）：**添加插件** 选文件夹；**导入插件(.zip)** 选压缩包（zip 里 `plugin.json` 在根目录或唯一顶层子目录都可以）。插件目录默认在 exe 旁的 `plugins\`，可在设置里切换到 `%APPDATA%\CaDt-DataLens\plugins`。
 
@@ -105,6 +117,31 @@ cadt.addTheme({
 
 `css` 是追加进页面的样式表，选择器用 `html[data-theme="<id>"]` 覆盖 `--*` 设计变量即可；建议完整提供 `--bg/--text/--muted/--border/--hover/--accent/--on-accent`。
 
+### 命令执行（进程桥）
+
+```js
+// 同步执行（超时默认 20s，上限 120s；输出上限 8MB）
+const res = cadt.runCommandSync({exe: 'git', args: ['status', '--porcelain'], cwd: 'D:epo', timeoutMs: 15000});
+// res = {code: 0, stdout: '...', stderr: '...'}；非零退出码不是异常
+
+// 流式执行
+const job = cadt.runCommand({
+    exe: 'git', args: ['log', '-n', '10'], cwd: 'D:epo',
+    onOut(line) { cadt.openVirtualDoc('输出.txt', line); },
+    onErr(line) {},
+    onExit(code) { cadt.flash('命令结束：' + code); },
+});
+job.stop(); // 提前终止
+```
+
+### 虚拟文档
+
+```js
+cadt.openVirtualDoc('Git 差异 — main.diff', patchText);  // 扩展名决定高亮（.diff → diff 高亮）
+```
+
+以未命名标签页打开文本内容，保存时走"另存为"。
+
 ### 运行时辅助
 
 | API | 说明 |
@@ -113,6 +150,9 @@ cadt.addTheme({
 | `cadt.getActiveText()` | 当前文件文本（按当前视图取值），二进制文件为 `null` |
 | `cadt.openPath(path)` | 用本程序打开一个文件或目录 |
 | `cadt.flash(message)` | 在右下角弹出提示 |
+| `cadt.runCommandSync(opts)` | 同步执行命令（见上） |
+| `cadt.runCommand(opts)` | 流式执行命令，返回 `{stop()}`（见上） |
+| `cadt.openVirtualDoc(name, content)` | 以未命名标签页打开文本 |
 
 ## 目录与切换
 

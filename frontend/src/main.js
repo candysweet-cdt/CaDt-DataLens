@@ -10,6 +10,10 @@ import {createContextMenu} from './contextmenu.js';
 import {createFileIcon, fileIconSpec} from './fileicons.js';
 import {getPluginCommands, initPluginRuntime, loadPlugins} from './plugins.js';
 
+window.addEventListener('error', (e) => {
+    window.__modErr = (e.message || '') + ' @ ' + (e.filename || '').split('/').pop() + ':' + e.lineno + ':' + e.colno;
+});
+
 const UNLOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2.4 2.4 0 0 1 10.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
 const LOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2 2 0 0 1 10 5.6V7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
 const plainTextExtensions = new Set(['txt', 'log', 'conf']);
@@ -398,6 +402,61 @@ const mockBackend = {
         }
         window.__mockSkill.registered = !!enabled;
     },
+    async TermCreate(cols, rows, shell, cwd) {
+        window.__mockTermSeq = (window.__mockTermSeq || 0) + 1;
+        const id = 'term-' + window.__mockTermSeq;
+        setTimeout(() => {
+            if (rt && rt.EventsEmit) {
+                rt.EventsEmit('term-out', {id, data: 'CaDt-DataLens 模拟终端（开发预览）\r\nPS ' + (cwd || 'C:\\') + '> '});
+            }
+        }, 200);
+        return {id};
+    },
+    async TermWrite(id, data) {
+        if (rt && rt.EventsEmit && data && !data.includes('\r')) {
+            rt.EventsEmit('term-out', {id, data});
+        }
+    },
+    async TermResize() {},
+    async TermClose() {},
+    async RunCommandSync(exe, args, cwd, timeoutMs) {
+        return {code: 0, stdout: '[mock] ' + exe + ' ' + (args || []).join(' ') + (cwd ? ' (cwd ' + cwd + ')' : ''), stderr: ''};
+    },
+    async StartCommand(id, exe, args) {
+        setTimeout(() => {
+            if (rt && rt.EventsEmit) {
+                rt.EventsEmit('cmd-out', {id, stream: 'out', data: '[mock] ' + exe + ' ' + (args || []).join(' ')});
+                rt.EventsEmit('cmd-exit', {id, code: '0'});
+            }
+        }, 150);
+        return null;
+    },
+    async StopCommand() {},
+    async GitStatusFor(dir) {
+        if (!mockScenario.has('gitmock')) {
+            return {available: false, reason: 'mock 无 git', entries: []};
+        }
+        return {
+            available: true,
+            root: dir,
+            branch: 'mock/main',
+            entries: [
+                {path: dir + '\\sample.json', state: 'modified'},
+                {path: dir + '\\sample.yaml', state: 'new'},
+                {path: dir + '\\sample.toml', state: 'deleted'},
+                {path: dir + '\\sample.ini', state: 'conflict'},
+            ],
+        };
+    },
+    async GitDiffFor(dir, path) {
+        return {
+            hasChanges: true,
+            diff: 'diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-旧内容\n+新内容（mock）\n',
+        };
+    },
+    async GetAppVersion() {
+        return 'v1.0.0';
+    },
     async GetPlugins() {
         const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
         if (!st.present) return [];
@@ -410,6 +469,12 @@ const mockBackend = {
             dir: 'C:\\plugins\\demo-format',
             entry: 'main.js',
             extensions: ['bak'],
+            homepage: 'https://gitee.com/cadt-datalens-plugins',
+            repository: 'https://gitee.com/cadt-datalens-plugins/bak-json',
+            license: 'MIT',
+            keywords: ['示例', 'json'],
+            minAppVersion: '1.0.0',
+            iconData: 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="3" fill="#ef86aa"/></svg>'),
             enabled: !st.disabled['demo-format'],
             entryOk: true,
         }];
@@ -500,6 +565,13 @@ window.__backend = backend;
 const mockRt = {
     _max: false,
     _calls: [],
+    _events: {},
+    EventsOn(name, cb) {
+        (this._events[name] = this._events[name] || []).push(cb);
+    },
+    EventsEmit(name, data) {
+        (this._events[name] || []).slice().forEach((cb) => cb(data));
+    },
     async WindowIsMaximised() { return this._max; },
     WindowToggleMaximise() { this._max = !this._max; this._calls.push('toggle:' + this._max); },
     WindowMinimise() { this._calls.push('min'); },
@@ -946,6 +1018,11 @@ function applySettings() {
     document.documentElement.classList.toggle('keycol-natural', !settings.fixedKeys);
     document.documentElement.classList.toggle('tree-guides', !!settings.treeGuides);
     applyTheme();
+    if (typeof syncTerminalTheme === 'function') {
+        try {
+            syncTerminalTheme();
+        } catch (e) {}
+    }
     document.documentElement.style.setProperty('--key-col-w', settings.keyWidth + 'px');
     elsSettings.fixed.checked = settings.fixedKeys;
     elsSettings.width.value = String(settings.keyWidth);
@@ -1389,6 +1466,25 @@ initPluginRuntime({
     openPath: (p) => {
         if (p) openPaths([p]);
     },
+    runCommandSync: (opts) => backend.RunCommandSync(opts.exe, opts.args, opts.cwd || '', opts.timeoutMs || 20000),
+    runCommand: (opts) => {
+        const id = 'cmd-' + ++cmdSeq;
+        cmdOutHandlers.set(id, (stream, data) => {
+            if (stream === 'out' && opts.onOut) opts.onOut(data);
+            if (stream === 'err' && opts.onErr) opts.onErr(data);
+        });
+        cmdExitHandlers.set(id, (code) => {
+            cmdOutHandlers.delete(id);
+            if (opts.onExit) opts.onExit(code);
+        });
+        Promise.resolve(backend.StartCommand(id, opts.exe, opts.args, opts.cwd || '')).catch((e) => {
+            flash('启动命令失败：' + e, true);
+            cmdExitHandlers.delete(id);
+            if (opts.onExit) opts.onExit(-1);
+        });
+        return {stop: () => backend.StopCommand(id).catch(() => {})};
+    },
+    openVirtualDoc: (name, content) => openVirtualDoc(name, content),
     addPluginTheme: (theme) => {
         if (themes.some((t) => t.id === theme.id)) {
             throw new Error(`主题 ${theme.id} 与内置主题冲突`);
@@ -1462,11 +1558,26 @@ function setupPluginsSettings() {
     });
 }
 
+let cachedAppVersion = '';
+function appVersionValue() {
+    return cachedAppVersion;
+}
+
+function versionAtLeast(current, required) {
+    const parse = (v) => String(v || '').replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
+    const [c1 = 0, c2 = 0, c3 = 0] = parse(current);
+    const [r1 = 0, r2 = 0, r3 = 0] = parse(required);
+    if (c1 !== r1) return c1 > r1;
+    if (c2 !== r2) return c2 > r2;
+    return c3 >= r3;
+}
+
 async function renderPluginsPane() {
     const listEl = document.getElementById('plugin-list');
     if (!listEl) return;
     const modeSel = document.getElementById('plugin-path-mode');
     try {
+        if (backend.GetAppVersion) cachedAppVersion = await backend.GetAppVersion();
         const plugins = backend.GetPlugins ? await backend.GetPlugins() : [];
         const dir = backend.GetPluginsDir ? await backend.GetPluginsDir() : '—';
         if (modeSel && backend.GetPluginsPathMode) {
@@ -1488,12 +1599,27 @@ async function renderPluginsPane() {
             item.className = 'plugin-item';
             const head = document.createElement('div');
             head.className = 'plugin-head';
+            if (p.iconData) {
+                const icon = document.createElement('img');
+                icon.className = 'plugin-icon';
+                icon.src = p.iconData;
+                icon.alt = '';
+                icon.draggable = false;
+                head.appendChild(icon);
+            }
             const name = document.createElement('span');
             name.className = 'plugin-name';
             name.textContent = p.name;
             const ver = document.createElement('span');
             ver.className = 'plugin-version';
             ver.textContent = p.version ? 'v' + p.version : '';
+            const author = document.createElement('span');
+            author.className = 'plugin-author';
+            author.textContent = p.author ? '作者：' + p.author : '';
+            const license = document.createElement('span');
+            license.className = 'plugin-license';
+            license.textContent = p.license || '';
+            license.title = '许可证';
             const enabledLabel = document.createElement('label');
             enabledLabel.className = 'popover-label plugin-enabled';
             const cb = document.createElement('input');
@@ -1536,15 +1662,51 @@ async function renderPluginsPane() {
                 }
                 renderPluginsPane();
             });
-            head.append(name, ver, enabledLabel, del);
+            head.append(name, ver, author, license, enabledLabel, del);
             const desc = document.createElement('div');
             desc.className = 'plugin-desc';
-            desc.textContent = [p.description, p.author].filter(Boolean).join(' · ') || '无描述';
-            const exts = document.createElement('div');
-            exts.className = 'plugin-exts';
-            const extText = p.extensions && p.extensions.length ? '扩展名：' + p.extensions.join('、') : '';
-            exts.textContent = [extText, p.entryOk ? '' : '入口文件缺失或过大'].filter(Boolean).join(' · ') || ' ';
-            item.append(head, desc, exts);
+            desc.textContent = p.description || '无描述';
+            const meta = document.createElement('div');
+            meta.className = 'plugin-meta';
+            if (p.extensions && p.extensions.length) {
+                const exts = document.createElement('span');
+                exts.textContent = '扩展名：' + p.extensions.join('、');
+                meta.appendChild(exts);
+            }
+            for (const kw of (p.keywords || []).slice(0, 6)) {
+                const chip = document.createElement('span');
+                chip.className = 'plugin-tag';
+                chip.textContent = kw;
+                meta.appendChild(chip);
+            }
+            if (p.minAppVersion && !versionAtLeast(appVersionValue(), p.minAppVersion)) {
+                const warn = document.createElement('span');
+                warn.className = 'plugin-warn';
+                warn.textContent = '需要应用 ≥ ' + p.minAppVersion;
+                meta.appendChild(warn);
+            }
+            for (const [label, url] of [['主页', p.homepage], ['源码', p.repository]]) {
+                if (!url) continue;
+                const link = document.createElement('a');
+                link.className = 'plugin-link';
+                link.textContent = label;
+                link.href = url;
+                link.dataset.url = url;
+                link.title = url;
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (rt && rt.BrowserOpenURL) rt.BrowserOpenURL(url);
+                    else window.open(url, '_blank', 'noopener');
+                });
+                meta.appendChild(link);
+            }
+            if (!p.entryOk) {
+                const warn = document.createElement('span');
+                warn.className = 'plugin-warn';
+                warn.textContent = '入口文件缺失或过大';
+                meta.appendChild(warn);
+            }
+            item.append(head, desc, meta);
             listEl.appendChild(item);
         }
     } catch (e) {
@@ -4375,6 +4537,9 @@ function showExplorerMenu(info, x, y, node) {
     } else {
         items.push({label: '打开', icon: 'E8E5', action: () => openPath(info.path)});
         items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => openInNewWindows([info.path])});
+        if (gitStateCache.map.get(info.path.replace(/\\/g, '/'))) {
+            items.push({label: 'Git：查看差异', icon: 'E8D3', action: () => showGitDiff(info.path)});
+        }
     }
     items.push({sep: true});
     items.push({label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', action: () => setFileClipboard(targets, false)});
@@ -5475,6 +5640,7 @@ function menuItems(kind) {
             }));
             items.push(
                 {sep: true},
+                {label: '终端面板', shortcut: 'Alt+F12', checked: terminalUI.open, action: () => toggleTerminalPanel()},
                 {label: '文件侧边栏', shortcut: 'Alt+1', checked: !!settings.showSidebar, action: () => toggleSidebar()},
                 {label: '文件列表', checked: settings.sidebarMode === 'list', action: () => setSidebarMode('list')},
                 {label: '文件树', checked: settings.sidebarMode === 'tree', action: () => setSidebarMode('tree')},
@@ -5729,6 +5895,10 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         openSettings('general');
+    } else if (e.altKey && e.key === 'F12') {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleTerminalPanel();
     } else if (e.ctrlKey && key === 'o') {
         e.preventDefault();
         e.stopPropagation();
@@ -5781,6 +5951,25 @@ if (rt) {
         flushCsvCellEditor();
         openCloseConfirm();
     });
+    rt.EventsOn('term-out', (data) => {
+        const s = terminalUI.sessions.get(data.id);
+        if (s) s.term.write(data.data);
+    });
+    rt.EventsOn('term-exit', (data) => {
+        const s = terminalUI.sessions.get(data.id);
+        if (s) s.term.write('\r\n\x1b[90m[进程已退出，代码 ' + data.code + ']\x1b[0m');
+    });
+    rt.EventsOn('cmd-out', (payload) => {
+        const h = cmdOutHandlers.get(payload.id);
+        if (h) h(payload.stream, payload.data);
+    });
+    rt.EventsOn('cmd-exit', (payload) => {
+        const h = cmdExitHandlers.get(payload.id);
+        if (h) {
+            cmdExitHandlers.delete(payload.id);
+            h(Number(payload.code));
+        }
+    });
 }
 
 document.querySelectorAll('.about-link').forEach((a) => {
@@ -5805,6 +5994,267 @@ els.tabbar.addEventListener('wheel', (e) => {
 initContextMenus();
 initExplorer();
 initActivityBar();
+// ===== 内置终端 =====
+const terminalUI = {open: false, sessions: new Map(), order: [], activeId: null};
+const cmdOutHandlers = new Map();
+const cmdExitHandlers = new Map();
+let cmdSeq = 0;
+
+function termCwd() {
+    return workspaceFolder || (file && file.path ? file.path.replace(/[\\/][^\\/]*$/, '') : '') || '';
+}
+
+function termTheme() {
+    const cs = getComputedStyle(document.documentElement);
+    return {
+        background: cs.getPropertyValue('--bg').trim() || '#1e1f24',
+        foreground: cs.getPropertyValue('--text').trim() || '#e0e0e0',
+        cursor: cs.getPropertyValue('--accent').trim() || '#4f8cff',
+        cursorAccent: cs.getPropertyValue('--bg').trim() || '#1e1f24',
+        selectionBackground: '#88888855',
+    };
+}
+
+function toggleTerminalPanel(force) {
+    const panel = document.getElementById('terminal-panel');
+    if (!panel) return;
+    const show = force === undefined ? panel.classList.contains('hidden') : force;
+    if (show) {
+        panel.classList.remove('hidden');
+        terminalUI.open = true;
+        if (!terminalUI.sessions.size) createTermSession();
+        else fitActiveTerm();
+    } else {
+        panel.classList.add('hidden');
+        terminalUI.open = false;
+    }
+}
+
+async function createTermSession() {
+    if (!backend.TermCreate) {
+        flash('当前版本不支持内置终端', true);
+        return;
+    }
+    const body = document.getElementById('term-body');
+    const host = document.createElement('div');
+    host.className = 'term-session';
+    body.appendChild(host);
+    let created;
+    try {
+        created = await backend.TermCreate(termDefaultCols(), termDefaultRows(), 'powershell', termCwd());
+    } catch (e) {
+        flash('创建终端失败：' + e, true);
+        host.remove();
+        return;
+    }
+    const id = created.id;
+    const term = new window.Terminal({
+        fontFamily: '"JetBrains Mono", Consolas, monospace',
+        fontSize: 12,
+        scrollback: 2000,
+        cursorBlink: true,
+        theme: termTheme(),
+    });
+    const fit = new window.FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(host);
+    try {
+        fit.fit();
+    } catch (e) {}
+    term.onData((data) => {
+        backend.TermWrite(id, data).catch(() => {});
+    });
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'term-tab';
+    const label = document.createElement('span');
+    label.className = 'term-tab-label';
+    label.textContent = '终端 ' + (terminalUI.order.length + 1);
+    const tabClose = document.createElement('span');
+    tabClose.className = 'term-tab-close';
+    tabClose.textContent = '✕';
+    tabClose.title = '关闭终端';
+    tab.append(label, tabClose);
+    tab.addEventListener('click', (e) => {
+        if (e.target.classList.contains('term-tab-close')) {
+            closeTermSession(id);
+            return;
+        }
+        activateTermSession(id);
+    });
+    document.getElementById('term-tabs').appendChild(tab);
+    terminalUI.sessions.set(id, {id, term, fit, host, tab});
+    terminalUI.order.push(id);
+    activateTermSession(id);
+    setTimeout(() => {
+        try {
+            fit.fit();
+            term.focus();
+        } catch (e) {}
+    }, 80);
+}
+
+function termDefaultCols() {
+    return 80;
+}
+
+function termDefaultRows() {
+    return 24;
+}
+
+function activateTermSession(id) {
+    terminalUI.activeId = id;
+    for (const [sid, s] of terminalUI.sessions) {
+        s.host.classList.toggle('hidden', sid !== id);
+        s.tab.classList.toggle('active', sid === id);
+    }
+    const s = terminalUI.sessions.get(id);
+    if (s) {
+        try {
+            s.fit.fit();
+            s.term.focus();
+        } catch (e) {}
+    }
+}
+
+function fitActiveTerm() {
+    const s = terminalUI.sessions.get(terminalUI.activeId);
+    if (s) {
+        try {
+            s.fit.fit();
+        } catch (e) {}
+    }
+}
+
+async function closeTermSession(id) {
+    try {
+        await backend.TermClose(id);
+    } catch (e) {}
+    removeTermSession(id);
+    if (!terminalUI.sessions.size) toggleTerminalPanel(false);
+    else activateTermSession(terminalUI.order[terminalUI.order.length - 1]);
+}
+
+function removeTermSession(id) {
+    const s = terminalUI.sessions.get(id);
+    if (s) {
+        try {
+            s.term.dispose();
+        } catch (e) {}
+        s.tab.remove();
+        s.host.remove();
+    }
+    terminalUI.sessions.delete(id);
+    terminalUI.order = terminalUI.order.filter((x) => x !== id);
+}
+
+function syncTerminalTheme() {
+    for (const s of terminalUI.sessions.values()) {
+        try {
+            s.term.options.theme = termTheme();
+        } catch (e) {}
+    }
+}
+
+window.addEventListener('resize', () => {
+    if (terminalUI.open) fitActiveTerm();
+});
+
+// ===== 进程桥 / 虚拟文档 =====
+function openVirtualDoc(name, content) {
+    const doc = createDoc({
+        path: null,
+        name,
+        content,
+        size: content.length,
+        eol: 'lf',
+        hasBom: false,
+        large: false,
+        enc: 'utf-8',
+    });
+    doc.untitled = true;
+    docs.push(doc);
+    activateDoc(doc);
+    return doc;
+}
+
+// ===== git 浅集成 =====
+const gitStateCache = {dir: '', map: new Map(), branch: ''};
+let gitTimer = null;
+
+function gitRootDir() {
+    return workspaceFolder || (file && file.path ? file.path.replace(/[\\/][^\\/]*$/, '') : '') || '';
+}
+
+async function refreshGitStatus() {
+    if (!backend.GitStatusFor) return;
+    const root = gitRootDir();
+    if (!root) {
+        gitStateCache.dir = '';
+        gitStateCache.map.clear();
+        applyGitBadges();
+        return;
+    }
+    if (root !== gitStateCache.dir) {
+        gitStateCache.dir = root;
+        gitStateCache.map.clear();
+    }
+    try {
+        const status = await backend.GitStatusFor(root);
+        if (!status || !status.available) {
+            gitStateCache.map.clear();
+            gitStateCache.branch = '';
+        } else {
+            gitStateCache.branch = status.branch || '';
+            gitStateCache.map.clear();
+            for (const entry of status.entries || []) {
+                gitStateCache.map.set(entry.path.replace(/\\/g, '/'), entry.state);
+            }
+        }
+    } catch (e) {}
+    applyGitBadges();
+}
+
+function applyGitBadges() {
+    document.querySelectorAll('.sb-row[data-path]').forEach((row) => {
+        for (const cls of Array.from(row.classList)) {
+            if (cls.startsWith('git-')) row.classList.remove(cls);
+        }
+        const st = gitStateCache.map.get(row.dataset.path.replace(/\\/g, '/'));
+        if (st) row.classList.add('git-' + st);
+    });
+}
+
+const gitBadgeObserver = new MutationObserver(() => applyGitBadges());
+
+function restartGitTimer() {
+    if (gitTimer) clearInterval(gitTimer);
+    const sec = Math.max(1, settings.treeRefreshInterval || 3);
+    gitTimer = setInterval(refreshGitStatus, sec * 1000);
+}
+
+async function showGitDiff(path) {
+    if (!backend.GitDiffFor) return;
+    try {
+        const res = await backend.GitDiffFor(gitStateCache.dir || gitRootDir(), path);
+        if (!res || !res.hasChanges) {
+            flash('该文件暂无差异');
+            return;
+        }
+        openVirtualDoc('Git 差异 — ' + path.replace(/^.*[\\/]/, '') + '.diff', res.diff);
+    } catch (e) {
+        flash('读取差异失败：' + e, true);
+    }
+}
+
+
+try {
+    if (els.sbBody) gitBadgeObserver.observe(els.sbBody, {childList: true, subtree: false});
+    restartGitTimer();
+    refreshGitStatus();
+} catch (e) {
+    window.__gitInitErr = String((e && e.stack) || e);
+}
 initCodeFoldHover();
 
 (async () => {

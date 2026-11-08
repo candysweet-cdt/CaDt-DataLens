@@ -30,6 +30,8 @@ const (
 	imagePreviewLimit = 32 << 20
 )
 
+const appVersion = "v1.0.0"
+
 type App struct {
 	ctx            context.Context
 	startupTargets []OpenTarget
@@ -986,6 +988,10 @@ func uniqueIDForLaunch() string {
 
 func (a *App) GetOpenMode() string {
 	return readOpenMode()
+}
+
+func (a *App) GetAppVersion() string {
+	return appVersion
 }
 
 func (a *App) SetOpenMode(mode string) error {

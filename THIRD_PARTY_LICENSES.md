@@ -14,6 +14,7 @@ The following components are licensed under the MIT License:
 - markdown-it — Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin
 - KaTeX — Copyright (c) 2013-2020 Khan Academy and other contributors
 - @vscode/markdown-it-katex — Copyright (c) Microsoft Corporation
+- go-pty — Copyright (c) 2023 Ayman Bagabas（terminal_windows.go 的终端启动流程改编自该项目）
 
 ```text
 MIT License

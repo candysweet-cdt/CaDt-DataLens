@@ -81,6 +81,18 @@ function apiFor(plugin) {
         openPath(path) {
             host.openPath(path);
         },
+        // 同步执行命令：{exe, args, cwd, timeoutMs} → {code, stdout, stderr}
+        runCommandSync(opts) {
+            return host.runCommandSync(opts);
+        },
+        // 流式执行命令：{exe, args, cwd, onOut, onErr, onExit} → {stop()}
+        runCommand(opts) {
+            return host.runCommand(opts);
+        },
+        // 以只读虚拟文档打开文本（用于展示命令输出等）
+        openVirtualDoc(name, content) {
+            return host.openVirtualDoc(name, content);
+        },
         flash(message) {
             host.flash(String(message ?? ''));
         },

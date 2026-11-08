@@ -60,6 +60,9 @@
     <script src="/vendor/ace/mode-graphqlschema.js"></script>
     <script src="/vendor/ace/mode-gomod.js"></script>
     <script src="/vendor/ace/mode-gosum.js"></script>
+    <link rel="stylesheet" href="/vendor/xterm/xterm.css"/>
+    <script src="/vendor/xterm/xterm.js"></script>
+    <script src="/vendor/xterm/addon-fit.js"></script>
 </head>
 <body>
 <div id="app">
@@ -462,6 +465,16 @@
                     <div class="welcome-sub">拖入 JSON / JSONL / YAML / XML / CSV / Markdown / 文本文件到窗口，或</div>
                     <button id="btn-welcome-open" class="tb-btn primary">打开文件 (Ctrl+O)</button>
                 </div>
+            </div>
+            <div id="terminal-panel" class="hidden">
+                <div class="term-head">
+                    <div class="term-tabs" id="term-tabs"></div>
+                    <div class="term-actions">
+                        <button type="button" id="term-new" class="term-btn" title="新建终端">＋</button>
+                        <button type="button" id="term-panel-close" class="term-btn" title="关闭面板">✕</button>
+                    </div>
+                </div>
+                <div class="term-body" id="term-body"></div>
             </div>
         </div>
     </div>
