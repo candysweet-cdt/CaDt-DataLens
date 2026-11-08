@@ -1390,7 +1390,21 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 .ab-btn svg { width: 18px; height: 18px; display: block; }
 .ab-sep { width: 20px; height: 1px; background: var(--border); margin: 4px 0 2px; }
 
+.sidebar-resize {
+    position: absolute;
+    top: 0;
+    right: -3px;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 5;
+}
+.sidebar-resize:hover, .sidebar-resize:active {
+    background: var(--accent-weak);
+}
 #sidebar {
+    position: relative;
+
     width: 264px;
     flex: none;
     display: flex;

@@ -638,6 +638,8 @@ const els = {
     termNew: document.getElementById('term-new'),
     termPanelClose: document.getElementById('term-panel-close'),
     terminalResize: document.getElementById('terminal-resize'),
+    sidebarResize: document.getElementById('sidebar-resize'),
+    sidebar: document.getElementById('sidebar'),
     terminalPanel: document.getElementById('terminal-panel'),
     abLock: document.getElementById('ab-lock'),
     abTheme: document.getElementById('ab-theme'),
@@ -751,6 +753,7 @@ const defaultSettings = {
     treeCounts: false,
     treeRefreshInterval: 3,
     terminalHeight: 240,
+    sidebarWidth: 264,
     codeGuides: false,
     alwaysOnTop: false,
     editorFont: 13,
@@ -790,6 +793,7 @@ settings.alwaysOnTop = !!settings.alwaysOnTop;
 settings.treeRefreshInterval = Number(settings.treeRefreshInterval);
 if (![0, 1, 2, 3, 5, 10].includes(settings.treeRefreshInterval)) settings.treeRefreshInterval = 3;
 settings.terminalHeight = Math.min(480, Math.max(120, Number(settings.terminalHeight) || 240));
+settings.sidebarWidth = Math.min(500, Math.max(160, Number(settings.sidebarWidth) || 264));
 settings.codeWrap = !!settings.codeWrap;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
 settings.showBanners = settings.showBanners !== false;
@@ -1044,6 +1048,9 @@ function applySettings() {
         try {
             syncTerminalTheme();
         } catch (e) {}
+    }
+    if (els.sidebar && settings.sidebarWidth) {
+        els.sidebar.style.width = settings.sidebarWidth + 'px';
     }
     document.documentElement.style.setProperty('--key-col-w', settings.keyWidth + 'px');
     elsSettings.fixed.checked = settings.fixedKeys;
@@ -6226,6 +6233,34 @@ if (els.termPanelClose) els.termPanelClose.addEventListener('click', () => toggl
 if (els.terminalPanel && settings.terminalHeight) {
     els.terminalPanel.style.height = settings.terminalHeight + 'px';
 }
+if (els.sidebarResize) {
+    let sidebarResizing = false;
+    let sidebarStartX = 0;
+    let sidebarStartW = 0;
+    els.sidebarResize.addEventListener('mousedown', (e) => {
+        if (!settings.showSidebar) return;
+        sidebarResizing = true;
+        sidebarStartX = e.clientX;
+        sidebarStartW = els.sidebar.offsetWidth;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+        if (!sidebarResizing) return;
+        const w = Math.min(500, Math.max(160, sidebarStartW + (e.clientX - sidebarStartX)));
+        els.sidebar.style.width = w + 'px';
+    });
+    window.addEventListener('mouseup', () => {
+        if (!sidebarResizing) return;
+        sidebarResizing = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        settings.sidebarWidth = Math.min(500, Math.max(160, els.sidebar.offsetWidth));
+        applySettings();
+    });
+}
+
 if (els.terminalResize) {
     let termResizing = false;
     let termResizeStartY = 0;
