@@ -17,7 +17,7 @@
 | `xml/` | 带属性的 XML、10 层嵌套 XML、SVG 示例 |
 | `csv/` | 基本 CSV、带逗号/引号/换行的 CSV、500 行 CSV、TSV |
 | `text/` | 所有支持的文本扩展各一份：txt、md、markdown、log、ini、properties、conf、cfg、toml、html、htm、css、js、ts、py、sh、bat、ps1、go、java、kt、lua、sql |
-| `binary/` | PNG、JPEG/JPG/JFIF、GIF、BMP、WebP、ICO、TIF/TIFF、AVIF；`magic-image.dat` 是改扩展名的 PNG，用于测试文件头识别；`sample.bin` 是任意字节 |
+| `binary/` | PNG、JPEG/JPG/JFIF、GIF、BMP、WebP、ICO、TIF/TIFF、AVIF；`magic-image.dat` 是改扩展名的 PNG，用于测试文件头识别；`sample.bin` 是包含控制字节的任意数据，会按二进制十六进制视图展示 |
 
 ## 说明
 

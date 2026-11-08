@@ -1127,7 +1127,7 @@ function showBanner(data, parseError) {
     if (data.binary) {
         const shown = data.hexShown || data.size;
         const truncated = shown < data.size;
-        els.banner.textContent = data.name + '（' + fmtSize(data.size) + '）：下方从第 0 字节开始，以十六进制字节数据只读展示' +
+        els.banner.textContent = '二进制文件 · ' + data.name + '（' + fmtSize(data.size) + '）：下方从第 0 字节开始，以十六进制字节数据只读展示' +
             (truncated ? '，仅显示前 ' + fmtSize(shown) : '') + '。';
         els.banner.classList.remove('hidden');
     } else if (data.large) {

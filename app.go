@@ -116,7 +116,7 @@ func (a *App) OpenFile(path string, enc string) (*FileData, error) {
 		return nil, err
 	}
 	name := filepath.Base(path)
-	if isImageFile(path, raw) {
+	if strings.EqualFold(filepath.Ext(path), ".bin") || isImageFile(path, raw) || looksBinary(raw) {
 		shown := len(raw)
 		if shown > imageHexLimit {
 			shown = imageHexLimit
@@ -197,6 +197,29 @@ func isImageFile(path string, raw []byte) bool {
 }
 
 const imageHexLimit = 1 << 20
+
+func looksBinary(raw []byte) bool {
+	sample := raw
+	if len(sample) > 8192 {
+		sample = sample[:8192]
+	}
+	if len(sample) == 0 {
+		return false
+	}
+	control := 0
+	for _, b := range sample {
+		if b == 0 {
+			return true
+		}
+		if b == '\t' || b == '\n' || b == '\r' {
+			continue
+		}
+		if b < 0x20 || b == 0x7F {
+			control++
+		}
+	}
+	return control*10 > len(sample)
+}
 
 func imageHexDump(raw []byte) string {
 	shown := len(raw)

@@ -85,6 +85,46 @@ func TestImageHexDumpHasNoPreamble(t *testing.T) {
 	}
 }
 
+func TestLooksBinary(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  []byte
+		want bool
+	}{
+		{"text", []byte("hello\nworld\r\n\t中文"), false},
+		{"nul", []byte("abc\x00def"), true},
+		{"few-controls", []byte{0x1B, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'}, false},
+		{"mostly-controls", []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 'a', 'b'}, true},
+		{"empty", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := looksBinary(tc.raw); got != tc.want {
+				t.Fatalf("looksBinary(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenFileBinaryBytes(t *testing.T) {
+	app := NewApp()
+	path := filepath.Join(t.TempDir(), "sample.bin")
+	raw := append([]byte("CaDt binary sample\n"), 0x00, 0x01, 0x02)
+	if err := os.WriteFile(path, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := app.OpenFile(path, "utf-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !data.Binary || data.Enc != "binary" || data.HexShown != int64(len(raw)) {
+		t.Fatalf("expected binary file data, got %+v", data)
+	}
+	if !strings.HasPrefix(data.Content, "00000000  ") || strings.HasPrefix(data.Content, "//") {
+		t.Fatalf("unexpected hex content: %q", data.Content)
+	}
+}
+
 func TestSaveFileEmptyPath(t *testing.T) {
 	app := NewApp()
 	if err := app.SaveFile("", "{}", "lf", false, "utf-8"); err == nil {
