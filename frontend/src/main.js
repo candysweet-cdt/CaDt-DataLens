@@ -2385,8 +2385,13 @@ function renderTabs() {
                 requestCloseDoc(doc);
             }
         });
-        // 拖动排序：HTML5 DnD，落在目标左半=插到其前，右半=插到其后
+        // 拖动排序：HTML5 DnD，落在目标左半=插到其前，右半=插到其后；目标标签让位形成插槽
         tab.draggable = true;
+        const clearDropGaps = () => {
+            els.tabbar.querySelectorAll('.tab.drop-gap-before, .tab.drop-gap-after').forEach((t) => {
+                t.classList.remove('drop-gap-before', 'drop-gap-after');
+            });
+        };
         tab.addEventListener('dragstart', (e) => {
             dragTabId = doc.id;
             tab.classList.add('dragging');
@@ -2396,9 +2401,7 @@ function renderTabs() {
         tab.addEventListener('dragend', () => {
             dragTabId = null;
             tab.classList.remove('dragging');
-            els.tabbar.querySelectorAll('.tab.drop-before, .tab.drop-after').forEach((t) => {
-                t.classList.remove('drop-before', 'drop-after');
-            });
+            clearDropGaps();
         });
         tab.addEventListener('dragover', (e) => {
             if (dragTabId === null || dragTabId === doc.id) return;
@@ -2406,16 +2409,23 @@ function renderTabs() {
             e.dataTransfer.dropEffect = 'move';
             const r = tab.getBoundingClientRect();
             const before = e.clientX < r.x + r.width / 2;
-            tab.classList.toggle('drop-before', before);
-            tab.classList.toggle('drop-after', !before);
+            clearDropGaps();
+            if (before) {
+                // 插到目标前：目标右移让出左插槽
+                tab.classList.add('drop-gap-before');
+            } else {
+                // 插到目标后：让下一个标签右移（插槽出现在目标与下一个之间）
+                const next = tab.nextElementSibling;
+                if (next && next.classList.contains('tab')) next.classList.add('drop-gap-before');
+                else tab.classList.add('drop-gap-after');
+            }
         });
-        tab.addEventListener('dragleave', () => tab.classList.remove('drop-before', 'drop-after'));
         tab.addEventListener('drop', (e) => {
             e.preventDefault();
             e.stopPropagation();
             const r = tab.getBoundingClientRect();
             const before = e.clientX < r.x + r.width / 2;
-            tab.classList.remove('drop-before', 'drop-after');
+            clearDropGaps();
             const srcId = dragTabId;
             dragTabId = null;
             moveTabDoc(srcId, doc.id, before);
