@@ -663,6 +663,8 @@ const els = {
     gitMessage: document.getElementById('git-message'),
     gitCommitBtn: document.getElementById('git-commit-btn'),
     gitCommitPushBtn: document.getElementById('git-commit-push-btn'),
+    gitSplitter: document.getElementById('git-splitter'),
+    gitCommitArea: document.getElementById('git-commit-area'),
     abLock: document.getElementById('ab-lock'),
     abTheme: document.getElementById('ab-theme'),
     abSettings: document.getElementById('ab-settings'),
@@ -776,6 +778,7 @@ const defaultSettings = {
     treeRefreshInterval: 3,
     terminalHeight: 240,
     sidebarWidth: 264,
+    gitCommitAreaHeight: 0,
     codeGuides: false,
     alwaysOnTop: false,
     editorFont: 13,
@@ -1073,6 +1076,15 @@ function applySettings() {
     }
     if (els.sidebar && settings.sidebarWidth) {
         els.sidebar.style.width = settings.sidebarWidth + 'px';
+    }
+    if (els.gitCommitArea) {
+        if (settings.gitCommitAreaHeight) {
+            els.gitCommitArea.style.height = settings.gitCommitAreaHeight + 'px';
+            els.gitCommitArea.style.flex = 'none';
+        } else {
+            els.gitCommitArea.style.height = '';
+            els.gitCommitArea.style.flex = '';
+        }
     }
     if (typeof applySidebarUI === 'function') {
         try {
@@ -2834,46 +2846,12 @@ function extendCodeFoldRange(session, fold) {
 
 function codeFoldPreviewFor(ace, fold) {
     const session = ace.session;
-    const startRow = fold.range.start.row;
-    const endRow = fold.range.end.row;
-    const startLine = session.getLine(startRow) || '';
-    const prefix = startLine.slice(0, fold.range.start.column);
-    const inner = session.getTextRange(fold.range);
-    let value;
-    let open = '';
-    try {
-        value = JSON.parse(inner.trim());
-        const first = inner.trim()[0];
-        if (first === '{' || first === '[') open = first;
-    } catch (e) {
-        const ch = prefix.trimEnd().slice(-1);
-        if (ch === '{' || ch === '[') {
-            try {
-                value = JSON.parse(ch + inner + (ch === '{' ? '}' : ']'));
-                open = ch;
-            } catch (e2) {}
-        }
-    }
-    if (open === '{' && value && typeof value === 'object' && !Array.isArray(value)) {
-        const keys = Object.keys(value);
-        if (!keys.length) return '{}';
-        const keyText = clipCodeFoldText(JSON.stringify(keys[0]), 14);
-        const budget = 28 - 1 - codeFoldDisplayWidth(keyText) - 2 - 3 - 1;
-        const valueText = budget > 3 ? clipCodeFoldText(foldPrimitive(value[keys[0]]), budget) : '';
-        return '{' + keyText + ': ' + valueText + '...' + '}';
-    }
-    if (open === '[' && Array.isArray(value)) {
-        if (!value.length) return '[]';
-        return '[ ' + value.length + ' 个元素' + '... ]';
-    }
-    const innerLines = inner.split('\n').map((line) => line.trim()).filter(Boolean);
-    const first = innerLines.find((line) => line !== '{' && line !== '[' && line !== '}' && line !== ']');
-    if (first) {
-        const lead = fold.range.start.column > 0 && !/[\s{\[(]$/.test(prefix) ? ' ' : '';
-        return lead + clipCodeFoldPreview(first, 40) + '...';
-    }
-    const lineCount = Math.max(1, endRow - startRow + 1);
-    return ' ' + lineCount + ' 行...';
+    const startLine = (session.getLine(fold.range.start.row) || '').trimEnd();
+    const inner = (session.getTextRange(fold.range) || '').trimStart();
+    // JetBrains 风格：花括号块 {...}、方括号块 [...]、缩进块 ...
+    if (/\{$/.test(startLine) || inner.startsWith('{')) return '{...}';
+    if (/\[$/.test(startLine) || inner.startsWith('[')) return '[...]';
+    return '...';
 }
 
 function updateCodeFoldPreviews(ace) {
@@ -6358,6 +6336,35 @@ window.addEventListener('resize', () => {
 });
 
 els.gitRefresh.addEventListener('click', () => refreshGitStatus());
+
+if (els.gitSplitter) {
+    let gitSplitting = false;
+    let gitSplitStartY = 0;
+    let gitSplitStartH = 0;
+    els.gitSplitter.addEventListener('mousedown', (e) => {
+        if (!els.gitCommitArea) return;
+        gitSplitting = true;
+        gitSplitStartY = e.clientY;
+        gitSplitStartH = els.gitCommitArea.offsetHeight;
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+        if (!gitSplitting) return;
+        const h = Math.min(300, Math.max(90, gitSplitStartH - (e.clientY - gitSplitStartY)));
+        els.gitCommitArea.style.height = h + 'px';
+        els.gitCommitArea.style.flex = 'none';
+    });
+    window.addEventListener('mouseup', () => {
+        if (!gitSplitting) return;
+        gitSplitting = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        settings.gitCommitAreaHeight = Math.min(300, Math.max(90, els.gitCommitArea.offsetHeight));
+        applySettings();
+    });
+}
 els.gitRecentLog.addEventListener('click', () => showGitRecentLog());
 els.gitCommitBtn.addEventListener('click', () => runGitCommit(false));
 els.gitCommitPushBtn.addEventListener('click', () => runGitCommit(true));
