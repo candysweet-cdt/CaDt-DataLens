@@ -3708,8 +3708,8 @@ function createDocEditor(doc) {
     if (ed.aceEditor) { hookCodeFoldPreviews(ed.aceEditor); hookFoldChevronHover(ed.aceEditor); }
     if (settings.treeExpandDefault === 'collapse' && startMode === 'tree' && treeAvailable && !doc.large) {
         setTimeout(() => {
-            try { if (doc.editor && !doc.loading) doc.editor.collapseAll(); } catch (e) {}
-        }, 0);
+            try { if (doc.editor) doc.editor.collapseAll(); } catch (e) {}
+        }, 50);
     }
     if (startMode === 'code' || startMode === 'text') {
         ed.setText(initialText != null ? initialText : '');
@@ -6825,9 +6825,11 @@ initActivityBar();
 // ===== Win11/系统调整光标（后端读注册表当前主题 + 内置候选，失败回落 CSS 关键字） =====
 // 注意：Windows 的 .cur 是多尺寸帧容器（aero_* 含 32/48/64/96/128 五帧），每帧在 ICONDIRENTRY
 // 的 planes/bitcount 位置存自己的热点。以前按 ICONDIR 头部读热点是错的（读到 dwImageOffset），
-// 而且浏览器默认会挑最大帧再缩放，导致糊、偏、尺寸不对。这里自己解析 .cur、取 32px 帧原样使用。
+// 而且浏览器默认会挑最大帧再缩放，导致糊、偏、尺寸不对。这里自己解析 .cur、按基准尺寸取帧原样使用。
 let sysCursor = null;
-const CURSOR_CSS_SIZE = 32; // 系统光标逻辑尺寸：32px@96dpi，高 DPI 由浏览器按 CSS px 放大
+// 系统光标逻辑基准尺寸（96dpi CSS px）：后端读 CursorBaseSize（默认 32；辅助功能放大光标时更大）。
+// 高 DPI 缩放不写死，由 image-set 按运行时 devicePixelRatio 自动选帧。
+let cursorCssSize = 32;
 
 function setDragCursor(kind) {
     document.body.classList.toggle('cursor-ew', kind === 'ew');
@@ -6927,12 +6929,12 @@ async function buildCursorValue(kind, keyFallback) {
     if (!url) return null;
     const frames = parseCurFrames(url);
     if (!frames) return null;
-    const base = pickCurFrame(frames, CURSOR_CSS_SIZE);
-    const one = await rasterizeCurFrame(base, CURSOR_CSS_SIZE);
+    const base = pickCurFrame(frames, cursorCssSize);
+    const one = await rasterizeCurFrame(base, cursorCssSize);
     if (!one) return null;
-    // 热点按实际帧尺寸换算到 32 CSS px；CSS 只接受整数
-    const hx = Math.max(0, Math.min(CURSOR_CSS_SIZE - 1, Math.round(base.hx * CURSOR_CSS_SIZE / base.w)));
-    const hy = Math.max(0, Math.min(CURSOR_CSS_SIZE - 1, Math.round(base.hy * CURSOR_CSS_SIZE / base.h)));
+    // 热点按实际帧尺寸换算到 CSS 逻辑尺寸；CSS 只接受整数
+    const hx = Math.max(0, Math.min(cursorCssSize - 1, Math.round(base.hx * cursorCssSize / base.w)));
+    const hy = Math.max(0, Math.min(cursorCssSize - 1, Math.round(base.hy * cursorCssSize / base.h)));
     const plain = 'url("' + one.png + '") ' + hx + ' ' + hy + ', ' + keyFallback;
 
     // image-set 让 Chromium 按 DPR 选原生帧：@150% 用 48px 帧，不再把 32px 位图向上插值（糊）
@@ -6942,8 +6944,8 @@ async function buildCursorValue(kind, keyFallback) {
         const seen = {};
         for (const f of frames) {
             if (f.w < 16) continue;
-            const res = f.w / CURSOR_CSS_SIZE;
-            if (res < 1 || res > 4) continue; // 32~128px 帧对应 1x~4x
+            const res = f.w / cursorCssSize;
+            if (res < 1 || res > 4) continue; // 原生帧按「基准尺寸」换算成 1x~4x 档
             const key = res.toFixed(2);
             if (seen[key]) continue;
             seen[key] = true;
@@ -6986,7 +6988,11 @@ async function applySystemCursors() {
 
 if (backend.GetSystemCursors) {
     backend.GetSystemCursors().then((c) => {
-        if (c && (c.ew || c.ns)) { sysCursor = c; applySystemCursors(); }
+        if (!c || !(c.ew || c.ns)) return;
+        const base = Number(c.base);
+        if (Number.isFinite(base) && base >= 16 && base <= 128) cursorCssSize = Math.round(base);
+        sysCursor = c;
+        applySystemCursors();
     }).catch(() => {});
 }
 // ===== 内置终端 =====

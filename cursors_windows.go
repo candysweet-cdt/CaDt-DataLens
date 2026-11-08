@@ -6,10 +6,23 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"golang.org/x/sys/windows/registry"
 )
+
+// cursorBaseSize 读取 Windows 光标逻辑基准尺寸（设置→辅助功能→鼠标指针大小，默认 32）。
+// CSS 光标不会跟随系统辅助功能放大，前端用它换算 image-set 的 1x 档位才能与系统光标一致。
+func cursorBaseSize() int {
+	if key, err := registry.OpenKey(registry.CURRENT_USER, `Control Panel\Cursors`, registry.QUERY_VALUE); err == nil {
+		defer key.Close()
+		if v, _, err := key.GetIntegerValue("CursorBaseSize"); err == nil && v >= 16 && v <= 128 {
+			return int(v)
+		}
+	}
+	return 32
+}
 
 // resolveSystemCursor 解析一类调整光标为 data URL。
 // 优先级：注册表当前主题（跟随用户自定义光标）→ 系统内置候选文件（aero: Vista+，hsplit/vsplit: 老系统兜底）。
@@ -69,7 +82,7 @@ func resolveSystemCursor(kind string) string {
 // GetSystemCursors 返回系统调整光标（Win11/Win10/Win7/XP 通用：读当前主题，回退内置候选）。
 // 前端注入 cursor: url(dataURL)，任一环节失败时由 CSS 关键字（col-resize/row-resize 等）兜底。
 func (a *App) GetSystemCursors() map[string]string {
-	out := map[string]string{}
+	out := map[string]string{"base": strconv.Itoa(cursorBaseSize())}
 	for _, k := range []string{"ew", "ns", "nwse", "nesw", "move"} {
 		if url := resolveSystemCursor(k); url != "" {
 			out[k] = url
