@@ -89,7 +89,15 @@
             <div class="settings-layout">
                 <div class="settings-nav">
                     <button type="button" class="snav-item active" data-pane="general">通用设置</button>
-                    <button type="button" class="snav-item" data-pane="formats">文件格式</button>
+                    <div id="snav-formats" class="snav-group expanded">
+                        <button type="button" class="snav-item snav-parent" aria-expanded="true">
+                            <span class="snav-chev" aria-hidden="true"></span>
+                            <span>文件格式</span>
+                        </button>
+                        <div class="snav-children">
+                            <button type="button" class="snav-item snav-child" data-pane="formats">通用文件格式</button>
+                        </div>
+                    </div>
                     <button type="button" class="snav-item" data-pane="shortcuts">快捷键</button>
                     <button type="button" class="snav-item" data-pane="integration">系统集成</button>
                     <button type="button" class="snav-item" data-pane="about">关于我们</button>
@@ -162,6 +170,13 @@
                         </div>
                         <div class="fmt-hint hint-indent">默认关闭；开启后在目录层级左侧显示对齐线。</div>
                         <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-tree-counts">
+                                文件树显示对象/数组项数
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">默认关闭；开启后展开的对象/数组会显示「N 项」。</div>
+                        <div class="popover-row">
                             <span class="popover-label">文件树自动刷新</span>
                             <select id="opt-tree-refresh" class="opt-select">
                                 <option value="0">关闭</option>
@@ -208,6 +223,8 @@
                         <div class="fmt-hint">字体与字号设置即时生效；文件树字号只影响左侧文件列表/目录树。中文字体可单独选择，拉丁字母与数字仍使用主字体。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="formats">
+                        <div class="fmt-pane-title">通用文件格式</div>
+                        <div class="fmt-pane-sub">所有格式的编码、缩进、保存换行与默认视图总览</div>
                         <div class="fmt-table" id="fmt-table"></div>
                         <div class="fmt-hint">编码「自动」= UTF-8 有效时用 UTF-8，否则回退 GBK；编码/缩进/换行对之后打开或保存的文件生效，默认视图对当前同类文件立即生效。</div>
                     </div>

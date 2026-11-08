@@ -526,6 +526,7 @@ const defaultSettings = {
     keyWidth: 160,
     sidebarFont: 12.5,
     treeGuides: false,
+    treeCounts: false,
     treeRefreshInterval: 3,
     codeGuides: false,
     alwaysOnTop: false,
@@ -560,6 +561,7 @@ if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
 settings.treeGuides = !!settings.treeGuides;
+settings.treeCounts = !!settings.treeCounts;
 settings.codeGuides = !!settings.codeGuides;
 settings.alwaysOnTop = !!settings.alwaysOnTop;
 settings.treeRefreshInterval = Number(settings.treeRefreshInterval);
@@ -595,6 +597,7 @@ const elsSettings = {
     sidebarFont: document.getElementById('opt-sidebar-font'),
     sidebarFontVal: document.getElementById('opt-sidebar-font-val'),
     treeGuides: document.getElementById('opt-tree-guides'),
+    treeCounts: document.getElementById('opt-tree-counts'),
     treeRefresh: document.getElementById('opt-tree-refresh'),
     codeGuides: document.getElementById('opt-code-guides'),
     alwaysOnTop: document.getElementById('opt-always-on-top'),
@@ -821,6 +824,7 @@ function applySettings() {
     elsSettings.sidebarFont.value = String(settings.sidebarFont);
     elsSettings.sidebarFontVal.textContent = String(settings.sidebarFont);
     elsSettings.treeGuides.checked = !!settings.treeGuides;
+    elsSettings.treeCounts.checked = !!settings.treeCounts;
     elsSettings.treeRefresh.value = String(settings.treeRefreshInterval);
     if (explorer && explorer.setAutoRefresh) explorer.setAutoRefresh(settings.treeRefreshInterval);
     elsSettings.autoSave.checked = !!settings.autoSave;
@@ -885,12 +889,23 @@ function closeDialogs() {
 function selectSettingsPane(pane) {
     document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane));
     document.querySelectorAll('.settings-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== pane));
+    const group = document.getElementById('snav-formats');
+    if (group) {
+        const inFormats = pane === 'formats' || String(pane).startsWith('fmt-');
+        group.classList.toggle('has-active', inFormats);
+        if (inFormats && !group.classList.contains('expanded')) {
+            group.classList.add('expanded');
+            const parent = group.querySelector('.snav-parent');
+            if (parent) parent.setAttribute('aria-expanded', 'true');
+        }
+    }
+    if (pane === 'formats') renderFmtTable();
+    else if (String(pane).startsWith('fmt-')) renderFormatPane(pane.slice(4));
 }
 
 function openSettings(pane = 'general') {
     openDialogEl(elsDialogs.settings);
     selectSettingsPane(pane);
-    if (pane === 'formats') renderFmtTable();
     if (pane === 'integration') syncIntegrationStatus();
 }
 
@@ -1169,13 +1184,20 @@ elsDialogs.mask.addEventListener('click', (e) => {
     if (!elsDialogs.confirm.classList.contains('hidden') || !elsDialogs.name.classList.contains('hidden')) closeDialogs();
 });
 
-document.querySelectorAll('.snav-item').forEach((btn) => {
-    btn.addEventListener('click', () => {
-        selectSettingsPane(btn.dataset.pane);
-        if (btn.dataset.pane === 'formats') renderFmtTable();
-        if (btn.dataset.pane === 'integration') syncIntegrationStatus();
-    });
+document.querySelector('.settings-nav').addEventListener('click', (e) => {
+    const parent = e.target.closest('.snav-parent');
+    if (parent) {
+        const group = parent.closest('.snav-group');
+        const expanded = group.classList.toggle('expanded');
+        parent.setAttribute('aria-expanded', String(expanded));
+        return;
+    }
+    const item = e.target.closest('.snav-item[data-pane]');
+    if (!item) return;
+    selectSettingsPane(item.dataset.pane);
+    if (item.dataset.pane === 'integration') syncIntegrationStatus();
 });
+setupFormatSettings();
 
 if (elsSettings.fileAssoc) {
     elsSettings.fileAssoc.addEventListener('change', () => applyIntegration('SetFileAssociation', elsSettings.fileAssoc, '文件关联'));
@@ -1536,6 +1558,70 @@ document.addEventListener('click', (e) => {
     closeFootPopover();
 }, true);
 window.addEventListener('blur', () => closeFootPopover());
+
+function setupFormatSettings() {
+    const children = document.querySelector('#snav-formats .snav-children');
+    const content = document.querySelector('.settings-content');
+    if (!children || !content) return;
+    for (const f of formatDefs) {
+        const nav = document.createElement('button');
+        nav.type = 'button';
+        nav.className = 'snav-item snav-child snav-fmt';
+        nav.dataset.pane = 'fmt-' + f.id;
+        nav.textContent = f.name;
+        children.appendChild(nav);
+        if (!content.querySelector(`.settings-pane[data-pane="fmt-${f.id}"]`)) {
+            const pane = document.createElement('div');
+            pane.className = 'settings-pane hidden';
+            pane.dataset.pane = 'fmt-' + f.id;
+            content.appendChild(pane);
+        }
+    }
+}
+
+function renderFormatPane(id) {
+    const f = formatDefs.find((item) => item.id === id);
+    const pane = document.querySelector(`.settings-pane[data-pane="fmt-${id}"]`);
+    if (!f || !pane) return;
+    const fs = getFormatSettings(id);
+    pane.textContent = '';
+    const title = document.createElement('div');
+    title.className = 'fmt-pane-title';
+    title.textContent = f.name + ' 文件';
+    const extensions = formats[id] && formats[id].extensions ? formats[id].extensions : [];
+    const sub = document.createElement('div');
+    sub.className = 'fmt-pane-sub';
+    sub.textContent = extensions.length ? '扩展名：' + extensions.join('、') : '';
+    pane.append(title, sub);
+    const update = (key) => (value) => {
+        settings.formatSettings[id][key] = value;
+        applySettings();
+    };
+    const addRow = (label, control) => {
+        const row = document.createElement('div');
+        row.className = 'popover-row';
+        const text = document.createElement('span');
+        text.className = 'popover-label';
+        text.textContent = label;
+        row.append(text, control);
+        pane.appendChild(row);
+    };
+    addRow('编码', makeSelect(ENCODINGS, fs.encoding, update('encoding')));
+    addRow('缩进', makeSelect(INDENTS, fs.indent, update('indent')));
+    addRow('保存换行', makeSelect(EOLS, fs.eol, update('eol')));
+    const viewSel = makeSelect(viewOptionsFor(f), fs.view, (value) => {
+        settings.formatSettings[id].view = value;
+        applySettings();
+        if (file && file.format.id === id) switchMode(value);
+    });
+    if (id === 'text') viewSel.disabled = true;
+    addRow('默认视图', viewSel);
+    const hint = document.createElement('div');
+    hint.className = 'fmt-hint';
+    hint.textContent = '编码 / 缩进 / 保存换行对之后打开或保存的文件生效；默认视图对当前同类文件立即生效。';
+    if (id === 'text') hint.textContent += ' txt/log/conf 默认文本视图，代码类扩展名按代码视图打开。';
+    pane.appendChild(hint);
+}
 
 function renderFmtTable() {
     const table = document.getElementById('fmt-table');
@@ -1979,13 +2065,13 @@ function humanizeCounts() {
             }
             el.removeAttribute('title');
         } else {
-            const text = count + ' 项';
+            const text = settings.treeCounts ? count + ' 项' : '';
             if (el.textContent !== text || el.querySelector('.jsoneditor-fold-preview')) el.textContent = text;
-            el.dataset.foldSig = 'e:' + count;
-            el.title = (isObject ? '对象' : '数组') + '，共 ' + count + ' 项';
+            el.dataset.foldSig = 'e:' + count + ':' + (settings.treeCounts ? '1' : '0');
+            el.title = settings.treeCounts ? (isObject ? '对象' : '数组') + '，共 ' + count + ' 项' : '';
         }
         el.classList.toggle('value-fold', collapsed);
-        el.classList.toggle('value-count', !collapsed);
+        el.classList.toggle('value-count', !collapsed && !!settings.treeCounts);
     });
 }
 
@@ -4712,6 +4798,11 @@ elsSettings.sidebarFont.addEventListener('input', () => {
 elsSettings.treeGuides.addEventListener('change', () => {
     settings.treeGuides = elsSettings.treeGuides.checked;
     applySettings();
+});
+elsSettings.treeCounts.addEventListener('change', () => {
+    settings.treeCounts = elsSettings.treeCounts.checked;
+    applySettings();
+    humanizeCounts();
 });
 elsSettings.treeRefresh.addEventListener('change', () => {
     settings.treeRefreshInterval = Number(elsSettings.treeRefresh.value) || 0;
