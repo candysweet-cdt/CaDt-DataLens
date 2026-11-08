@@ -1887,6 +1887,22 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 .jsoneditor .ace_scroller { background: var(--bg); }
 .jsoneditor .ace_gutter { background: var(--panel); color: var(--ace-gutter); }
 .jsoneditor .ace_gutter-active-line { background: var(--panel2); }
+.jsoneditor .ace_fold-widget,
+.jsoneditor .ace_custom-widget {
+    background-color: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    transition: filter 0.12s ease;
+}
+.jsoneditor .ace_fold-widget:hover,
+.jsoneditor .ace_fold-widget:active,
+.jsoneditor .ace_custom-widget:hover,
+.jsoneditor .ace_custom-widget:active {
+    background-color: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    filter: brightness(1.45);
+}
 .jsoneditor .ace_cursor {
     color: var(--text) !important;
     border-left-color: var(--text) !important;
