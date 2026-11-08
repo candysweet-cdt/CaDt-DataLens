@@ -293,6 +293,13 @@
                         </div>
                         <div class="fmt-hint hint-indent">为文件、文件夹和文件夹空白处添加“用 CaDt-DataLens 打开”。Windows 11 可能显示在“显示更多选项”中。</div>
                         <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-agent-skill">
+                                注册全局 Agent Skill
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">把使用说明写入常用的 agent 全局技能目录，让 AI agent 学会调用本程序打开和定位文件（<span id="opt-skill-dirs">~/.agents/skills、~/.claude/skills</span>）。</div>
+                        <div class="popover-row">
                             <span class="popover-label">当前程序</span>
                             <span id="opt-exe-path" class="opt-path">—</span>
                         </div>

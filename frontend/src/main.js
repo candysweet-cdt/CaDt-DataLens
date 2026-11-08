@@ -378,6 +378,24 @@ const mockBackend = {
         }
         window.__mockIntegration.contextMenu = !!enabled;
     },
+    async GetAgentSkillStatus() {
+        if (!window.__mockSkill) {
+            window.__mockSkill = {registered: false};
+        }
+        return {
+            home: 'C:\\Users\\demo',
+            targets: [
+                {dir: 'C:\\Users\\demo\\.agents\\skills', registered: !!window.__mockSkill.registered},
+                {dir: 'C:\\Users\\demo\\.claude\\skills', registered: !!window.__mockSkill.registered},
+            ],
+        };
+    },
+    async SetAgentSkill(enabled) {
+        if (!window.__mockSkill) {
+            window.__mockSkill = {registered: false};
+        }
+        window.__mockSkill.registered = !!enabled;
+    },
     async OpenInNewWindows(paths) { window.__mockNewWindows = (window.__mockNewWindows || []).concat([paths]); },
     async OpenNewWindow() { window.__mockNewWindow = (window.__mockNewWindow || 0) + 1; },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
@@ -636,6 +654,8 @@ const elsSettings = {
     editorCjkFont: document.getElementById('opt-editor-cjk-font'),
     fileAssoc: document.getElementById('opt-file-assoc'),
     contextMenu: document.getElementById('opt-context-menu'),
+    agentSkill: document.getElementById('opt-agent-skill'),
+    skillDirs: document.getElementById('opt-skill-dirs'),
     exePath: document.getElementById('opt-exe-path'),
     refreshIntegration: document.getElementById('opt-refresh-integration'),
 };
@@ -947,6 +967,21 @@ async function syncIntegrationStatus() {
     } catch (e) {
         flash('读取系统集成状态失败：' + e, true);
     }
+    if (backend.GetAgentSkillStatus && elsSettings.agentSkill) {
+        try {
+            const skill = await backend.GetAgentSkillStatus();
+            elsSettings.agentSkill.checked = skill.targets.some((t) => t.registered);
+            if (elsSettings.skillDirs) {
+                const home = skill.home || '';
+                elsSettings.skillDirs.textContent = skill.targets.map((t) => {
+                    const dir = home && t.dir.startsWith(home) ? '~' + t.dir.slice(home.length) : t.dir;
+                    return (t.registered ? '✓ ' : '○ ') + dir.replace(/\\/g, '/');
+                }).join('，');
+            }
+        } catch (e) {
+            if (elsSettings.skillDirs) elsSettings.skillDirs.textContent = '读取技能状态失败';
+        }
+    }
 }
 
 async function applyIntegration(kind, checkbox, label) {
@@ -956,16 +991,18 @@ async function applyIntegration(kind, checkbox, label) {
         flash('当前版本不支持系统集成', true);
         return;
     }
-    elsSettings.fileAssoc.disabled = true;
-    elsSettings.contextMenu.disabled = true;
+    for (const el of [elsSettings.fileAssoc, elsSettings.contextMenu, elsSettings.agentSkill]) {
+        if (el) el.disabled = true;
+    }
     try {
         await backend[kind](enabled);
         flash(label + (enabled ? '已注册' : '已取消'));
     } catch (e) {
         flash(label + (enabled ? '注册失败：' : '取消注册失败：') + e, true);
     } finally {
-        elsSettings.fileAssoc.disabled = false;
-        elsSettings.contextMenu.disabled = false;
+        for (const el of [elsSettings.fileAssoc, elsSettings.contextMenu, elsSettings.agentSkill]) {
+            if (el) el.disabled = false;
+        }
         await syncIntegrationStatus();
     }
 }
@@ -1225,6 +1262,7 @@ setupFormatSettings();
 if (elsSettings.fileAssoc) {
     elsSettings.fileAssoc.addEventListener('change', () => applyIntegration('SetFileAssociation', elsSettings.fileAssoc, '文件关联'));
     elsSettings.contextMenu.addEventListener('change', () => applyIntegration('SetContextMenu', elsSettings.contextMenu, '右键菜单'));
+    elsSettings.agentSkill.addEventListener('change', () => applyIntegration('SetAgentSkill', elsSettings.agentSkill, 'Agent Skill '));
     elsSettings.refreshIntegration.addEventListener('click', syncIntegrationStatus);
 }
 

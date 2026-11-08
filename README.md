@@ -42,6 +42,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 - 左侧工具条：IDEA 风格竖向工具窗口栏，文件树左边常驻显示；包含文件树开关、节点搜索、视图/工具窗口“更多”、只读锁、主题、设置和关于。文件树开关与底部状态栏按钮状态同步。
 - 右键菜单：标签页可关闭/关闭其他/全部/左侧/未修改、复制路径、在新窗口打开、重新打开关闭的标签页；侧边栏目录可新建常见格式文件（JSON / TXT / Markdown / YAML / XML / CSV / TOML / JSONL / INI / Properties 及常用代码文件）或文件夹，文件和目录都可复制、剪切、粘贴、重命名；粘贴到同名位置时会先给出“名称 - 副本”建议再确认；复制路径子菜单提供绝对路径、相对当前打开目录的路径（不带 `./`）和文件名；代码/文本内容区可剪切复制粘贴、查找、格式化、重新加载、折叠。
 - 设置 → 系统集成：可把当前程序注册到注册表（加入 JSON/JSONL/YAML/XML/CSV/文本等格式的“打开方式”）和资源管理器右键菜单（文件/文件夹/文件夹空白处）；只写 HKCU，无需管理员权限，默认程序仍需在 Windows 中确认。
+- 设置 → 系统集成 → 注册全局 Agent Skill：把 `docs/skills/cadt-datalens` 里的使用说明注册到常用的 agent 全局技能目录（`~/.agents/skills`、`~/.claude/skills`），让 AI agent 学会用命令行打开文件并跳转到指定行:列（详见 [docs/skills/README.md](docs/skills/README.md)）。
 - UTF-8 / GBK / GB18030 / ISO-8859-1 / US-ASCII 编码，自动检测；保留原文件换行符与 UTF-8 BOM。
 - 大文件与二进制文件自动只读。
 
