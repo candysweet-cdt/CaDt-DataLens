@@ -2572,7 +2572,7 @@ a.jsoneditor-poweredBy { display: none !important; }
     display: flex;
     align-items: center;
     gap: 7px;
-    padding: 2px 6px;
+    padding: 2px 6px 2px 48px;
     border-radius: 4px;
     font-size: 12px;
     color: var(--text);
