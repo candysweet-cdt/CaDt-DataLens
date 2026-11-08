@@ -62,3 +62,36 @@ func TestRegistryHelpersRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSetPathRegisteredRoundTrip(t *testing.T) {
+	app := NewApp()
+
+	// 记录初始状态，结束后还原
+	statusBefore, err := app.GetIntegrationStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 开启
+	if err := app.SetPathRegistered(true); err != nil {
+		t.Fatalf("开启 PATH 注册失败: %v", err)
+	}
+	statusOn, _ := app.GetIntegrationStatus()
+	if !statusOn.PathRegistered {
+		t.Fatal("开启后应已注册")
+	}
+
+	// 关闭
+	if err := app.SetPathRegistered(false); err != nil {
+		t.Fatalf("关闭 PATH 注册失败: %v", err)
+	}
+	statusOff, _ := app.GetIntegrationStatus()
+	if statusOff.PathRegistered {
+		t.Fatal("关闭后应取消注册")
+	}
+
+	// 还原初始状态
+	if statusBefore.PathRegistered {
+		app.SetPathRegistered(true)
+	}
+}

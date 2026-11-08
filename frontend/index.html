@@ -308,6 +308,13 @@
                         </div>
                         <div class="fmt-hint hint-indent">把使用说明写入常用的 agent 全局技能目录，让 AI agent 学会调用本程序打开和定位文件（<span id="opt-skill-dirs">~/.agents/skills、~/.claude/skills</span>）。</div>
                         <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-path-cmd">
+                                注册 datalens 命令（加入用户 PATH）
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">把程序所在目录加入用户 PATH；之后在任意目录的命令行输入 datalens，软件就以该目录为工作区打开。仅对新开的命令行窗口生效，已有窗口需重开。</div>
+                        <div class="popover-row">
                             <span class="popover-label">当前程序</span>
                             <span id="opt-exe-path" class="opt-path">—</span>
                         </div>

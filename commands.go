@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 	"sync"
 	"time"
 
@@ -46,6 +47,11 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// hideConsoleWindow 后台命令不闪控制台窗口（GUI 进程拉起控制台子进程时必须）。
+func hideConsoleWindow(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
+}
+
 func normalizeCommandArgs(exe string, args []string) error {
 	if strings.TrimSpace(exe) == "" {
 		return fmt.Errorf("exe 不能为空")
@@ -79,6 +85,7 @@ func (a *App) RunCommandSync(exe string, args []string, cwd string, timeoutMs in
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = dir
+	hideConsoleWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, limit: commandOutputCap}
 	cmd.Stderr = &limitedWriter{w: &stderr, limit: commandOutputCap}
@@ -140,6 +147,7 @@ func (a *App) StartCommand(id, exe string, args []string, cwd string) error {
 
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = dir
+	hideConsoleWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		stopRunningCommand(id)

@@ -75,7 +75,11 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) secondInstance(data options.SecondInstanceData) {
-	if targets := parseOpenTargets(data.Args); len(targets) > 0 {
+	targets := parseOpenTargets(data.Args)
+	if len(targets) == 0 {
+		targets = startupCwdTarget()
+	}
+	if len(targets) > 0 {
 		runtime.EventsEmit(a.ctx, "open-targets", targets)
 	}
 	runtime.WindowUnminimise(a.ctx)
@@ -205,9 +209,31 @@ func parseOpenTargets(args []string) []OpenTarget {
 	return targets
 }
 
+// startupCwdTarget 裸启动（无参数）时把当前目录作为工作区打开；
+// 双击 exe 启动时 CWD 等于 exe 目录，此时返回空（走欢迎页）。
+func startupCwdTarget() []OpenTarget {
+	wd, err := os.Getwd()
+	if err != nil || strings.TrimSpace(wd) == "" {
+		return nil
+	}
+	if exe, exeErr := os.Executable(); exeErr == nil && exe != "" {
+		if strings.EqualFold(filepath.Dir(exe), wd) {
+			return nil
+		}
+	}
+	info, err := os.Stat(wd)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+	return []OpenTarget{{Path: wd}}
+}
+
 func (a *App) GetStartupTargets() []OpenTarget {
 	if a.startupTargets == nil {
 		return []OpenTarget{}
+	}
+	if len(a.startupTargets) == 0 {
+		return startupCwdTarget()
 	}
 	return a.startupTargets
 }

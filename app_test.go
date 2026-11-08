@@ -639,3 +639,39 @@ func TestMoveEntryFileAndDirectory(t *testing.T) {
 		t.Fatalf("source directory still exists: %v", err)
 	}
 }
+
+func TestStartupCwdTarget(t *testing.T) {
+	tmp := t.TempDir()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig)
+
+	exeDir := filepath.Dir(mustSelfPath(t))
+
+	// 在 exe 目录内 → 返回空（双击场景）
+	if err := os.Chdir(exeDir); err != nil {
+		t.Skip("无法 chdir 到 exe 目录")
+	}
+	if targets := startupCwdTarget(); len(targets) != 0 {
+		t.Fatalf("exe 目录内应返回空: %+v", targets)
+	}
+
+	// 在任意其他目录 → 以该目录为工作区
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	targets := startupCwdTarget()
+	if len(targets) != 1 || targets[0].Path != tmp {
+		t.Fatalf("应返回 cwd 工作区: %+v (want %s)", targets, tmp)
+	}
+}
+
+func mustSelfPath(t *testing.T) string {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return exe
+}

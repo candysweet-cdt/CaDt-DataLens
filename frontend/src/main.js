@@ -368,9 +368,16 @@ const mockBackend = {
         }
         return {
             executable: 'D:\\Tools\\CaDt-DataLens.exe',
+            pathRegistered: !!(window.__mockIntegration && window.__mockIntegration.pathCmd),
             fileAssoc: !!window.__mockIntegration.fileAssoc,
             contextMenu: !!window.__mockIntegration.contextMenu,
         };
+    },
+    async SetPathRegistered(enabled) {
+        if (!window.__mockIntegration) {
+            window.__mockIntegration = {fileAssoc: false, contextMenu: false};
+        }
+        window.__mockIntegration.pathCmd = !!enabled;
     },
     async SetFileAssociation(enabled) {
         if (!window.__mockIntegration) {
