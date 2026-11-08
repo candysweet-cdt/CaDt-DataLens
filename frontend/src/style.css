@@ -1605,6 +1605,25 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
 .st-zoom:focus { outline: none; }
 .st-zoom.active { background: var(--accent-weak); color: var(--accent); }
 .st-zoom:empty { display: none; }
+#st-mode,
+#st-eol,
+#st-enc {
+    padding: 1px 4px;
+    border-radius: 3px;
+    cursor: default;
+}
+#st-mode:hover,
+#st-eol:hover,
+#st-enc:hover {
+    background: var(--hover);
+    color: var(--text);
+}
+#st-mode.active,
+#st-eol.active,
+#st-enc.active {
+    background: var(--accent-weak);
+    color: var(--accent);
+}
 .status-lock {
     flex: none;
     width: 22px;
