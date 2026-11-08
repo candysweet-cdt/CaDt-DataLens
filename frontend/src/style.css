@@ -1663,13 +1663,6 @@ div.jsoneditor-value { color: var(--text); }
 div.jsoneditor-value.jsoneditor-object,
 div.jsoneditor-value.jsoneditor-array {
     color: var(--muted);
-    font-size: 11px;
-    font-weight: 400;
-    background: var(--chip-bg);
-    border-radius: 4px;
-    padding: 0 6px;
-    margin-top: 2px;
-    line-height: 15px;
     min-width: 0;
     user-select: none;
 }
@@ -1876,11 +1869,30 @@ div.jsoneditor-tree div.jsoneditor-show-more {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 2px 8px;
-    margin: 3px 0;
-    background: var(--panel2);
-    border: 1px solid var(--border);
-    border-radius: 4px;
+    padding: 0;
+    margin: 2px 0;
+    background: none;
+    border: none;
+    border-radius: 0;
+    color: var(--muted);
+    font-size: var(--editor-font, 13px);
+}
+div.jsoneditor-tree div.jsoneditor-value.jsoneditor-object,
+div.jsoneditor-tree div.jsoneditor-value.jsoneditor-array {
+    padding: 0;
+    margin-top: 0;
+    background: none;
+    border-radius: 0;
+    color: var(--muted);
+    font-size: var(--editor-font, 13px);
+    line-height: 1.45;
+}
+div.jsoneditor-tree div.jsoneditor-value.value-count {
+    color: var(--muted);
+    font-size: 11px;
+    opacity: 0.8;
+}
+div.jsoneditor-tree div.jsoneditor-value.value-fold {
     color: var(--muted);
     font-size: var(--editor-font, 13px);
 }

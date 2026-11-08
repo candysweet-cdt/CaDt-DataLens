@@ -1614,11 +1614,24 @@ function humanizeCounts() {
     const root = file && file.pane ? file.pane : els.editor;
     const nodes = root.querySelectorAll('div.jsoneditor-value.jsoneditor-object, div.jsoneditor-value.jsoneditor-array');
     nodes.forEach((el) => {
-        const m = el.textContent.trim().match(/^[[{]\s*(\d+)\s*[\]}]$/);
-        if (!m) return;
-        const n = Number(m[1]);
-        el.textContent = n + ' 项';
-        el.title = (el.classList.contains('jsoneditor-object') ? '对象' : '数组') + '，共 ' + n + ' 项';
+        const isObject = el.classList.contains('jsoneditor-object');
+        const collapsed = !!el.closest('tr.jsoneditor-collapsed');
+        const raw = el.textContent.trim();
+        let count = null;
+        const exact = raw.match(/^[[{]\s*(\d+)\s*[\]}]$/);
+        if (exact) count = Number(exact[1]);
+        else {
+            const loose = raw.match(/[[{]\s*(\d+)/);
+            if (loose) count = Number(loose[1]);
+            else if (el.dataset.count != null) count = Number(el.dataset.count);
+        }
+        if (!Number.isFinite(count)) return;
+        el.dataset.count = String(count);
+        const text = collapsed ? (isObject ? '{...}' : '[...]') : count + ' 项';
+        if (el.textContent !== text) el.textContent = text;
+        el.classList.toggle('value-fold', collapsed);
+        el.classList.toggle('value-count', !collapsed);
+        el.title = (isObject ? '对象' : '数组') + '，共 ' + count + ' 项';
     });
 }
 
