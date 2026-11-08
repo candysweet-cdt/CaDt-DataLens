@@ -2044,6 +2044,7 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
     position: fixed;
     z-index: 90;
     display: flex;
+    align-items: flex-start;
     max-width: min(720px, calc(100vw - 16px));
     max-height: min(65vh, 560px);
     overflow: auto;
@@ -2054,7 +2055,8 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 }
 #code-fold-hover.hidden { display: none; }
 .code-fold-gutter {
-    flex: none;
+    flex: 0 0 auto;
+    min-width: 2.2em;
     margin: 0;
     padding: 8px 8px 8px 12px;
     border-right: 1px solid var(--border);
@@ -2068,7 +2070,8 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
     user-select: none;
 }
 .code-fold-code {
-    flex: 1;
+    flex: 1 1 auto;
+    min-width: 0;
     margin: 0;
     padding: 8px 14px;
     color: var(--muted);

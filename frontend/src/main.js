@@ -1925,6 +1925,28 @@ function clipCodeFoldPreview(text, max) {
     return compact.length > max ? compact.slice(0, max) : compact;
 }
 
+function codeFoldDisplayWidth(text) {
+    let width = 0;
+    for (const ch of String(text)) {
+        width += /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch) ? 2 : 1;
+    }
+    return width;
+}
+
+function clipCodeFoldText(text, maxWidth) {
+    const raw = String(text == null ? '' : text);
+    if (codeFoldDisplayWidth(raw) <= maxWidth) return raw;
+    let out = '';
+    let width = 0;
+    for (const ch of raw) {
+        const chWidth = codeFoldDisplayWidth(ch);
+        if (width + chWidth > maxWidth) break;
+        out += ch;
+        width += chWidth;
+    }
+    return out + (raw.startsWith('"') ? '"' : '');
+}
+
 function extendCodeFoldRange(session, fold) {
     const range = fold && fold.range;
     if (!range || !range.start || !range.end) return;
@@ -1961,10 +1983,12 @@ function codeFoldPreviewFor(ace, fold) {
         }
     }
     if (open === '{' && value && typeof value === 'object' && !Array.isArray(value)) {
-        const spec = foldObjectSpec(value);
-        if (!spec) return '';
-        if (spec.kind === 'empty') return '{}';
-        return '{' + spec.keyText + ': ' + spec.valueText + '...' + '}';
+        const keys = Object.keys(value);
+        if (!keys.length) return '{}';
+        const keyText = clipCodeFoldText(JSON.stringify(keys[0]), 18);
+        const valueMax = codeFoldDisplayWidth(keyText) > 12 ? 8 : 14;
+        const valueText = clipCodeFoldText(foldPrimitive(value[keys[0]]), valueMax);
+        return '{' + keyText + ': ' + valueText + '...' + '}';
     }
     if (open === '[' && Array.isArray(value)) {
         if (!value.length) return '[]';
@@ -1974,7 +1998,7 @@ function codeFoldPreviewFor(ace, fold) {
     const first = innerLines.find((line) => line !== '{' && line !== '[' && line !== '}' && line !== ']');
     if (first) {
         const lead = fold.range.start.column > 0 && !/[\s{\[(]$/.test(prefix) ? ' ' : '';
-        return lead + clipCodeFoldPreview(first, 64) + '...';
+        return lead + clipCodeFoldPreview(first, 40) + '...';
     }
     const lineCount = Math.max(1, endRow - startRow + 1);
     return ' ' + lineCount + ' 行...';

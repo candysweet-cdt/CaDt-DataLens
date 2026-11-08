@@ -17,7 +17,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 - Markdown 文件默认打开预览：标题、列表、表格、引用、代码块和 KaTeX 行内/块级公式；代码块按当前主题高亮，行号可在设置中开启（默认关闭）。预览只读，可切回代码/文本视图编辑。原始 HTML 不执行，外部链接交给系统浏览器打开。
 - 多种视图：
   - **树视图**：展开/收起节点，直接编辑键和值。
-  - **代码视图**：Ace 编辑器，带行号、语法高亮、括号匹配。按扩展名启用 YAML、XML/SVG、JS/TS、Python、Markdown、HTML/CSS、Shell/PowerShell/Batch、Go/Java/Kotlin/Lua/SQL、TOML/INI/Properties 等语法模式。折叠区显示与树视图一致的预览（JSON 对象首项、数组元素数，其他格式显示首行内容）；hover 折叠区会弹出带原始行号和语法高亮的完整折叠内容，树视图不显示该 hover 预览。
+  - **代码视图**：Ace 编辑器，带行号、语法高亮、括号匹配。按扩展名启用 YAML、XML/SVG、JS/TS、Python、Markdown、HTML/CSS、Shell/PowerShell/Batch、Go/Java/Kotlin/Lua/SQL、TOML/INI/Properties 等语法模式。折叠区显示与树视图一致的预览（JSON 对象首项、数组元素数，内容过长时按显示宽度截断，其他格式显示首行内容）；hover 折叠区会弹出带原始行号和语法高亮的完整折叠内容，树视图不显示该 hover 预览。
   - **文本视图**：纯文本编辑框，适合看原始内容和最简单的文本修改。
   - **预览**（Markdown）：只读渲染；支持代码块语法高亮和数学公式。
   - **表格视图**（CSV / TSV）：冻结表头与行号，拖动表头边缘可调整列宽；点击单元格直接编辑（Enter 确认并下移、Tab 换格、Esc 取消），支持撤销/重做；超过 5000 行时只预览前 5000 行，编辑仍会保留全部行。
