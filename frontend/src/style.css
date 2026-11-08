@@ -2290,22 +2290,32 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 .code-fold-code .hljs-literal { color: var(--val-bool); }
 .jsoneditor .ace_fold-widget,
 .jsoneditor .ace_custom-widget {
-    background: var(--hover) !important;
+    background: transparent !important;
     border: none !important;
-    border-radius: 4px;
+    border-radius: 3px;
     color: var(--muted) !important;
-    padding: 0 5px;
-    margin-left: 5px;
-    height: auto;
-    line-height: inherit;
-    font-size: inherit;
-    transition: background 0.12s ease;
+    height: 14px;
+    font-size: 10px;
+    text-align: center;
+    transition: background-color 0.12s ease;
+}
+.jsoneditor .ace_fold-widget.ace_closed,
+.jsoneditor .ace_custom-widget.ace_closed {
+    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M3.5 2.5L6 5l-2.5 2.5' fill='none' stroke='%23959ba8' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
+}
+.jsoneditor .ace_fold-widget.ace_start,
+.jsoneditor .ace_custom-widget.ace_start {
+    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2.5 3.5L5 6l2.5-2.5' fill='none' stroke='%23959ba8' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
+}
+.jsoneditor .ace_fold-widget.ace_end,
+.jsoneditor .ace_custom-widget.ace_end {
+    background: transparent !important;
 }
 .jsoneditor .ace_fold-widget:hover,
 .jsoneditor .ace_fold-widget:active,
 .jsoneditor .ace_custom-widget:hover,
 .jsoneditor .ace_custom-widget:active {
-    background: var(--accent-weak) !important;
+    background-color: var(--hover) !important;
     color: var(--text) !important;
 }
 .jsoneditor .ace_cursor {
