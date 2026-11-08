@@ -202,6 +202,7 @@ const mockRt = {
     WindowClose() { this._calls.push('close'); },
     Quit() { this._calls.push('quit'); },
     WindowSetTitle(title) { this._title = title; this._calls.push('title:' + title); },
+    BrowserOpenURL(url) { window.__mockOpenUrl = url; this._calls.push('url:' + url); },
     EventsOn() {},
 };
 const rt = window.runtime || (mockScenario.has('winctl') ? mockRt : null);
@@ -2708,6 +2709,16 @@ if (rt) {
     rt.EventsOn('open-files', (paths) => openPaths(paths));
     rt.EventsOn('confirm-close', () => openCloseConfirm());
 }
+
+document.querySelectorAll('.about-link').forEach((a) => {
+    a.addEventListener('click', (e) => {
+        e.preventDefault();
+        const url = a.dataset.url;
+        if (!url) return;
+        if (rt && rt.BrowserOpenURL) rt.BrowserOpenURL(url);
+        else window.open(url, '_blank', 'noopener');
+    });
+});
 
 els.tabbar.addEventListener('wheel', (e) => {
     if (els.tabbar.scrollWidth <= els.tabbar.clientWidth) return;

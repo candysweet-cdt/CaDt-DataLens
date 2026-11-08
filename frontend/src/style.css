@@ -795,6 +795,11 @@ html, body {
 .about-meta { display: grid; grid-template-columns: max-content max-content; gap: 4px 18px; margin: 14px 0 12px; text-align: left; }
 .about-meta span:nth-child(odd) { color: var(--muted); }
 .about-meta span:nth-child(even) { color: var(--text); }
+.about-repo { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.about-repo-label { color: var(--muted); }
+.about-repo-sep { color: var(--faint); }
+.about-link { color: var(--accent); text-decoration: none; cursor: default; }
+.about-link:hover { color: var(--text); text-decoration: underline; }
 .about-formats { color: var(--text); }
 .about-dim { color: var(--muted); font-size: 11px; margin-top: 8px; line-height: 1.7; }
 .dialog-footer {
