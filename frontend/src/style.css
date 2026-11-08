@@ -1964,11 +1964,6 @@ div.jsoneditor-tree div.jsoneditor-value.value-fold {
 }
 html[data-theme="idea-light"] { --fold-bg: #e9f5e6; }
 html[data-theme="idea-dark"] { --fold-bg: #363a42; }
-div.jsoneditor-tree div.jsoneditor-value.value-fold:hover {
-    text-decoration: underline;
-    text-underline-offset: 2px;
-    text-decoration-color: var(--faint);
-}
 div.jsoneditor-tree .jsoneditor-fold-preview { display: inline; }
 div.jsoneditor-tree .jsoneditor-fold-text { color: var(--text); }
 
@@ -2028,6 +2023,65 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 .jsoneditor .ace_scroller { background: var(--bg); }
 .jsoneditor .ace_gutter { background: var(--panel); color: var(--ace-gutter); }
 .jsoneditor .ace_gutter-active-line { background: var(--panel2); }
+.jsoneditor .ace_fold {
+    background-color: var(--fold-bg, var(--hover)) !important;
+    background-image: none !important;
+    border: none !important;
+    border-radius: 3px !important;
+    color: var(--text) !important;
+    height: 1.3em !important;
+    line-height: 1.3em !important;
+    margin-top: -1px !important;
+    padding: 0 4px !important;
+    text-align: center;
+    vertical-align: middle;
+}
+.jsoneditor .ace_fold:hover {
+    background-color: var(--fold-bg, var(--hover)) !important;
+    background-image: none !important;
+}
+#code-fold-hover {
+    position: fixed;
+    z-index: 90;
+    display: flex;
+    max-width: min(720px, calc(100vw - 16px));
+    max-height: min(65vh, 560px);
+    overflow: auto;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 14px 36px var(--shadow-strong);
+}
+#code-fold-hover.hidden { display: none; }
+.code-fold-gutter {
+    flex: none;
+    margin: 0;
+    padding: 8px 8px 8px 12px;
+    border-right: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--faint);
+    font-family: var(--editor-font-family);
+    font-size: var(--editor-font, 13px);
+    line-height: 1.5;
+    text-align: right;
+    white-space: pre;
+    user-select: none;
+}
+.code-fold-code {
+    flex: 1;
+    margin: 0;
+    padding: 8px 14px;
+    color: var(--muted);
+    font-family: var(--editor-font-family);
+    font-size: var(--editor-font, 13px);
+    line-height: 1.5;
+    white-space: pre;
+    tab-size: 2;
+}
+.code-fold-code .hljs-attr { color: var(--val-key); }
+.code-fold-code .hljs-string { color: var(--val-string); }
+.code-fold-code .hljs-number { color: var(--val-number); }
+.code-fold-code .hljs-literal { color: var(--val-bool); }
 .jsoneditor .ace_fold-widget,
 .jsoneditor .ace_custom-widget {
     background-color: transparent !important;

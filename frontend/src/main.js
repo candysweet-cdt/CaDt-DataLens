@@ -1833,9 +1833,268 @@ function applyAceMode() {
         }
         editor.aceEditor.setDisplayIndentGuides(true);
         editor.aceEditor.setHighlightIndentGuides(true);
+        hookCodeFoldPreviews(editor.aceEditor);
+        updateCodeFoldPreviews(editor.aceEditor);
     } catch (e) {
         console.warn('ace mode switch failed', e);
     }
+}
+
+const codeFoldLanguages = {
+    json: 'json', json5: 'json', jsonl: 'json',
+    yaml: 'yaml', xml: 'xml', html: 'xml', css: 'css',
+    javascript: 'javascript', typescript: 'typescript',
+    markdown: 'markdown', python: 'python', sh: 'bash', bash: 'bash',
+    batchfile: 'dos', powershell: 'powershell', golang: 'go', go: 'go',
+    java: 'java', kotlin: 'kotlin', lua: 'lua', sql: 'sql',
+    toml: 'ini', ini: 'ini', properties: 'ini', text: 'plaintext',
+};
+
+let codeFoldHoverEl = null;
+let codeFoldHoverGutter = null;
+let codeFoldHoverCode = null;
+let codeFoldHoverShowTimer = 0;
+let codeFoldHoverHideTimer = 0;
+let codeFoldHoverTarget = null;
+
+function ensureCodeFoldHover() {
+    if (codeFoldHoverEl) return codeFoldHoverEl;
+    codeFoldHoverEl = document.createElement('div');
+    codeFoldHoverEl.id = 'code-fold-hover';
+    codeFoldHoverEl.className = 'hidden';
+    codeFoldHoverGutter = document.createElement('pre');
+    codeFoldHoverGutter.className = 'code-fold-gutter';
+    codeFoldHoverCode = document.createElement('pre');
+    codeFoldHoverCode.className = 'code-fold-code';
+    codeFoldHoverEl.append(codeFoldHoverGutter, codeFoldHoverCode);
+    codeFoldHoverEl.addEventListener('mouseenter', () => {
+        clearTimeout(codeFoldHoverHideTimer);
+    });
+    codeFoldHoverEl.addEventListener('mouseleave', () => {
+        codeFoldHoverHideTimer = setTimeout(hideCodeFoldHover, 120);
+    });
+    document.body.appendChild(codeFoldHoverEl);
+    return codeFoldHoverEl;
+}
+
+function hideCodeFoldHover() {
+    clearTimeout(codeFoldHoverShowTimer);
+    clearTimeout(codeFoldHoverHideTimer);
+    codeFoldHoverTarget = null;
+    if (codeFoldHoverEl) codeFoldHoverEl.classList.add('hidden');
+}
+
+function codeFoldLineFromEvent(e) {
+    const target = e.target;
+    if (!target || !target.closest) return null;
+    const line = target.closest('.ace_line');
+    if (!line || !line.querySelector('.ace_fold')) return null;
+    const ace = editor && editor.aceEditor;
+    if (!ace || !ace.container.contains(line)) return null;
+    return line;
+}
+
+function codeFoldForLine(lineEl) {
+    const ace = editor && editor.aceEditor;
+    if (!ace || !lineEl || !ace.container.contains(lineEl)) return null;
+    let row = null;
+    try {
+        const rect = lineEl.getBoundingClientRect();
+        const position = ace.renderer.screenToTextCoordinates(rect.left + 1, rect.top + rect.height / 2);
+        row = position.row;
+    } catch (e) {
+        return null;
+    }
+    const folds = ace.session.getAllFolds();
+    const starts = folds.filter((fold) => fold.range && fold.range.start && fold.range.start.row === row);
+    if (starts.length) {
+        starts.sort((left, right) => right.range.end.row - left.range.end.row);
+        return {ace, fold: starts[0]};
+    }
+    const containing = folds.find((fold) => fold.range && row >= fold.range.start.row && row <= fold.range.end.row);
+    return containing ? {ace, fold: containing} : null;
+}
+
+function codeFoldLanguage(session) {
+    const id = session && session.getMode ? String(session.getMode().$id || '').split('/').pop() : '';
+    return codeFoldLanguages[id] || 'plaintext';
+}
+
+function clipCodeFoldPreview(text, max) {
+    const compact = String(text || '').replace(/\s+/g, ' ').trim();
+    return compact.length > max ? compact.slice(0, max) : compact;
+}
+
+function extendCodeFoldRange(session, fold) {
+    const range = fold && fold.range;
+    if (!range || !range.start || !range.end) return;
+    const startLine = session.getLine(range.start.row) || '';
+    if (range.start.column > 0) {
+        const before = startLine[range.start.column - 1];
+        if (before === '{' || before === '[') range.start.column -= 1;
+    }
+    const endLine = session.getLine(range.end.row) || '';
+    const after = endLine[range.end.column];
+    if (after === '}' || after === ']') range.end.column += 1;
+}
+
+function codeFoldPreviewFor(ace, fold) {
+    const session = ace.session;
+    const startRow = fold.range.start.row;
+    const endRow = fold.range.end.row;
+    const startLine = session.getLine(startRow) || '';
+    const prefix = startLine.slice(0, fold.range.start.column);
+    const inner = session.getTextRange(fold.range);
+    let value;
+    let open = '';
+    try {
+        value = JSON.parse(inner.trim());
+        const first = inner.trim()[0];
+        if (first === '{' || first === '[') open = first;
+    } catch (e) {
+        const ch = prefix.trimEnd().slice(-1);
+        if (ch === '{' || ch === '[') {
+            try {
+                value = JSON.parse(ch + inner + (ch === '{' ? '}' : ']'));
+                open = ch;
+            } catch (e2) {}
+        }
+    }
+    if (open === '{' && value && typeof value === 'object' && !Array.isArray(value)) {
+        const spec = foldObjectSpec(value);
+        if (!spec) return '';
+        if (spec.kind === 'empty') return '{}';
+        return '{' + spec.keyText + ': ' + spec.valueText + '...' + '}';
+    }
+    if (open === '[' && Array.isArray(value)) {
+        if (!value.length) return '[]';
+        return '[ ' + value.length + ' 个元素' + '... ]';
+    }
+    const innerLines = inner.split('\n').map((line) => line.trim()).filter(Boolean);
+    const first = innerLines.find((line) => line !== '{' && line !== '[' && line !== '}' && line !== ']');
+    if (first) {
+        const lead = fold.range.start.column > 0 && !/[\s{\[(]$/.test(prefix) ? ' ' : '';
+        return lead + clipCodeFoldPreview(first, 64) + '...';
+    }
+    const lineCount = Math.max(1, endRow - startRow + 1);
+    return ' ' + lineCount + ' 行...';
+}
+
+function updateCodeFoldPreviews(ace) {
+    if (!ace || !ace.session || !ace.session.getAllFolds) return;
+    const folds = ace.session.getAllFolds();
+    if (!folds.length) return;
+    let changed = false;
+    for (const fold of folds) {
+        extendCodeFoldRange(ace.session, fold);
+        let preview = '';
+        try {
+            preview = codeFoldPreviewFor(ace, fold);
+        } catch (e) {
+            continue;
+        }
+        if (fold.placeholder !== preview) {
+            fold.placeholder = preview;
+            changed = true;
+        }
+    }
+    if (changed) {
+        try {
+            ace.renderer.updateFull(true);
+        } catch (e) {
+            ace.renderer.updateFull();
+        }
+    }
+}
+
+function hookCodeFoldPreviews(ace) {
+    if (!ace || ace._foldPreviewHooked) return;
+    ace._foldPreviewHooked = true;
+    const schedule = () => {
+        clearTimeout(ace._foldPreviewTimer);
+        ace._foldPreviewTimer = setTimeout(() => {
+            ace._foldPreviewTimer = 0;
+            updateCodeFoldPreviews(ace);
+        }, 40);
+    };
+    ace.session.on('changeFold', () => updateCodeFoldPreviews(ace));
+    ace.session.on('change', schedule);
+}
+
+function showCodeFoldHover(lineEl) {
+    const found = codeFoldForLine(lineEl);
+    if (!found) return;
+    const {ace, fold} = found;
+    const start = fold.range.start.row;
+    const end = fold.range.end.row;
+    let lines = ace.session.getLines(start, end);
+    const truncated = lines.length > 200;
+    if (truncated) lines = lines.slice(0, 200);
+    let text = lines.join('\n');
+    if (truncated) text += '\n…';
+    const gutterText = Array.from({length: lines.length}, (_, index) => String(start + 1 + index)).join('\n');
+    ensureCodeFoldHover();
+    codeFoldHoverGutter.textContent = gutterText;
+    const language = codeFoldLanguage(ace.session);
+    let highlighted = '';
+    try {
+        if (hljs.getLanguage(language)) highlighted = hljs.highlight(text, {language}).value;
+    } catch (e) {}
+    if (highlighted) codeFoldHoverCode.innerHTML = highlighted;
+    else codeFoldHoverCode.textContent = text;
+    codeFoldHoverEl.scrollTop = 0;
+    codeFoldHoverEl.scrollLeft = 0;
+    codeFoldHoverEl.style.visibility = 'hidden';
+    codeFoldHoverEl.style.left = '0px';
+    codeFoldHoverEl.style.top = '0px';
+    codeFoldHoverEl.classList.remove('hidden');
+    const width = codeFoldHoverEl.offsetWidth;
+    const height = codeFoldHoverEl.offsetHeight;
+    const rect = lineEl.getBoundingClientRect();
+    const margin = 8;
+    let left = Math.min(rect.left, window.innerWidth - width - margin);
+    left = Math.max(margin, left);
+    let top = rect.bottom + 4;
+    if (top + height > window.innerHeight - margin) top = rect.top - height - 4;
+    top = Math.max(margin, top);
+    codeFoldHoverEl.style.left = left + 'px';
+    codeFoldHoverEl.style.top = top + 'px';
+    codeFoldHoverEl.style.visibility = '';
+    codeFoldHoverTarget = lineEl;
+}
+
+function initCodeFoldHover() {
+    if (!els.editor) return;
+    ensureCodeFoldHover();
+    els.editor.addEventListener('mouseover', (e) => {
+        const line = codeFoldLineFromEvent(e);
+        if (!line || line === codeFoldHoverTarget) return;
+        if (!codeFoldForLine(line)) return;
+        codeFoldHoverTarget = line;
+        clearTimeout(codeFoldHoverShowTimer);
+        clearTimeout(codeFoldHoverHideTimer);
+        if (codeFoldHoverEl) codeFoldHoverEl.classList.add('hidden');
+        codeFoldHoverShowTimer = setTimeout(() => showCodeFoldHover(line), 280);
+    });
+    els.editor.addEventListener('mouseout', (e) => {
+        const line = codeFoldLineFromEvent(e);
+        const related = e.relatedTarget;
+        if (related && ((line && line.contains(related)) || (codeFoldHoverEl && codeFoldHoverEl.contains(related)))) return;
+        if (!codeFoldHoverTarget) return;
+        if (line && line !== codeFoldHoverTarget) return;
+        clearTimeout(codeFoldHoverShowTimer);
+        codeFoldHoverHideTimer = setTimeout(hideCodeFoldHover, 140);
+    });
+    document.addEventListener('pointerdown', (e) => {
+        if (codeFoldHoverEl && e.target && codeFoldHoverEl.contains(e.target)) return;
+        hideCodeFoldHover();
+    }, true);
+    window.addEventListener('scroll', (e) => {
+        if (codeFoldHoverEl && e.target && codeFoldHoverEl.contains(e.target)) return;
+        hideCodeFoldHover();
+    }, true);
+    window.addEventListener('resize', hideCodeFoldHover);
+    window.addEventListener('blur', hideCodeFoldHover);
 }
 
 function snapshotActiveDoc() {
@@ -4714,6 +4973,7 @@ els.tabbar.addEventListener('wheel', (e) => {
 initContextMenus();
 initExplorer();
 initActivityBar();
+initCodeFoldHover();
 
 (async () => {
     if (backend.GetOpenMode) {
