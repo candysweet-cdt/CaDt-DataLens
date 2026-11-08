@@ -1312,6 +1312,24 @@ function renderImageZoomMenu() {
     footPopover.appendChild(popFoot('当前', current));
 }
 
+function renderTableZoomMenu() {
+    if (!file || !file.format || !file.format.table) return;
+    const doc = file;
+    footPopover.appendChild(popTitle('表格缩放'));
+    for (const percent of [25, 50, 75, 100, 150, 200, 400, 800]) {
+        footPopover.appendChild(popItem(percent + '%', {
+            current: Math.round((doc.tableZoom || 1) * 100) === percent,
+            onClick: () => {
+                doc.tableZoom = percent / 100;
+                applyCsvTableZoom(doc);
+                updateStatus();
+                closeFootPopover();
+            },
+        }));
+    }
+    footPopover.appendChild(popFoot('当前', Math.round((doc.tableZoom || 1) * 100) + '%'));
+}
+
 function chooseEol(value) {
     if (!file) return;
     const fs = getFormatSettings(file.format.id);
@@ -1350,7 +1368,10 @@ function openFootPopover(kind) {
     footPopover.classList.remove('hidden');
     if (kind === 'encoding') renderEncodingMenu();
     else if (kind === 'view') renderViewMenu();
-    else if (kind === 'zoom') renderImageZoomMenu();
+    else if (kind === 'zoom') {
+        if (currentMode === 'table' && file.format && file.format.table) renderTableZoomMenu();
+        else renderImageZoomMenu();
+    }
     else renderEolMenu();
     const r = anchor.getBoundingClientRect();
     const pr = footPopover.getBoundingClientRect();
@@ -1611,11 +1632,14 @@ function updateStatus() {
     els.stMode.textContent = fmt.name + ' · ' + view + (file.large || file.binary || settings.readOnlyMode ? ' · 只读' : '');
     els.stSize.textContent = fmtSize(file.size);
     els.stSize.title = file.image && file.imageWidth ? file.imageWidth + ' × ' + file.imageHeight : '';
+    const tableZoom = currentMode === 'table' && file.format && file.format.table;
     const zoom = file.image && currentMode === 'image' && file.imageScale
         ? Math.round(file.imageScale * 100) + '%'
-        : '';
+        : tableZoom ? Math.round((file.tableZoom || 1) * 100) + '%' : '';
     els.stZoom.textContent = zoom;
-    els.stZoom.title = zoom ? '图片缩放比例（点击选择，Ctrl+滚轮调整，双击图片恢复适配）' : '';
+    els.stZoom.title = zoom
+        ? (tableZoom ? '表格缩放比例（点击选择，Ctrl+滚轮调整）' : '图片缩放比例（点击选择，Ctrl+滚轮调整，双击图片恢复适配）')
+        : '';
     if (file.binary) {
         els.stEol.textContent = '';
         els.stEnc.textContent = '';
@@ -2353,11 +2377,7 @@ function createCsvTableView(doc) {
     hint.textContent = doc.large
         ? '文件超过 10 MB，表格只读；可拖表头边缘调列宽；Ctrl+滚轮缩放'
         : '点击单元格编辑；拖表头边缘调列宽；Ctrl+滚轮缩放；Enter 确认，Esc 取消';
-    const zoom = document.createElement('span');
-    zoom.className = 'csv-table-zoom';
-    zoom.title = 'Ctrl+滚轮缩放表格';
-    zoom.textContent = '100%';
-    bar.append(meta, hint, zoom);
+    bar.append(meta, hint);
     const scroll = document.createElement('div');
     scroll.className = 'csv-table-scroll';
     wrap.append(bar, scroll);
@@ -2365,27 +2385,24 @@ function createCsvTableView(doc) {
     doc.tableEl = wrap;
     doc.tableMeta = meta;
     doc.tableScroll = scroll;
-    doc.tableZoomLabel = zoom;
     if (!doc.tableZoom) doc.tableZoom = 1;
     applyCsvTableZoom(doc);
 }
 
 function applyCsvTableZoom(doc) {
     if (!doc || !doc.tableEl) return;
-    const zoom = doc.tableZoom || 1;
-    doc.tableEl.style.setProperty('--csv-zoom', String(zoom));
-    if (doc.tableZoomLabel) doc.tableZoomLabel.textContent = Math.round(zoom * 100) + '%';
+    doc.tableEl.style.setProperty('--csv-zoom', String(doc.tableZoom || 1));
 }
 
 function zoomCsvTable(doc, deltaY) {
     if (!doc || !doc.tableEl || !deltaY) return;
     const dir = deltaY < 0 ? 1 : -1;
     const current = doc.tableZoom || 1;
-    const next = Math.min(3, Math.max(0.5, Math.round((current + dir * 0.1) * 10) / 10));
+    const next = Math.min(8, Math.max(0.25, Math.round((current + dir * 0.1) * 10) / 10));
     if (next === current) return;
     doc.tableZoom = next;
     applyCsvTableZoom(doc);
-    flash('表格缩放 ' + Math.round(next * 100) + '%');
+    updateStatus();
 }
 
 function renderCsvTableView(doc) {
