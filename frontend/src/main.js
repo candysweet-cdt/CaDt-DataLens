@@ -1,6 +1,7 @@
 import './style.css';
 import {detectFormat, formats, isSupportedFile} from './formats.js';
 import {createExplorer} from './explorer.js';
+import {createContextMenu} from './contextmenu.js';
 
 const hasWails = !!(window.go && window.go.main && window.go.main.App);
 
@@ -155,7 +156,8 @@ const mockBackend = {
     async OpenInNewWindows(paths) { window.__mockNewWindows = (window.__mockNewWindows || []).concat([paths]); },
     async OpenNewWindow() { window.__mockNewWindow = (window.__mockNewWindow || 0) + 1; },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
-    async CopyText(text) { window.__mockCopied = text; },
+    async CopyText(text) { window.__mockCopied = text; window.__mockClipboard = text; },
+    async GetClipboardText() { return window.__mockClipboard || ''; },
     async ForceClose() { window.__mockForceClosed = (window.__mockForceClosed || 0) + 1; },
     async CheckEncoding(content, enc) {
         if (enc === 'utf-8' || enc === 'gbk' || enc === 'gb18030') return true;
@@ -187,6 +189,7 @@ const els = {
     banner: document.getElementById('banner'),
     editor: document.getElementById('editor'),
     welcome: document.getElementById('welcome'),
+    mainPane: document.getElementById('main-pane'),
     btnWelcomeOpen: document.getElementById('btn-welcome-open'),
     stMode: document.getElementById('st-mode'),
     stSize: document.getElementById('st-size'),
@@ -213,14 +216,18 @@ let docSeq = 0;
 let autoSaveTimer = 0;
 let explorer = null;
 let workspaceFolder = null;
+let ctxMenu = null;
+let closedTabs = [];
 window.__lens = {
     get editor() { return editor; },
     get file() { return file; },
     get docs() { return docs; },
     get explorer() { return explorer; },
+    get closedTabs() { return closedTabs; },
     openCloseConfirm,
     openPaths,
     openFolderWorkspace,
+    reopenClosedTab,
     setTheme,
 };
 let dirty = false;
@@ -849,6 +856,12 @@ function renderTabs() {
             requestCloseDoc(doc);
         });
         tab.addEventListener('click', () => activateDoc(doc));
+        tab.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            activateDoc(doc);
+            showTabMenu(doc, e.clientX, e.clientY);
+        });
         tab.addEventListener('auxclick', (e) => {
             if (e.button === 1) {
                 e.preventDefault();
@@ -1267,6 +1280,10 @@ function closeDocNow(doc) {
     const idx = docs.indexOf(doc);
     if (idx < 0) return;
     const wasActive = doc === file;
+    if (doc.path) {
+        closedTabs.push({path: doc.path, name: doc.name});
+        if (closedTabs.length > 12) closedTabs.shift();
+    }
     docs.splice(idx, 1);
     if (doc.editor) {
         doc.editor.destroy();
@@ -1291,6 +1308,232 @@ function closeDocNow(doc) {
         renderTabs();
         updateBackendDirty();
     }
+}
+
+function showPathInFolder(path) {
+    if (!path) return;
+    backend.ShowInFolder(path).catch((e) => flash('打开文件位置失败：' + e, true));
+}
+
+function closeDocsWithConfirm(list, message) {
+    const targets = (list || []).filter((doc) => docs.includes(doc));
+    if (!targets.length) return;
+    const run = () => {
+        for (const doc of targets.slice()) closeDocNow(doc);
+    };
+    if (targets.some((doc) => doc.dirty)) {
+        openCloseConfirm(message || '有未保存的修改，关闭后将丢弃。', run);
+    } else {
+        run();
+    }
+}
+
+function reopenClosedTab() {
+    const entry = closedTabs.pop();
+    if (!entry) return;
+    openPath(entry.path);
+}
+
+function showTabMenu(doc, x, y) {
+    if (!ctxMenu || !doc) return;
+    const idx = docs.indexOf(doc);
+    const others = docs.filter((d) => d !== doc);
+    const left = docs.slice(0, Math.max(0, idx));
+    const clean = docs.filter((d) => !d.dirty);
+    const hasPath = !!doc.path;
+    ctxMenu.open([
+        {label: '关闭', shortcut: 'Ctrl+W', icon: 'E8BB', action: () => requestCloseDoc(doc)},
+        {label: '关闭其他标签页', disabled: !others.length, action: () => closeDocsWithConfirm(others)},
+        {label: '关闭所有标签页', action: () => closeDocsWithConfirm(docs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
+        {label: '关闭左侧标签页', disabled: !left.length, action: () => closeDocsWithConfirm(left)},
+        {label: '关闭未修改标签页', disabled: !clean.length, action: () => closeDocsWithConfirm(clean)},
+        {sep: true},
+        {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => copyText(doc.path, '路径')},
+        {label: '复制文件名', icon: 'E8C8', action: () => copyText(doc.name, '文件名')},
+        {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: () => showPathInFolder(doc.path)},
+        {sep: true},
+        {label: '在新窗口中打开', shortcut: 'Shift+F4', icon: 'E8A7', disabled: !hasPath, action: () => openInNewWindows([doc.path])},
+        {label: '重新打开关闭的标签页', shortcut: 'Ctrl+Shift+T', icon: 'E7A7', disabled: !closedTabs.length, action: reopenClosedTab},
+    ], x, y);
+}
+
+function showExplorerMenu(info, x, y, node) {
+    if (!ctxMenu || !info) return;
+    const isDir = !!info.isDir;
+    const items = [];
+    if (isDir) {
+        items.push({
+            label: node && node.expanded ? '收起目录' : '展开目录',
+            icon: 'E70D',
+            disabled: !node,
+            action: () => explorer && explorer.toggleNode(node),
+        });
+        items.push({label: '设为文件树根目录', icon: 'E8B7', action: () => openFolderWorkspace(info.path)});
+    } else {
+        items.push({label: '打开', icon: 'E8E5', action: () => openPath(info.path)});
+        items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => openInNewWindows([info.path])});
+    }
+    items.push({sep: true});
+    items.push({label: '复制路径', icon: 'E8C8', action: () => copyText(info.path, '路径')});
+    if (!isDir) items.push({label: '复制文件名', icon: 'E8C8', action: () => copyText(info.name, '文件名')});
+    items.push({label: '在文件管理器中显示', icon: 'E8B7', action: () => showPathInFolder(info.path)});
+    items.push({sep: true});
+    items.push({label: '刷新', icon: 'E72C', action: () => explorer && explorer.refresh()});
+    ctxMenu.open(items, x, y);
+}
+
+function selectedText() {
+    if (!editor) return '';
+    if (currentMode === 'code' && editor.aceEditor) return editor.aceEditor.getSelectedText();
+    if (currentMode === 'text') {
+        const ta = textArea();
+        if (ta) return ta.value.slice(ta.selectionStart, ta.selectionEnd);
+    }
+    return '';
+}
+
+async function ctxCopy() {
+    const text = selectedText();
+    if (text) await copyText(text, '所选内容');
+}
+
+async function ctxCut() {
+    if (!editor || file.binary || file.large) return;
+    if (currentMode === 'code' && editor.aceEditor) {
+        const ace = editor.aceEditor;
+        const text = ace.getSelectedText();
+        if (!text) return;
+        if (!(await copyText(text, '所选内容'))) return;
+        ace.session.replace(ace.getSelectionRange(), '');
+        ace.focus();
+    } else if (currentMode === 'text') {
+        const ta = textArea();
+        if (!ta) return;
+        const start = ta.selectionStart;
+        const end = ta.selectionEnd;
+        if (start === end) return;
+        if (!(await copyText(ta.value.slice(start, end), '所选内容'))) return;
+        ta.setRangeText('', start, end, 'end');
+        ta.dispatchEvent(new Event('input', {bubbles: true}));
+        ta.focus();
+    }
+}
+
+async function ctxPaste() {
+    if (!editor || file.binary || file.large) return;
+    if (!backend.GetClipboardText) return;
+    let text = '';
+    try {
+        text = await backend.GetClipboardText();
+    } catch (e) {
+        flash('读取剪贴板失败：' + e, true);
+        return;
+    }
+    if (!text) return;
+    if (currentMode === 'code' && editor.aceEditor) {
+        editor.aceEditor.focus();
+        editor.aceEditor.insert(text);
+    } else if (currentMode === 'text') {
+        const ta = textArea();
+        if (!ta) return;
+        ta.focus();
+        ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end');
+        ta.dispatchEvent(new Event('input', {bubbles: true}));
+    }
+}
+
+function ctxSelectAll() {
+    if (currentMode === 'code' && editor && editor.aceEditor) {
+        editor.aceEditor.focus();
+        editor.aceEditor.selectAll();
+    } else if (currentMode === 'text') {
+        const ta = textArea();
+        if (ta) {
+            ta.focus();
+            ta.select();
+        }
+    }
+}
+
+function ctxFind() {
+    if (currentMode === 'code' && editor && editor.aceEditor) {
+        editor.aceEditor.focus();
+        editor.aceEditor.execCommand('find');
+    }
+}
+
+function ctxFold(command) {
+    if (currentMode === 'code' && editor && editor.aceEditor) {
+        editor.aceEditor.execCommand(command);
+    }
+}
+
+function showEditorMenu(x, y) {
+    if (!ctxMenu || !file) return;
+    const code = currentMode === 'code' && !!editor && !!editor.aceEditor;
+    const text = currentMode === 'text';
+    const editable = code || text;
+    const readonly = !!file.binary || !!file.large;
+    const hasPath = !!file.path;
+    ctxMenu.open([
+        {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', action: doUndo},
+        {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', action: doRedo},
+        {sep: true},
+        {label: '剪切', shortcut: 'Ctrl+X', icon: 'E8C6', disabled: !editable || readonly, action: ctxCut},
+        {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !editable, action: ctxCopy},
+        {label: '粘贴', shortcut: 'Ctrl+V', icon: 'E77F', disabled: !editable || readonly, action: ctxPaste},
+        {label: '全选', shortcut: 'Ctrl+A', icon: 'E8B3', disabled: !editable, action: ctxSelectAll},
+        {sep: true},
+        {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', disabled: !code, action: ctxFind},
+        {label: '格式化', shortcut: 'Ctrl+Alt+L', disabled: !file || readonly || !!file.format.rawOnly, action: formatDocument},
+        {label: '重新加载', icon: 'E72C', disabled: !hasPath, action: requestReload},
+        {sep: true},
+        {
+            label: '折叠',
+            icon: 'E70D',
+            disabled: !code,
+            submenu: [
+                {label: '折叠当前', action: () => ctxFold('fold')},
+                {label: '展开当前', action: () => ctxFold('unfold')},
+                {sep: true},
+                {label: '全部折叠', action: () => ctxFold('foldall')},
+                {label: '全部展开', action: () => ctxFold('unfoldall')},
+            ],
+        },
+        {sep: true},
+        {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => copyText(file.path, '路径')},
+        {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: showInFolder},
+    ], x, y);
+}
+
+function showBlankMenu(x, y) {
+    if (!ctxMenu) return;
+    const items = [
+        {label: '新建', shortcut: 'Ctrl+N', icon: 'E710', action: newDocument},
+        {label: '打开文件…', shortcut: 'Ctrl+O', icon: 'E8E5', action: openDialog},
+        {label: '打开文件夹…', icon: 'E8B7', action: openFolderDialog},
+    ];
+    if (workspaceFolder) items.push({label: '关闭文件夹', icon: 'E8BB', action: closeFolder});
+    items.push({sep: true}, {label: '设置…', shortcut: 'Ctrl+,', icon: 'E713', action: () => openSettings('general')});
+    ctxMenu.open(items, x, y);
+}
+
+function initContextMenus() {
+    ctxMenu = createContextMenu();
+    if (!els.mainPane) return;
+    els.mainPane.addEventListener('contextmenu', (e) => {
+        if (e.target.closest && e.target.closest('.ctx-menu')) return;
+        if (!file) {
+            e.preventDefault();
+            e.stopPropagation();
+            showBlankMenu(e.clientX, e.clientY);
+            return;
+        }
+        if (currentMode === 'tree') return;
+        e.preventDefault();
+        e.stopPropagation();
+        showEditorMenu(e.clientX, e.clientY);
+    });
 }
 
 function findDocByPath(path) {
@@ -1464,6 +1707,7 @@ function initExplorer() {
         openFolder: () => openFolderDialog(),
         openFileDialog: () => openDialog(),
         isSupported: isSupportedFile,
+        onContextMenu: (info, x, y, node) => showExplorerMenu(info, x, y, node),
         onModeChange: (mode) => {
             settings.sidebarMode = mode;
             applySettings();
@@ -1513,12 +1757,14 @@ async function showInFolder() {
 }
 
 async function copyText(text, label) {
-    if (!text) return;
+    if (!text) return false;
     try {
         await backend.CopyText(text);
         flash('已复制' + label);
+        return true;
     } catch (e) {
         flash('复制失败：' + e, true);
+        return false;
     }
 }
 
@@ -2050,6 +2296,10 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         toggleSidebar();
+    } else if (e.shiftKey && e.key === 'F4') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (file && file.path) openInNewWindows([file.path]);
     } else if (e.ctrlKey && e.altKey && (key === 'l' || e.code === 'KeyL')) {
         e.preventDefault();
         e.stopPropagation();
@@ -2066,6 +2316,10 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         openNewWindow();
+    } else if (e.ctrlKey && e.shiftKey && key === 't') {
+        e.preventDefault();
+        e.stopPropagation();
+        reopenClosedTab();
     } else if (e.ctrlKey && !e.shiftKey && key === 'n') {
         e.preventDefault();
         e.stopPropagation();
@@ -2128,6 +2382,7 @@ if (rt) {
     rt.EventsOn('confirm-close', () => openCloseConfirm());
 }
 
+initContextMenus();
 initExplorer();
 
 (async () => {

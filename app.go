@@ -540,6 +540,10 @@ func (a *App) CopyText(text string) error {
 	return runtime.ClipboardSetText(a.ctx, text)
 }
 
+func (a *App) GetClipboardText() (string, error) {
+	return runtime.ClipboardGetText(a.ctx)
+}
+
 func (a *App) OpenInNewWindows(paths []string) error {
 	_ = a.SetOpenMode("window")
 	exe, err := os.Executable()

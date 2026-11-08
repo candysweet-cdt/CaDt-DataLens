@@ -65,7 +65,7 @@ export function createExplorer(options) {
     const {
         body, titleEl, refreshBtn, listBtn, treeBtn,
         readDir, openPath, openFolder, openFileDialog, isSupported,
-        onModeChange, listLimit = 200, readLimit = 1000, listReadLimit = 5000,
+        onModeChange, onContextMenu, listLimit = 200, readLimit = 1000, listReadLimit = 5000,
     } = options;
     let mode = 'tree';
     let visible = false;
@@ -152,6 +152,13 @@ export function createExplorer(options) {
                 else renderTree();
             } else if (typeof openPath === 'function') {
                 openPath(node.path);
+            }
+        });
+        row.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (typeof onContextMenu === 'function') {
+                onContextMenu({kind: 'tree', name: node.name, path: node.path, isDir: node.isDir}, e.clientX, e.clientY, node);
             }
         });
         return row;
@@ -346,6 +353,13 @@ export function createExplorer(options) {
         row.addEventListener('click', () => {
             if (typeof openPath === 'function') openPath(entry.path);
         });
+        row.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (typeof onContextMenu === 'function') {
+                onContextMenu({kind: 'list', name: entry.name, path: entry.path, isDir: false}, e.clientX, e.clientY, null);
+            }
+        });
         return row;
     }
 
@@ -454,6 +468,13 @@ export function createExplorer(options) {
         }
     }
 
+    function toggleNode(node) {
+        if (!node || !node.isDir) return;
+        node.expanded = !node.expanded;
+        if (node.expanded && !node.loaded) loadNode(node, treeSeq);
+        else renderTree();
+    }
+
     if (refreshBtn) {
         refreshBtn.innerHTML = ICONS.refresh;
         refreshBtn.addEventListener('click', refresh);
@@ -476,5 +497,6 @@ export function createExplorer(options) {
         getRoot: currentRoot,
         setActive,
         refresh,
+        toggleNode,
     };
 }

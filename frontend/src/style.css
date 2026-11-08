@@ -591,6 +591,32 @@ html, body {
 .mi-key { color: var(--muted); font-size: 11px; font-family: Consolas, monospace; }
 .menu-sep { height: 1px; background: var(--border); margin: 4px 6px; }
 
+.ctx-menu {
+    position: fixed;
+    z-index: 120;
+    min-width: 248px;
+    max-width: 360px;
+    max-height: calc(100vh - 16px);
+    overflow: auto;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    box-shadow: 0 10px 30px var(--shadow-strong);
+    user-select: none;
+}
+.ctx-menu.hidden { display: none; }
+.ctx-menu .mi-label { overflow: hidden; text-overflow: ellipsis; }
+.ctx-item .ctx-arrow {
+    flex: none;
+    margin-left: 4px;
+    color: var(--muted);
+    font-family: "Segoe MDL2 Assets", sans-serif;
+    font-size: 10px;
+}
+.ctx-item:hover .ctx-arrow { color: var(--text); }
+.ctx-item.danger .mi-label { color: var(--red); }
+
 #menubar-search {
     display: flex;
     align-items: center;
