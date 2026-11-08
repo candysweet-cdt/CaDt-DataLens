@@ -329,6 +329,7 @@
                         <div class="plugin-toolbar">
                             <button type="button" id="plugin-add" class="dlg-btn">添加插件…</button>
                             <button type="button" id="plugin-import" class="dlg-btn">导入插件(.zip)…</button>
+                            <button type="button" id="plugin-clone" class="dlg-btn">从仓库地址…</button>
                             <button type="button" id="plugin-open-dir" class="dlg-btn">打开插件目录</button>
                         </div>
                         <div class="popover-row">
@@ -425,6 +426,13 @@
                 <button type="button" id="ab-search" class="ab-btn" title="搜索节点 (Ctrl+F)" aria-label="搜索节点">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="m12.8 12.8 3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 </button>
+                <button type="button" id="ab-terminal" class="ab-btn" title="终端 (Alt+F12)" aria-label="终端" aria-pressed="false">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 6.2 4 3.8-4 3.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.6 13.8H16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
+                <button type="button" id="ab-git" class="ab-btn" title="Git：变更列表" aria-label="Git">
+                    <span class="ab-dot" aria-hidden="true"></span>
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="6" cy="5" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="6" cy="15" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="14" cy="9" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7v6M6 9.4c0-2.2 2.4-2.2 5.6-2.3M14 11v.6c0 2-1.6 3.4-4.6 3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="6" cy="10" r=".1" fill="none"/></svg>
+                </button>
                 <button type="button" id="ab-more" class="ab-btn" title="视图与工具窗口" aria-label="更多">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="10" r="1.2" fill="currentColor"/><circle cx="10" cy="10" r="1.2" fill="currentColor"/><circle cx="15" cy="10" r="1.2" fill="currentColor"/></svg>
                 </button>
@@ -474,6 +482,7 @@
                 </div>
             </div>
             <div id="terminal-panel" class="hidden">
+                <div id="terminal-resize" class="term-resize" title="拖动调整高度"></div>
                 <div class="term-head">
                     <div class="term-tabs" id="term-tabs"></div>
                     <div class="term-actions">

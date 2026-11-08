@@ -2,8 +2,10 @@ package main
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"os/exec"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +14,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
+	"syscall"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -356,6 +360,72 @@ func importPluginZipAt(root, zipPath string) (*PluginInfo, error) {
 	}
 	defer os.RemoveAll(tmp)
 	srcDir, err := extractPluginZip(zipPath, tmp)
+	if err != nil {
+		return nil, err
+	}
+	return installPluginAt(root, srcDir)
+}
+
+// InstallPluginFromUrl 用系统 git 浅克隆插件仓库并安装；支持 https(s) 与 git@ 地址。
+func (a *App) InstallPluginFromUrl(rawUrl string) (*PluginInfo, error) {
+	urlStr := strings.TrimSpace(rawUrl)
+	if urlStr == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(urlStr, "git@") {
+		urlStr = strings.TrimPrefix(urlStr, "git@")
+		urlStr = strings.Replace(urlStr, ":", "/", 1)
+		urlStr = "https://" + urlStr
+	}
+	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+		urlStr = "https://" + strings.TrimPrefix(urlStr, "//")
+	}
+	urlStr = strings.TrimRight(urlStr, "/")
+	if !strings.Contains(strings.TrimPrefix(strings.TrimPrefix(urlStr, "https://"), "http://"), "/") {
+		return nil, fmt.Errorf("不是有效的仓库地址：%s", urlStr)
+	}
+	if !strings.HasSuffix(urlStr, ".git") {
+		urlStr += ".git"
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, fmt.Errorf("未安装 git 或未加入 PATH，无法从仓库地址安装")
+	}
+	tmp, err := os.MkdirTemp("", "cadt-plugin-repo-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--single-branch", urlStr, filepath.Join(tmp, "repo"))
+	cloneCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	if out, cloneErr := cloneCmd.CombinedOutput(); cloneErr != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("克隆超时（90 秒）")
+		}
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = cloneErr.Error()
+		}
+		return nil, fmt.Errorf("克隆失败：%s", msg)
+	}
+	repoDir := filepath.Join(tmp, "repo")
+	var srcDir string
+	if _, err := os.Stat(filepath.Join(repoDir, pluginManifestName)); err == nil {
+		srcDir = repoDir
+	} else {
+		top, readErr := os.ReadDir(repoDir)
+		if readErr == nil && len(top) == 1 && top[0].IsDir() {
+			sub := filepath.Join(repoDir, top[0].Name())
+			if _, err2 := os.Stat(filepath.Join(sub, pluginManifestName)); err2 == nil {
+				srcDir = sub
+			}
+		}
+	}
+	if srcDir == "" {
+		return nil, fmt.Errorf("仓库里没有找到 %s，不是有效的插件仓库", pluginManifestName)
+	}
+	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
 	if err != nil {
 		return nil, err
 	}

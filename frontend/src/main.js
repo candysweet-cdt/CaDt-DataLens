@@ -506,6 +506,13 @@ const mockBackend = {
     async ImportPluginFromZip() {
         return this.AddPluginFromFolder();
     },
+    async InstallPluginFromUrl(rawUrl) {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        st.present = true;
+        delete st.disabled['demo-format'];
+        const list = await this.GetPlugins();
+        return list[0];
+    },
     async DeletePlugin(id) {
         const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
         if (id === 'demo-format') st.present = false;
@@ -626,6 +633,12 @@ const els = {
     abFiles: document.getElementById('ab-files'),
     abSearch: document.getElementById('ab-search'),
     abMore: document.getElementById('ab-more'),
+    abTerminal: document.getElementById('ab-terminal'),
+    abGit: document.getElementById('ab-git'),
+    termNew: document.getElementById('term-new'),
+    termPanelClose: document.getElementById('term-panel-close'),
+    terminalResize: document.getElementById('terminal-resize'),
+    terminalPanel: document.getElementById('terminal-panel'),
     abLock: document.getElementById('ab-lock'),
     abTheme: document.getElementById('ab-theme'),
     abSettings: document.getElementById('ab-settings'),
@@ -737,6 +750,7 @@ const defaultSettings = {
     treeGuides: false,
     treeCounts: false,
     treeRefreshInterval: 3,
+    terminalHeight: 240,
     codeGuides: false,
     alwaysOnTop: false,
     editorFont: 13,
@@ -775,6 +789,7 @@ settings.codeGuides = !!settings.codeGuides;
 settings.alwaysOnTop = !!settings.alwaysOnTop;
 settings.treeRefreshInterval = Number(settings.treeRefreshInterval);
 if (![0, 1, 2, 3, 5, 10].includes(settings.treeRefreshInterval)) settings.treeRefreshInterval = 3;
+settings.terminalHeight = Math.min(480, Math.max(120, Number(settings.terminalHeight) || 240));
 settings.codeWrap = !!settings.codeWrap;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
 settings.showBanners = settings.showBanners !== false;
@@ -1516,6 +1531,7 @@ if (elsSettings.fileAssoc) {
 function setupPluginsSettings() {
     const addBtn = document.getElementById('plugin-add');
     const importBtn = document.getElementById('plugin-import');
+    const cloneBtn = document.getElementById('plugin-clone');
     const openDirBtn = document.getElementById('plugin-open-dir');
     const modeSel = document.getElementById('plugin-path-mode');
     if (!addBtn) return;
@@ -1544,6 +1560,27 @@ function setupPluginsSettings() {
             flash('导入插件失败：' + e, true);
         }
         renderPluginsPane();
+    });
+    cloneBtn.addEventListener('click', () => {
+        if (!backend.InstallPluginFromUrl) {
+            flash('当前版本不支持从仓库地址安装', true);
+            return;
+        }
+        openNameDialog({
+            title: '从仓库地址安装插件',
+            label: '仓库地址',
+            placeholder: 'https://gitee.com/cadt-datalens-plugins/git-flow',
+            okLabel: '安装',
+            onSubmit: async (url) => {
+                const installed = await backend.InstallPluginFromUrl(url);
+                if (!installed) {
+                    throw new Error('仓库地址为空');
+                }
+                await reloadPluginErrors('');
+                renderPluginsPane();
+                flash('已安装插件：' + installed.name);
+            },
+        });
     });
     openDirBtn.addEventListener('click', async () => {
         try {
@@ -4930,8 +4967,9 @@ function applySidebarUI() {
         els.btnSidebar.setAttribute('aria-pressed', String(!!settings.showSidebar));
     }
     if (els.abFiles) {
-        els.abFiles.classList.toggle('active', !!settings.showSidebar);
-        els.abFiles.setAttribute('aria-pressed', String(!!settings.showSidebar));
+        const treeActive = !!settings.showSidebar && settings.sidebarMode === 'tree';
+        els.abFiles.classList.toggle('active', treeActive);
+        els.abFiles.setAttribute('aria-pressed', String(treeActive));
     }
     if (explorer) explorer.setVisible(!!settings.showSidebar);
     requestAnimationFrame(() => {
@@ -4964,7 +5002,17 @@ function syncExplorerActive() {
 
 function initActivityBar() {
     if (!els.activityBar) return;
-    if (els.abFiles) els.abFiles.addEventListener('click', () => toggleSidebar());
+    if (els.abFiles) els.abFiles.addEventListener('click', () => {
+        if (!settings.showSidebar) {
+            settings.showSidebar = true;
+            settings.sidebarMode = 'tree';
+        } else if (settings.sidebarMode !== 'tree') {
+            settings.sidebarMode = 'tree';
+        } else {
+            settings.showSidebar = false;
+        }
+        applySettings();
+    });
     if (els.abSearch) els.abSearch.addEventListener('click', () => {
         if (els.searchInput.disabled) {
             flash('当前视图不支持节点搜索', true);
@@ -4972,6 +5020,8 @@ function initActivityBar() {
         }
         focusSearch();
     });
+    if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleTerminalPanel());
+    if (els.abGit) els.abGit.addEventListener('click', () => openGitChangesDoc());
     if (els.abMore) els.abMore.addEventListener('click', () => {
         if (!ctxMenu) return;
         const rect = els.abMore.getBoundingClientRect();
@@ -6035,6 +6085,10 @@ function toggleTerminalPanel(force) {
         panel.classList.add('hidden');
         terminalUI.open = false;
     }
+    if (els.abTerminal) {
+        els.abTerminal.classList.toggle('active', terminalUI.open);
+        els.abTerminal.setAttribute('aria-pressed', String(terminalUI.open));
+    }
 }
 
 async function createTermSession() {
@@ -6167,6 +6221,39 @@ window.addEventListener('resize', () => {
     if (terminalUI.open) fitActiveTerm();
 });
 
+if (els.termNew) els.termNew.addEventListener('click', () => createTermSession());
+if (els.termPanelClose) els.termPanelClose.addEventListener('click', () => toggleTerminalPanel(false));
+if (els.terminalPanel && settings.terminalHeight) {
+    els.terminalPanel.style.height = settings.terminalHeight + 'px';
+}
+if (els.terminalResize) {
+    let termResizing = false;
+    let termResizeStartY = 0;
+    let termResizeStartH = 0;
+    els.terminalResize.addEventListener('mousedown', (e) => {
+        if (!terminalUI.open) return;
+        termResizing = true;
+        termResizeStartY = e.clientY;
+        termResizeStartH = els.terminalPanel.offsetHeight;
+        document.body.style.cursor = 'row-resize';
+        e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+        if (!termResizing) return;
+        const h = Math.min(480, Math.max(120, termResizeStartH + (termResizeStartY - e.clientY)));
+        els.terminalPanel.style.height = h + 'px';
+        fitActiveTerm();
+    });
+    window.addEventListener('mouseup', () => {
+        if (!termResizing) return;
+        termResizing = false;
+        document.body.style.cursor = '';
+        fitActiveTerm();
+        settings.terminalHeight = Math.min(480, Math.max(120, els.terminalPanel.offsetHeight));
+        applySettings();
+    });
+}
+
 // ===== 进程桥 / 虚拟文档 =====
 function openVirtualDoc(name, content) {
     const doc = createDoc({
@@ -6220,6 +6307,7 @@ async function refreshGitStatus() {
         }
     } catch (e) {}
     applyGitBadges();
+    applyGitDot();
 }
 
 function applyGitBadges() {
@@ -6238,6 +6326,35 @@ function restartGitTimer() {
     if (gitTimer) clearInterval(gitTimer);
     const sec = Math.max(1, settings.treeRefreshInterval || 3);
     gitTimer = setInterval(refreshGitStatus, sec * 1000);
+}
+
+function openGitChangesDoc() {
+    if (!backend.GitStatusFor) {
+        flash('当前版本不支持 git 集成', true);
+        return;
+    }
+    const marks = {new: '新增', modified: '修改', deleted: '删除', renamed: '重命名', conflict: '冲突'};
+    const lines = [];
+    for (const [path, state] of gitStateCache.map) {
+        lines.push('[' + (marks[state] || state) + '] ' + path);
+    }
+    if (!lines.length) {
+        refreshGitStatus().then(() => {
+            const still = [];
+            for (const [path, state] of gitStateCache.map) {
+                still.push('[' + (marks[state] || state) + '] ' + path);
+            }
+            const head = gitStateCache.branch ? '分支：' + gitStateCache.branch + '\n\n' : '';
+            openVirtualDoc('Git 变更列表' + (gitStateCache.dir ? ' — ' + gitStateCache.dir : '') + '.gitstatus', head + (still.length ? still.join('\n') : '（工作区干净，没有变更）'));
+        });
+        return;
+    }
+    const head = gitStateCache.branch ? '分支：' + gitStateCache.branch + '\n\n' : '';
+    openVirtualDoc('Git 变更列表' + (gitStateCache.dir ? ' — ' + gitStateCache.dir : '') + '.gitstatus', head + lines.join('\n'));
+}
+
+function applyGitDot() {
+    if (els.abGit) els.abGit.classList.toggle('has-changes', gitStateCache.map.size > 0);
 }
 
 async function showGitDiff(path) {

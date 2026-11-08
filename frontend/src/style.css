@@ -2392,13 +2392,28 @@ a.jsoneditor-poweredBy { display: none !important; }
 /* 内置终端面板 */
 #terminal-panel {
     flex: none;
-    height: 240px;
+    min-height: 120px;
+    max-height: 480px;
     display: flex;
     flex-direction: column;
     border-top: 1px solid var(--border);
     background: var(--bg);
 }
 #terminal-panel.hidden { display: none; }
+.term-resize { height: 4px; cursor: row-resize; background: transparent; flex: none; }
+.term-resize:hover { background: var(--accent-weak); }
+.ab-btn { position: relative; }
+.ab-btn .ab-dot {
+    display: none;
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #e8912d;
+}
+.ab-btn.has-changes .ab-dot { display: block; }
 .term-head {
     display: flex;
     align-items: center;

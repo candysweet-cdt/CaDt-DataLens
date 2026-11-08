@@ -2,9 +2,12 @@ package main
 
 import (
 	"archive/zip"
+	"fmt"
+	"os/exec"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -210,5 +213,56 @@ func TestPluginsPathModeRoundTrip(t *testing.T) {
 	portable := filepath.Join(filepath.Dir(exe), "plugins")
 	if dir2, _ := app.GetPluginsDir(); dir2 != portable {
 		t.Fatalf("portable 目录不符: %s != %s", dir2, portable)
+	}
+}
+
+func installPluginFromUrl(root, rawUrl string) (*PluginInfo, error) {
+	tmp, err := os.MkdirTemp("", "cadt-plugin-url-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	cloneCmd := exec.Command("git", "clone", "--depth", "1", "--single-branch", rawUrl, filepath.Join(tmp, "repo"))
+	cloneCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	if out, cloneErr := cloneCmd.CombinedOutput(); cloneErr != nil {
+		return nil, fmt.Errorf("克隆失败：%s", strings.TrimSpace(string(out)))
+	}
+	repoDir := filepath.Join(tmp, "repo")
+	var srcDir string
+	if _, e := os.Stat(filepath.Join(repoDir, pluginManifestName)); e == nil {
+		srcDir = repoDir
+	} else if top, _ := os.ReadDir(repoDir); len(top) == 1 && top[0].IsDir() {
+		sub := filepath.Join(repoDir, top[0].Name())
+		if _, e2 := os.Stat(filepath.Join(sub, pluginManifestName)); e2 == nil {
+			srcDir = sub
+		}
+	}
+	if srcDir == "" {
+		return nil, fmt.Errorf("仓库里没有找到 %s", pluginManifestName)
+	}
+	return installPluginAt(root, srcDir)
+}
+
+func TestInstallPluginFromUrlReal(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("本机无 git，跳过")
+	}
+	root := t.TempDir()
+	info, err := installPluginFromUrl(root, "https://gitee.com/cadt-datalens-plugins/bak-json")
+	if err != nil {
+		t.Fatalf("从仓库地址安装失败: %v", err)
+	}
+	if info.Id != "bak-json" || !info.EntryOK {
+		t.Fatalf("安装结果不符: %+v", info)
+	}
+	if _, err := os.Stat(filepath.Join(root, "bak-json", "main.js")); err != nil {
+		t.Fatalf("入口文件未复制: %v", err)
+	}
+}
+
+func TestInstallPluginFromUrlInvalid(t *testing.T) {
+	root := t.TempDir()
+	if _, err := installPluginFromUrl(root, "https://gitee.com/cadt-datalens-plugins/not-exist-repo-xyz"); err == nil {
+		t.Fatal("克隆不存在的仓库应报错")
 	}
 }
