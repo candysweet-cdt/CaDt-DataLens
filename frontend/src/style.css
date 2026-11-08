@@ -1938,26 +1938,26 @@ div.jsoneditor-tree div.jsoneditor-value.value-count {
     font-size: 11px;
     opacity: 0.8;
 }
+div.jsoneditor div.jsoneditor-tree td { vertical-align: middle; }
 div.jsoneditor-tree div.jsoneditor-value.value-fold {
-    color: var(--muted);
+    color: var(--text);
     font-size: var(--editor-font, 13px);
     cursor: pointer;
     white-space: nowrap;
+    background: var(--fold-bg, var(--hover));
+    border-radius: 3px;
+    padding: 0 4px;
 }
+html[data-theme="idea-light"] { --fold-bg: #e9f5e6; }
+html[data-theme="idea-dark"] { --fold-bg: #363a42; }
 div.jsoneditor-tree div.jsoneditor-value.value-fold:hover {
     text-decoration: underline;
     text-underline-offset: 2px;
     text-decoration-color: var(--faint);
 }
 div.jsoneditor-tree .jsoneditor-fold-preview { display: inline; }
-div.jsoneditor-tree .jsoneditor-fold-punct,
-div.jsoneditor-tree .jsoneditor-fold-nested,
-div.jsoneditor-tree .jsoneditor-fold-count { color: var(--muted); }
-div.jsoneditor-tree .jsoneditor-fold-key { color: var(--val-key); }
-div.jsoneditor-tree .jsoneditor-fold-string { color: var(--val-string); }
-div.jsoneditor-tree .jsoneditor-fold-number { color: var(--val-number); }
-div.jsoneditor-tree .jsoneditor-fold-bool { color: var(--val-bool); }
-div.jsoneditor-tree .jsoneditor-fold-null { color: var(--val-null); }
+div.jsoneditor-tree .jsoneditor-fold-text { color: var(--text); }
+
 div.jsoneditor-tree div.jsoneditor-show-more a {
     color: var(--accent);
     text-decoration: none;

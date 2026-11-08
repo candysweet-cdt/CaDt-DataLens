@@ -1675,13 +1675,12 @@ function foldRowPaths(tbody) {
 }
 
 function foldPrimitive(value) {
-    if (typeof value === 'string') return {text: JSON.stringify(value), cls: 'jsoneditor-fold-string'};
-    if (value === null || value === undefined) return {text: 'null', cls: 'jsoneditor-fold-null'};
-    if (typeof value === 'boolean') return {text: String(value), cls: 'jsoneditor-fold-bool'};
-    if (typeof value === 'number') return {text: String(value), cls: 'jsoneditor-fold-number'};
-    if (Array.isArray(value)) return {text: '[...]', cls: 'jsoneditor-fold-nested'};
-    if (typeof value === 'object') return {text: '{...}', cls: 'jsoneditor-fold-nested'};
-    return {text: String(value), cls: 'jsoneditor-fold-nested'};
+    if (typeof value === 'string') return JSON.stringify(value);
+    if (value === null || value === undefined) return 'null';
+    if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+    if (Array.isArray(value)) return '[...]';
+    if (typeof value === 'object') return '{...}';
+    return String(value);
 }
 
 function clipFoldText(text, max) {
@@ -1694,12 +1693,10 @@ function foldObjectSpec(value) {
     const keys = Object.keys(value);
     if (!keys.length) return {kind: 'empty'};
     const keyText = clipFoldText(JSON.stringify(keys[0]), 36);
-    const primitive = foldPrimitive(value[keys[0]]);
     return {
         kind: 'object',
         keyText,
-        valueText: clipFoldText(primitive.text, 30),
-        valueClass: primitive.cls,
+        valueText: clipFoldText(foldPrimitive(value[keys[0]]), 30),
     };
 }
 
@@ -1758,38 +1755,39 @@ function humanizeCounts() {
             if (isObject) {
                 const spec = foldObjectSpec(value);
                 if (spec && spec.kind === 'empty') {
-                    renderFoldPreview(el, 'o:empty', (wrap) => foldSpan(wrap, '{}', 'jsoneditor-fold-punct'));
+                    renderFoldPreview(el, 'o:empty', (wrap) => foldSpan(wrap, '{}', 'jsoneditor-fold-text'));
                 } else if (spec) {
                     renderFoldPreview(el, 'o:' + JSON.stringify(spec), (wrap) => {
-                        foldSpan(wrap, '{', 'jsoneditor-fold-punct');
-                        foldSpan(wrap, spec.keyText, 'jsoneditor-fold-key');
-                        foldSpan(wrap, ': ', 'jsoneditor-fold-punct');
-                        foldSpan(wrap, spec.valueText, spec.valueClass);
-                        foldSpan(wrap, '...', 'jsoneditor-fold-punct');
-                        foldSpan(wrap, '}', 'jsoneditor-fold-punct');
+                        foldSpan(wrap, '{', 'jsoneditor-fold-text');
+                        foldSpan(wrap, spec.keyText, 'jsoneditor-fold-text');
+                        foldSpan(wrap, ': ', 'jsoneditor-fold-text');
+                        foldSpan(wrap, spec.valueText, 'jsoneditor-fold-text');
+                        foldSpan(wrap, '...', 'jsoneditor-fold-text');
+                        foldSpan(wrap, '}', 'jsoneditor-fold-text');
                     });
                 } else {
                     renderFoldPreview(el, 'of:' + count, (wrap) => {
-                        foldSpan(wrap, '{' + count + ' 项}', 'jsoneditor-fold-punct');
+                        foldSpan(wrap, '{' + count + ' 项}', 'jsoneditor-fold-text');
                     });
                 }
             } else if (count === 0) {
-                renderFoldPreview(el, 'a:0', (wrap) => foldSpan(wrap, '[]', 'jsoneditor-fold-punct'));
+                renderFoldPreview(el, 'a:0', (wrap) => foldSpan(wrap, '[]', 'jsoneditor-fold-text'));
             } else {
                 renderFoldPreview(el, 'a:' + count, (wrap) => {
-                    foldSpan(wrap, '[ ', 'jsoneditor-fold-punct');
-                    foldSpan(wrap, count + ' 个元素', 'jsoneditor-fold-count');
-                    foldSpan(wrap, '... ]', 'jsoneditor-fold-punct');
+                    foldSpan(wrap, '[ ', 'jsoneditor-fold-text');
+                    foldSpan(wrap, count + ' 个元素', 'jsoneditor-fold-text');
+                    foldSpan(wrap, '... ]', 'jsoneditor-fold-text');
                 });
             }
+            el.removeAttribute('title');
         } else {
             const text = count + ' 项';
             if (el.textContent !== text || el.querySelector('.jsoneditor-fold-preview')) el.textContent = text;
             el.dataset.foldSig = 'e:' + count;
+            el.title = (isObject ? '对象' : '数组') + '，共 ' + count + ' 项';
         }
         el.classList.toggle('value-fold', collapsed);
         el.classList.toggle('value-count', !collapsed);
-        el.title = (isObject ? '对象' : '数组') + '，共 ' + count + ' 项' + (collapsed ? '（点击展开）' : '');
     });
 }
 
