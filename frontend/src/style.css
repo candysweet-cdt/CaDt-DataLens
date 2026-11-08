@@ -793,6 +793,14 @@ html, body {
 .dlg-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .popover-row { display: flex; align-items: center; gap: 8px; }
 .popover-label { display: flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
+.opt-path {
+    flex: 1;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 11px;
+    word-break: break-all;
+    user-select: text;
+}
 .settings-pane .popover-row > .popover-label {
     width: 112px;
     flex: none;
@@ -1526,6 +1534,7 @@ a.jsoneditor-poweredBy { display: none !important; }
 .font-preview .fp-ui { font-family: var(--ui-font); color: var(--text); }
 .font-preview .fp-editor { font-family: var(--editor-font-family); color: var(--val-key); }
 .fmt-hint { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.fmt-hint.hint-indent { padding-left: 22px; }
 
 /* prevent native drag-selection across tree rows; allow text selection inside an editing cell */
 div.jsoneditor-tree, div.jsoneditor-tree * { user-select: none; }

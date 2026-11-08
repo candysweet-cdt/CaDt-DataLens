@@ -153,6 +153,28 @@ const mockBackend = {
         return window.__mockOpenMode;
     },
     async SetOpenMode(mode) { window.__mockOpenMode = mode; },
+    async GetIntegrationStatus() {
+        if (!window.__mockIntegration) {
+            window.__mockIntegration = {fileAssoc: false, contextMenu: false};
+        }
+        return {
+            executable: 'D:\\Tools\\CaDt-DataLens.exe',
+            fileAssoc: !!window.__mockIntegration.fileAssoc,
+            contextMenu: !!window.__mockIntegration.contextMenu,
+        };
+    },
+    async SetFileAssociation(enabled) {
+        if (!window.__mockIntegration) {
+            window.__mockIntegration = {fileAssoc: false, contextMenu: false};
+        }
+        window.__mockIntegration.fileAssoc = !!enabled;
+    },
+    async SetContextMenu(enabled) {
+        if (!window.__mockIntegration) {
+            window.__mockIntegration = {fileAssoc: false, contextMenu: false};
+        }
+        window.__mockIntegration.contextMenu = !!enabled;
+    },
     async OpenInNewWindows(paths) { window.__mockNewWindows = (window.__mockNewWindows || []).concat([paths]); },
     async OpenNewWindow() { window.__mockNewWindow = (window.__mockNewWindow || 0) + 1; },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
@@ -333,6 +355,10 @@ const elsSettings = {
     uiCjkFont: document.getElementById('opt-ui-cjk-font'),
     editorFontFamily: document.getElementById('opt-editor-font'),
     editorCjkFont: document.getElementById('opt-editor-cjk-font'),
+    fileAssoc: document.getElementById('opt-file-assoc'),
+    contextMenu: document.getElementById('opt-context-menu'),
+    exePath: document.getElementById('opt-exe-path'),
+    refreshIntegration: document.getElementById('opt-refresh-integration'),
 };
 
 function fillFontSelect(select, list) {
@@ -459,6 +485,45 @@ function openSettings(pane = 'general') {
     openDialogEl(elsDialogs.settings);
     selectSettingsPane(pane);
     if (pane === 'formats') renderFmtTable();
+    if (pane === 'integration') syncIntegrationStatus();
+}
+
+async function syncIntegrationStatus() {
+    if (!elsSettings.fileAssoc) return;
+    if (!backend.GetIntegrationStatus) {
+        elsSettings.exePath.textContent = '当前版本不支持系统集成';
+        return;
+    }
+    try {
+        const status = await backend.GetIntegrationStatus();
+        elsSettings.fileAssoc.checked = !!status.fileAssoc;
+        elsSettings.contextMenu.checked = !!status.contextMenu;
+        elsSettings.exePath.textContent = status.executable || '—';
+        elsSettings.exePath.title = status.executable || '';
+    } catch (e) {
+        flash('读取系统集成状态失败：' + e, true);
+    }
+}
+
+async function applyIntegration(kind, checkbox, label) {
+    const enabled = checkbox.checked;
+    if (!backend[kind]) {
+        checkbox.checked = !enabled;
+        flash('当前版本不支持系统集成', true);
+        return;
+    }
+    elsSettings.fileAssoc.disabled = true;
+    elsSettings.contextMenu.disabled = true;
+    try {
+        await backend[kind](enabled);
+        flash(label + (enabled ? '已注册' : '已取消'));
+    } catch (e) {
+        flash(label + (enabled ? '注册失败：' : '取消注册失败：') + e, true);
+    } finally {
+        elsSettings.fileAssoc.disabled = false;
+        elsSettings.contextMenu.disabled = false;
+        await syncIntegrationStatus();
+    }
 }
 
 function openAbout() {
@@ -512,8 +577,15 @@ document.querySelectorAll('.snav-item').forEach((btn) => {
     btn.addEventListener('click', () => {
         selectSettingsPane(btn.dataset.pane);
         if (btn.dataset.pane === 'formats') renderFmtTable();
+        if (btn.dataset.pane === 'integration') syncIntegrationStatus();
     });
 });
+
+if (elsSettings.fileAssoc) {
+    elsSettings.fileAssoc.addEventListener('change', () => applyIntegration('SetFileAssociation', elsSettings.fileAssoc, '文件关联'));
+    elsSettings.contextMenu.addEventListener('change', () => applyIntegration('SetContextMenu', elsSettings.contextMenu, '右键菜单'));
+    elsSettings.refreshIntegration.addEventListener('click', syncIntegrationStatus);
+}
 
 const ENCODINGS = [['auto', '自动'], ['utf-8', 'UTF-8'], ['gbk', 'GBK'], ['gb18030', 'GB18030'], ['iso-8859-1', 'ISO-8859-1'], ['us-ascii', 'US-ASCII']];
 const CONVERT_ENCODINGS = [['utf-8', 'UTF-8'], ['gbk', 'GBK'], ['gb18030', 'GB18030'], ['iso-8859-1', 'ISO-8859-1'], ['us-ascii', 'US-ASCII']];

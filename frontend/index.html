@@ -71,6 +71,7 @@
                     <button type="button" class="snav-item active" data-pane="general">通用设置</button>
                     <button type="button" class="snav-item" data-pane="formats">文件格式</button>
                     <button type="button" class="snav-item" data-pane="shortcuts">快捷键</button>
+                    <button type="button" class="snav-item" data-pane="integration">系统集成</button>
                     <button type="button" class="snav-item" data-pane="about">关于我们</button>
                 </div>
                 <div class="settings-content">
@@ -147,6 +148,30 @@
                             <div><span>全部展开 / 收起</span><span class="kbd">Ctrl+Shift+= / -</span></div>
                             <div><span>编辑器字号</span><span class="kbd">Ctrl+滚轮</span></div>
                         </div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="integration">
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-file-assoc">
+                                注册文件关联（写入当前用户注册表）
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">把 JSON / JSONC / JSON5、YAML、XML、CSV、纯文本等格式加入“打开方式”。不会改动系统默认程序；默认应用仍需在 Windows 设置里确认一次。</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-context-menu">
+                                注册资源管理器右键菜单
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">为文件、文件夹和文件夹空白处添加“用 CaDt-DataLens 打开”。Windows 11 可能显示在“显示更多选项”中。</div>
+                        <div class="popover-row">
+                            <span class="popover-label">当前程序</span>
+                            <span id="opt-exe-path" class="opt-path">—</span>
+                        </div>
+                        <div class="dialog-footer" style="justify-content:flex-start; margin-top:10px;">
+                            <button type="button" id="opt-refresh-integration" class="dlg-btn">刷新状态</button>
+                        </div>
+                        <div class="fmt-hint">只写入 HKCU，无需管理员权限；程序移动位置后重新勾选即可更新路径。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="about">
                         <div class="about-body">
