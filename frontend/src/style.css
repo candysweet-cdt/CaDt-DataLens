@@ -772,7 +772,31 @@ html, body {
     max-height: 70vh;
     overflow: auto;
 }
-.about-body { text-align: center; line-height: 1.9; color: var(--text); font-size: 12.5px; }
+.about-body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    line-height: 1.7;
+    color: var(--text);
+    font-size: 12.5px;
+    padding: 8px 0 4px;
+}
+.about-logo {
+    width: 76px;
+    height: 76px;
+    border-radius: 18px;
+    object-fit: cover;
+    box-shadow: 0 6px 18px var(--shadow);
+    margin: 2px 0 12px;
+}
+.about-name { font-size: 19px; font-weight: 600; color: var(--text); letter-spacing: 0.2px; }
+.about-sub { color: var(--muted); margin-top: 2px; }
+.about-meta { display: grid; grid-template-columns: max-content max-content; gap: 4px 18px; margin: 14px 0 12px; text-align: left; }
+.about-meta span:nth-child(odd) { color: var(--muted); }
+.about-meta span:nth-child(even) { color: var(--text); }
+.about-formats { color: var(--text); }
+.about-dim { color: var(--muted); font-size: 11px; margin-top: 8px; line-height: 1.7; }
 .dialog-footer {
     display: flex;
     justify-content: flex-end;
@@ -1459,8 +1483,6 @@ div.jsoneditor-tree td:has(> input[type="checkbox"]) { vertical-align: middle; }
 .jsoneditor .ace_searchbtn, .jsoneditor .ace_button { color: var(--text); }
 a.jsoneditor-poweredBy { display: none !important; }
 
-.about-body b { font-size: 15px; }
-.about-dim { color: var(--muted); font-size: 11px; }
 /* settings dialog layout */
 .dialog-settings { width: 780px; }
 .settings-layout { display: flex; min-height: 400px; }
