@@ -118,6 +118,7 @@ const mockImageDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0
 const mockFiles = {
     yaml: {name: 'sample.yaml', content: sampleYaml},
     xml: {name: 'sample.xml', content: sampleXml},
+    svg: {name: 'diagram.svg', content: '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" rx="10" fill="#4f8cff"/><circle cx="52" cy="60" r="26" fill="#ffb648"/><text x="96" y="68" fill="#fff" font-family="sans-serif" font-size="20">SVG OK</text></svg>'},
     csv: {name: 'sample.csv', content: sampleCsv},
     text: {name: 'notes.md', content: sampleText},
     json: {name: 'sample.json', content: sampleJson},
@@ -136,6 +137,7 @@ const mockTree = {
         {name: 'notes.md', path: 'mock://samples/notes.md', isDir: false},
         {name: 'sample.csv', path: 'mock://samples/sample.csv', isDir: false},
         {name: 'sample.json', path: 'mock://samples/sample.json', isDir: false},
+        {name: 'diagram.svg', path: 'mock://samples/diagram.svg', isDir: false},
         {name: 'sample.jsonl', path: 'mock://samples/sample.jsonl', isDir: false},
         {name: 'sample.ini', path: 'mock://samples/sample.ini', isDir: false},
         {name: 'sample.png', path: 'mock://samples/sample.png', isDir: false},
@@ -202,7 +204,7 @@ const mockBackend = {
         if (mockScenario.has('image')) return [mockDir + 'sample.png'];
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
         if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
-        for (const key of ['yaml', 'xml', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak']) {
+        for (const key of ['yaml', 'xml', 'svg', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak']) {
             if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
         }
         return [mockDir + 'sample.json'];
@@ -793,6 +795,7 @@ const defaultSettings = {
     editorFont: 13,
     codeWrap: false,
     mdLineNumbers: false,
+    treeExpandDefault: 'expand',
     showBanners: true,
     readOnlyMode: false,
     theme: 'dark',
@@ -830,6 +833,7 @@ settings.terminalHeight = Math.min(480, Math.max(120, Number(settings.terminalHe
 settings.sidebarWidth = Math.min(500, Math.max(160, Number(settings.sidebarWidth) || 264));
 settings.codeWrap = !!settings.codeWrap;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
+settings.treeExpandDefault = settings.treeExpandDefault === 'collapse' ? 'collapse' : 'expand';
 settings.showBanners = settings.showBanners !== false;
 settings.readOnlyMode = !!settings.readOnlyMode;
 if (!['always', 'hover', 'none'].includes(settings.tabCloseMode)) settings.tabCloseMode = 'always';
@@ -868,6 +872,7 @@ const elsSettings = {
     alwaysOnTop: document.getElementById('opt-always-on-top'),
     codeWrap: document.getElementById('opt-code-wrap'),
     mdLineNumbers: document.getElementById('opt-md-line-numbers'),
+    treeExpand: document.getElementById('opt-tree-expand'),
     showBanners: document.getElementById('opt-show-banners'),
     autoSave: document.getElementById('opt-auto-save'),
     openMode: document.getElementById('opt-open-mode'),
@@ -1118,6 +1123,7 @@ function applySettings() {
     elsSettings.alwaysOnTop.checked = !!settings.alwaysOnTop;
     elsSettings.codeWrap.checked = !!settings.codeWrap;
     elsSettings.mdLineNumbers.checked = !!settings.mdLineNumbers;
+    if (elsSettings.treeExpand) elsSettings.treeExpand.value = settings.treeExpandDefault;
     elsSettings.showBanners.checked = !!settings.showBanners;
     elsSettings.openMode.value = settings.openMode;
     document.documentElement.dataset.tabClose = settings.tabCloseMode;
@@ -1830,14 +1836,20 @@ const CSV_VIEWS = [['table', '表格视图'], ['tree', '树视图'], ['text', '�
 const MARKDOWN_VIEWS = [['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
 const IMAGE_VIEWS = [['image', '图片视图'], ['binary', '二进制视图'], ['text', '文本视图']];
 const BINARY_VIEWS = [['binary', '二进制视图'], ['text', '文本视图']];
+const SVG_VIEWS = [['render', '渲染视图'], ['code', '代码视图'], ['text', '文本视图']];
+
+function isSvgDoc(doc) {
+    return !!(doc && /\.svg$/i.test(doc.name || ''));
+}
 const CSV_TABLE_ROW_LIMIT = 5000;
 const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
 
-function viewOptionsFor(fmt) {
+function viewOptionsFor(fmt, doc) {
     if (fmt && fmt.image) return IMAGE_VIEWS;
     if (fmt && fmt.id === 'bytes') return BINARY_VIEWS;
     if (fmt && fmt.id === 'markdown') return MARKDOWN_VIEWS;
+    if (isSvgDoc(doc)) return SVG_VIEWS;
     return fmt && (fmt.table || fmt.id === 'csv') ? CSV_VIEWS : VIEWS;
 }
 
@@ -1848,6 +1860,7 @@ function viewDisabled(mode) {
     if (mode === 'tree') return !file.treeAvailable;
     if (mode === 'text') return false;
     if (mode === 'preview') return !(file.format && file.format.preview) || !!file.large;
+    if (mode === 'render') return !isSvgDoc(file);
     return false;
 }
 
@@ -1860,6 +1873,7 @@ function viewLabel(mode) {
     if (mode === 'image') return '图片视图';
     if (mode === 'binary') return '二进制视图';
     if (mode === 'preview') return '预览';
+    if (mode === 'render') return '渲染视图';
     if (mode === 'table') return '表格视图';
     if (mode === 'text') return '文本视图';
     if (mode === 'code') return '代码视图';
@@ -2454,6 +2468,8 @@ function moveTabInGroup(gid, srcId, targetId, before) {
 function renderTabs() { renderEditorLayout(); }
 
 function renderEditorLayout() {
+    // 提示条先移出布局区，避免被整体清空
+    if (els.banner && els.banner.parentElement === els.editor) els.editorArea.appendChild(els.banner);
     els.editor.textContent = '';
     const root = splitRoot || (focusedGroupId || (editorGroups[0] && editorGroups[0].id));
     if (!root || !editorGroups.length) return;
@@ -2470,6 +2486,12 @@ function renderEditorLayout() {
         for (const d of list) {
             if (d.pane) d.pane.classList.toggle('active', d.id === g.activeId);
         }
+    }
+    // 提示条：放在聚焦分栏的标签条下方
+    const fgWrap = els.editor.querySelector('.egroup[data-gid="' + (focusedGroupId || (editorGroups[0] && editorGroups[0].id) || '') + '"]');
+    if (fgWrap) {
+        const fgHost = fgWrap.querySelector('.ehost');
+        if (fgHost && els.banner.parentElement !== fgWrap) fgWrap.insertBefore(els.banner, fgHost);
     }
     // 全局 file 对齐聚焦组（直接更新 chrome，绝不递归回 renderTabs）
     if (!file || !groupOfDoc(file.id)) {
@@ -2577,6 +2599,7 @@ const VIEW_ICONS = {
     preview: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
     image: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
     binary: '<svg viewBox="0 0 14 14" aria-hidden="true"><text x="2" y="10.6" font-size="9" font-family="JetBrains Mono, Consolas, monospace" font-weight="700" fill="currentColor">01</text></svg>',
+    render: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 11c2.8 0 3.4-7 6.2-7 1.7 0 2 1.6 3.8 1.6" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><circle cx="2" cy="11" r="1.1" fill="currentColor"/><circle cx="12" cy="5.6" r="1.1" fill="currentColor"/></svg>',
 };
 const MORE_ICON = '<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="2.9" r="1.25" fill="currentColor"/><circle cx="7" cy="7" r="1.25" fill="currentColor"/><circle cx="7" cy="11.1" r="1.25" fill="currentColor"/></svg>';
 
@@ -2587,12 +2610,8 @@ function viewDisabledFor(doc, mode) {
     if (mode === 'tree') return !doc.treeAvailable;
     if (mode === 'preview') return !(doc.format && doc.format.preview) || !!doc.large;
     if (mode === 'table') return !(doc.format && doc.format.table);
+    if (mode === 'render') return !isSvgDoc(doc);
     return false;
-}
-
-function viewDisabledTitleFor(doc, mode) {
-    if (mode === 'preview' && doc && doc.large) return '大文件不支持预览';
-    return '当前文件不支持该视图';
 }
 
 function buildGroupTools(gid) {
@@ -2602,20 +2621,19 @@ function buildGroupTools(gid) {
     if (!doc) return null;
     const tools = document.createElement('div');
     tools.className = 'tb-tools';
-    for (const [mode, label] of viewOptionsFor(doc.format)) {
-        const disabled = viewDisabledFor(doc, mode);
+    for (const [mode, label] of viewOptionsFor(doc.format, doc)) {
+        // 不可用的视图不显示（IDEA 只列可用视图），不摆灰态占位
+        if (viewDisabledFor(doc, mode)) continue;
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'tb-view' + (doc.mode === mode ? ' active' : '') + (disabled ? ' disabled' : '');
-        btn.title = label + (disabled ? '（' + viewDisabledTitleFor(doc, mode) + '）' : '');
+        btn.className = 'tb-view' + (doc.mode === mode ? ' active' : '');
+        btn.title = label;
         btn.innerHTML = VIEW_ICONS[mode] || '';
-        if (!disabled) {
-            btn.addEventListener('click', async () => {
-                if (file !== doc) await activateDoc(doc);
-                if (currentMode !== mode) switchMode(mode);
-                renderTabs();
-            });
-        }
+        btn.addEventListener('click', async () => {
+            if (file !== doc) await activateDoc(doc);
+            if (currentMode !== mode) switchMode(mode);
+            renderTabs();
+        });
         tools.appendChild(btn);
     }
     const more = document.createElement('button');
@@ -2988,9 +3006,11 @@ function updateStatus() {
     els.stSize.textContent = fmtSize(file.size);
     els.stSize.title = file.image && file.imageWidth ? file.imageWidth + ' × ' + file.imageHeight : '';
     const tableZoom = currentMode === 'table' && file.format && file.format.table;
+    const renderZoom = currentMode === 'render' && file && file.svgRenderScale
+        ? Math.round(file.svgRenderScale * 100) + '%' : '';
     const zoom = file.image && currentMode === 'image' && file.imageScale
         ? Math.round(file.imageScale * 100) + '%'
-        : tableZoom ? Math.round((file.tableZoom || 1) * 100) + '%' : '';
+        : renderZoom || (tableZoom ? Math.round((file.tableZoom || 1) * 100) + '%' : '');
     els.stZoom.textContent = zoom;
     els.stZoom.title = zoom
         ? (tableZoom ? '表格缩放比例（点击选择，Ctrl+滚轮调整）' : '图片缩放比例（点击选择，Ctrl+滚轮调整，双击图片恢复适配）')
@@ -3686,6 +3706,11 @@ function createDocEditor(doc) {
     doc.editor = ed;
     doc.pane = pane;
     if (ed.aceEditor) { hookCodeFoldPreviews(ed.aceEditor); hookFoldChevronHover(ed.aceEditor); }
+    if (settings.treeExpandDefault === 'collapse' && startMode === 'tree' && treeAvailable && !doc.large) {
+        setTimeout(() => {
+            try { if (doc.editor && !doc.loading) doc.editor.collapseAll(); } catch (e) {}
+        }, 0);
+    }
     if (startMode === 'code' || startMode === 'text') {
         ed.setText(initialText != null ? initialText : '');
     } else {
@@ -4321,6 +4346,97 @@ function loadImagePreview(doc) {
             switchMode('binary');
         }
     });
+}
+
+function applySvgZoom(doc) {
+    if (!doc || !doc.svgRenderImg || !doc.svgRenderScroll || !doc.svgRenderW || !doc.svgRenderH) return;
+    const scroll = doc.svgRenderScroll;
+    const width = scroll.clientWidth;
+    const height = scroll.clientHeight;
+    if (width < 20 || height < 20) return;
+    const availableWidth = Math.max(1, width - 36);
+    const availableHeight = Math.max(1, height - 36);
+    const scale = doc.svgRenderZoom == null
+        ? Math.min(1, availableWidth / doc.svgRenderW, availableHeight / doc.svgRenderH)
+        : doc.svgRenderZoom;
+    const previous = doc.svgRenderScale || 0;
+    const centerX = scroll.scrollLeft + width / 2;
+    const centerY = scroll.scrollTop + height / 2;
+    doc.svgRenderScale = scale;
+    doc.svgRenderImg.style.width = Math.max(1, Math.round(doc.svgRenderW * scale)) + 'px';
+    doc.svgRenderImg.style.height = Math.max(1, Math.round(doc.svgRenderH * scale)) + 'px';
+    if (previous > 0 && Math.abs(scale - previous) > 0.0001) {
+        const ratio = scale / previous;
+        requestAnimationFrame(() => {
+            if (!doc.svgRenderScroll) return;
+            scroll.scrollLeft = Math.max(0, centerX * ratio - width / 2);
+            scroll.scrollTop = Math.max(0, centerY * ratio - height / 2);
+        });
+    }
+    if (doc === file) updateStatus();
+}
+
+function zoomSvgRenderBy(doc, deltaY) {
+    if (!doc || !doc.svgRenderW || !deltaY) return;
+    const base = doc.svgRenderScale || 1;
+    const factor = deltaY < 0 ? 1.1 : 1 / 1.1;
+    doc.svgRenderZoom = Math.min(8, Math.max(0.05, Math.round(base * factor * 1000) / 1000));
+    applySvgZoom(doc);
+}
+
+function showSvgRender(doc) {
+    createSvgRenderView(doc);
+    if (doc.pane) doc.pane.classList.add('svg-render-active');
+    if (!doc.svgRenderImg || !doc.editor) return;
+    // 树模式下 getText() 是 JSON 序列化，必须走 format.stringify(editor.get()) 还原成 SVG 文本
+    let svgText = null;
+    try { svgText = doc.format.stringify(doc.editor.get()); } catch (e) {
+        svgText = doc.rawText != null ? doc.rawText : (doc.content || '');
+    }
+    doc.svgRenderImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
+}
+
+function hideSvgRender(doc) {
+    if (!doc || !doc.pane) return;
+    doc.pane.classList.remove('svg-render-active');
+}
+
+function enterSvgRender(doc) {
+    if (!doc || !doc.editor) return;
+    doc.loading = true;
+    try {
+        doc.editor.setMode('code');
+        doc.mode = 'render';
+        currentMode = 'render';
+        showSvgRender(doc);
+        showBanner(doc, doc.parseError);
+        updateStatus();
+        updateSearchState();
+    } finally {
+        doc.loading = false;
+    }
+}
+
+function createSvgRenderView(doc) {
+    if (doc.svgRenderEl || !doc.pane) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'svg-render-view';
+    const scroll = document.createElement('div');
+    scroll.className = 'svg-render-scroll';
+    const img = document.createElement('img');
+    img.className = 'svg-render-img';
+    img.alt = doc.name || 'SVG';
+    img.onload = () => {
+        doc.svgRenderW = img.naturalWidth || 240;
+        doc.svgRenderH = img.naturalHeight || 120;
+        applySvgZoom(doc);
+    };
+    scroll.appendChild(img);
+    doc.svgRenderScroll = scroll;
+    wrap.appendChild(scroll);
+    doc.pane.appendChild(wrap);
+    doc.svgRenderEl = wrap;
+    doc.svgRenderImg = img;
 }
 
 function showImageView(doc) {
@@ -5944,6 +6060,10 @@ elsSettings.shiftClickClose.addEventListener('change', () => {
     settings.shiftClickClose = elsSettings.shiftClickClose.checked;
     applySettings();
 });
+elsSettings.treeExpand.addEventListener('change', () => {
+    settings.treeExpandDefault = elsSettings.treeExpand.value;
+    applySettings();
+});
 elsSettings.mdLineNumbers.addEventListener('change', () => {
     settings.mdLineNumbers = elsSettings.mdLineNumbers.checked;
     applySettings();
@@ -6012,6 +6132,10 @@ window.addEventListener('wheel', (e) => {
     }
     if (currentMode === 'image' && file && file.image) {
         zoomImageBy(file, e.deltaY);
+        return;
+    }
+    if (currentMode === 'render' && file && isSvgDoc(file)) {
+        zoomSvgRenderBy(file, e.deltaY);
         return;
     }
     const dir = e.deltaY < 0 ? 1 : -1;
@@ -6154,6 +6278,13 @@ function switchMode(mode) {
         if (doc && doc.format.preview) enterMarkdownPreview(doc);
         return;
     }
+    if (mode === 'render') {
+        if (doc && isSvgDoc(doc)) enterSvgRender(doc);
+        return;
+    }
+    if (currentMode === 'render') {
+        if (doc) hideSvgRender(doc);
+    }
     if (currentMode === 'preview') {
         if (doc) leaveMarkdownPreview(doc, mode);
         return;
@@ -6295,7 +6426,7 @@ function menuItems(kind) {
             ];
         case 'view': {
             const structured = !!file && !!file.treeAvailable;
-            const items = viewOptionsFor(file && file.format).map(([mode, label]) => ({
+            const items = viewOptionsFor(file && file.format, file).map(([mode, label]) => ({
                 label,
                 checked: currentMode === mode,
                 disabled: viewDisabled(mode),
@@ -6582,6 +6713,25 @@ window.addEventListener('keydown', (e) => {
         }
     } else if (e.ctrlKey && (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd' ||
         e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract')) {
+        const vplus = e.key === '+' || e.key === '=' || e.code === 'NumpadAdd';
+        if (currentMode === 'image' && file && file.image) {
+            e.preventDefault();
+            e.stopPropagation();
+            zoomImageBy(file, vplus ? -1 : 1);
+            return;
+        }
+        if (currentMode === 'table' && file && file.format && file.format.table) {
+            e.preventDefault();
+            e.stopPropagation();
+            zoomCsvTable(file, vplus ? -1 : 1);
+            return;
+        }
+        if (currentMode === 'render' && file && isSvgDoc(file)) {
+            e.preventDefault();
+            e.stopPropagation();
+            zoomSvgRenderBy(file, vplus ? -1 : 1);
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         if (!editor || currentMode !== 'tree' || !file || file.format.rawOnly) return;
@@ -6673,66 +6823,165 @@ initExplorer();
 initActivityBar();
 
 // ===== Win11/系统调整光标（后端读注册表当前主题 + 内置候选，失败回落 CSS 关键字） =====
+// 注意：Windows 的 .cur 是多尺寸帧容器（aero_* 含 32/48/64/96/128 五帧），每帧在 ICONDIRENTRY
+// 的 planes/bitcount 位置存自己的热点。以前按 ICONDIR 头部读热点是错的（读到 dwImageOffset），
+// 而且浏览器默认会挑最大帧再缩放，导致糊、偏、尺寸不对。这里自己解析 .cur、取 32px 帧原样使用。
 let sysCursor = null;
+const CURSOR_CSS_SIZE = 32; // 系统光标逻辑尺寸：32px@96dpi，高 DPI 由浏览器按 CSS px 放大
+
 function setDragCursor(kind) {
     document.body.classList.toggle('cursor-ew', kind === 'ew');
     document.body.classList.toggle('cursor-ns', kind === 'ns');
 }
-async function applySystemCursors() {
-    if (!sysCursor) return;
-    const SIZE = 24; // 系统光标 32px 位图在此偏大，缩到 24px
-    const build = async (k, fallback) => {
-        const url = sysCursor[k];
-        if (!url) return null;
-        const hs = parseCurHotspot(url);
-        const png = await scaleCursorImage(url, SIZE);
-        if (!png) return null;
-        const hx = hs ? Math.round(hs.x * SIZE / 32) : Math.round(SIZE / 2);
-        const hy = hs ? Math.round(hs.y * SIZE / 32) : Math.round(SIZE / 2);
-        return 'cursor: url("' + png + '") ' + hx + ' ' + hy + ', ' + fallback + ';';
-    };
-    const ew = await build('ew', 'ew-resize');
-    const ns = await build('ns', 'ns-resize');
-    const parts = [];
-    if (ew) {
-        parts.push('.sidebar-resize, .esplit-col > .esplit-divider { ' + ew + ' }');
-        parts.push('body.cursor-ew { ' + ew + ' }');
-    }
-    if (ns) {
-        parts.push('.term-resize, .git-splitter, .esplit-row > .esplit-divider { ' + ns + ' }');
-        parts.push('body.cursor-ns { ' + ns + ' }');
-    }
-    if (!parts.length) return;
-    const style = document.createElement('style');
-    style.id = 'sys-cursors';
-    style.textContent = parts.join('\n');
-    document.head.appendChild(style);
-}
 
-function parseCurHotspot(dataUrl) {
-    // .cur 头部：ICONDIR(6) + ICONDIRENTRY(16)，wHotspotX@18、wHotspotY@20（LE u16）
+function parseCurFrames(dataUrl) {
     try {
-        const bin = atob(dataUrl.split(',')[1]);
-        if (bin.length < 22) return null;
-        return { x: bin.charCodeAt(18) | (bin.charCodeAt(19) << 8), y: bin.charCodeAt(20) | (bin.charCodeAt(21) << 8) };
+        const bin = atob((dataUrl || '').split(',')[1] || '');
+        const n = bin.length;
+        if (n < 22) return null;
+        const u16 = (o) => bin.charCodeAt(o) | (bin.charCodeAt(o + 1) << 8);
+        const u32 = (o) => (bin.charCodeAt(o) | (bin.charCodeAt(o + 1) << 8) | (bin.charCodeAt(o + 2) << 16) | (bin.charCodeAt(o + 3) << 24)) >>> 0;
+        if (u16(2) !== 2) return null; // 2 = CUR（1 = ICO）
+        const count = u16(4);
+        const out = [];
+        for (let i = 0; i < count; i++) {
+            const e = 6 + i * 16;
+            if (e + 16 > n) break;
+            const w = bin.charCodeAt(e) || 256;
+            const h = bin.charCodeAt(e + 1) || 256;
+            const hx = u16(e + 4); // CUR 的 wPlanes 字段实为热点 X
+            const hy = u16(e + 6); // CUR 的 wBitCount 字段实为热点 Y
+            const size = u32(e + 8);
+            const off = u32(e + 12);
+            if (!size || off + size > n) continue;
+            out.push({bin, w, h, hx, hy, size, off});
+        }
+        return out.length ? out : null;
     } catch (e) { return null; }
 }
 
-function scaleCursorImage(dataUrl, size) {
+function pickCurFrame(frames, target) {
+    let best = null;
+    let bestScore = Infinity;
+    for (const f of frames) {
+        // 优先选不小于目标的帧（放大精度更好），再取尺寸差最小
+        const score = Math.abs(f.w - target) + (f.w < target ? 1024 : 0);
+        if (score < bestScore) { bestScore = score; best = f; }
+    }
+    return best;
+}
+
+function curFrameDataUrl(fr) {
+    // 重新打包成单帧 .cur，避免浏览器在多帧文件里挑到最大帧
+    const le = (v, bytes) => {
+        let s = '';
+        for (let i = 0; i < bytes; i++) s += String.fromCharCode((v >> (8 * i)) & 255);
+        return s;
+    };
+    let head = le(0, 2) + le(2, 2) + le(1, 2);
+    head += String.fromCharCode(fr.w === 256 ? 0 : fr.w, fr.h === 256 ? 0 : fr.h, 0, 0);
+    head += le(fr.hx, 2) + le(fr.hy, 2) + le(fr.size, 4) + le(22, 4);
+    return 'data:image/x-icon;base64,' + btoa(head + fr.bin.substr(fr.off, fr.size));
+}
+
+function rasterizeCurFrame(fr, size) {
     return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
             try {
+                const iw = img.naturalWidth || img.width;
+                const ih = img.naturalHeight || img.height;
                 const c = document.createElement('canvas');
                 c.width = size;
                 c.height = size;
-                c.getContext('2d').drawImage(img, 0, 0, size, size);
-                resolve(c.toDataURL('image/png'));
+                const ctx = c.getContext('2d');
+                const scaled = iw !== size || ih !== size;
+                ctx.imageSmoothingEnabled = scaled; // 1:1 帧原样拷贝，不做二次插值
+                if (scaled) ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(img, 0, 0, size, size);
+                resolve({png: c.toDataURL('image/png'), iw, ih});
             } catch (e) { resolve(null); }
         };
         img.onerror = () => resolve(null);
-        img.src = dataUrl;
+        img.src = curFrameDataUrl(fr);
     });
+}
+
+let imageSetCursorSupport = null;
+function supportsImageSetCursor() {
+    if (imageSetCursorSupport == null) {
+        try {
+            imageSetCursorSupport = !!(window.CSS && CSS.supports && CSS.supports('cursor', 'image-set(url("x") 1x) 0 0, auto'));
+        } catch (e) { imageSetCursorSupport = false; }
+    }
+    return imageSetCursorSupport;
+}
+
+function fmtResolution(res) {
+    if (Number.isInteger(res)) return res + 'x';
+    return res.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + 'x';
+}
+
+async function buildCursorValue(kind, keyFallback) {
+    const url = sysCursor[kind];
+    if (!url) return null;
+    const frames = parseCurFrames(url);
+    if (!frames) return null;
+    const base = pickCurFrame(frames, CURSOR_CSS_SIZE);
+    const one = await rasterizeCurFrame(base, CURSOR_CSS_SIZE);
+    if (!one) return null;
+    // 热点按实际帧尺寸换算到 32 CSS px；CSS 只接受整数
+    const hx = Math.max(0, Math.min(CURSOR_CSS_SIZE - 1, Math.round(base.hx * CURSOR_CSS_SIZE / base.w)));
+    const hy = Math.max(0, Math.min(CURSOR_CSS_SIZE - 1, Math.round(base.hy * CURSOR_CSS_SIZE / base.h)));
+    const plain = 'url("' + one.png + '") ' + hx + ' ' + hy + ', ' + keyFallback;
+
+    // image-set 让 Chromium 按 DPR 选原生帧：@150% 用 48px 帧，不再把 32px 位图向上插值（糊）
+    let set = null;
+    if (supportsImageSetCursor()) {
+        const cands = [];
+        const seen = {};
+        for (const f of frames) {
+            if (f.w < 16) continue;
+            const res = f.w / CURSOR_CSS_SIZE;
+            if (res < 1 || res > 4) continue; // 32~128px 帧对应 1x~4x
+            const key = res.toFixed(2);
+            if (seen[key]) continue;
+            seen[key] = true;
+            const png = await rasterizeCurFrame(f, f.w); // 原生像素，1:1，不插值
+            if (png) cands.push({res, png: png.png});
+        }
+        if (!seen['1.00']) cands.push({res: 1, png: one.png});
+        cands.sort((a, b) => a.res - b.res);
+        if (cands.length) {
+            set = 'image-set(' + cands.map((c) => 'url("' + c.png + '") ' + fmtResolution(c.res)).join(', ') + ') ' + hx + ' ' + hy + ', ' + keyFallback;
+        }
+    }
+    return {plain, set};
+}
+
+async function applySystemCursors() {
+    if (!sysCursor) return;
+    const ew = await buildCursorValue('ew', 'ew-resize');
+    const ns = await buildCursorValue('ns', 'ns-resize');
+    const parts = [];
+    const pushRule = (selector, v) => {
+        if (!v) return;
+        let rule = selector + ' { cursor: ' + v.plain + ';';
+        if (v.set) rule += ' cursor: ' + v.set + ';';
+        parts.push(rule + ' }');
+    };
+    pushRule('.sidebar-resize, .esplit-col > .esplit-divider', ew);
+    pushRule('body.cursor-ew', ew);
+    pushRule('.term-resize, .git-splitter, .esplit-row > .esplit-divider', ns);
+    pushRule('body.cursor-ns', ns);
+    if (!parts.length) return;
+    let style = document.getElementById('sys-cursors');
+    if (!style) {
+        style = document.createElement('style');
+        style.id = 'sys-cursors';
+        document.head.appendChild(style);
+    }
+    style.textContent = parts.join('\n');
 }
 
 if (backend.GetSystemCursors) {

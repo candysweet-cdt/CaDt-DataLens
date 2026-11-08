@@ -1084,6 +1084,9 @@ html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
 .esplit-divider { flex: none; position: relative; z-index: 5; background: var(--border); }
 .esplit-col > .esplit-divider { width: 1px; cursor: col-resize; }
 .esplit-row > .esplit-divider { height: 1px; cursor: row-resize; }
+/* 拖动时整窗光标（后端拿不到系统光标时回落系统关键字） */
+body.cursor-ew { cursor: ew-resize; }
+body.cursor-ns { cursor: ns-resize; }
 /* 视觉 1px 线 + 加宽的隐形抓取区（::before 属于元素命中范围） */
 .esplit-divider::before { content: ''; position: absolute; background: transparent; transition: background 0.12s ease; }
 .esplit-col > .esplit-divider::before { top: 0; bottom: 0; left: -3px; right: -3px; }
@@ -1282,6 +1285,20 @@ body.csv-col-resizing * {
 .csv-table-empty.error { color: var(--red); white-space: pre-wrap; text-align: left; }
 
 .jsoneditor-pane.preview-active > .jsoneditor { display: none !important; }
+.jsoneditor-pane.svg-render-active > .jsoneditor { display: none !important; }
+.svg-render-view { position: absolute; inset: 0; display: none; }
+.jsoneditor-pane.svg-render-active .svg-render-view { display: block; }
+.svg-render-scroll {
+    position: absolute;
+    inset: 0;
+    overflow: auto;
+    padding: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+}
+.svg-render-img { display: block; filter: drop-shadow(0 2px 10px var(--shadow)); }
 .md-preview-view {
     position: absolute;
     inset: 0;

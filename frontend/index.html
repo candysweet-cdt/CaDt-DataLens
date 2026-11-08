@@ -165,6 +165,14 @@
                         </div>
                         <div class="fmt-hint hint-indent">关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧 × 只关闭当前提示。</div>
                         <div class="popover-row">
+                            <span class="popover-label">树视图展开</span>
+                            <select id="opt-tree-expand" class="opt-select">
+                                <option value="expand">默认全展开</option>
+                                <option value="collapse">默认全部收起</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent">打开文件进入树视图时的默认展开状态。</div>
+                        <div class="popover-row">
                             <span class="popover-label">键列宽度</span>
                             <input type="range" id="opt-key-width" min="100" max="320" step="10" value="160">
                             <span id="opt-key-width-val" class="popover-value">160</span>
