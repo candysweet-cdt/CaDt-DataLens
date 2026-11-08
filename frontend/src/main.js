@@ -2907,15 +2907,50 @@ function textArea() {
 
 function doUndo() {
     if (!editor || settings.readOnlyMode) return;
-    if (currentMode === 'tree') treeHistory('undo');
-    else if (currentMode === 'table') tableHistory('undo');
-    else if (currentMode === 'code' && editor.aceEditor) editor.aceEditor.execCommand('undo');
-    else if (currentMode === 'text') {
+    if (currentMode === 'tree') {
+        const btn = editor.dom && editor.dom.undo;
+        if (btn && !btn.disabled) { treeHistory('undo'); return; }
+    } else if (currentMode === 'table') {
+        if (file && file.tableUndo && file.tableUndo.length) { tableHistory('undo'); return; }
+    } else if (currentMode === 'code' && editor.aceEditor) {
+        const um = editor.aceEditor.session.getUndoManager();
+        if (um && um.hasUndo()) { editor.aceEditor.execCommand('undo'); return; }
+    } else if (currentMode === 'text') {
         const ta = textArea();
         if (ta) {
             ta.focus();
-            document.execCommand('undo');
+            if (document.execCommand('undo')) return;
         }
+    }
+    // 操作栈为空但文件仍处于修改状态：Ctrl+Z 直接退回未修改（已保存）状态
+    if (file && file.dirty) revertDocToSaved(file);
+}
+
+// revertDocToSaved：把文档内容回退到最后一次保存（或打开/新建）时的状态
+function revertDocToSaved(doc) {
+    if (!doc || !doc.editor) return;
+    const target = doc.savedText != null ? doc.savedText : (doc.content != null ? doc.content : '');
+    let value = null;
+    if (currentMode === 'tree') {
+        try { value = doc.format.parse(target); } catch (e) { flash('无法回退：已保存内容解析失败', true); return; }
+    }
+    doc.loading = true;
+    try {
+        if (currentMode === 'tree') editor.set(value);
+        else editor.setText(target);
+        doc.text = target;
+        doc.bases[doc.mode] = target;
+        doc.dirty = false;
+        if (file === doc) {
+            setDirty(false);
+            updateStatus();
+            updateWindowTitle();
+        }
+        updateTabDirty(doc);
+        updateBackendDirty();
+        if (currentMode === 'table') renderCsvTableView(doc);
+    } finally {
+        doc.loading = false;
     }
 }
 
@@ -3397,7 +3432,9 @@ function hookFoldChevronHover(ace) {
     if (!ace || !ace.renderer || ace._chevHover) return;
     ace._chevHover = true;
     const layer = ace.renderer.$gutterLayer;
-    if (!layer || !layer.element) return;
+    if (!layer || !layer.element) { window.__chevErr = 'no layer'; return; }
+    window.__chevErr = null;
+    layer.element.dataset.chevHooked = '1';
     layer.element.addEventListener('mouseenter', () => layer.element.classList.add('chev-show'));
     layer.element.addEventListener('mouseleave', () => layer.element.classList.remove('chev-show'));
 }
@@ -3648,6 +3685,7 @@ function createDocEditor(doc) {
     });
     doc.editor = ed;
     doc.pane = pane;
+    if (ed.aceEditor) { hookCodeFoldPreviews(ed.aceEditor); hookFoldChevronHover(ed.aceEditor); }
     if (startMode === 'code' || startMode === 'text') {
         ed.setText(initialText != null ? initialText : '');
     } else {
@@ -4467,6 +4505,7 @@ function createDoc(data) {
             untitled: false,
             binary: true,
             bases: {tree: null, code: null},
+            savedText: data.content,
         };
     }
     const preview = detectFormat(data.name, '');
@@ -4512,6 +4551,7 @@ function createDoc(data) {
         untitled: false,
         binary: false,
         bases: {tree: null, code: null, text: null, table: null, preview: null},
+        savedText: data.content,
     };
 }
 
@@ -5810,6 +5850,7 @@ async function saveDoc(doc, opts = {}) {
         doc.mode = savedMode;
         doc.text = snapshot;
         doc.bases[savedMode] = snapshot;
+        doc.savedText = snapshot;
         if (doc.treeAvailable) doc.rawText = text;
         if (doc.parseError) {
             doc.parseError = null;
@@ -6130,6 +6171,7 @@ function switchMode(mode) {
         try {
             editor.setMode(mode);
             editor.setText(doc.rawText);
+            if (editor.aceEditor) { hookCodeFoldPreviews(editor.aceEditor); hookFoldChevronHover(editor.aceEditor); updateCodeFoldPreviews(editor.aceEditor); }
         } catch (e) {
             console.warn('switch mode failed', e);
         } finally {
@@ -6612,6 +6654,19 @@ els.editor.addEventListener('wheel', (e) => {
     e.preventDefault();
     strip.scrollLeft += delta * unit;
 }, {passive: false});
+
+// Ctrl+Z 捕获拦截：代码模式下 ace 聚焦时会吞掉 Ctrl+Z（空栈静默），这里在捕获阶段先判空栈+脏 → 直接回退已保存状态
+window.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey || e.shiftKey || e.altKey) return;
+    if ((e.key || '').toLowerCase() !== 'z') return;
+    if (currentMode !== 'code' || !editor || !editor.aceEditor || settings.readOnlyMode) return;
+    let um = null;
+    try { um = editor.aceEditor.session.getUndoManager(); } catch (err) { return; }
+    if (um && um.hasUndo()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (file && file.dirty) revertDocToSaved(file);
+}, true);
 
 initContextMenus();
 initExplorer();
