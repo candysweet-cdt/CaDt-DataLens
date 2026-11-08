@@ -455,6 +455,18 @@ const mockBackend = {
             ],
         };
     },
+    async GitRollbackFor(dir, paths, untracked) {
+        return null;
+    },
+    async GitFileHistoryFor(dir, path, limit) {
+        return '[mock] a1b2c3d | 2026-11-08 12:00 | CandySweet | 提交 ' + path;
+    },
+    async GitRecentLogFor(dir, limit) {
+        return '[mock] a1b2c3d | 2026-11-08 12:00 | CandySweet | 提交一';
+    },
+    async GitCommitChanges(dir, message, paths, amend, push) {
+        return {success: true, output: '[mock] ' + (amend ? '修正提交' : '提交') + ' ' + (paths || []).length + ' 个文件' + (push ? ' 并推送' : '')};
+    },
     async GitDiffFor(dir, path) {
         return {
             hasChanges: true,
@@ -641,6 +653,16 @@ const els = {
     sidebarResize: document.getElementById('sidebar-resize'),
     sidebar: document.getElementById('sidebar'),
     terminalPanel: document.getElementById('terminal-panel'),
+    gitPanel: document.getElementById('git-panel'),
+    gitBranch: document.getElementById('git-branch'),
+    gitHint: document.getElementById('git-hint'),
+    gitChanges: document.getElementById('git-changes'),
+    gitRefresh: document.getElementById('git-refresh'),
+    gitRecentLog: document.getElementById('git-recent-log'),
+    gitAmend: document.getElementById('git-amend'),
+    gitMessage: document.getElementById('git-message'),
+    gitCommitBtn: document.getElementById('git-commit-btn'),
+    gitCommitPushBtn: document.getElementById('git-commit-push-btn'),
     abLock: document.getElementById('ab-lock'),
     abTheme: document.getElementById('ab-theme'),
     abSettings: document.getElementById('ab-settings'),
@@ -1052,6 +1074,11 @@ function applySettings() {
     if (els.sidebar && settings.sidebarWidth) {
         els.sidebar.style.width = settings.sidebarWidth + 'px';
     }
+    if (typeof applySidebarUI === 'function') {
+        try {
+            applySidebarUI();
+        } catch (e) {}
+    }
     document.documentElement.style.setProperty('--key-col-w', settings.keyWidth + 'px');
     elsSettings.fixed.checked = settings.fixedKeys;
     elsSettings.width.value = String(settings.keyWidth);
@@ -1396,9 +1423,11 @@ document.addEventListener('selectionchange', () => {
     if (textarea && document.activeElement === textarea) updateCursorPosition();
 });
 
-function openCloseConfirm(message, action, okLabel) {
+function openCloseConfirm(message, action, okLabel, title) {
     elsDialogs.confirmText.textContent = message || '有未保存的修改，关闭后将丢弃。';
     elsDialogs.confirmOk.textContent = okLabel || '丢弃并关闭';
+    const titleEl = elsDialogs.confirm.querySelector('.dialog-title');
+    if (titleEl) titleEl.textContent = title || '关闭';
     confirmAction = action || (() => {
         if (backend.ForceClose) backend.ForceClose();
     });
@@ -4969,14 +4998,20 @@ function closeFolder() {
 function applySidebarUI() {
     if (!els.sidebar) return;
     els.sidebar.classList.toggle('hidden', !settings.showSidebar);
+    els.sidebar.dataset.sidebarView = currentSidebarView();
     if (els.btnSidebar) {
         els.btnSidebar.classList.toggle('active', !!settings.showSidebar);
         els.btnSidebar.setAttribute('aria-pressed', String(!!settings.showSidebar));
     }
     if (els.abFiles) {
-        const treeActive = !!settings.showSidebar && settings.sidebarMode === 'tree';
-        els.abFiles.classList.toggle('active', treeActive);
-        els.abFiles.setAttribute('aria-pressed', String(treeActive));
+        const filesActive = !!settings.showSidebar && settings.sidebarView === 'files' && settings.sidebarMode === 'tree';
+        els.abFiles.classList.toggle('active', filesActive);
+        els.abFiles.setAttribute('aria-pressed', String(filesActive));
+    }
+    if (els.abGit) {
+        const gitActive = !!settings.showSidebar && settings.sidebarView === 'git';
+        els.abGit.classList.toggle('active', gitActive);
+        els.abGit.setAttribute('aria-pressed', String(gitActive));
     }
     if (explorer) explorer.setVisible(!!settings.showSidebar);
     requestAnimationFrame(() => {
@@ -5009,17 +5044,7 @@ function syncExplorerActive() {
 
 function initActivityBar() {
     if (!els.activityBar) return;
-    if (els.abFiles) els.abFiles.addEventListener('click', () => {
-        if (!settings.showSidebar) {
-            settings.showSidebar = true;
-            settings.sidebarMode = 'tree';
-        } else if (settings.sidebarMode !== 'tree') {
-            settings.sidebarMode = 'tree';
-        } else {
-            settings.showSidebar = false;
-        }
-        applySettings();
-    });
+    if (els.abFiles) els.abFiles.addEventListener('click', () => toggleSidebarView('files'));
     if (els.abSearch) els.abSearch.addEventListener('click', () => {
         if (els.searchInput.disabled) {
             flash('当前视图不支持节点搜索', true);
@@ -5028,7 +5053,7 @@ function initActivityBar() {
         focusSearch();
     });
     if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleTerminalPanel());
-    if (els.abGit) els.abGit.addEventListener('click', () => openGitChangesDoc());
+    if (els.abGit) els.abGit.addEventListener('click', () => toggleSidebarView('git'));
     if (els.abMore) els.abMore.addEventListener('click', () => {
         if (!ctxMenu) return;
         const rect = els.abMore.getBoundingClientRect();
@@ -6064,6 +6089,110 @@ const cmdOutHandlers = new Map();
 const cmdExitHandlers = new Map();
 let cmdSeq = 0;
 
+
+
+function renderGitPanel() {
+    if (!els.gitChanges) return;
+    const available = gitStateCache.available && gitStateCache.dir;
+    els.gitBranch.textContent = gitStateCache.branch ? '分支：' + gitStateCache.branch : '';
+    if (!available) {
+        els.gitHint.textContent = gitStateCache.reason || '当前目录不在 git 仓库内';
+        els.gitChanges.innerHTML = '';
+        els.gitCommitBtn.disabled = true;
+        els.gitCommitPushBtn.disabled = true;
+        return;
+    }
+    els.gitHint.textContent = '';
+    els.gitCommitBtn.disabled = false;
+    els.gitCommitPushBtn.disabled = false;
+    const changes = [];
+    const untracked = [];
+    for (const [path, state] of gitStateCache.map) {
+        if (state === 'untracked') untracked.push(path);
+        else changes.push({path, state});
+    }
+    els.gitChanges.textContent = '';
+    if (!changes.length && !untracked.length) {
+        const empty = document.createElement('div');
+        empty.className = 'git-empty';
+        empty.textContent = '（工作区干净，没有变更）';
+        els.gitChanges.appendChild(empty);
+        return;
+    }
+    const makeRow = (path, checked) => {
+        const row = document.createElement('label');
+        row.className = 'git-file-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = checked;
+        cb.dataset.path = path;
+        row.append(cb, document.createTextNode(path.replace(/^.*[\\/]/, '')));
+        row.title = path;
+        row.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!ctxMenu) return;
+            const isUntracked = gitStateCache.untrackedSet.has(path);
+            ctxMenu.open([
+                {label: '查看差异', icon: 'E8D3', action: () => showGitDiff(path)},
+                {label: '文件历史', icon: 'E81C', action: () => showGitFileHistory(path)},
+                {sep: true},
+                {label: '回滚更改', icon: 'E7A7', danger: true, action: () => {
+                    const what = isUntracked ? '该文件未被版本管理，回滚将删除文件：' : '将丢弃该文件的全部未提交修改：';
+                    openCloseConfirm(what + '\n' + path, () => gitRollbackPaths([path], isUntracked ? [path] : []), '回滚');
+                }},
+            ], e.clientX, e.clientY);
+        });
+        return row;
+    };
+    if (changes.length) {
+        const head = document.createElement('div');
+        head.className = 'git-group';
+        head.textContent = '更改（' + changes.length + ' 个文件）';
+        els.gitChanges.appendChild(head);
+        for (const item of changes) {
+            const row = makeRow(item.path, true);
+            row.querySelector('input').dataset.path = item.path;
+            row.addEventListener('dblclick', () => showGitDiff(item.path));
+            els.gitChanges.appendChild(row);
+        }
+    }
+    if (untracked.length) {
+        const head = document.createElement('div');
+        head.className = 'git-group';
+        head.textContent = '未进行版本管理的文件（' + untracked.length + ' 个文件）';
+        els.gitChanges.appendChild(head);
+        for (const path of untracked) {
+            const row = makeRow(path, true);
+            row.addEventListener('dblclick', () => showGitDiff(path));
+            els.gitChanges.appendChild(row);
+        }
+    }
+}
+
+function currentSidebarView() {
+    return settings.sidebarView === 'git' ? 'git' : 'files';
+}
+
+function switchSidebarView(view) {
+    if (!['files', 'git'].includes(view)) view = 'files';
+    settings.sidebarView = view;
+    applySettings();
+    if (view === 'git') {
+        refreshGitStatus().then(() => renderGitPanel()).catch(() => renderGitPanel());
+    }
+}
+
+function toggleSidebarView(view) {
+    if (settings.showSidebar && currentSidebarView() === view) {
+        settings.showSidebar = false;
+    } else {
+        settings.showSidebar = true;
+        switchSidebarView(view);
+    }
+    applySettings();
+}
+
 function termCwd() {
     return workspaceFolder || (file && file.path ? file.path.replace(/[\\/][^\\/]*$/, '') : '') || '';
 }
@@ -6228,6 +6357,53 @@ window.addEventListener('resize', () => {
     if (terminalUI.open) fitActiveTerm();
 });
 
+els.gitRefresh.addEventListener('click', () => refreshGitStatus());
+els.gitRecentLog.addEventListener('click', () => showGitRecentLog());
+els.gitCommitBtn.addEventListener('click', () => runGitCommit(false));
+els.gitCommitPushBtn.addEventListener('click', () => runGitCommit(true));
+
+function collectCheckedPaths() {
+    return [...els.gitChanges.querySelectorAll('input[type="checkbox"]:checked')].map((cb) => cb.dataset.path);
+}
+
+async function runGitCommit(push) {
+    if (!backend.GitCommitChanges) {
+        flash('当前版本不支持 git 提交', true);
+        return;
+    }
+    const paths = collectCheckedPaths();
+    const message = els.gitMessage.value.trim();
+    const amend = els.gitAmend.checked;
+    if (!amend && !message) {
+        flash('请填写提交消息', true);
+        els.gitMessage.focus();
+        return;
+    }
+    if (!paths.length && !amend) {
+        flash('请勾选要提交的文件', true);
+        return;
+    }
+    els.gitCommitBtn.disabled = true;
+    els.gitCommitPushBtn.disabled = true;
+    try {
+        const res = await backend.GitCommitChanges(gitStateCache.dir, message, paths, amend, push);
+        const tail = (res.output || '').trim().split('\n').slice(-4).join('\n');
+        if (res.success) {
+            flash((push ? '提交并推送完成' : '提交完成') + (tail ? '：' + tail : ''));
+            els.gitMessage.value = '';
+        } else {
+            flash('git 提交失败：' + (tail || '无输出'), true);
+        }
+    } catch (e) {
+        flash('git 提交失败：' + e, true);
+    } finally {
+        els.gitCommitBtn.disabled = false;
+        els.gitCommitPushBtn.disabled = false;
+        await refreshGitStatus();
+        renderGitPanel();
+    }
+}
+
 if (els.termNew) els.termNew.addEventListener('click', () => createTermSession());
 if (els.termPanelClose) els.termPanelClose.addEventListener('click', () => toggleTerminalPanel(false));
 if (els.terminalPanel && settings.terminalHeight) {
@@ -6308,7 +6484,7 @@ function openVirtualDoc(name, content) {
 }
 
 // ===== git 浅集成 =====
-const gitStateCache = {dir: '', map: new Map(), branch: ''};
+const gitStateCache = {dir: '', map: new Map(), branch: '', available: false, reason: '', untrackedSet: new Set()};
 let gitTimer = null;
 
 function gitRootDir() {
@@ -6333,16 +6509,24 @@ async function refreshGitStatus() {
         if (!status || !status.available) {
             gitStateCache.map.clear();
             gitStateCache.branch = '';
+            gitStateCache.available = !!status.available;
+            gitStateCache.reason = status.reason || '';
         } else {
+            gitStateCache.available = true;
             gitStateCache.branch = status.branch || '';
             gitStateCache.map.clear();
+            gitStateCache.untrackedSet.clear();
             for (const entry of status.entries || []) {
                 gitStateCache.map.set(entry.path.replace(/\\/g, '/'), entry.state);
+                if (entry.state === 'untracked') gitStateCache.untrackedSet.add(entry.path.replace(/\\/g, '/'));
             }
         }
     } catch (e) {}
     applyGitBadges();
     applyGitDot();
+    if (currentSidebarView() === 'git' && settings.showSidebar && els.gitChanges) {
+        renderGitPanel();
+    }
 }
 
 function applyGitBadges() {
@@ -6351,7 +6535,7 @@ function applyGitBadges() {
             if (cls.startsWith('git-')) row.classList.remove(cls);
         }
         const st = gitStateCache.map.get(row.dataset.path.replace(/\\/g, '/'));
-        if (st) row.classList.add('git-' + st);
+        if (st) row.classList.add('git-' + (st === 'untracked' || st === 'added' ? 'new' : st));
     });
 }
 
@@ -6392,6 +6576,57 @@ function applyGitDot() {
     if (els.abGit) els.abGit.classList.toggle('has-changes', gitStateCache.map.size > 0);
 }
 
+async function showGitRecentLog() {
+    if (!backend.GitRecentLogFor) {
+        flash('当前版本不支持查看提交历史', true);
+        return;
+    }
+    const dir = gitStateCache.dir || gitRootDir();
+    if (!dir) {
+        flash('请先打开一个文件或目录', true);
+        return;
+    }
+    try {
+        const log = await backend.GitRecentLogFor(dir, 100);
+        openVirtualDoc('Git 最近提交.gitlog', log || '（没有提交）');
+    } catch (e) {
+        flash('读取提交历史失败：' + e, true);
+    }
+}
+
+async function showGitFileHistory(path) {
+    if (!backend.GitFileHistoryFor) {
+        flash('当前版本不支持查看文件历史', true);
+        return;
+    }
+    const dir = gitStateCache.dir || gitRootDir();
+    if (!dir) return;
+    try {
+        const log = await backend.GitFileHistoryFor(dir, path, 50);
+        openVirtualDoc('Git 文件历史 — ' + path.replace(/^.*[\\/]/, '') + '.history', log || '（该文件没有提交历史）');
+    } catch (e) {
+        flash('读取文件历史失败：' + e, true);
+    }
+}
+
+async function gitRollbackPaths(paths, untracked) {
+    if (!backend.GitRollbackFor) {
+        flash('当前版本不支持回滚', true);
+        return;
+    }
+    const root = gitStateCache.dir || gitRootDir();
+    const tracked = paths.filter((p) => !untracked.includes(p));
+    const realUntracked = untracked.filter((p) => untracked.includes(p));
+    try {
+        await backend.GitRollbackFor(root, tracked, realUntracked);
+        flash('已回滚 ' + (tracked.length + realUntracked.length) + ' 个文件');
+    } catch (e) {
+        flash('回滚失败：' + e, true);
+    }
+    await refreshGitStatus();
+    renderGitPanel();
+}
+
 async function showGitDiff(path) {
     if (!backend.GitDiffFor) return;
     try {
@@ -6411,6 +6646,7 @@ try {
     if (els.sbBody) gitBadgeObserver.observe(els.sbBody, {childList: true, subtree: false});
     restartGitTimer();
     refreshGitStatus();
+    if (settings.sidebarView === 'git') switchSidebarView('git');
 } catch (e) {
     window.__gitInitErr = String((e && e.stack) || e);
 }

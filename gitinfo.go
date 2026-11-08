@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -55,9 +56,10 @@ func gitRun(dir string, args []string, timeoutMs int) (string, int, error) {
 	return stdout.String(), code, nil
 }
 
+// gitBadgeState 返回细分状态：untracked/added/modified/deleted/renamed/conflict。
 func gitBadgeState(x, y byte) string {
 	if x == '?' || y == '?' {
-		return "new"
+		return "untracked"
 	}
 	if x == 'U' || y == 'U' {
 		return "conflict"
@@ -68,11 +70,11 @@ func gitBadgeState(x, y byte) string {
 	if x == 'R' || y == 'R' {
 		return "renamed"
 	}
+	if x == 'A' || x == 'C' {
+		return "added"
+	}
 	if y == 'M' || y == 'T' || x == 'M' || x == 'T' {
 		return "modified"
-	}
-	if x == 'A' || x == 'C' {
-		return "new"
 	}
 	return "modified"
 }
@@ -122,6 +124,132 @@ func (a *App) GitStatusFor(dir string) (*GitTreeStatus, error) {
 		})
 	}
 	return status, nil
+}
+
+type GitCommitResult struct {
+	Success bool   `json:"success"`
+	Output  string `json:"output"`
+}
+
+// GitCommitChanges 暂存勾选的文件并提交（可选修正/推送）。
+func (a *App) GitCommitChanges(dir string, message string, paths []string, amend bool, push bool) (*GitCommitResult, error) {
+	dir = strings.TrimSpace(dir)
+	message = strings.TrimSpace(message)
+	if dir == "" {
+		return nil, fmt.Errorf("缺少目录")
+	}
+	if !amend && message == "" {
+		return nil, fmt.Errorf("提交消息不能为空")
+	}
+	output := ""
+	// 暂存勾选的文件（修正模式不强制重新 add）
+	if len(paths) > 0 {
+		args := append([]string{"add", "--"}, paths...)
+		addOut, code, addErr := gitRun(dir, args, 30000)
+		if addErr != nil {
+			return nil, addErr
+		}
+		output += addOut
+		if code != 0 {
+			return &GitCommitResult{Success: false, Output: strings.TrimSpace(output)}, nil
+		}
+	}
+	commitArgs := []string{"commit", "-m", message}
+	if amend {
+		commitArgs = append(commitArgs, "--amend")
+	}
+	out, code, err := gitRun(dir, commitArgs, 60000)
+	if err != nil {
+		return nil, err
+	}
+	output += "\n" + out
+	if code != 0 {
+		return &GitCommitResult{Success: false, Output: strings.TrimSpace(output)}, nil
+	}
+	if push {
+		pushOut, pushCode, pushErr := gitRun(dir, []string{"push"}, 120000)
+		if pushErr != nil {
+			return nil, pushErr
+		}
+		output += "\n" + pushOut
+		if pushCode != 0 {
+			return &GitCommitResult{Success: false, Output: strings.TrimSpace(output)}, nil
+		}
+	}
+	return &GitCommitResult{Success: true, Output: strings.TrimSpace(output)}, nil
+}
+
+// gitPathInRoot 校验 path 必须位于 root 之内（防穿越）。
+func gitPathInRoot(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// GitRollbackFor 回滚指定文件：已跟踪还原到 HEAD，未跟踪直接删除。
+func (a *App) GitRollbackFor(dir string, paths []string, untracked []string) error {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return fmt.Errorf("缺少目录")
+	}
+	for _, p := range paths {
+		if !gitPathInRoot(dir, p) {
+			return fmt.Errorf("路径越界：%s", p)
+		}
+	}
+	for _, p := range untracked {
+		if !gitPathInRoot(dir, p) {
+			return fmt.Errorf("路径越界：%s", p)
+		}
+	}
+	if len(paths) > 0 {
+		if _, code, err := gitRun(dir, append([]string{"checkout", "HEAD", "--"}, paths...), 30000); err != nil {
+			return err
+		} else if code != 0 {
+			return fmt.Errorf("git checkout 返回 %d", code)
+		}
+	}
+	for _, p := range untracked {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// GitFileHistoryFor 返回指定文件的提交历史文本。
+func (a *App) GitFileHistoryFor(dir string, path string, limit int) (string, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	out, _, err := gitRun(dir, []string{
+		"log", "--follow", "-n", fmt.Sprintf("%d", limit),
+		"--date=format:%Y-%m-%d %H:%M",
+		"--pretty=format:%h | %ad | %an | %s",
+		"--", path,
+	}, 20000)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// GitRecentLogFor 返回仓库最近的提交历史文本。
+func (a *App) GitRecentLogFor(dir string, limit int) (string, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	out, _, err := gitRun(dir, []string{
+		"log", "-n", fmt.Sprintf("%d", limit),
+		"--date=format:%Y-%m-%d %H:%M",
+		"--pretty=format:%h | %ad | %an | %s",
+	}, 20000)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // GitDiffFor 返回指定文件相对 HEAD 的差异（unified patch）。

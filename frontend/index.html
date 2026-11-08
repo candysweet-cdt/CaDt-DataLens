@@ -454,8 +454,8 @@
                 </button>
             </div>
         </nav>
-        <aside id="sidebar" class="hidden">
-            <div class="sb-head">
+        <aside id="sidebar" class="hidden" data-sidebar-view="files">
+            <div class="sb-head" data-files-view="files">
                 <span id="sb-title" class="sb-title">资源</span>
                 <div class="sb-tools">
                     <button type="button" id="sb-mode-list" class="sb-tool" title="文件列表" aria-pressed="false"></button>
@@ -464,6 +464,31 @@
                 </div>
             </div>
             <div id="sb-body" class="sb-body"></div>
+            <div id="git-panel" class="hidden">
+                <div class="git-toolbar">
+                    <span class="sb-title">提交</span>
+                    <div class="sb-tools">
+                        <button type="button" id="git-refresh" class="sb-tool" title="刷新"></button>
+                        <button type="button" id="git-recent-log" class="sb-tool" title="最近提交"></button>
+                    </div>
+                </div>
+                <div class="git-toolbar git-meta">
+                    <span id="git-branch" class="git-branch"></span>
+                    <span class="git-hint" id="git-hint"></span>
+                </div>
+                <div class="git-changes" id="git-changes"></div>
+                <div class="git-commit-area">
+                    <label class="popover-label git-amend-label">
+                        <input type="checkbox" id="git-amend">
+                        修正(M)
+                    </label>
+                    <textarea id="git-message" class="git-message" placeholder="提交消息" rows="3"></textarea>
+                    <div class="git-commit-actions">
+                        <button type="button" id="git-commit-btn" class="dlg-btn primary">提交</button>
+                        <button type="button" id="git-commit-push-btn" class="dlg-btn">提交并推送…</button>
+                    </div>
+                </div>
+            </div>
             <div id="sidebar-resize" class="sidebar-resize" title="拖动调整宽度"></div>
         </aside>
         <div id="main-pane">
@@ -482,17 +507,17 @@
                     <button id="btn-welcome-open" class="tb-btn primary">打开文件 (Ctrl+O)</button>
                 </div>
             </div>
-            <div id="terminal-panel" class="hidden">
-                <div id="terminal-resize" class="term-resize" title="拖动调整高度"></div>
-                <div class="term-head">
-                    <div class="term-tabs" id="term-tabs"></div>
-                    <div class="term-actions">
-                        <button type="button" id="term-new" class="term-btn" title="新建终端">＋</button>
-                        <button type="button" id="term-panel-close" class="term-btn" title="关闭面板">✕</button>
-                    </div>
+        </div>
+        <div id="terminal-panel" class="hidden">
+            <div id="terminal-resize" class="term-resize" title="拖动调整高度"></div>
+            <div class="term-head">
+                <div class="term-tabs" id="term-tabs"></div>
+                <div class="term-actions">
+                    <button type="button" id="term-new" class="term-btn" title="新建终端">＋</button>
+                    <button type="button" id="term-panel-close" class="term-btn" title="关闭面板">✕</button>
                 </div>
-                <div class="term-body" id="term-body"></div>
             </div>
+            <div class="term-body" id="term-body"></div>
         </div>
     </div>
     <div id="enc-popover" class="enc-popover hidden"></div>
