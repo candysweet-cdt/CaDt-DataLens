@@ -120,6 +120,7 @@
             <div class="settings-layout">
                 <div class="settings-nav">
                     <button type="button" class="snav-item active" data-pane="general">通用设置</button>
+                    <button type="button" class="snav-item" data-pane="editor-tabs">编辑器标签页</button>
                     <div id="snav-formats" class="snav-group expanded">
                         <button type="button" class="snav-item snav-parent" aria-expanded="true">
                             <span class="snav-chev" aria-hidden="true"></span>
@@ -253,6 +254,32 @@
                             <span class="fp-editor">编辑器：{"name": "糖果超甜", "count": 42, "ok": true}</span>
                         </div>
                         <div class="fmt-hint">字体与字号设置即时生效；文件树字号只影响左侧文件列表/目录树。中文字体可单独选择，拉丁字母与数字仍使用主字体。</div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="editor-tabs">
+                        <div class="fmt-pane-title">编辑器标签页</div>
+                        <div class="fmt-pane-sub">标签页关闭方式与工具区行为</div>
+                        <div class="popover-row">
+                            <span class="popover-label">关闭按钮显示</span>
+                            <select id="opt-tab-close" class="opt-select">
+                                <option value="always">所有标签页</option>
+                                <option value="hover">悬停或活动时</option>
+                                <option value="none">不显示</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent">「不显示」时仍可用 Shift+点击、中键点击或右键菜单关闭标签页。</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-shiftclick-close">
+                                Shift+点击标签页关闭
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-dblclick-close">
+                                双击标签页关闭
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">默认关闭；开启后双击标签页即尝试关闭（有未保存修改时先确认）。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="formats">
                         <div class="fmt-pane-title">通用文件格式</div>

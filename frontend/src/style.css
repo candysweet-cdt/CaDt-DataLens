@@ -1090,7 +1090,45 @@ html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
 .esplit-divider:hover::before, .esplit-divider:active::before { background: var(--accent); }
 .esplit-col > .esplit-child:first-child { border-right: 1px solid var(--border); }
 .esplit-row > .esplit-child:first-child { border-bottom: 1px solid var(--border); }
-.egroup { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; background: var(--bg); }
+.egroup { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; background: var(--bg); position: relative; }
+/* 标签条右侧工具区（视图切换 + 标签页操作，IDEA 式覆盖层，每个分栏组独立） */
+.tb-tools {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 29px;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 6px 0 8px;
+    background: var(--panel);
+    z-index: 4;
+    user-select: none;
+}
+.tb-view, .tb-more {
+    width: 24px;
+    height: 24px;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+}
+.tb-view svg, .tb-more svg { width: 14px; height: 14px; display: block; }
+.tb-view:hover, .tb-more:hover { background: var(--hover); color: var(--text); }
+.tb-view.active { background: var(--accent-weak); color: var(--text); }
+.tb-view.disabled { opacity: 0.35; cursor: default; }
+.tb-view.disabled:hover { background: none; color: var(--muted); }
+.tb-spacer { flex: none; }
+/* 设置：标签页关闭按钮显示方式 */
+html[data-tab-close="always"] .tab .tab-close { visibility: visible; }
+html[data-tab-close="hover"] .tab:not(.active):not(:hover) .tab-close { visibility: hidden; }
+html[data-tab-close="none"] .tab .tab-close { visibility: hidden; }
 .etabs {
     display: flex;
     align-items: stretch;

@@ -829,6 +829,9 @@ settings.codeWrap = !!settings.codeWrap;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
 settings.showBanners = settings.showBanners !== false;
 settings.readOnlyMode = !!settings.readOnlyMode;
+if (!['always', 'hover', 'none'].includes(settings.tabCloseMode)) settings.tabCloseMode = 'always';
+settings.dblClickClose = !!settings.dblClickClose;
+settings.shiftClickClose = settings.shiftClickClose !== false;
 settings.sidebarFont = Number(settings.sidebarFont);
 if (!Number.isFinite(settings.sidebarFont)) settings.sidebarFont = 12.5;
 settings.sidebarFont = Math.min(20, Math.max(10, settings.sidebarFont));
@@ -865,6 +868,9 @@ const elsSettings = {
     showBanners: document.getElementById('opt-show-banners'),
     autoSave: document.getElementById('opt-auto-save'),
     openMode: document.getElementById('opt-open-mode'),
+    tabClose: document.getElementById('opt-tab-close'),
+    dblClickClose: document.getElementById('opt-dblclick-close'),
+    shiftClickClose: document.getElementById('opt-shiftclick-close'),
     uiFont: document.getElementById('opt-ui-font'),
     uiCjkFont: document.getElementById('opt-ui-cjk-font'),
     editorFontFamily: document.getElementById('opt-editor-font'),
@@ -1111,6 +1117,10 @@ function applySettings() {
     elsSettings.mdLineNumbers.checked = !!settings.mdLineNumbers;
     elsSettings.showBanners.checked = !!settings.showBanners;
     elsSettings.openMode.value = settings.openMode;
+    document.documentElement.dataset.tabClose = settings.tabCloseMode;
+    if (elsSettings.tabClose) elsSettings.tabClose.value = settings.tabCloseMode;
+    if (elsSettings.dblClickClose) elsSettings.dblClickClose.checked = !!settings.dblClickClose;
+    if (elsSettings.shiftClickClose) elsSettings.shiftClickClose.checked = settings.shiftClickClose !== false;
     syncOpenMode();
     document.documentElement.style.setProperty('--editor-font', settings.editorFont + 'px');
     document.documentElement.style.setProperty('--sidebar-font', settings.sidebarFont + 'px');
@@ -2352,6 +2362,13 @@ function createGroup(docIds) {
     if (!focusedGroupId) focusedGroupId = g.id;
     return g;
 }
+// 新开文件归入当前聚焦组（多开时只 activate 最后一个，其余仍需可见）
+function addDocToFocusedGroup(doc) {
+    if (!doc) return null;
+    const g = focusedGroup() || createGroup();
+    if (!g.docIds.includes(doc.id)) g.docIds.push(doc.id);
+    return g;
+}
 function leafDepth(node, gid, d) {
     if (!node) return -1;
     if (typeof node === 'string') return node === gid ? d : -1;
@@ -2511,6 +2528,92 @@ function buildGroup(parent, gid) {
         if (focusedGroupId !== gid) focusGroupById(gid);
     });
     parent.appendChild(wrap);
+    // 标签条右侧工具区（视图切换 + 标签页操作），每个分栏组独立一份
+    if (!hide) {
+        const tools = buildGroupTools(gid);
+        if (tools) {
+            wrap.appendChild(tools);
+            const spacer = document.createElement('div');
+            spacer.className = 'tb-spacer';
+            spacer.style.width = tools.offsetWidth + 'px';
+            strip.appendChild(spacer);
+        }
+    }
+}
+
+const VIEW_ICONS = {
+    tree: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M1.5 3.2h11M1.5 7h7.6M1.5 10.8h4.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/></svg>',
+    table: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M1.5 5.6h11M5.3 2.2v9.6M9 2.2v9.6" stroke="currentColor" stroke-width="1" fill="none"/></svg>',
+    code: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M4.4 3.6 1.7 7l2.7 3.4M9.6 3.6 12.3 7l-2.7 3.4M7.9 2.4 6.1 11.6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+    text: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 1.6h5.6L11.4 4v8.4H3z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/><path d="M5 7.2h4M5 9.6h4" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
+    preview: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
+    image: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
+    binary: '<svg viewBox="0 0 14 14" aria-hidden="true"><text x="2" y="10.6" font-size="9" font-family="JetBrains Mono, Consolas, monospace" font-weight="700" fill="currentColor">01</text></svg>',
+};
+const MORE_ICON = '<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="2.9" r="1.25" fill="currentColor"/><circle cx="7" cy="7" r="1.25" fill="currentColor"/><circle cx="7" cy="11.1" r="1.25" fill="currentColor"/></svg>';
+
+function viewDisabledFor(doc, mode) {
+    if (!doc) return true;
+    if (mode === 'image') return !doc.image;
+    if (mode === 'binary') return !doc.binary;
+    if (mode === 'tree') return !doc.treeAvailable;
+    if (mode === 'preview') return !(doc.format && doc.format.preview) || !!doc.large;
+    if (mode === 'table') return !(doc.format && doc.format.table);
+    return false;
+}
+
+function viewDisabledTitleFor(doc, mode) {
+    if (mode === 'preview' && doc && doc.large) return '大文件不支持预览';
+    return '当前文件不支持该视图';
+}
+
+function buildGroupTools(gid) {
+    const g = groupById(gid);
+    if (!g || !g.docIds.length) return null;
+    const doc = docs.find((d) => d.id === g.activeId) || groupDocs(g)[0];
+    if (!doc) return null;
+    const tools = document.createElement('div');
+    tools.className = 'tb-tools';
+    for (const [mode, label] of viewOptionsFor(doc.format)) {
+        const disabled = viewDisabledFor(doc, mode);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'tb-view' + (doc.mode === mode ? ' active' : '') + (disabled ? ' disabled' : '');
+        btn.title = label + (disabled ? '（' + viewDisabledTitleFor(doc, mode) + '）' : '');
+        btn.innerHTML = VIEW_ICONS[mode] || '';
+        if (!disabled) {
+            btn.addEventListener('click', async () => {
+                if (file !== doc) await activateDoc(doc);
+                if (currentMode !== mode) switchMode(mode);
+                renderTabs();
+            });
+        }
+        tools.appendChild(btn);
+    }
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'tb-more';
+    more.title = '标签页操作';
+    more.innerHTML = MORE_ICON;
+    more.addEventListener('click', () => {
+        const r = more.getBoundingClientRect();
+        showTabbarToolsMenu(r.left, r.bottom + 4);
+    });
+    tools.appendChild(more);
+    return tools;
+}
+
+function showTabbarToolsMenu(x, y) {
+    if (!ctxMenu) return;
+    const clean = docs.filter((d) => !d.dirty);
+    ctxMenu.open([
+        {label: '转到文件…', shortcut: 'Ctrl+Shift+N', icon: 'E721', action: () => {}},
+        {sep: true},
+        {label: '关闭所有标签页', action: () => closeDocsWithConfirm(docs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
+        {label: '关闭未修改标签页', disabled: !clean.length, action: () => closeDocsWithConfirm(clean)},
+        {sep: true},
+        {label: '配置编辑器标签页…', icon: 'E713', action: () => openSettings('editor-tabs')},
+    ], x, y);
 }
 
 function focusGroupById(gid) {
@@ -2542,12 +2645,15 @@ function buildGroupTab(g, doc, strip) {
     });
     tab.append(icon, dot, name, close);
     tab.addEventListener('click', (e) => {
-        if (e.shiftKey) {
+        if (e.shiftKey && settings.shiftClickClose !== false) {
             e.preventDefault();
             requestCloseDoc(doc);
             return;
         }
         activateDoc(doc);
+    });
+    tab.addEventListener('dblclick', () => {
+        if (settings.dblClickClose) requestCloseDoc(doc);
     });
     tab.addEventListener('contextmenu', (e) => {
         e.preventDefault();
@@ -5228,6 +5334,7 @@ async function openPathsHere(paths) {
             }
             const doc = createDoc(data);
             docs.push(doc);
+            addDocToFocusedGroup(doc);
             target = doc;
             lastNew = doc;
         } catch (e) {
@@ -5744,6 +5851,18 @@ elsSettings.alwaysOnTop.addEventListener('change', () => {
 });
 elsSettings.codeWrap.addEventListener('change', () => {
     settings.codeWrap = elsSettings.codeWrap.checked;
+    applySettings();
+});
+elsSettings.tabClose.addEventListener('change', () => {
+    settings.tabCloseMode = elsSettings.tabClose.value;
+    applySettings();
+});
+elsSettings.dblClickClose.addEventListener('change', () => {
+    settings.dblClickClose = elsSettings.dblClickClose.checked;
+    applySettings();
+});
+elsSettings.shiftClickClose.addEventListener('change', () => {
+    settings.shiftClickClose = elsSettings.shiftClickClose.checked;
     applySettings();
 });
 elsSettings.mdLineNumbers.addEventListener('change', () => {
