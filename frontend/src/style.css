@@ -1450,8 +1450,20 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 }
 #st-message.error { color: var(--red); }
 #st-dirty { color: var(--orange); }
-#st-zoom:empty { display: none; }
-#st-zoom { color: var(--muted); font-variant-numeric: tabular-nums; }
+.st-zoom {
+    padding: 1px 4px;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+    cursor: default;
+}
+.st-zoom:hover { background: var(--hover); color: var(--text); }
+.st-zoom:focus { outline: none; }
+.st-zoom.active { background: var(--accent-weak); color: var(--accent); }
+.st-zoom:empty { display: none; }
 .status-lock {
     flex: none;
     width: 22px;

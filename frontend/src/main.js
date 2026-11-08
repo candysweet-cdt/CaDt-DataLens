@@ -867,7 +867,7 @@ function makeSelect(options, value, onChange) {
 }
 
 const footPopover = document.getElementById('enc-popover');
-const FOOT_WIDGETS = {encoding: els.stEnc, view: els.stMode, eol: els.stEol};
+const FOOT_WIDGETS = {encoding: els.stEnc, view: els.stMode, eol: els.stEol, zoom: els.stZoom};
 let footPopoverKind = null;
 const CHECK_ICON = String.fromCharCode(0xE73E);
 const WARN_ICON = String.fromCharCode(0xE7BA);
@@ -985,6 +985,33 @@ function renderViewMenu() {
     footPopover.appendChild(popFoot('当前', viewLabel(currentMode)));
 }
 
+function renderImageZoomMenu() {
+    if (!file || !file.image) return;
+    const doc = file;
+    footPopover.appendChild(popTitle('图片缩放'));
+    footPopover.appendChild(popItem('自动（适配显示区）', {
+        current: doc.imageZoom == null,
+        onClick: () => {
+            doc.imageZoom = null;
+            applyImageZoom(doc);
+            closeFootPopover();
+        },
+    }));
+    footPopover.appendChild(popSep());
+    for (const percent of [25, 50, 75, 100, 150, 200, 400, 800]) {
+        footPopover.appendChild(popItem(percent + '%', {
+            current: doc.imageZoom != null && Math.round(doc.imageZoom * 100) === percent,
+            onClick: () => {
+                doc.imageZoom = percent / 100;
+                applyImageZoom(doc);
+                closeFootPopover();
+            },
+        }));
+    }
+    const current = doc.imageScale ? Math.round(doc.imageScale * 100) + '%' : '—';
+    footPopover.appendChild(popFoot('当前', current));
+}
+
 function chooseEol(value) {
     if (!file) return;
     const fs = getFormatSettings(file.format.id);
@@ -1023,6 +1050,7 @@ function openFootPopover(kind) {
     footPopover.classList.remove('hidden');
     if (kind === 'encoding') renderEncodingMenu();
     else if (kind === 'view') renderViewMenu();
+    else if (kind === 'zoom') renderImageZoomMenu();
     else renderEolMenu();
     const r = anchor.getBoundingClientRect();
     const pr = footPopover.getBoundingClientRect();
@@ -1286,7 +1314,7 @@ function updateStatus() {
         ? Math.round(file.imageScale * 100) + '%'
         : '';
     els.stZoom.textContent = zoom;
-    els.stZoom.title = zoom ? '图片缩放比例（Ctrl+滚轮调整，双击图片恢复适配）' : '';
+    els.stZoom.title = zoom ? '图片缩放比例（点击选择，Ctrl+滚轮调整，双击图片恢复适配）' : '';
     if (file.binary) {
         els.stEol.textContent = '';
         els.stEnc.textContent = '';
