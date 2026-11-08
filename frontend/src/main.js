@@ -781,7 +781,7 @@ function applyReadOnlyToDoc(doc) {
     if (doc.pane) {
         doc.pane.classList.toggle('app-readonly', locked);
         const textarea = doc.pane.querySelector('textarea.jsoneditor-text');
-        if (textarea) textarea.readOnly = locked;
+        if (textarea) textarea.readOnly = locked || !!doc.binary;
         doc.pane.querySelectorAll('.jsoneditor-tree input, .jsoneditor-tree select').forEach((control) => {
             control.disabled = locked;
         });
@@ -1055,8 +1055,8 @@ const EOLS = [['follow', '跟随原文件'], ['lf', 'LF'], ['crlf', 'CRLF']];
 const VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
 const CSV_VIEWS = [['table', '表格视图'], ['tree', '树视图'], ['text', '文本视图']];
 const MARKDOWN_VIEWS = [['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
-const IMAGE_VIEWS = [['image', '图片视图'], ['binary', '二进制视图']];
-const BINARY_VIEWS = [['binary', '二进制视图']];
+const IMAGE_VIEWS = [['image', '图片视图'], ['binary', '二进制视图'], ['text', '文本视图']];
+const BINARY_VIEWS = [['binary', '二进制视图'], ['text', '文本视图']];
 const CSV_TABLE_ROW_LIMIT = 5000;
 const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
@@ -1073,7 +1073,7 @@ function viewDisabled(mode) {
     if (mode === 'image') return !file.image;
     if (mode === 'binary') return !file.binary;
     if (mode === 'tree') return !file.treeAvailable;
-    if (mode === 'text') return !!(file.image || file.binary);
+    if (mode === 'text') return false;
     if (mode === 'preview') return !(file.format && file.format.preview) || !!file.large;
     return false;
 }
@@ -2973,6 +2973,27 @@ function enterBinaryView(doc) {
     } catch (e) {}
 }
 
+function enterTextView(doc) {
+    if (!doc || !doc.editor) return;
+    hideImageView(doc);
+    const loading = doc.loading;
+    doc.loading = true;
+    try {
+        doc.editor.setMode('text');
+        doc.mode = 'text';
+        currentMode = 'text';
+        if (doc.pane) doc.pane.classList.add('active');
+        showBanner(doc, doc.parseError);
+        updateStatus();
+        updateSearchState();
+    } catch (e) {
+        flash('切换文本视图失败：' + e.message, true);
+    } finally {
+        doc.loading = loading;
+    }
+    applyReadOnlyToDoc(doc);
+}
+
 function showCsvTableView(doc) {
     if (!doc || !doc.format.table) return;
     createCsvTableView(doc);
@@ -4619,6 +4640,10 @@ function switchMode(mode) {
     }
     if (mode === 'binary') {
         if (doc && doc.binary) enterBinaryView(doc);
+        return;
+    }
+    if (mode === 'text' && (currentMode === 'image' || currentMode === 'binary') && doc) {
+        enterTextView(doc);
         return;
     }
     if (mode === 'preview') {

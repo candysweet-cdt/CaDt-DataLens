@@ -2007,10 +2007,12 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 .jsoneditor textarea.jsoneditor-text {
     background: var(--bg) !important;
     color: var(--text);
-    font-family: var(--editor-font-family);
-    font-size: var(--editor-font, 13px);
-    line-height: 1.5;
-    padding: 12px 24px;
+    font-family: Consolas, "Courier New", var(--editor-font-family);
+    font-size: var(--editor-font, 14px);
+    line-height: 1.45;
+    padding: 8px 10px;
+    border: none;
+    outline: none;
     caret-color: var(--text);
 }
 .jsoneditor .ace_editor,
