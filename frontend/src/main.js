@@ -227,6 +227,8 @@ const rt = window.runtime || (mockScenario.has('winctl') ? mockRt : null);
 const els = {
     filename: document.getElementById('filename'),
     banner: document.getElementById('banner'),
+    bannerText: document.getElementById('banner-text'),
+    bannerClose: document.getElementById('banner-close'),
     editor: document.getElementById('editor'),
     welcome: document.getElementById('welcome'),
     mainPane: document.getElementById('main-pane'),
@@ -348,6 +350,7 @@ const defaultSettings = {
     editorFont: 13,
     codeWrap: false,
     mdLineNumbers: false,
+    showBanners: true,
     readOnlyMode: false,
     theme: 'dark',
     uiFont: 'inter',
@@ -376,6 +379,7 @@ if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
 settings.codeWrap = !!settings.codeWrap;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
+settings.showBanners = settings.showBanners !== false;
 settings.readOnlyMode = !!settings.readOnlyMode;
 settings.sidebarFont = Number(settings.sidebarFont);
 if (!Number.isFinite(settings.sidebarFont)) settings.sidebarFont = 12.5;
@@ -405,6 +409,7 @@ const elsSettings = {
     sidebarFontVal: document.getElementById('opt-sidebar-font-val'),
     codeWrap: document.getElementById('opt-code-wrap'),
     mdLineNumbers: document.getElementById('opt-md-line-numbers'),
+    showBanners: document.getElementById('opt-show-banners'),
     autoSave: document.getElementById('opt-auto-save'),
     openMode: document.getElementById('opt-open-mode'),
     uiFont: document.getElementById('opt-ui-font'),
@@ -591,6 +596,7 @@ function applySettings() {
     elsSettings.autoSave.checked = !!settings.autoSave;
     elsSettings.codeWrap.checked = !!settings.codeWrap;
     elsSettings.mdLineNumbers.checked = !!settings.mdLineNumbers;
+    elsSettings.showBanners.checked = !!settings.showBanners;
     elsSettings.openMode.value = settings.openMode;
     syncOpenMode();
     document.documentElement.style.setProperty('--editor-font', settings.editorFont + 'px');
@@ -1330,25 +1336,38 @@ function updateStatus() {
     els.stEnc.textContent = enc + (file.hasBom && enc === 'UTF-8' ? ' BOM' : '');
 }
 
+function hideBanner() {
+    els.banner.classList.add('hidden');
+}
+
+function dismissBanner() {
+    if (file) file.bannerDismissed = true;
+    hideBanner();
+}
+
 function showBanner(data, parseError) {
+    if (!data || data.bannerDismissed || !settings.showBanners) {
+        hideBanner();
+        return;
+    }
     if (data.binary) {
         if (data.image && data.mode === 'image') {
-            els.banner.classList.add('hidden');
+            hideBanner();
             return;
         }
         const shown = data.hexShown || data.size;
         const truncated = shown < data.size;
-        els.banner.textContent = '二进制文件 · ' + data.name + '（' + fmtSize(data.size) + '）：下方从第 0 字节开始，以十六进制字节数据只读展示' +
+        els.bannerText.textContent = '二进制文件 · ' + data.name + '（' + fmtSize(data.size) + '）：下方从第 0 字节开始，以十六进制字节数据只读展示' +
             (truncated ? '，仅显示前 ' + fmtSize(shown) : '') + '。';
         els.banner.classList.remove('hidden');
     } else if (data.large) {
-        els.banner.textContent = '大文件（' + fmtSize(data.size) + '）：已切换为只读代码模式，不可编辑保存。';
+        els.bannerText.textContent = '大文件（' + fmtSize(data.size) + '）：已切换为只读代码模式，不可编辑保存。';
         els.banner.classList.remove('hidden');
     } else if (parseError) {
-        els.banner.textContent = data.format.name + ' 解析失败：' + parseError.message + '。已用代码模式打开，可手动修复后保存。';
+        els.bannerText.textContent = data.format.name + ' 解析失败：' + parseError.message + '。已用代码模式打开，可手动修复后保存。';
         els.banner.classList.remove('hidden');
     } else {
-        els.banner.classList.add('hidden');
+        hideBanner();
     }
 }
 
@@ -2853,6 +2872,10 @@ function initExplorer() {
             flash('已解除只读锁定');
         }
     });
+    if (els.bannerClose) els.bannerClose.addEventListener('click', (e) => {
+        e.stopPropagation();
+        dismissBanner();
+    });
 }
 
 let untitledSeq = 0;
@@ -2952,6 +2975,7 @@ async function reloadActive() {
         doc.imageZoom = null;
         doc.imagePan = null;
         doc.loading = false;
+        doc.bannerDismissed = false;
         Object.assign(doc, fresh, {id: doc.id, dirty: false, untitled: false, text: null, content: data.content});
         let nextMode = keepMode;
         if (doc.binary) {
@@ -3110,6 +3134,12 @@ elsSettings.mdLineNumbers.addEventListener('change', () => {
     settings.mdLineNumbers = elsSettings.mdLineNumbers.checked;
     applySettings();
     if (currentMode === 'preview' && file) renderMarkdownPreview(file);
+});
+elsSettings.showBanners.addEventListener('change', () => {
+    settings.showBanners = elsSettings.showBanners.checked;
+    applySettings();
+    if (file) showBanner(file, file.parseError);
+    else hideBanner();
 });
 elsSettings.openMode.addEventListener('change', () => {
     settings.openMode = elsSettings.openMode.value;

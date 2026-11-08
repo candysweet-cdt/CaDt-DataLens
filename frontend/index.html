@@ -117,6 +117,13 @@
                         </div>
                         <div class="fmt-hint">多窗口模式下新打开的文件使用独立窗口；单窗口模式在标签栏中打开。</div>
                         <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-show-banners" checked>
+                                显示顶部提示条
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧 × 只关闭当前提示。</div>
+                        <div class="popover-row">
                             <span class="popover-label">键列宽度</span>
                             <input type="range" id="opt-key-width" min="100" max="320" step="10" value="160">
                             <span id="opt-key-width-val" class="popover-value">160</span>
@@ -263,7 +270,12 @@
         </aside>
         <div id="main-pane">
             <div id="tabbar" class="hidden"></div>
-            <div id="banner" class="banner hidden"></div>
+            <div id="banner" class="banner hidden">
+                <span id="banner-text" class="banner-text"></span>
+                <button type="button" id="banner-close" class="banner-close" title="关闭提示" aria-label="关闭提示">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                </button>
+            </div>
             <div id="editor-area">
                 <div id="editor" class="hidden"></div>
                 <div id="welcome">

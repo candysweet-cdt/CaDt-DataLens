@@ -883,6 +883,9 @@ html, body {
 .popover-shortcuts .kbd { color: var(--text); font-family: Consolas, monospace; }
 
 .banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     padding: 6px 12px;
     background: var(--banner-bg);
     color: var(--banner-fg);
@@ -891,6 +894,24 @@ html, body {
     flex: none;
 }
 .banner.hidden { display: none; }
+.banner-text { flex: 1; min-width: 0; }
+.banner-close {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    cursor: default;
+    opacity: 0.7;
+}
+.banner-close svg { width: 12px; height: 12px; }
+.banner-close:hover { background: rgba(0, 0, 0, 0.16); opacity: 1; }
+.banner-close:focus { outline: none; }
 
 #tabbar {
     display: flex;
