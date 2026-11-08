@@ -3706,7 +3706,7 @@ function createDocEditor(doc) {
     doc.editor = ed;
     doc.pane = pane;
     if (ed.aceEditor) { hookCodeFoldPreviews(ed.aceEditor); hookFoldChevronHover(ed.aceEditor); }
-    if (settings.treeExpandDefault === 'collapse' && startMode === 'tree' && treeAvailable && !doc.large) {
+    if (settings.treeExpandDefault === 'collapse' && startMode === 'tree' && doc.treeAvailable && !doc.large) {
         setTimeout(() => {
             try { if (doc.editor) doc.editor.collapseAll(); } catch (e) {}
         }, 50);
