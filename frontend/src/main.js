@@ -2417,14 +2417,9 @@ function moveTabInGroup(gid, srcId, targetId, before) {
     renderTabs();
 }
 
-let __rlDepth = 0;
 function renderTabs() { renderEditorLayout(); }
-window.__splitDbg = () => ({ dragTabId, dragTabGroupId, dropZone, groups: editorGroups.map(g => ({ id: g.id, docIds: g.docIds, activeId: g.activeId })), focused: focusedGroupId, root: splitRoot });
 
 function renderEditorLayout() {
-    if (++__rlDepth > 60) { window.__rlLoop = new Error('renderEditorLayout depth ' + __rlDepth).stack; __rlDepth--; return; }
-    if (!els.editor) { __rlDepth--; return; }
-    try {
     els.editor.textContent = '';
     const root = splitRoot || (focusedGroupId || (editorGroups[0] && editorGroups[0].id));
     if (!root || !editorGroups.length) return;
@@ -2459,7 +2454,6 @@ function renderEditorLayout() {
         updateStatus();
         updateSearchState();
     }
-    } catch (e) { window.__rlErr = String(e && e.stack || e); } finally { __rlDepth--; }
 }
 
 function buildSplitNode(parent, node) {
@@ -4488,10 +4482,8 @@ function setFilename(name, path) {
     icon.dataset.fi = spec.id;
 }
 
-let __ucDepth = 0;
 function updateDocChrome() {
-    if (++__ucDepth > 60) { window.__ucLoop = new Error('updateDocChrome depth ' + __ucDepth).stack; __ucDepth--; return; }
-    if (!file) { __ucDepth--; return; }
+    if (!file) return;
     setFilename(file.name, file.path);
     renderBreadcrumb(file.path);
     showBanner(file, file.parseError);
@@ -4503,7 +4495,6 @@ function updateDocChrome() {
     updateStatus();
     updateSearchState();
     renderTabs();
-    __ucDepth--;
 }
 
 function showWelcome() {
