@@ -381,6 +381,7 @@ const mockRt = {
     WindowClose() { this._calls.push('close'); },
     Quit() { this._calls.push('quit'); },
     WindowSetTitle(title) { this._title = title; this._calls.push('title:' + title); },
+    WindowSetAlwaysOnTop(b) { window.__mockAlwaysOnTop = !!b; this._topmost = !!b; this._calls.push('topmost:' + !!b); },
     BrowserOpenURL(url) { window.__mockOpenUrl = url; this._calls.push('url:' + url); },
     EventsOn() {},
 };
@@ -526,6 +527,7 @@ const defaultSettings = {
     treeGuides: false,
     treeRefreshInterval: 3,
     codeGuides: false,
+    alwaysOnTop: false,
     editorFont: 13,
     codeWrap: false,
     mdLineNumbers: false,
@@ -558,6 +560,7 @@ if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
 settings.treeGuides = !!settings.treeGuides;
 settings.codeGuides = !!settings.codeGuides;
+settings.alwaysOnTop = !!settings.alwaysOnTop;
 settings.treeRefreshInterval = Number(settings.treeRefreshInterval);
 if (![0, 1, 2, 3, 5, 10].includes(settings.treeRefreshInterval)) settings.treeRefreshInterval = 3;
 settings.codeWrap = !!settings.codeWrap;
@@ -593,6 +596,7 @@ const elsSettings = {
     treeGuides: document.getElementById('opt-tree-guides'),
     treeRefresh: document.getElementById('opt-tree-refresh'),
     codeGuides: document.getElementById('opt-code-guides'),
+    alwaysOnTop: document.getElementById('opt-always-on-top'),
     codeWrap: document.getElementById('opt-code-wrap'),
     mdLineNumbers: document.getElementById('opt-md-line-numbers'),
     showBanners: document.getElementById('opt-show-banners'),
@@ -703,6 +707,13 @@ function applyCodeGuides() {
     }
 }
 
+function applyAlwaysOnTop() {
+    if (!rt || !rt.WindowSetAlwaysOnTop) return;
+    try {
+        rt.WindowSetAlwaysOnTop(!!settings.alwaysOnTop);
+    } catch (e) {}
+}
+
 function toggleCodeWrap() {
     settings.codeWrap = !settings.codeWrap;
     applySettings();
@@ -810,6 +821,7 @@ function applySettings() {
     if (explorer && explorer.setAutoRefresh) explorer.setAutoRefresh(settings.treeRefreshInterval);
     elsSettings.autoSave.checked = !!settings.autoSave;
     elsSettings.codeGuides.checked = !!settings.codeGuides;
+    elsSettings.alwaysOnTop.checked = !!settings.alwaysOnTop;
     elsSettings.codeWrap.checked = !!settings.codeWrap;
     elsSettings.mdLineNumbers.checked = !!settings.mdLineNumbers;
     elsSettings.showBanners.checked = !!settings.showBanners;
@@ -834,6 +846,7 @@ function applySettings() {
     }
     applyCodeWrap();
     applyCodeGuides();
+    applyAlwaysOnTop();
     applyReadOnlyMode();
     try {
         localStorage.setItem(settingsKey, JSON.stringify(settings));
@@ -4437,6 +4450,10 @@ elsSettings.autoSave.addEventListener('change', () => {
 });
 elsSettings.codeGuides.addEventListener('change', () => {
     settings.codeGuides = elsSettings.codeGuides.checked;
+    applySettings();
+});
+elsSettings.alwaysOnTop.addEventListener('change', () => {
+    settings.alwaysOnTop = elsSettings.alwaysOnTop.checked;
     applySettings();
 });
 elsSettings.codeWrap.addEventListener('change', () => {
