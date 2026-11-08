@@ -1002,6 +1002,8 @@ html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
     height: 30px;
     flex: none;
     flex-shrink: 0;
+    gap: 4px;
+    padding: 3px 8px 0;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
@@ -1020,14 +1022,14 @@ html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
     flex: none;
     min-width: 96px;
     max-width: 240px;
-    padding: 0 6px 0 12px;
-    border-right: 1px solid var(--border);
+    padding: 0 6px 0 10px;
+    border-radius: 7px;
     color: var(--muted);
     font-size: 12px;
     cursor: default;
 }
 .tab:hover { background: var(--hover); color: var(--text); }
-.tab.active { background: var(--bg); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
+.tab.active { background: var(--accent-weak); color: var(--text); }
 .tab-icon { flex: none; width: 15px; height: 15px; display: grid; place-items: center; opacity: 0.82; }
 .tab-icon svg { width: 14px; height: 14px; }
 .tab:hover .tab-icon, .tab.active .tab-icon { opacity: 1; }
