@@ -313,6 +313,7 @@ const defaultSettings = {
     showSidebar: false,
     keyWidth: 160,
     editorFont: 13,
+    codeWrap: false,
     theme: 'dark',
     uiFont: 'inter',
     uiCjkFont: 'auto',
@@ -338,6 +339,7 @@ settings.autoSave = !!settings.autoSave;
 if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
+settings.codeWrap = !!settings.codeWrap;
 
 function getFormatSettings(id) {
     return settings.formatSettings[id] || defaultFormatSettings()[id] || {encoding: 'auto', indent: '2', eol: 'follow', view: 'tree'};
@@ -349,6 +351,7 @@ const elsSettings = {
     widthVal: document.getElementById('opt-key-width-val'),
     font: document.getElementById('opt-font-size'),
     fontVal: document.getElementById('opt-font-size-val'),
+    codeWrap: document.getElementById('opt-code-wrap'),
     autoSave: document.getElementById('opt-auto-save'),
     openMode: document.getElementById('opt-open-mode'),
     uiFont: document.getElementById('opt-ui-font'),
@@ -423,6 +426,27 @@ function setTheme(id) {
     flash('主题：' + currentTheme().name);
 }
 
+function applyCodeWrap() {
+    for (const doc of docs) {
+        const ace = doc && doc.editor && doc.editor.aceEditor;
+        if (!ace) continue;
+        try {
+            ace.getSession().setUseWrapMode(!!settings.codeWrap);
+        } catch (e) {}
+    }
+    if (editor && editor.aceEditor) {
+        try {
+            editor.aceEditor.resize();
+        } catch (e) {}
+    }
+}
+
+function toggleCodeWrap() {
+    settings.codeWrap = !settings.codeWrap;
+    applySettings();
+    flash('代码视图自动换行：' + (settings.codeWrap ? '开' : '关'));
+}
+
 function applySettings() {
     document.documentElement.classList.toggle('keycol-natural', !settings.fixedKeys);
     applyTheme();
@@ -434,6 +458,7 @@ function applySettings() {
     elsSettings.font.value = String(settings.editorFont);
     elsSettings.fontVal.textContent = String(settings.editorFont);
     elsSettings.autoSave.checked = !!settings.autoSave;
+    elsSettings.codeWrap.checked = !!settings.codeWrap;
     elsSettings.openMode.value = settings.openMode;
     syncOpenMode();
     document.documentElement.style.setProperty('--editor-font', settings.editorFont + 'px');
@@ -452,6 +477,7 @@ function applySettings() {
             editor.aceEditor.setFontSize(settings.editorFont);
         } catch (e) {}
     }
+    applyCodeWrap();
     try {
         localStorage.setItem(settingsKey, JSON.stringify(settings));
     } catch (e) {}
@@ -1089,6 +1115,7 @@ function applyAceMode() {
             editor.aceEditor.session.setMode(want);
         }
         editor.aceEditor.setFontSize(settings.editorFont);
+        editor.aceEditor.session.setUseWrapMode(!!settings.codeWrap);
         if (file && file.format) {
             const fs = getFormatSettings(file.format.id);
             const tab = fs.indent === 'tab';
@@ -1186,6 +1213,11 @@ function createDocEditor(doc) {
     }
     if ((doc.large || doc.binary) && ed.aceEditor) {
         ed.aceEditor.setReadOnly(true);
+    }
+    if (ed.aceEditor) {
+        try {
+            ed.aceEditor.session.setUseWrapMode(!!settings.codeWrap);
+        } catch (e) {}
     }
     doc.mode = startMode;
     doc.text = ed.getText();
@@ -1995,6 +2027,10 @@ elsSettings.autoSave.addEventListener('change', () => {
     settings.autoSave = elsSettings.autoSave.checked;
     applySettings();
 });
+elsSettings.codeWrap.addEventListener('change', () => {
+    settings.codeWrap = elsSettings.codeWrap.checked;
+    applySettings();
+});
 elsSettings.openMode.addEventListener('change', () => {
     settings.openMode = elsSettings.openMode.value;
     applySettings();
@@ -2231,6 +2267,7 @@ function menuItems(kind) {
                 {label: '文件列表', checked: settings.sidebarMode === 'list', action: () => setSidebarMode('list')},
                 {label: '文件树', checked: settings.sidebarMode === 'tree', action: () => setSidebarMode('tree')},
                 {sep: true},
+                {label: '自动换行', checked: !!settings.codeWrap, action: toggleCodeWrap},
                 {label: '展开全部', shortcut: 'Ctrl+Shift+=', disabled: !tree, action: () => editor && editor.expandAll()},
                 {label: '收起全部', shortcut: 'Ctrl+Shift+-', disabled: !tree, action: () => editor && editor.collapseAll()},
             ];
