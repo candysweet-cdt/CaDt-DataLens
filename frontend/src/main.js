@@ -481,6 +481,9 @@ const mockBackend = {
             diff: 'diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-旧内容\n+新内容（mock）\n',
         };
     },
+    async ReadImageAsDataURL(path) {
+        return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFklEQVR42mNkYPjPgAyYGBgYmRgAHPoBG0gGtMUAAAAASUVORK5CYII=';
+    },
     async GetAppVersion() {
         return 'v1.0.0';
     },
@@ -1914,6 +1917,37 @@ markdownRenderer.renderer.rules.link_open = (tokens, idx, options, env, self) =>
     }
     return defaultLinkOpen(tokens, idx, options, env, self);
 };
+
+// resolveMarkdownImages 把 Markdown 预览里相对路径/本地绝对路径的图片换成后端读取的 data URL。
+function resolveMarkdownImages(doc) {
+    if (!doc || !doc.previewBody) return;
+    const BS = String.fromCharCode(92); // 反斜杠（避免注入层转义问题）
+    const raw0 = doc.path || '';
+    const cut = Math.max(raw0.lastIndexOf('/'), raw0.lastIndexOf(BS));
+    const base = cut >= 0 ? raw0.slice(0, cut) : '';
+    for (const img of doc.previewBody.querySelectorAll('img')) {
+        const raw = img.getAttribute('src') || '';
+        if (!raw || /^(https?:|data:|blob:)/i.test(raw)) continue;
+        let p = raw;
+        if (/^file:/i.test(p)) p = p.slice(7);
+        p = p.replace(/^\/+/, '');
+        try { p = decodeURIComponent(p); } catch (e) {}
+        p = p.split('/').join(BS);
+        let abs;
+        if (/^[A-Za-z]:/.test(p)) abs = p;
+        else if (base) abs = base + BS + p;
+        else continue;
+        const parts = [];
+        for (const seg of abs.split(BS)) {
+            if (seg === '.' || seg === '') continue;
+            if (seg === '..') { parts.pop(); continue; }
+            parts.push(seg);
+        }
+        abs = parts.join(BS);
+        if (!backend.ReadImageAsDataURL) continue;
+        backend.ReadImageAsDataURL(abs).then((url) => { if (url) img.src = url; }).catch(() => {});
+    }
+}
 
 function renderMarkdownHtml(text) {
     const html = markdownRenderer.render(text || '');
@@ -4012,6 +4046,7 @@ function renderMarkdownPreview(doc) {
     const scrollTop = doc.previewScroll ? doc.previewScroll.scrollTop : 0;
     try {
         doc.previewBody.innerHTML = renderMarkdownHtml(doc.editor.getText());
+        resolveMarkdownImages(doc);
     } catch (e) {
         doc.previewBody.textContent = 'Markdown 渲染失败：' + e.message;
     }
@@ -6576,16 +6611,29 @@ function setDragCursor(kind) {
     document.body.classList.toggle('cursor-ew', kind === 'ew');
     document.body.classList.toggle('cursor-ns', kind === 'ns');
 }
-function applySystemCursors() {
+async function applySystemCursors() {
     if (!sysCursor) return;
+    const SIZE = 24; // 系统光标 32px 位图在此偏大，缩到 24px
+    const build = async (k, fallback) => {
+        const url = sysCursor[k];
+        if (!url) return null;
+        const hs = parseCurHotspot(url);
+        const png = await scaleCursorImage(url, SIZE);
+        if (!png) return null;
+        const hx = hs ? Math.round(hs.x * SIZE / 32) : Math.round(SIZE / 2);
+        const hy = hs ? Math.round(hs.y * SIZE / 32) : Math.round(SIZE / 2);
+        return 'cursor: url("' + png + '") ' + hx + ' ' + hy + ', ' + fallback + ';';
+    };
+    const ew = await build('ew', 'ew-resize');
+    const ns = await build('ns', 'ns-resize');
     const parts = [];
-    if (sysCursor.ew) {
-        parts.push('.sidebar-resize, .esplit-col > .esplit-divider { cursor: url("' + sysCursor.ew + '"), ew-resize; }');
-        parts.push('body.cursor-ew { cursor: url("' + sysCursor.ew + '"), ew-resize; }');
+    if (ew) {
+        parts.push('.sidebar-resize, .esplit-col > .esplit-divider { ' + ew + ' }');
+        parts.push('body.cursor-ew { ' + ew + ' }');
     }
-    if (sysCursor.ns) {
-        parts.push('.term-resize, .git-splitter, .esplit-row > .esplit-divider { cursor: url("' + sysCursor.ns + '"), ns-resize; }');
-        parts.push('body.cursor-ns { cursor: url("' + sysCursor.ns + '"), ns-resize; }');
+    if (ns) {
+        parts.push('.term-resize, .git-splitter, .esplit-row > .esplit-divider { ' + ns + ' }');
+        parts.push('body.cursor-ns { ' + ns + ' }');
     }
     if (!parts.length) return;
     const style = document.createElement('style');
@@ -6593,6 +6641,33 @@ function applySystemCursors() {
     style.textContent = parts.join('\n');
     document.head.appendChild(style);
 }
+
+function parseCurHotspot(dataUrl) {
+    // .cur 头部：ICONDIR(6) + ICONDIRENTRY(16)，wHotspotX@18、wHotspotY@20（LE u16）
+    try {
+        const bin = atob(dataUrl.split(',')[1]);
+        if (bin.length < 22) return null;
+        return { x: bin.charCodeAt(18) | (bin.charCodeAt(19) << 8), y: bin.charCodeAt(20) | (bin.charCodeAt(21) << 8) };
+    } catch (e) { return null; }
+}
+
+function scaleCursorImage(dataUrl, size) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const c = document.createElement('canvas');
+                c.width = size;
+                c.height = size;
+                c.getContext('2d').drawImage(img, 0, 0, size, size);
+                resolve(c.toDataURL('image/png'));
+            } catch (e) { resolve(null); }
+        };
+        img.onerror = () => resolve(null);
+        img.src = dataUrl;
+    });
+}
+
 if (backend.GetSystemCursors) {
     backend.GetSystemCursors().then((c) => {
         if (c && (c.ew || c.ns)) { sysCursor = c; applySystemCursors(); }

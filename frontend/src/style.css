@@ -1151,7 +1151,7 @@ html[data-tab-close="none"] .tab .tab-close { visibility: hidden; }
 #split-mask {
     position: absolute;
     display: none;
-    background: rgba(0, 0, 0, 0.52);
+    background: rgba(0, 0, 0, 0.3);
     border: 1px solid var(--accent);
     border-radius: 4px;
     pointer-events: none;
