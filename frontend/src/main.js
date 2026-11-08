@@ -522,6 +522,7 @@ const defaultSettings = {
     csvTableMigrated: false,
     keyWidth: 160,
     sidebarFont: 12.5,
+    treeGuides: false,
     editorFont: 13,
     codeWrap: false,
     mdLineNumbers: false,
@@ -552,6 +553,7 @@ settings.autoSave = !!settings.autoSave;
 if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
+settings.treeGuides = !!settings.treeGuides;
 settings.codeWrap = !!settings.codeWrap;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
 settings.showBanners = settings.showBanners !== false;
@@ -582,6 +584,7 @@ const elsSettings = {
     fontVal: document.getElementById('opt-font-size-val'),
     sidebarFont: document.getElementById('opt-sidebar-font'),
     sidebarFontVal: document.getElementById('opt-sidebar-font-val'),
+    treeGuides: document.getElementById('opt-tree-guides'),
     codeWrap: document.getElementById('opt-code-wrap'),
     mdLineNumbers: document.getElementById('opt-md-line-numbers'),
     showBanners: document.getElementById('opt-show-banners'),
@@ -771,6 +774,7 @@ function applyReadOnlyMode() {
 
 function applySettings() {
     document.documentElement.classList.toggle('keycol-natural', !settings.fixedKeys);
+    document.documentElement.classList.toggle('tree-guides', !!settings.treeGuides);
     applyTheme();
     document.documentElement.style.setProperty('--key-col-w', settings.keyWidth + 'px');
     elsSettings.fixed.checked = settings.fixedKeys;
@@ -781,6 +785,7 @@ function applySettings() {
     elsSettings.fontVal.textContent = String(settings.editorFont);
     elsSettings.sidebarFont.value = String(settings.sidebarFont);
     elsSettings.sidebarFontVal.textContent = String(settings.sidebarFont);
+    elsSettings.treeGuides.checked = !!settings.treeGuides;
     elsSettings.autoSave.checked = !!settings.autoSave;
     elsSettings.codeWrap.checked = !!settings.codeWrap;
     elsSettings.mdLineNumbers.checked = !!settings.mdLineNumbers;
@@ -4100,6 +4105,10 @@ elsSettings.font.addEventListener('input', () => {
 });
 elsSettings.sidebarFont.addEventListener('input', () => {
     settings.sidebarFont = Number(elsSettings.sidebarFont.value);
+    applySettings();
+});
+elsSettings.treeGuides.addEventListener('change', () => {
+    settings.treeGuides = elsSettings.treeGuides.checked;
     applySettings();
 });
 elsSettings.uiFont.addEventListener('change', () => {

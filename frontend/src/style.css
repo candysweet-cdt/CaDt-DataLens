@@ -1418,6 +1418,7 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 .sb-tool:disabled { opacity: 0.4; background: transparent; }
 .sb-body { flex: 1; min-height: 0; overflow: auto; padding: 3px 0 10px; }
 .sb-row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 5px;
@@ -1429,12 +1430,22 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
     white-space: nowrap;
     cursor: default;
 }
-.sb-row:hover { background: var(--hover); }
+.sb-row::before {
+    content: "";
+    position: absolute;
+    left: 5px;
+    right: 5px;
+    top: 1px;
+    bottom: 1px;
+    border-radius: 5px;
+    background: transparent;
+    pointer-events: none;
+    z-index: 0;
+}
+.sb-row > * { position: relative; z-index: 1; }
+.sb-row:hover::before { background: var(--hover); }
 .sb-row:focus { outline: none; }
-.sb-row.selected { background: var(--accent-weak); }
-.sb-row.current { background: var(--tree-highlight-active); }
-.sb-row.current.selected { background: var(--tree-highlight-active); }
-.sb-row.anchor.selected { box-shadow: inset 0 0 0 1px var(--accent); }
+.sb-row.selected::before { background: var(--accent-weak); }
 .sb-row.cut { opacity: 0.55; }
 .sb-chev {
     flex: none;
@@ -1458,7 +1469,8 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 }
 .sb-icon svg { width: 14px; height: 14px; }
 .sb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.sb-children { margin-left: 14px; border-left: 1px solid var(--border); }
+.sb-children { margin-left: 14px; }
+html.tree-guides .sb-children { border-left: 1px solid var(--border); }
 .sb-status { color: var(--muted); }
 .sb-status.error { color: var(--red); }
 .sb-status .sb-icon { visibility: hidden; }
