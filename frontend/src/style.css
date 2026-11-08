@@ -953,7 +953,7 @@ html, body {
     color: var(--muted);
     font-size: 11px;
 }
-.csv-table-hint { margin-left: auto; color: var(--faint); }
+.csv-table-hint { margin-left: auto; color: var(--muted); }
 .csv-table-scroll { flex: 1; min-height: 0; overflow: auto; }
 .csv-table {
     border-collapse: separate;
@@ -985,6 +985,13 @@ html, body {
 }
 .csv-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--panel) 35%, transparent); }
 .csv-table tbody tr:hover td { background: var(--hover); }
+.csv-table td.csv-cell { cursor: text; caret-color: var(--accent); }
+.csv-table td.csv-cell:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    background: var(--bg) !important;
+    text-overflow: clip;
+}
 .csv-table .csv-rownum {
     position: sticky;
     left: 0;

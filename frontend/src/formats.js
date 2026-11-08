@@ -75,9 +75,13 @@ export const formats = {
             return result.data;
         },
         parseTable(text) {
-            const result = Papa.parse(text, {header: true, skipEmptyLines: 'greedy', dynamicTyping: false});
+            const result = Papa.parse(text, {header: false, skipEmptyLines: 'greedy', dynamicTyping: false});
             if (result.errors.length) throw new Error(result.errors[0].message);
-            return {headers: result.meta.fields || [], rows: result.data};
+            const data = result.data;
+            return {headers: data[0] || [], rows: data.slice(1)};
+        },
+        stringifyTable(headers, rows) {
+            return Papa.unparse([headers, ...rows], {newline: '\n'});
         },
         stringify(value) {
             return Papa.unparse(value, {newline: '\n'});

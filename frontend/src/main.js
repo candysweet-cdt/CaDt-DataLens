@@ -919,7 +919,7 @@ function updateBackendDirty() {
     backend.SetDirty(anyDirty());
 }
 
-function setDirty(flag) {
+function setDirty(flag, opts = {}) {
     dirty = flag;
     if (file) file.dirty = flag;
     updateBackendDirty();
@@ -927,7 +927,7 @@ function setDirty(flag) {
     els.filename.classList.toggle('dirty', flag);
     if (file) updateTabDirty(file);
     updateWindowTitle();
-    if (flag) scheduleAutoSave();
+    if (flag && !opts.noAutoSave) scheduleAutoSave();
     else cancelAutoSave();
 }
 
@@ -1037,6 +1037,7 @@ function textArea() {
 function doUndo() {
     if (!editor) return;
     if (currentMode === 'tree') treeHistory('undo');
+    else if (currentMode === 'table') tableHistory('undo');
     else if (currentMode === 'code' && editor.aceEditor) editor.aceEditor.execCommand('undo');
     else if (currentMode === 'text') {
         const ta = textArea();
@@ -1050,6 +1051,7 @@ function doUndo() {
 function doRedo() {
     if (!editor) return;
     if (currentMode === 'tree') treeHistory('redo');
+    else if (currentMode === 'table') tableHistory('redo');
     else if (currentMode === 'code' && editor.aceEditor) editor.aceEditor.execCommand('redo');
     else if (currentMode === 'text') {
         const ta = textArea();
@@ -1268,7 +1270,7 @@ function createCsvTableView(doc) {
     meta.className = 'csv-table-meta';
     const hint = document.createElement('span');
     hint.className = 'csv-table-hint';
-    hint.textContent = '只读预览，编辑请切换树视图或文本视图';
+    hint.textContent = doc.large ? '文件超过 10 MB，表格只读' : '点击单元格编辑，Enter 确认，Esc 取消';
     bar.append(meta, hint);
     const scroll = document.createElement('div');
     scroll.className = 'csv-table-scroll';
@@ -1282,8 +1284,11 @@ function createCsvTableView(doc) {
 function renderCsvTableView(doc) {
     if (!doc || !doc.tableEl || !doc.editor) return;
     const scroll = doc.tableScroll;
+    const keepTop = scroll.scrollTop;
+    const keepLeft = scroll.scrollLeft;
     scroll.textContent = '';
     const text = doc.editor.getText();
+    doc.tableTrailingNewline = /\n$/.test(text);
     let parsed;
     try {
         parsed = doc.format.parseTable ? doc.format.parseTable(text) : {headers: [], rows: []};
@@ -1298,6 +1303,10 @@ function renderCsvTableView(doc) {
     const headers = parsed.headers || [];
     const rows = parsed.rows || [];
     const shown = Math.min(rows.length, CSV_TABLE_ROW_LIMIT);
+    doc.tableHeaders = headers;
+    doc.tableRows = rows;
+    if (!doc.tableUndo) doc.tableUndo = [];
+    if (!doc.tableRedo) doc.tableRedo = [];
     doc.tableMeta.textContent = rows.length + ' 行 × ' + headers.length + ' 列' +
         (shown < rows.length ? ' · 仅显示前 ' + shown + ' 行' : '');
     if (!headers.length) {
@@ -1325,19 +1334,30 @@ function renderCsvTableView(doc) {
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
     const fragment = document.createDocumentFragment();
+    const editable = !doc.large && !doc.binary;
     for (let i = 0; i < shown; i++) {
-        const row = rows[i] || {};
+        const row = rows[i] || [];
         const tr = document.createElement('tr');
         const num = document.createElement('td');
         num.className = 'csv-rownum';
         num.textContent = String(i + 1);
         tr.appendChild(num);
-        for (const header of headers) {
+        for (let col = 0; col < headers.length; col++) {
             const td = document.createElement('td');
-            const value = row[header];
+            td.className = 'csv-cell';
+            const value = row[col];
             const display = value == null ? '' : String(value);
             td.textContent = display;
             td.title = display;
+            if (editable) {
+                td.contentEditable = 'plaintext-only';
+                td.spellcheck = false;
+                td.dataset.row = String(i);
+                td.dataset.col = String(col);
+                td.addEventListener('keydown', (e) => onCsvCellKeyDown(doc, e));
+                td.addEventListener('input', () => markCsvCellTyping(doc));
+                td.addEventListener('blur', () => commitCsvCell(doc, td));
+            }
             tr.appendChild(td);
         }
         fragment.appendChild(tr);
@@ -1345,6 +1365,127 @@ function renderCsvTableView(doc) {
     tbody.appendChild(fragment);
     table.appendChild(tbody);
     scroll.appendChild(table);
+    scroll.scrollTop = keepTop;
+    scroll.scrollLeft = keepLeft;
+}
+
+function onCsvCellKeyDown(doc, e) {
+    const td = e.currentTarget;
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        const row = doc.tableRows && doc.tableRows[Number(td.dataset.row)];
+        const value = row && row[Number(td.dataset.col)] != null ? String(row[Number(td.dataset.col)]) : '';
+        td.textContent = value;
+        td.blur();
+        return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        commitCsvCell(doc, td);
+        focusAdjacentCsvCell(doc, td, (doc.tableHeaders || []).length || 1);
+        return;
+    }
+    if (e.key === 'Tab') {
+        e.preventDefault();
+        commitCsvCell(doc, td);
+        focusAdjacentCsvCell(doc, td, e.shiftKey ? -1 : 1);
+    }
+}
+
+function focusAdjacentCsvCell(doc, td, offset) {
+    if (!doc.tableScroll) return;
+    const cells = doc.tableScroll.querySelectorAll('td.csv-cell');
+    const index = Array.prototype.indexOf.call(cells, td);
+    if (index < 0) return;
+    const target = cells[index + offset];
+    if (!target) {
+        td.blur();
+        return;
+    }
+    target.focus();
+    target.scrollIntoView({block: 'nearest', inline: 'nearest'});
+}
+
+function csvCellText(td) {
+    return String(td.innerText || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ');
+}
+
+function markCsvCellTyping(doc) {
+    if (!doc || doc.dirty) return;
+    if (file === doc) {
+        setDirty(true, {noAutoSave: true});
+    } else {
+        doc.dirty = true;
+        updateTabDirty(doc);
+        updateBackendDirty();
+    }
+}
+
+function flushCsvCellEditor() {
+    if (currentMode !== 'table') return;
+    const active = document.activeElement;
+    if (active && active.classList && active.classList.contains('csv-cell')) active.blur();
+}
+
+function serializeCsvTable(doc) {
+    const text = doc.format.stringifyTable(doc.tableHeaders, doc.tableRows);
+    return doc.tableTrailingNewline ? text + '\n' : text;
+}
+
+function applyCsvTableText(doc, text) {
+    if (!doc || !doc.editor || doc.editor.getText() === text) return;
+    const loading = doc.loading;
+    doc.loading = true;
+    try {
+        doc.editor.setText(text);
+        doc.text = text;
+    } finally {
+        doc.loading = loading;
+    }
+    markDocDirty(doc);
+}
+
+function commitCsvCell(doc, td) {
+    if (!doc || doc !== file || doc.large || !doc.tableRows || !doc.tableHeaders || !td) return;
+    const rowIndex = Number(td.dataset.row);
+    const colIndex = Number(td.dataset.col);
+    const row = doc.tableRows[rowIndex];
+    if (!row) return;
+    const value = csvCellText(td);
+    const before = row[colIndex] == null ? '' : String(row[colIndex]);
+    td.textContent = value;
+    td.title = value;
+    if (value === before) {
+        markDocDirty(doc);
+        return;
+    }
+    row[colIndex] = value;
+    applyCsvTableText(doc, serializeCsvTable(doc));
+    doc.tableUndo.push({row: rowIndex, col: colIndex, before, after: value});
+    if (doc.tableUndo.length > 100) doc.tableUndo.shift();
+    doc.tableRedo.length = 0;
+}
+
+function tableHistory(action) {
+    if (currentMode !== 'table' || !file || !file.tableRows) return;
+    const doc = file;
+    const active = document.activeElement;
+    if (active && active.classList && active.classList.contains('csv-cell')) active.blur();
+    if (!doc.tableUndo || !doc.tableRedo) return;
+    const from = action === 'undo' ? doc.tableUndo : doc.tableRedo;
+    const to = action === 'undo' ? doc.tableRedo : doc.tableUndo;
+    if (!from.length) return;
+    const op = from.pop();
+    const row = doc.tableRows[op.row];
+    if (!row) {
+        from.push(op);
+        return;
+    }
+    row[op.col] = action === 'undo' ? op.before : op.after;
+    to.push(op);
+    applyCsvTableText(doc, serializeCsvTable(doc));
+    renderCsvTableView(doc);
 }
 
 function showCsvTableView(doc) {
@@ -1378,8 +1519,11 @@ function enterCsvTable(doc) {
         doc.editor.setMode('text');
         doc.editor.setText(text);
         doc.text = text;
+        if (!doc.dirty && doc.bases.table == null) doc.bases.table = text;
         doc.mode = 'table';
         currentMode = 'table';
+        doc.tableUndo = [];
+        doc.tableRedo = [];
         showCsvTableView(doc);
         updateStatus();
         updateSearchState();
@@ -1579,6 +1723,7 @@ async function activateDoc(doc) {
 
 function requestCloseDoc(doc) {
     if (!doc) return;
+    if (doc === file) flushCsvCellEditor();
     if (doc.dirty) {
         openCloseConfirm('“' + doc.name + '”有未保存的修改，关闭标签后将丢弃。', () => closeDocNow(doc));
     } else {
@@ -2099,9 +2244,18 @@ async function reloadActive() {
         if (doc.pane) doc.pane.remove();
         doc.editor = null;
         doc.pane = null;
+        doc.tableEl = null;
+        doc.tableScroll = null;
+        doc.tableMeta = null;
+        doc.tableUndo = [];
+        doc.tableRedo = [];
         doc.loading = false;
         Object.assign(doc, fresh, {id: doc.id, dirty: false, untitled: false, text: null, content: data.content});
-        doc.mode = keepMode === 'code' || !doc.treeAvailable ? 'code' : 'tree';
+        let nextMode = keepMode;
+        if (!doc.treeAvailable) nextMode = 'code';
+        else if (!['code', 'text', 'table'].includes(nextMode)) nextMode = 'tree';
+        if (nextMode === 'table' && !doc.format.table) nextMode = 'tree';
+        doc.mode = nextMode;
         editor = null;
         createDocEditor(doc);
         doc.pane.classList.add('active');
@@ -2119,6 +2273,7 @@ async function reloadActive() {
 
 async function saveDoc(doc, opts = {}) {
     if (!doc || doc.large || doc.binary || !doc.editor) return false;
+    if (doc === file) flushCsvCellEditor();
     const fmt = doc.format;
     const fs = getFormatSettings(fmt.id);
     const savedMode = doc.mode;
@@ -2316,6 +2471,7 @@ function clickEditorButton(sel) {
 
 function formatDocument() {
     if (!editor || !file) return;
+    flushCsvCellEditor();
     const doc = file;
     if (doc.large || doc.binary || (doc.format && doc.format.rawOnly)) {
         flash('当前文件不支持格式化', true);
@@ -2707,7 +2863,10 @@ for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
 
 if (rt) {
     rt.EventsOn('open-files', (paths) => openPaths(paths));
-    rt.EventsOn('confirm-close', () => openCloseConfirm());
+    rt.EventsOn('confirm-close', () => {
+        flushCsvCellEditor();
+        openCloseConfirm();
+    });
 }
 
 document.querySelectorAll('.about-link').forEach((a) => {
