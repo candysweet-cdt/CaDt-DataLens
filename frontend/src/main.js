@@ -302,7 +302,7 @@ function defaultFormatSettings() {
         encoding: 'auto',
         indent: '2',
         eol: 'follow',
-        view: f.id === 'text' ? 'code' : 'tree',
+        view: f.id === 'csv' ? 'table' : f.id === 'text' ? 'code' : 'tree',
     }]));
 }
 const defaultSettings = {
@@ -311,6 +311,7 @@ const defaultSettings = {
     openMode: 'tab',
     sidebarMode: 'tree',
     showSidebar: false,
+    csvTableMigrated: false,
     keyWidth: 160,
     editorFont: 13,
     codeWrap: false,
@@ -340,6 +341,13 @@ if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
 settings.codeWrap = !!settings.codeWrap;
+if (!settings.csvTableMigrated) {
+    settings.formatSettings.csv.view = 'table';
+    settings.csvTableMigrated = true;
+}
+if (!['table', 'tree', 'text'].includes(settings.formatSettings.csv.view)) {
+    settings.formatSettings.csv.view = 'table';
+}
 
 function getFormatSettings(id) {
     return settings.formatSettings[id] || defaultFormatSettings()[id] || {encoding: 'auto', indent: '2', eol: 'follow', view: 'tree'};
@@ -619,6 +627,28 @@ const CONVERT_ENCODINGS = [['utf-8', 'UTF-8'], ['gbk', 'GBK'], ['gb18030', 'GB18
 const INDENTS = [['2', '2 空格'], ['4', '4 空格'], ['tab', 'Tab']];
 const EOLS = [['follow', '跟随原文件'], ['lf', 'LF'], ['crlf', 'CRLF']];
 const VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
+const CSV_VIEWS = [['table', '表格视图'], ['tree', '树视图'], ['text', '文本视图']];
+const CSV_TABLE_ROW_LIMIT = 5000;
+
+function viewOptionsFor(fmt) {
+    return fmt && (fmt.table || fmt.id === 'csv') ? CSV_VIEWS : VIEWS;
+}
+
+function viewLabel(mode) {
+    if (mode === 'table') return '表格视图';
+    if (mode === 'text') return '文本视图';
+    if (mode === 'code') return '代码视图';
+    return '树视图';
+}
+
+const TREE_MAX_CHILDREN = 10000;
+const editorLocale = {
+    'zh-CN': {
+        showMoreStatus: '已显示 ${visibleChilds} / ${totalChilds} 项',
+        showMore: '显示更多',
+        showAll: '显示全部',
+    },
+};
 
 function makeSelect(options, value, onChange) {
     const sel = document.createElement('select');
@@ -739,26 +769,18 @@ async function renderEncodingMenu() {
 }
 
 function renderViewMenu() {
-    const treeAvailable = !!file.treeAvailable;
     footPopover.appendChild(popTitle('视图'));
-    footPopover.appendChild(popItem('树视图', {
-        current: currentMode === 'tree',
-        disabled: !treeAvailable,
-        disabledTitle: '当前文件只支持代码视图',
-        onClick: () => { switchMode('tree'); closeFootPopover(); },
-    }));
-    footPopover.appendChild(popItem('代码视图', {
-        current: currentMode === 'code',
-        onClick: () => { switchMode('code'); closeFootPopover(); },
-    }));
-    footPopover.appendChild(popItem('文本视图', {
-        current: currentMode === 'text',
-        disabled: !treeAvailable,
-        disabledTitle: '当前文件只支持代码视图',
-        onClick: () => { switchMode('text'); closeFootPopover(); },
-    }));
-    const label = currentMode === 'tree' ? '树视图' : currentMode === 'text' ? '文本视图' : '代码视图';
-    footPopover.appendChild(popFoot('当前', label));
+    const treeAvailable = !!(file && file.treeAvailable);
+    for (const [mode, label] of viewOptionsFor(file && file.format)) {
+        const disabled = (mode === 'tree' || mode === 'text') && !treeAvailable;
+        footPopover.appendChild(popItem(label, {
+            current: currentMode === mode,
+            disabled,
+            disabledTitle: '当前文件只支持代码视图',
+            onClick: () => { switchMode(mode); closeFootPopover(); },
+        }));
+    }
+    footPopover.appendChild(popFoot('当前', viewLabel(currentMode)));
 }
 
 function chooseEol(value) {
@@ -854,7 +876,7 @@ function renderFmtTable() {
         row.appendChild(makeSelect(ENCODINGS, fs.encoding, update('encoding')));
         row.appendChild(makeSelect(INDENTS, fs.indent, update('indent')));
         row.appendChild(makeSelect(EOLS, fs.eol, update('eol')));
-        const viewSel = makeSelect(VIEWS, fs.view, (value) => {
+        const viewSel = makeSelect(viewOptionsFor(f), fs.view, (value) => {
             settings.formatSettings[f.id].view = value;
             applySettings();
             if (file && file.format.id === f.id) switchMode(value);
@@ -1052,7 +1074,7 @@ function toggleFocusedNode(action) {
 function updateStatus() {
     if (!file) return;
     const fmt = file.format;
-    const view = currentMode === 'tree' ? '树视图' : currentMode === 'text' ? '文本视图' : '代码视图';
+    const view = viewLabel(currentMode);
     els.stMode.textContent = fmt.name + ' · ' + view + (file.large || file.binary ? ' · 只读' : '');
     els.stSize.textContent = fmtSize(file.size);
     if (file.binary) {
@@ -1156,7 +1178,9 @@ function createDocEditor(doc) {
     if (doc.editor) return;
     const fmt = doc.format;
     const fs = getFormatSettings(fmt.id);
+    const tableRequested = !!fmt.table && doc.mode === 'table';
     let startMode = !doc.treeAvailable ? 'code' : (doc.mode === 'code' || doc.mode === 'text' ? doc.mode : 'tree');
+    if (tableRequested) startMode = 'text';
     let initialText = null;
     let initialValue = null;
     if (startMode === 'code' || startMode === 'text') {
@@ -1177,10 +1201,14 @@ function createDocEditor(doc) {
     doc.loading = true;
     const ed = new JSONEditor(pane, {
         mode: startMode,
-        modes: doc.treeAvailable ? ['tree', 'code', 'text'] : ['code'],
+        modes: fmt.table ? ['tree', 'text'] : (doc.treeAvailable ? ['tree', 'code', 'text'] : ['code']),
         mainMenuBar: true,
         navigationBar: !fmt.rawOnly,
         statusBar: false,
+        showErrorTable: fmt.id === 'json',
+        maxVisibleChilds: TREE_MAX_CHILDREN,
+        language: 'zh-CN',
+        languages: editorLocale,
         indentation: fs.indent === 'tab' ? '\t' : Number(fs.indent),
         onChange() {
             if (doc.loading) return;
@@ -1220,11 +1248,184 @@ function createDocEditor(doc) {
             ed.aceEditor.session.setUseWrapMode(!!settings.codeWrap);
         } catch (e) {}
     }
-    doc.mode = startMode;
+    doc.mode = tableRequested ? 'table' : startMode;
     doc.text = ed.getText();
-    if (!doc.dirty) doc.bases[startMode] = doc.text;
+    if (fmt.table) createCsvTableView(doc);
+    if (tableRequested) showCsvTableView(doc);
+    if (!doc.dirty) doc.bases[doc.mode] = doc.text;
     doc.content = null;
     doc.loading = false;
+}
+
+function createCsvTableView(doc) {
+    if (doc.tableEl || !doc.pane) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'csv-table-view';
+    const bar = document.createElement('div');
+    bar.className = 'csv-table-bar';
+    const meta = document.createElement('span');
+    meta.className = 'csv-table-meta';
+    const hint = document.createElement('span');
+    hint.className = 'csv-table-hint';
+    hint.textContent = '只读预览，编辑请切换树视图或文本视图';
+    bar.append(meta, hint);
+    const scroll = document.createElement('div');
+    scroll.className = 'csv-table-scroll';
+    wrap.append(bar, scroll);
+    doc.pane.appendChild(wrap);
+    doc.tableEl = wrap;
+    doc.tableMeta = meta;
+    doc.tableScroll = scroll;
+}
+
+function renderCsvTableView(doc) {
+    if (!doc || !doc.tableEl || !doc.editor) return;
+    const scroll = doc.tableScroll;
+    scroll.textContent = '';
+    const text = doc.editor.getText();
+    let parsed;
+    try {
+        parsed = doc.format.parseTable ? doc.format.parseTable(text) : {headers: [], rows: []};
+    } catch (e) {
+        doc.tableMeta.textContent = 'CSV 解析失败';
+        const error = document.createElement('div');
+        error.className = 'csv-table-empty error';
+        error.textContent = e.message;
+        scroll.appendChild(error);
+        return;
+    }
+    const headers = parsed.headers || [];
+    const rows = parsed.rows || [];
+    const shown = Math.min(rows.length, CSV_TABLE_ROW_LIMIT);
+    doc.tableMeta.textContent = rows.length + ' 行 × ' + headers.length + ' 列' +
+        (shown < rows.length ? ' · 仅显示前 ' + shown + ' 行' : '');
+    if (!headers.length) {
+        const empty = document.createElement('div');
+        empty.className = 'csv-table-empty';
+        empty.textContent = '没有可显示的表格内容';
+        scroll.appendChild(empty);
+        return;
+    }
+    const table = document.createElement('table');
+    table.className = 'csv-table';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    const corner = document.createElement('th');
+    corner.className = 'csv-rownum';
+    corner.textContent = '#';
+    headRow.appendChild(corner);
+    for (const header of headers) {
+        const th = document.createElement('th');
+        th.textContent = header === '' ? '(空列名)' : header;
+        th.title = header;
+        headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < shown; i++) {
+        const row = rows[i] || {};
+        const tr = document.createElement('tr');
+        const num = document.createElement('td');
+        num.className = 'csv-rownum';
+        num.textContent = String(i + 1);
+        tr.appendChild(num);
+        for (const header of headers) {
+            const td = document.createElement('td');
+            const value = row[header];
+            const display = value == null ? '' : String(value);
+            td.textContent = display;
+            td.title = display;
+            tr.appendChild(td);
+        }
+        fragment.appendChild(tr);
+    }
+    tbody.appendChild(fragment);
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+}
+
+function showCsvTableView(doc) {
+    if (!doc || !doc.format.table) return;
+    createCsvTableView(doc);
+    if (doc.pane) doc.pane.classList.add('table-active');
+    renderCsvTableView(doc);
+}
+
+function hideCsvTableView(doc) {
+    if (!doc || !doc.pane) return;
+    doc.pane.classList.remove('table-active');
+    if (doc === file && doc.editor && doc.editor.aceEditor) {
+        try {
+            doc.editor.aceEditor.resize();
+        } catch (e) {}
+    }
+}
+
+function enterCsvTable(doc) {
+    if (!doc || !doc.format.table || !doc.editor) return;
+    let text;
+    try {
+        text = currentMode === 'tree' ? doc.format.stringify(doc.editor.get()) : doc.editor.getText();
+    } catch (e) {
+        flash('无法生成 CSV 表格：' + e.message, true);
+        return;
+    }
+    doc.loading = true;
+    try {
+        doc.editor.setMode('text');
+        doc.editor.setText(text);
+        doc.text = text;
+        doc.mode = 'table';
+        currentMode = 'table';
+        showCsvTableView(doc);
+        updateStatus();
+        updateSearchState();
+    } catch (e) {
+        flash('切换表格视图失败：' + e.message, true);
+    } finally {
+        doc.loading = false;
+    }
+}
+
+function leaveCsvTable(doc, mode) {
+    if (!doc || !doc.editor) return;
+    if (mode === 'text') {
+        hideCsvTableView(doc);
+        doc.mode = 'text';
+        currentMode = 'text';
+        try {
+            doc.editor.setMode('text');
+        } catch (e) {}
+        updateStatus();
+        updateSearchState();
+        return;
+    }
+    if (mode !== 'tree') return;
+    const text = doc.editor.getText();
+    let value;
+    try {
+        value = doc.format.parse(text);
+    } catch (e) {
+        flash('CSV 解析失败：' + e.message, true);
+        return;
+    }
+    doc.loading = true;
+    try {
+        doc.editor.setText(JSON.stringify(value, null, 2));
+        doc.editor.setMode('tree');
+        doc.editor.set(value);
+        hideCsvTableView(doc);
+        doc.mode = 'tree';
+        currentMode = 'tree';
+        updateStatus();
+        updateSearchState();
+    } catch (e) {
+        flash('切换树视图失败：' + e.message, true);
+    } finally {
+        doc.loading = false;
+    }
 }
 
 function createDoc(data) {
@@ -1265,6 +1466,9 @@ function createDoc(data) {
             parseError = e;
         }
     }
+    const preferredMode = format.table
+        ? (['table', 'tree', 'text'].includes(fs.view) ? fs.view : 'table')
+        : (fs.view === 'code' || fs.view === 'text' ? fs.view : 'tree');
     return {
         id: ++docSeq,
         path: data.path,
@@ -1278,13 +1482,13 @@ function createDoc(data) {
         format,
         treeAvailable,
         parseError,
-        mode: treeAvailable ? (fs.view === 'code' || fs.view === 'text' ? fs.view : 'tree') : 'code',
+        mode: treeAvailable ? preferredMode : 'code',
         text: null,
         rawText: treeAvailable ? data.content : null,
         dirty: false,
         untitled: false,
         binary: false,
-        bases: {tree: null, code: null},
+        bases: {tree: null, code: null, text: null, table: null},
     };
 }
 
@@ -1634,7 +1838,7 @@ function initContextMenus() {
             showBlankMenu(e.clientX, e.clientY);
             return;
         }
-        if (currentMode === 'tree') return;
+        if (currentMode === 'tree' || currentMode === 'table') return;
         e.preventDefault();
         e.stopPropagation();
         showEditorMenu(e.clientX, e.clientY);
@@ -1921,7 +2125,7 @@ async function saveDoc(doc, opts = {}) {
     let text;
     if (!doc.dirty && doc.rawText != null) {
         text = doc.rawText;
-    } else if (savedMode === 'code' || savedMode === 'text' || fmt.rawOnly) {
+    } else if (savedMode === 'table' || savedMode === 'code' || savedMode === 'text' || fmt.rawOnly) {
         text = snapshot;
         if (!fmt.rawOnly) {
             try {
@@ -2147,11 +2351,20 @@ function formatDocument() {
     }
     markDocDirty(doc);
     updateStatus();
+    if (currentMode === 'table') renderCsvTableView(doc);
 }
 
 function switchMode(mode) {
     if (!editor || currentMode === mode) return;
     const doc = file;
+    if (mode === 'table') {
+        if (doc && doc.format.table) enterCsvTable(doc);
+        return;
+    }
+    if (currentMode === 'table') {
+        if (doc) leaveCsvTable(doc, mode);
+        return;
+    }
     if ((mode === 'code' || mode === 'text') && currentMode === 'tree' && doc && !dirty && doc.rawText != null) {
         doc.loading = true;
         try {
@@ -2259,10 +2472,13 @@ function menuItems(kind) {
             ];
         case 'view': {
             const structured = !!file && !!file.treeAvailable;
-            return [
-                {label: '树视图', checked: currentMode === 'tree', disabled: !structured, action: () => switchMode('tree')},
-                {label: '代码视图', checked: currentMode === 'code', action: () => switchMode('code')},
-                {label: '文本视图', checked: currentMode === 'text', disabled: !structured, action: () => switchMode('text')},
+            const items = viewOptionsFor(file && file.format).map(([mode, label]) => ({
+                label,
+                checked: currentMode === mode,
+                disabled: (mode === 'tree' || mode === 'text') && !structured,
+                action: () => switchMode(mode),
+            }));
+            items.push(
                 {sep: true},
                 {label: '文件侧边栏', shortcut: 'Alt+1', checked: !!settings.showSidebar, action: () => toggleSidebar()},
                 {label: '文件列表', checked: settings.sidebarMode === 'list', action: () => setSidebarMode('list')},
@@ -2271,7 +2487,8 @@ function menuItems(kind) {
                 {label: '自动换行', checked: !!settings.codeWrap, action: toggleCodeWrap},
                 {label: '展开全部', shortcut: 'Ctrl+Shift+=', disabled: !tree, action: () => editor && editor.expandAll()},
                 {label: '收起全部', shortcut: 'Ctrl+Shift+-', disabled: !tree, action: () => editor && editor.collapseAll()},
-            ];
+            );
+            return items;
         }
         case 'theme': {
             const items = [];
@@ -2491,6 +2708,15 @@ if (rt) {
     rt.EventsOn('open-files', (paths) => openPaths(paths));
     rt.EventsOn('confirm-close', () => openCloseConfirm());
 }
+
+els.tabbar.addEventListener('wheel', (e) => {
+    if (els.tabbar.scrollWidth <= els.tabbar.clientWidth) return;
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (!delta) return;
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? els.tabbar.clientWidth : 1;
+    e.preventDefault();
+    els.tabbar.scrollLeft += delta * unit;
+}, {passive: false});
 
 initContextMenus();
 initExplorer();

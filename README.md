@@ -13,10 +13,11 @@ CaDt-DataLens 用桌面窗口打开 JSON、YAML、XML、CSV 和普通文本，�
 
 - 结构化格式：JSON / JSONC / JSON5、YAML / YML、XML / SVG、CSV / TSV。
 - 文本格式：txt、md、log、ini、toml、html、css、js、ts、py、go、java、sql 等。
-- 三种编辑视图：
+- 多种编辑视图：
   - **树视图**：展开/收起节点，直接编辑键和值。
   - **代码视图**：Ace 编辑器，带行号、语法高亮、括号匹配。
   - **文本视图**：纯文本编辑框，适合看原始内容和最简单的文本修改。
+  - **表格视图**（CSV / TSV）：只读表格，冻结表头与行号，超过 5000 行时只预览前 5000 行。
 - 每个格式可单独配置默认视图，修改后对当前同类文件立即生效。
 - 代码视图支持自动换行开关（设置 → 通用设置或视图菜单），默认关闭，长行横向滚动。
 - 图片按扩展名/文件头识别，显示为只读十六进制字节视图（超过 1 MB 截断并注明）。
@@ -73,6 +74,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、YAML、XML、CSV 和普通文本，�
 | 展开 / 收起节点 | `Ctrl+=` / `Ctrl+-` |
 | 全部展开 / 收起 | `Ctrl+Shift+=` / `Ctrl+Shift+-` |
 | 调整编辑器字号 | `Ctrl+滚轮` |
+| 标签栏横向滚动 | 鼠标滚轮悬停在标签栏 |
 
 ## 支持的文件类型
 
@@ -81,7 +83,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、YAML、XML、CSV 和普通文本，�
 | JSON | `.json` `.jsonc` `.json5` | 树视图 / 代码视图 / 文本视图 |
 | YAML | `.yaml` `.yml` | 树视图 / 代码视图 / 文本视图 |
 | XML | `.xml` `.svg` | 树视图 / 代码视图 / 文本视图 |
-| CSV | `.csv` `.tsv` | 树视图 / 代码视图 / 文本视图 |
+| CSV | `.csv` `.tsv` | 表格视图 / 树视图 / 文本视图 |
 | 文本 | `.txt` `.md` `.log` `.ini` `.toml` `.html` `.css` `.js` `.ts` `.py` `.go` `.java` `.sql` 等 | 代码视图 |
 | 图片 | `.png` `.jpg` `.jpeg` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` `.heic` `.psd` 等 | 只读字节数据 |
 | 其他 | 任意扩展名 | 纯文本 |

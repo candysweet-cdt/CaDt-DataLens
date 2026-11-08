@@ -867,11 +867,12 @@ html, body {
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
     overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
     user-select: none;
 }
 #tabbar.hidden { display: none; }
-#tabbar::-webkit-scrollbar { height: 4px; }
-#tabbar::-webkit-scrollbar-thumb { border-radius: 2px; }
+#tabbar::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .tab {
     position: relative;
     display: flex;
@@ -919,11 +920,85 @@ html, body {
 .tab-close:hover { background: var(--hover); color: var(--text); }
 
 #editor-wrap { flex: 1; position: relative; min-height: 0; display: flex; }
-#main-pane { flex: 1; position: relative; min-width: 0; }
+#main-pane { flex: 1; position: relative; min-width: 0; display: flex; flex-direction: column; }
+#editor-area { position: relative; flex: 1; min-height: 0; }
 #editor { position: absolute; inset: 0; }
 #editor.hidden { display: none; }
 .jsoneditor-pane { position: absolute; inset: 0; display: none; }
 .jsoneditor-pane.active { display: block; }
+.jsoneditor-pane.table-active > .jsoneditor { display: none !important; }
+.csv-table-view {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--bg);
+}
+.jsoneditor-pane.table-active .csv-table-view { display: flex; }
+.csv-table-bar {
+    flex: none;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 10px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+}
+.csv-table-hint { margin-left: auto; color: var(--faint); }
+.csv-table-scroll { flex: 1; min-height: 0; overflow: auto; }
+.csv-table {
+    border-collapse: separate;
+    border-spacing: 0;
+    min-width: 100%;
+    font-family: var(--editor-font-family);
+    font-size: 12px;
+    color: var(--text);
+}
+.csv-table th,
+.csv-table td {
+    padding: 4px 10px;
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: text;
+}
+.csv-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--panel2);
+    color: var(--text);
+    font-weight: 600;
+    text-align: left;
+}
+.csv-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--panel) 35%, transparent); }
+.csv-table tbody tr:hover td { background: var(--hover); }
+.csv-table .csv-rownum {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    width: 44px;
+    min-width: 44px;
+    text-align: right;
+    color: var(--muted);
+    background: var(--panel) !important;
+    font-variant-numeric: tabular-nums;
+}
+.csv-table thead .csv-rownum { z-index: 3; background: var(--panel2) !important; }
+.csv-table-empty {
+    padding: 28px 18px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+}
+.csv-table-empty.error { color: var(--red); white-space: pre-wrap; text-align: left; }
 
 #sidebar {
     width: 264px;
@@ -937,7 +1012,7 @@ html, body {
 }
 #sidebar.hidden { display: none; }
 .sb-head {
-    height: 34px;
+    height: 30px;
     flex: none;
     display: flex;
     align-items: center;
@@ -1395,6 +1470,27 @@ div.jsoneditor-tree div.jsoneditor-date {
 }
 div.jsoneditor-tree td, div.jsoneditor-tree th { font-family: var(--editor-font-family); }
 div.jsoneditor-tree td:has(> input[type="checkbox"]) { vertical-align: middle; }
+div.jsoneditor-tree div.jsoneditor-show-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    margin: 3px 0;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted);
+    font-size: var(--editor-font, 13px);
+}
+div.jsoneditor-tree div.jsoneditor-show-more a {
+    color: var(--accent);
+    text-decoration: none;
+    cursor: default;
+}
+div.jsoneditor-tree div.jsoneditor-show-more a:hover {
+    color: var(--text);
+    text-decoration: underline;
+}
 
 .jsoneditor-navigation-bar,
 .jsoneditor-search,
