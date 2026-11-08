@@ -2353,7 +2353,14 @@ function renderTabs() {
             e.stopPropagation();
             requestCloseDoc(doc);
         });
-        tab.addEventListener('click', () => activateDoc(doc));
+        tab.addEventListener('click', (e) => {
+            if (e.shiftKey) {
+                e.preventDefault();
+                requestCloseDoc(doc);
+                return;
+            }
+            activateDoc(doc);
+        });
         tab.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -4179,7 +4186,7 @@ function showTabMenu(doc, x, y) {
     const clean = docs.filter((d) => !d.dirty);
     const hasPath = !!doc.path;
     ctxMenu.open([
-        {label: '关闭', shortcut: 'Ctrl+W', icon: 'E8BB', action: () => requestCloseDoc(doc)},
+        {label: '关闭', shortcut: 'Ctrl+W / Shift+点击', icon: 'E8BB', action: () => requestCloseDoc(doc)},
         {label: '关闭其他标签页', disabled: !others.length, action: () => closeDocsWithConfirm(others)},
         {label: '关闭所有标签页', action: () => closeDocsWithConfirm(docs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
         {label: '关闭左侧标签页', disabled: !left.length, action: () => closeDocsWithConfirm(left)},
@@ -6251,6 +6258,11 @@ async function createTermSession() {
     tabClose.title = '关闭终端';
     tab.append(label, tabClose);
     tab.addEventListener('click', (e) => {
+        if (e.shiftKey && !e.target.classList.contains('term-tab-close')) {
+            e.preventDefault();
+            closeTermSession(id);
+            return;
+        }
         if (e.target.classList.contains('term-tab-close')) {
             closeTermSession(id);
             return;
