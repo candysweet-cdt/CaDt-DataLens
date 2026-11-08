@@ -2295,17 +2295,21 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
     border-radius: 3px;
     color: var(--muted) !important;
     height: 14px;
-    font-size: 10px;
+    font-size: 11px;
     text-align: center;
-    transition: background-color 0.12s ease;
 }
 .jsoneditor .ace_fold-widget.ace_closed,
 .jsoneditor .ace_custom-widget.ace_closed {
-    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M3.5 2.5L6 5l-2.5 2.5' fill='none' stroke='%23959ba8' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
+    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M4 2.5L7.5 6L4 9.5' fill='none' stroke='%23959ba8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
 }
 .jsoneditor .ace_fold-widget.ace_start,
 .jsoneditor .ace_custom-widget.ace_start {
-    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2.5 3.5L5 6l2.5-2.5' fill='none' stroke='%23959ba8' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
+    display: none !important;
+    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5L6 8l3.5-3.5' fill='none' stroke='%23959ba8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
+}
+.jsoneditor .ace_gutter-layer.chev-show .ace_fold-widget.ace_start,
+.jsoneditor .ace_gutter-layer.chev-show .ace_custom-widget.ace_start {
+    display: inline-block !important;
 }
 .jsoneditor .ace_fold-widget.ace_end,
 .jsoneditor .ace_custom-widget.ace_end {

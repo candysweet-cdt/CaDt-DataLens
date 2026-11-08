@@ -3211,6 +3211,7 @@ function applyAceMode() {
         editor.aceEditor.setDisplayIndentGuides(!!settings.codeGuides);
         editor.aceEditor.setHighlightIndentGuides(!!settings.codeGuides);
         hookCodeFoldPreviews(editor.aceEditor);
+        hookFoldChevronHover(editor.aceEditor);
         hookPythonTokenClasses(editor.aceEditor);
         hookCursorTracking(editor.aceEditor);
         updateCodeFoldPreviews(editor.aceEditor);
@@ -3379,6 +3380,7 @@ function updateCodeFoldPreviews(ace) {
 function hookCodeFoldPreviews(ace) {
     if (!ace || ace._foldPreviewHooked) return;
     ace._foldPreviewHooked = true;
+    hookFoldChevronHover(ace);
     const schedule = () => {
         clearTimeout(ace._foldPreviewTimer);
         ace._foldPreviewTimer = setTimeout(() => {
@@ -3388,6 +3390,16 @@ function hookCodeFoldPreviews(ace) {
     };
     ace.session.on('changeFold', () => updateCodeFoldPreviews(ace));
     ace.session.on('change', schedule);
+}
+
+// hookFoldChevronHover：鼠标进入行号区时显示全部展开态折叠箭头（∨），离开隐藏；折叠态（>）常显由 CSS 保证
+function hookFoldChevronHover(ace) {
+    if (!ace || !ace.renderer || ace._chevHover) return;
+    ace._chevHover = true;
+    const layer = ace.renderer.$gutterLayer;
+    if (!layer || !layer.element) return;
+    layer.element.addEventListener('mouseenter', () => layer.element.classList.add('chev-show'));
+    layer.element.addEventListener('mouseleave', () => layer.element.classList.remove('chev-show'));
 }
 
 function hookCursorTracking(ace) {
