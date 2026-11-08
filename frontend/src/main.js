@@ -665,8 +665,6 @@ const els = {
     gitCommitPushBtn: document.getElementById('git-commit-push-btn'),
     gitSplitter: document.getElementById('git-splitter'),
     gitCommitArea: document.getElementById('git-commit-area'),
-    abLock: document.getElementById('ab-lock'),
-    abTheme: document.getElementById('ab-theme'),
     abSettings: document.getElementById('ab-settings'),
     abAbout: document.getElementById('ab-about'),
 };
@@ -991,12 +989,6 @@ function updateLockButton() {
         els.lock.setAttribute('aria-pressed', String(locked));
         els.lock.title = locked ? '解除只读锁定' : '只读锁定';
         els.lock.innerHTML = locked ? LOCK_ICON : UNLOCK_ICON;
-    }
-    if (els.abLock) {
-        els.abLock.classList.toggle('active', locked);
-        els.abLock.setAttribute('aria-pressed', String(locked));
-        els.abLock.title = locked ? '解除只读锁定' : '只读锁定';
-        els.abLock.innerHTML = locked ? LOCK_ICON : UNLOCK_ICON;
     }
 }
 
@@ -5043,14 +5035,6 @@ function initActivityBar() {
         if (!ctxMenu) return;
         const rect = els.abMore.getBoundingClientRect();
         ctxMenu.open(menuItems('view'), rect.right + 6, rect.top - 4);
-    });
-    if (els.abLock) els.abLock.addEventListener('click', () => {
-        if (els.lock) els.lock.click();
-    });
-    if (els.abTheme) els.abTheme.addEventListener('click', () => {
-        if (!ctxMenu) return;
-        const rect = els.abTheme.getBoundingClientRect();
-        ctxMenu.open(menuItems('theme'), rect.right + 6, rect.top - 4);
     });
     if (els.abSettings) els.abSettings.addEventListener('click', () => openSettings('general'));
     if (els.abAbout) els.abAbout.addEventListener('click', () => openSettings('about'));
