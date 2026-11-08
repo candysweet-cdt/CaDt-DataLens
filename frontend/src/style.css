@@ -1337,6 +1337,38 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 }
 .image-preview-status.hidden { display: none; }
 
+#activity-bar {
+    width: 42px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 5px 0 7px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    user-select: none;
+}
+.ab-group { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 100%; }
+.ab-spacer { flex: 1; }
+.ab-btn {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: var(--muted);
+    cursor: default;
+}
+.ab-btn:hover { background: var(--hover); color: var(--text); }
+.ab-btn:focus { outline: none; }
+.ab-btn.active { color: var(--accent); background: var(--accent-weak); }
+.ab-btn:disabled { opacity: 0.35; pointer-events: none; }
+.ab-btn svg { width: 18px; height: 18px; display: block; }
+.ab-sep { width: 20px; height: 1px; background: var(--border); margin: 4px 0 2px; }
+
 #sidebar {
     width: 264px;
     flex: none;

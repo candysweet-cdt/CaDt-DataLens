@@ -414,6 +414,14 @@ const els = {
     sbModeTree: document.getElementById('sb-mode-tree'),
     btnSidebar: document.getElementById('btn-sidebar'),
     lock: document.getElementById('btn-lock'),
+    activityBar: document.getElementById('activity-bar'),
+    abFiles: document.getElementById('ab-files'),
+    abSearch: document.getElementById('ab-search'),
+    abMore: document.getElementById('ab-more'),
+    abLock: document.getElementById('ab-lock'),
+    abTheme: document.getElementById('ab-theme'),
+    abSettings: document.getElementById('ab-settings'),
+    abAbout: document.getElementById('ab-about'),
 };
 
 let editor = null;
@@ -681,12 +689,19 @@ function toggleCodeWrap() {
 let appliedReadOnly = null;
 
 function updateLockButton() {
-    if (!els.lock) return;
     const locked = !!settings.readOnlyMode;
-    els.lock.classList.toggle('locked', locked);
-    els.lock.setAttribute('aria-pressed', String(locked));
-    els.lock.title = locked ? '解除只读锁定' : '只读锁定';
-    els.lock.innerHTML = locked ? LOCK_ICON : UNLOCK_ICON;
+    if (els.lock) {
+        els.lock.classList.toggle('locked', locked);
+        els.lock.setAttribute('aria-pressed', String(locked));
+        els.lock.title = locked ? '解除只读锁定' : '只读锁定';
+        els.lock.innerHTML = locked ? LOCK_ICON : UNLOCK_ICON;
+    }
+    if (els.abLock) {
+        els.abLock.classList.toggle('active', locked);
+        els.abLock.setAttribute('aria-pressed', String(locked));
+        els.abLock.title = locked ? '解除只读锁定' : '只读锁定';
+        els.abLock.innerHTML = locked ? LOCK_ICON : UNLOCK_ICON;
+    }
 }
 
 function installReadOnlyGuards(pane) {
@@ -3708,6 +3723,10 @@ function applySidebarUI() {
         els.btnSidebar.classList.toggle('active', !!settings.showSidebar);
         els.btnSidebar.setAttribute('aria-pressed', String(!!settings.showSidebar));
     }
+    if (els.abFiles) {
+        els.abFiles.classList.toggle('active', !!settings.showSidebar);
+        els.abFiles.setAttribute('aria-pressed', String(!!settings.showSidebar));
+    }
     if (explorer) explorer.setVisible(!!settings.showSidebar);
     requestAnimationFrame(() => {
         if (!editor) return;
@@ -3735,6 +3754,35 @@ function setSidebarMode(mode) {
 
 function syncExplorerActive() {
     if (explorer) explorer.setActive(file && file.path ? file.path : null);
+}
+
+function initActivityBar() {
+    if (!els.activityBar) return;
+    if (els.abFiles) els.abFiles.addEventListener('click', () => toggleSidebar());
+    if (els.abSearch) els.abSearch.addEventListener('click', () => {
+        if (els.searchInput.disabled) {
+            flash('当前视图不支持节点搜索', true);
+            return;
+        }
+        focusSearch();
+    });
+    if (els.abMore) els.abMore.addEventListener('click', () => {
+        if (!ctxMenu) return;
+        const rect = els.abMore.getBoundingClientRect();
+        ctxMenu.open(menuItems('view'), rect.right + 6, rect.top - 4);
+    });
+    if (els.abLock) els.abLock.addEventListener('click', () => {
+        if (els.lock) els.lock.click();
+    });
+    if (els.abTheme) els.abTheme.addEventListener('click', () => {
+        if (!ctxMenu) return;
+        const rect = els.abTheme.getBoundingClientRect();
+        ctxMenu.open(menuItems('theme'), rect.right + 6, rect.top - 4);
+    });
+    if (els.abSettings) els.abSettings.addEventListener('click', () => openSettings('general'));
+    if (els.abAbout) els.abAbout.addEventListener('click', () => openSettings('about'));
+    applySidebarUI();
+    updateLockButton();
 }
 
 function initExplorer() {
@@ -4463,6 +4511,10 @@ function updateSearchState() {
     els.searchInput.disabled = !tree;
     els.searchInput.placeholder = tree ? '搜索节点…'
         : (currentMode === 'image' || currentMode === 'binary' ? '只读视图' : '代码模式按 Ctrl+F 查找');
+    if (els.abSearch) {
+        els.abSearch.disabled = !tree;
+        els.abSearch.title = tree ? '搜索节点 (Ctrl+F)' : '当前视图不支持节点搜索';
+    }
     if (!tree) {
         els.searchInput.value = '';
         if (editor && editor.searchBox) editor.searchBox.clear();
@@ -4643,6 +4695,7 @@ els.tabbar.addEventListener('wheel', (e) => {
 
 initContextMenus();
 initExplorer();
+initActivityBar();
 
 (async () => {
     if (backend.GetOpenMode) {

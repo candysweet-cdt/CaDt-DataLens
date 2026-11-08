@@ -81,7 +81,11 @@ export function createContextMenu() {
             const icon = el('span', 'mi-icon' + (item.checked ? ' checked' : '') +
                 (item.iconClass ? ' ' + item.iconClass : ''));
             if (item.checked) icon.textContent = '\uE73E';
-            else if (item.iconHtml) {
+            else if (item.swatch) {
+                const dot = el('span', 'mi-swatch');
+                dot.style.background = 'linear-gradient(135deg, ' + item.swatch + ' 55%, ' + item.swatchAccent + ' 55%)';
+                icon.appendChild(dot);
+            } else if (item.iconHtml) {
                 icon.innerHTML = item.iconHtml;
                 if (item.iconClass) icon.dataset.fi = item.iconClass.replace(/^fi-/, '');
             } else if (item.icon) icon.textContent = String.fromCharCode(parseInt(item.icon, 16));
