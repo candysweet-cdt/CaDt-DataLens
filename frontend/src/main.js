@@ -948,87 +948,11 @@ function applyAceMode() {
             editor.aceEditor.session.setUseSoftTabs(!tab);
             editor.aceEditor.session.setTabSize(tab ? 4 : Number(fs.indent));
         }
-        if (!editor.aceEditor._bracketGuideBound) {
-            editor.aceEditor._bracketGuideBound = true;
-            editor.aceEditor.on('changeSelection', scheduleBracketGuide);
-            editor.aceEditor.on('change', scheduleBracketGuide);
-        }
-        scheduleBracketGuide();
+        editor.aceEditor.setDisplayIndentGuides(true);
+        editor.aceEditor.setHighlightIndentGuides(true);
     } catch (e) {
         console.warn('ace mode switch failed', e);
     }
-}
-
-let bracketGuideTimer = 0;
-let bracketGuideMarkers = [];
-let bracketGuideSession = null;
-
-function clearBracketGuide() {
-    if (bracketGuideSession) {
-        for (const id of bracketGuideMarkers) bracketGuideSession.removeMarker(id);
-        bracketGuideSession = null;
-    }
-    bracketGuideMarkers = [];
-}
-
-function updateBracketGuide() {
-    bracketGuideTimer = 0;
-    const ace = editor && editor.aceEditor;
-    if (!ace || currentMode !== 'code') {
-        clearBracketGuide();
-        return;
-    }
-    const session = ace.session;
-    if (bracketGuideSession !== session) {
-        clearBracketGuide();
-        bracketGuideSession = session;
-    }
-    for (const id of bracketGuideMarkers) session.removeMarker(id);
-    bracketGuideMarkers = [];
-    let ranges = null;
-    try {
-        ranges = session.getMatchingBracketRanges(ace.getCursorPosition());
-    } catch (e) {
-        return;
-    }
-    if (!ranges || ranges.length < 2) return;
-    let opener = ranges[0];
-    let closer = ranges[1];
-    const textAt = (r) => (session.getLine(r.start.row) || '').charAt(r.start.column);
-    if (!'{[('.includes(textAt(opener))) {
-        const tmp = opener;
-        opener = closer;
-        closer = tmp;
-    }
-    if (!'{[('.includes(textAt(opener))) return;
-    const openRow = opener.start.row;
-    const closeRow = closer.start.row;
-    if (closeRow <= openRow || closeRow - openRow > 2000) return;
-    let indent = -1;
-    for (let row = openRow + 1; row < closeRow; row++) {
-        const line = session.getLine(row) || '';
-        if (!line.trim()) continue;
-        indent = line.match(/^[ \t]*/)[0].length;
-        break;
-    }
-    if (indent < 0) {
-        const closeCol = closer.start.column;
-        if (closeCol < 2) return;
-        indent = closeCol - 2;
-    }
-    const Range = ace.getSelectionRange().constructor;
-    for (let row = openRow + 1; row <= closeRow; row++) {
-        const line = session.getLine(row) || '';
-        if (line.length <= indent) continue;
-        if (row === closeRow && line.search(/\S/) < indent) continue;
-        const range = new Range(row, indent, row, indent + 1);
-        bracketGuideMarkers.push(session.addMarker(range, 'ace_bracket-guide-marker', 'text', false));
-    }
-}
-
-function scheduleBracketGuide() {
-    if (bracketGuideTimer) cancelAnimationFrame(bracketGuideTimer);
-    bracketGuideTimer = requestAnimationFrame(updateBracketGuide);
 }
 
 function snapshotActiveDoc() {
@@ -1095,7 +1019,6 @@ function createDocEditor(doc) {
                 applyAceMode();
                 updateStatus();
                 updateSearchState();
-                scheduleBracketGuide();
             }
             setTimeout(() => {
                 if (!doc.editor || doc.mode !== mode) return;
@@ -1203,7 +1126,6 @@ function updateDocChrome() {
 
 function showWelcome() {
     cancelAutoSave();
-    clearBracketGuide();
     if (editor) {
         editor.destroy();
         editor = null;
@@ -1246,7 +1168,6 @@ async function activateDoc(doc) {
         if (token !== activateToken) return;
     }
     snapshotActiveDoc();
-    clearBracketGuide();
     file = doc;
     dirty = !!doc.dirty;
     currentMode = doc.mode || 'tree';
@@ -1262,7 +1183,6 @@ async function activateDoc(doc) {
     setDirty(doc.dirty);
     applyAceMode();
     humanizeCounts();
-    scheduleBracketGuide();
     if (editor && editor.aceEditor) {
         setTimeout(() => {
             if (editor === doc.editor && editor && editor.aceEditor) editor.aceEditor.resize();
@@ -1284,7 +1204,6 @@ function closeDocNow(doc) {
     if (idx < 0) return;
     const wasActive = doc === file;
     docs.splice(idx, 1);
-    if (wasActive) clearBracketGuide();
     if (doc.editor) {
         doc.editor.destroy();
         doc.editor = null;
@@ -1447,7 +1366,6 @@ async function reloadActive() {
         const data = await backend.OpenFile(doc.path, getFormatSettings(doc.format.id).encoding);
         const fresh = createDoc(data);
         const keepMode = doc.mode;
-        clearBracketGuide();
         if (doc.editor) doc.editor.destroy();
         if (doc.pane) doc.pane.remove();
         doc.editor = null;
@@ -1464,7 +1382,6 @@ async function reloadActive() {
         setDirty(false);
         applyAceMode();
         humanizeCounts();
-        scheduleBracketGuide();
         flash('已重新加载 ' + doc.name);
     } catch (e) {
         flash('重新加载失败：' + e, true);

@@ -1153,6 +1153,9 @@ div.jsoneditor-tree td:has(> input[type="checkbox"]) { vertical-align: middle; }
 .jsoneditor .ace_indent-guide {
     background: linear-gradient(to right, transparent 0, transparent calc(100% - 1px), var(--ace-indent) calc(100% - 1px), var(--ace-indent) 100%) !important;
 }
+.jsoneditor .ace_indent-guide-active {
+    background: linear-gradient(to right, transparent 0, transparent calc(100% - 1px), color-mix(in srgb, var(--text) 30%, transparent) calc(100% - 1px), color-mix(in srgb, var(--text) 30%, transparent) 100%) !important;
+}
 .jsoneditor .ace-jsoneditor .ace_marker-layer .ace_bracket,
 .jsoneditor .ace_marker-layer .ace_bracket {
     margin: 0 !important;
@@ -1160,12 +1163,6 @@ div.jsoneditor-tree td:has(> input[type="checkbox"]) { vertical-align: middle; }
     background: var(--hover) !important;
     background: color-mix(in srgb, var(--bg) 90%, var(--text) 10%) !important;
     border-radius: 2px;
-}
-.jsoneditor .ace_marker-layer .ace_bracket-guide-marker {
-    position: absolute;
-    border-left: 1px solid var(--border);
-    border-left-color: color-mix(in srgb, var(--text) 24%, transparent);
-    background: transparent !important;
 }
 .jsoneditor .ace_search {
     background: var(--panel2);
