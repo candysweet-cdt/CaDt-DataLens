@@ -1985,9 +1985,9 @@ function codeFoldPreviewFor(ace, fold) {
     if (open === '{' && value && typeof value === 'object' && !Array.isArray(value)) {
         const keys = Object.keys(value);
         if (!keys.length) return '{}';
-        const keyText = clipCodeFoldText(JSON.stringify(keys[0]), 18);
-        const valueMax = codeFoldDisplayWidth(keyText) > 12 ? 8 : 14;
-        const valueText = clipCodeFoldText(foldPrimitive(value[keys[0]]), valueMax);
+        const keyText = clipCodeFoldText(JSON.stringify(keys[0]), 14);
+        const budget = 28 - 1 - codeFoldDisplayWidth(keyText) - 2 - 3 - 1;
+        const valueText = budget > 3 ? clipCodeFoldText(foldPrimitive(value[keys[0]]), budget) : '';
         return '{' + keyText + ': ' + valueText + '...' + '}';
     }
     if (open === '[' && Array.isArray(value)) {
