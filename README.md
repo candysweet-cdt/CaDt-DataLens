@@ -89,7 +89,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、YAML、XML、CSV 和普通文本，�
 
 ```bash
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1
-git clone https://github.com/OraSkyC/CaDt-DataLens.git
+git clone https://github.com/candysweet-cdt/CaDt-DataLens.git
 cd CaDt-DataLens
 wails build
 ```
