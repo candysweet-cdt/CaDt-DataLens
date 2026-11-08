@@ -2411,15 +2411,21 @@ a.jsoneditor-poweredBy { display: none !important; }
 .plugin-link { color: var(--accent); cursor: pointer; text-decoration: none; }
 .plugin-link:hover { text-decoration: underline; color: var(--text); }
 .plugin-empty { color: var(--muted); font-size: 12px; padding: 10px 2px; line-height: 1.7; }
-/* 内置终端面板 */
+/* 内置终端面板：底部全宽覆盖（层级在侧边栏之上） */
 #terminal-panel {
-    flex: none;
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    height: 240px;
     min-height: 120px;
     max-height: 480px;
     display: flex;
     flex-direction: column;
     border-top: 1px solid var(--border);
     background: var(--bg);
+    box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.25);
 }
 #terminal-panel.hidden { display: none; }
 .term-resize { height: 4px; cursor: row-resize; background: transparent; flex: none; }
@@ -2511,7 +2517,7 @@ a.jsoneditor-poweredBy { display: none !important; }
 .git-splitter:hover::before, .git-splitter:active::before {
     background: var(--accent);
 }
-.git-commit-area { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 6px; }
+.git-commit-area { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 6px; height: 33%; min-height: 150px; flex: none; }
 .git-amend-label { font-size: 12px; }
 .git-commit-area .git-message { flex: 1; min-height: 54px; resize: none; }
 .git-message {
