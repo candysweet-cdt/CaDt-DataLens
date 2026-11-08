@@ -6144,28 +6144,53 @@ function renderGitPanel() {
         });
         return row;
     };
-    if (changes.length) {
+    // 分组块：组头勾选框 = 全选/全不选该组文件（JetBrains 式，支持半选态）
+    const makeGroupBlock = (title, rows) => {
+        const block = document.createElement('div');
+        block.className = 'git-group-block';
         const head = document.createElement('div');
         head.className = 'git-group';
-        head.textContent = '更改（' + changes.length + ' 个文件）';
-        els.gitChanges.appendChild(head);
-        for (const item of changes) {
+        const gcb = document.createElement('input');
+        gcb.type = 'checkbox';
+        gcb.className = 'git-group-cb';
+        const label = document.createElement('span');
+        label.textContent = title;
+        head.append(gcb, label);
+        const rowCbs = () => [...block.querySelectorAll('.git-file-row input[type="checkbox"]')];
+        const updateGroupState = () => {
+            const cbs = rowCbs();
+            const checkedCount = cbs.filter((c) => c.checked).length;
+            gcb.checked = cbs.length > 0 && checkedCount === cbs.length;
+            gcb.indeterminate = checkedCount > 0 && checkedCount < cbs.length;
+        };
+        gcb.addEventListener('change', () => {
+            for (const c of rowCbs()) c.checked = gcb.checked;
+            updateGroupState();
+        });
+        block.append(head);
+        for (const row of rows) {
+            block.append(row);
+            row.querySelector('input[type="checkbox"]').addEventListener('change', updateGroupState);
+        }
+        updateGroupState();
+        return block;
+    };
+    if (changes.length) {
+        const rows = changes.map((item) => {
             const row = makeRow(item.path, true, item.state);
             row.querySelector('input').dataset.path = item.path;
             row.addEventListener('dblclick', () => showGitDiff(item.path));
-            els.gitChanges.appendChild(row);
-        }
+            return row;
+        });
+        els.gitChanges.appendChild(makeGroupBlock('更改（' + changes.length + ' 个文件）', rows));
     }
     if (untracked.length) {
-        const head = document.createElement('div');
-        head.className = 'git-group';
-        head.textContent = '未进行版本管理的文件（' + untracked.length + ' 个文件）';
-        els.gitChanges.appendChild(head);
-        for (const path of untracked) {
+        const rows = untracked.map((path) => {
             const row = makeRow(path, true, 'untracked');
             row.addEventListener('dblclick', () => showGitDiff(path));
-            els.gitChanges.appendChild(row);
-        }
+            return row;
+        });
+        els.gitChanges.appendChild(makeGroupBlock('未进行版本管理的文件（' + untracked.length + ' 个文件）', rows));
     }
 }
 
@@ -6396,7 +6421,7 @@ els.gitCommitBtn.addEventListener('click', () => runGitCommit(false));
 els.gitCommitPushBtn.addEventListener('click', () => runGitCommit(true));
 
 function collectCheckedPaths() {
-    return [...els.gitChanges.querySelectorAll('input[type="checkbox"]:checked')].map((cb) => cb.dataset.path);
+    return [...els.gitChanges.querySelectorAll('.git-file-row input[type="checkbox"]:checked')].map((cb) => cb.dataset.path);
 }
 
 async function runGitCommit(push) {
