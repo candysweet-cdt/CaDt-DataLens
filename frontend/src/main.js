@@ -640,7 +640,7 @@ const els = {
     stDirty: document.getElementById('st-dirty'),
     breadcrumb: document.getElementById('breadcrumb'),
     searchInput: document.getElementById('search-input'),
-    tabbar: document.getElementById('tabbar'),
+    editorArea: document.getElementById('editor-area'),
     sidebar: document.getElementById('sidebar'),
     sbBody: document.getElementById('sb-body'),
     sbTitle: document.getElementById('sb-title'),
@@ -2325,115 +2325,412 @@ function scheduleAutoSave() {
 }
 
 function updateTabDirty(doc) {
-    const el = els.tabbar.querySelector('.tab[data-doc-id="' + doc.id + '"]');
+    const el = document.querySelector('.etabs .tab[data-doc-id="' + doc.id + '"]');
     if (el) el.classList.toggle('dirty', !!doc.dirty);
 }
 
+// ===== 编辑器分栏（编辑器组 + 二叉分割树，VS Code 式） =====
+let editorGroups = [];
+let splitRoot = null;
+let focusedGroupId = null;
+let groupSeq = 0;
 let dragTabId = null;
-function moveTabDoc(srcId, targetId, before) {
-    if (srcId === null || srcId === undefined || srcId === targetId) return;
-    const si = docs.findIndex((d) => d.id === srcId);
-    const ti = docs.findIndex((d) => d.id === targetId);
-    if (si === -1 || ti === -1) return;
-    const [moved] = docs.splice(si, 1);
-    const index = docs.findIndex((x) => x.id === targetId);
-    docs.splice(before ? index : index + 1, 0, moved);
+let dragTabGroupId = null;
+let dropZone = null;
+const SPLIT_MAX_DEPTH = 3;
+const SPLIT_MIN_W = 240;
+const SPLIT_MIN_H = 180;
+
+function nextGroupId() { return 'g' + (++groupSeq); }
+function groupById(gid) { return editorGroups.find((g) => g.id === gid) || null; }
+function groupOfDoc(docId) { return editorGroups.find((g) => g.docIds.includes(docId)) || null; }
+function groupDocs(g) { return (g ? g.docIds.map((id) => docs.find((d) => d.id === id)).filter(Boolean) : []); }
+function focusedGroup() { return groupById(focusedGroupId) || editorGroups[0] || null; }
+function createGroup(docIds) {
+    const g = { id: nextGroupId(), docIds: docIds || [], activeId: (docIds && docIds.length ? docIds[0] : null) };
+    editorGroups.push(g);
+    if (!focusedGroupId) focusedGroupId = g.id;
+    return g;
+}
+function leafDepth(node, gid, d) {
+    if (!node) return -1;
+    if (typeof node === 'string') return node === gid ? d : -1;
+    const a = leafDepth(node.a, gid, d + 1);
+    if (a >= 0) return a;
+    return leafDepth(node.b, gid, d + 1);
+}
+function groupDepth(gid) { return splitRoot ? leafDepth(splitRoot, gid, 0) : 0; }
+function splitReplaceLeaf(node, gid, dir, side, newGid) {
+    const mkSplit = (existing) => ({ dir, ratio: 0.5, a: side === 'before' ? newGid : existing, b: side === 'before' ? existing : newGid });
+    if (!node) return mkSplit(gid);
+    if (typeof node === 'string') return node === gid ? mkSplit(node) : node;
+    if (node.a === gid) return { dir: node.dir, ratio: node.ratio, a: mkSplit(gid), b: node.b };
+    if (node.b === gid) return { dir: node.dir, ratio: node.ratio, a: node.a, b: mkSplit(gid) };
+    return { dir: node.dir, ratio: node.ratio, a: splitReplaceLeaf(node.a, gid, dir, side, newGid), b: splitReplaceLeaf(node.b, gid, dir, side, newGid) };
+}
+function collapseTree(node) {
+    if (typeof node === 'string') return groupById(node) ? node : null;
+    const a = collapseTree(node.a);
+    const b = collapseTree(node.b);
+    if (a === null) return b;
+    if (b === null) return a;
+    return { dir: node.dir, ratio: node.ratio, a, b };
+}
+function removeGroupIfEmpty(gid) {
+    if (!gid) return;
+    const idx = editorGroups.findIndex((g) => g.id === gid);
+    if (idx < 0) return;
+    if (editorGroups[idx].docIds.length) return;
+    editorGroups.splice(idx, 1);
+    if (splitRoot) splitRoot = collapseTree(splitRoot);
+    if (focusedGroupId === gid || !groupById(focusedGroupId)) {
+        const fg = focusedGroup();
+        focusedGroupId = fg ? fg.id : null;
+    }
+}
+function moveTabInGroup(gid, srcId, targetId, before) {
+    const g = groupById(gid);
+    if (!g) return;
+    const si = g.docIds.indexOf(srcId);
+    const ti = g.docIds.indexOf(targetId);
+    if (si < 0 || ti < 0 || srcId === targetId) return;
+    g.docIds.splice(si, 1);
+    const idx = g.docIds.indexOf(targetId);
+    g.docIds.splice(before ? idx : idx + 1, 0, srcId);
     renderTabs();
 }
 
-function renderTabs() {
-    els.tabbar.textContent = '';
-    const hide = docs.length === 0 || (settings.openMode === 'window' && docs.length === 1);
-    els.tabbar.classList.toggle('hidden', hide);
-    for (const doc of docs) {
-        const tab = document.createElement('div');
-        tab.className = 'tab' + (doc === file ? ' active' : '') + (doc.dirty ? ' dirty' : '');
-        tab.dataset.docId = String(doc.id);
-        tab.title = doc.path || doc.name;
-        const icon = createFileIcon(doc.name, 'tab-icon');
-        const dot = document.createElement('span');
-        dot.className = 'tab-dot';
-        const name = document.createElement('span');
-        name.className = 'tab-name';
-        name.textContent = doc.name;
-        const close = document.createElement('button');
-        close.type = 'button';
-        close.className = 'tab-close';
-        close.title = '关闭';
-        close.textContent = '\uE8BB';
-        close.addEventListener('click', (e) => {
-            e.stopPropagation();
-            requestCloseDoc(doc);
-        });
-        tab.addEventListener('click', (e) => {
-            if (e.shiftKey) {
-                e.preventDefault();
-                requestCloseDoc(doc);
-                return;
-            }
-            activateDoc(doc);
-        });
-        tab.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            activateDoc(doc);
-            showTabMenu(doc, e.clientX, e.clientY);
-        });
-        tab.addEventListener('auxclick', (e) => {
-            if (e.button === 1) {
-                e.preventDefault();
-                requestCloseDoc(doc);
-            }
-        });
-        // 拖动排序：HTML5 DnD，落在目标左半=插到其前，右半=插到其后；目标标签让位形成插槽
-        tab.draggable = true;
-        const clearDropGaps = () => {
-            els.tabbar.querySelectorAll('.tab.drop-gap-before, .tab.drop-gap-after').forEach((t) => {
-                t.classList.remove('drop-gap-before', 'drop-gap-after');
-            });
-        };
-        tab.addEventListener('dragstart', (e) => {
-            dragTabId = doc.id;
-            tab.classList.add('dragging');
-            e.dataTransfer.effectAllowed = 'move';
-            try { e.dataTransfer.setData('text/plain', String(doc.id)); } catch (err) {}
-        });
-        tab.addEventListener('dragend', () => {
-            dragTabId = null;
-            tab.classList.remove('dragging');
-            clearDropGaps();
-        });
-        tab.addEventListener('dragover', (e) => {
-            if (dragTabId === null || dragTabId === doc.id) return;
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-            const r = tab.getBoundingClientRect();
-            const before = e.clientX < r.x + r.width / 2;
-            clearDropGaps();
-            if (before) {
-                // 插到目标前：目标右移让出左插槽
-                tab.classList.add('drop-gap-before');
-            } else {
-                // 插到目标后：让下一个标签右移（插槽出现在目标与下一个之间）
-                const next = tab.nextElementSibling;
-                if (next && next.classList.contains('tab')) next.classList.add('drop-gap-before');
-                else tab.classList.add('drop-gap-after');
-            }
-        });
-        tab.addEventListener('drop', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const r = tab.getBoundingClientRect();
-            const before = e.clientX < r.x + r.width / 2;
-            clearDropGaps();
-            const srcId = dragTabId;
-            dragTabId = null;
-            moveTabDoc(srcId, doc.id, before);
-        });
-        tab.append(icon, dot, name, close);
-        els.tabbar.appendChild(tab);
-        if (doc === file) tab.scrollIntoView({block: 'nearest', inline: 'nearest'});
+let __rlDepth = 0;
+function renderTabs() { renderEditorLayout(); }
+window.__splitDbg = () => ({ dragTabId, dragTabGroupId, dropZone, groups: editorGroups.map(g => ({ id: g.id, docIds: g.docIds, activeId: g.activeId })), focused: focusedGroupId, root: splitRoot });
+
+function renderEditorLayout() {
+    if (++__rlDepth > 60) { window.__rlLoop = new Error('renderEditorLayout depth ' + __rlDepth).stack; __rlDepth--; return; }
+    if (!els.editor) { __rlDepth--; return; }
+    try {
+    els.editor.textContent = '';
+    const root = splitRoot || (focusedGroupId || (editorGroups[0] && editorGroups[0].id));
+    if (!root || !editorGroups.length) return;
+    buildSplitNode(els.editor, root);
+    for (const g of editorGroups) {
+        const host = els.editor.querySelector('.egroup[data-gid="' + g.id + '"] .ehost');
+        if (!host) continue;
+        const list = groupDocs(g);
+        for (const d of list) {
+            if (d.pane && d.pane.parentElement !== host) host.appendChild(d.pane);
+        }
+        const active = list.find((d) => d.id === g.activeId) || list[0];
+        if (active) g.activeId = active.id;
+        for (const d of list) {
+            if (d.pane) d.pane.classList.toggle('active', d.id === g.activeId);
+        }
     }
+    // 全局 file 对齐聚焦组（直接更新 chrome，绝不递归回 renderTabs）
+    if (!file || !groupOfDoc(file.id)) {
+        const fg = focusedGroup();
+        const fd = fg ? docs.find((d) => d.id === fg.activeId) : null;
+        if (fd) {
+            file = fd;
+            dirty = !!fd.dirty;
+        }
+    }
+    if (file) {
+        setFilename(file.name, file.path);
+        renderBreadcrumb(file.path);
+        showBanner(file, file.parseError);
+        updateWindowTitle();
+        updateStatus();
+        updateSearchState();
+    }
+    } catch (e) { window.__rlErr = String(e && e.stack || e); } finally { __rlDepth--; }
+}
+
+function buildSplitNode(parent, node) {
+    if (typeof node === 'string') { buildGroup(parent, node); return; }
+    const wrap = document.createElement('div');
+    wrap.className = 'esplit esplit-' + node.dir;
+    const a = document.createElement('div');
+    a.className = 'esplit-child';
+    a.style.flexBasis = (node.ratio * 100) + '%';
+    buildSplitNode(a, node.a);
+    const b = document.createElement('div');
+    b.className = 'esplit-child';
+    buildSplitNode(b, node.b);
+    wrap.append(a, makeSplitDivider(node), b);
+    parent.appendChild(wrap);
+}
+
+function makeSplitDivider(node) {
+    const d = document.createElement('div');
+    d.className = 'esplit-divider';
+    d.addEventListener('mousedown', (e) => {
+        const childA = d.previousElementSibling;
+        const childB = d.nextElementSibling;
+        if (!childA || !childB) return;
+        const horiz = node.dir === 'col';
+        const start = horiz ? e.clientX : e.clientY;
+        const rectA = childA.getBoundingClientRect();
+        const total = horiz ? (rectA.width + childB.getBoundingClientRect().width) : (rectA.height + childB.getBoundingClientRect().height);
+        const startRatio = node.ratio;
+        document.body.style.cursor = horiz ? 'col-resize' : 'row-resize';
+        document.body.style.userSelect = 'none';
+        const move = (ev) => {
+            const delta = (horiz ? ev.clientX : ev.clientY) - start;
+            node.ratio = Math.min(0.8, Math.max(0.2, startRatio + delta / total));
+            childA.style.flexBasis = (node.ratio * 100) + '%';
+        };
+        const up = () => {
+            window.removeEventListener('mousemove', move);
+            window.removeEventListener('mouseup', up);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        };
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', up);
+        e.preventDefault();
+    });
+    return d;
+}
+
+function buildGroup(parent, gid) {
+    const g = groupById(gid);
+    const wrap = document.createElement('div');
+    wrap.className = 'egroup';
+    wrap.dataset.gid = gid;
+    const strip = document.createElement('div');
+    strip.className = 'etabs';
+    const single = editorGroups.length === 1 && !splitRoot;
+    const hide = !g || !g.docIds.length || (settings.openMode === 'window' && g.docIds.length === 1 && single);
+    if (hide) strip.classList.add('hidden');
+    const host = document.createElement('div');
+    host.className = 'ehost';
+    if (g) for (const d of groupDocs(g)) strip.appendChild(buildGroupTab(g, d, strip));
+    wrap.append(strip, host);
+    wireHostDnd(host, gid);
+    host.addEventListener('mousedown', () => {
+        if (focusedGroupId !== gid) focusGroupById(gid);
+    });
+    parent.appendChild(wrap);
+}
+
+function focusGroupById(gid) {
+    focusedGroupId = gid;
+    const g = groupById(gid);
+    const d = g ? docs.find((x) => x.id === g.activeId) : null;
+    if (d && file !== d) activateDoc(d);
+}
+
+function buildGroupTab(g, doc, strip) {
+    const tab = document.createElement('div');
+    tab.className = 'tab' + (doc.id === g.activeId ? ' active' : '') + (doc.dirty ? ' dirty' : '');
+    tab.dataset.docId = String(doc.id);
+    tab.title = doc.path || doc.name;
+    const icon = createFileIcon(doc.name, 'tab-icon');
+    const dot = document.createElement('span');
+    dot.className = 'tab-dot';
+    const name = document.createElement('span');
+    name.className = 'tab-name';
+    name.textContent = doc.name;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'tab-close';
+    close.title = '关闭';
+    close.textContent = '\uE8BB';
+    close.addEventListener('click', (e) => {
+        e.stopPropagation();
+        requestCloseDoc(doc);
+    });
+    tab.append(icon, dot, name, close);
+    tab.addEventListener('click', (e) => {
+        if (e.shiftKey) {
+            e.preventDefault();
+            requestCloseDoc(doc);
+            return;
+        }
+        activateDoc(doc);
+    });
+    tab.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        activateDoc(doc);
+        showTabMenu(doc, e.clientX, e.clientY);
+    });
+    tab.addEventListener('auxclick', (e) => {
+        if (e.button === 1) {
+            e.preventDefault();
+            requestCloseDoc(doc);
+        }
+    });
+    // 拖动：组内排序 + 跨区拖出分栏
+    tab.draggable = true;
+    const clearDropGaps = () => {
+        strip.querySelectorAll('.tab.drop-gap-before, .tab.drop-gap-after').forEach((t) => {
+            t.classList.remove('drop-gap-before', 'drop-gap-after');
+        });
+    };
+    tab.addEventListener('dragstart', (e) => {
+        dragTabId = doc.id;
+        dragTabGroupId = g.id;
+        tab.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(doc.id)); } catch (err) {}
+    });
+    tab.addEventListener('dragend', () => {
+        dragTabId = null;
+        dragTabGroupId = null;
+        tab.classList.remove('dragging');
+        clearDropGaps();
+        hideSplitMask();
+        dropZone = null;
+    });
+    tab.addEventListener('dragover', (e) => {
+        if (dragTabId === null || dragTabGroupId !== g.id || dragTabId === doc.id) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        const r = tab.getBoundingClientRect();
+        const before = e.clientX < r.x + r.width / 2;
+        clearDropGaps();
+        if (before) tab.classList.add('drop-gap-before');
+        else {
+            const next = tab.nextElementSibling;
+            if (next && next.classList.contains('tab')) next.classList.add('drop-gap-before');
+            else tab.classList.add('drop-gap-after');
+        }
+    });
+    tab.addEventListener('drop', (e) => {
+        if (dragTabId === null || dragTabGroupId !== g.id) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const r = tab.getBoundingClientRect();
+        const before = e.clientX < r.x + r.width / 2;
+        clearDropGaps();
+        const srcId = dragTabId;
+        dragTabId = null;
+        dragTabGroupId = null;
+        moveTabInGroup(g.id, srcId, doc.id, before);
+    });
+    if (doc.id === g.activeId) setTimeout(() => {
+        try { tab.scrollIntoView({block: 'nearest', inline: 'nearest'}); } catch (err) {}
+    }, 0);
+    return tab;
+}
+
+function wireHostDnd(host, gid) {
+    host.addEventListener('dragover', (e) => {
+        if (dragTabId === null) return;
+        const srcG = groupById(dragTabGroupId);
+        const selfSingle = srcG && srcG.id === gid && srcG.docIds.length <= 1;
+        const tg = groupById(gid);
+        const canSplit = !selfSingle && !!tg && tg.docIds.length > 0 && groupDepth(gid) < SPLIT_MAX_DEPTH;
+        const cell = host.parentElement;
+        if (!cell) return;
+        const rect = cell.getBoundingClientRect();
+        const relX = (e.clientX - rect.x) / rect.width;
+        const relY = (e.clientY - rect.y) / rect.height;
+        let zone = 'center';
+        if (canSplit) {
+            if (relX < 0.25) zone = 'left';
+            else if (relX > 0.75) zone = 'right';
+            else if (relY < 0.25) zone = 'top';
+            else if (relY > 0.75) zone = 'bottom';
+        }
+        if (zone === 'left' || zone === 'right') {
+            if (rect.width / 2 < SPLIT_MIN_W) zone = 'center';
+        } else if (zone === 'top' || zone === 'bottom') {
+            if (rect.height / 2 < SPLIT_MIN_H) zone = 'center';
+        }
+        dropZone = { gid, zone, rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height } };
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        showSplitMask();
+    });
+    host.addEventListener('dragleave', (e) => {
+        if (!host.contains(e.relatedTarget)) { hideSplitMask(); dropZone = null; }
+    });
+    host.addEventListener('drop', (e) => {
+        if (dragTabId === null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const dz = dropZone;
+        hideSplitMask();
+        dropZone = null;
+        const srcId = dragTabId;
+        dragTabId = null;
+        dragTabGroupId = null;
+        if (!dz) { renderTabs(); return; }
+        try {
+            performDrop(dz, srcId);
+        } catch (err) {
+            flash('分栏失败：' + (err && err.message || err), true);
+            renderTabs();
+        }
+    });
+}
+
+function ensureSplitMask() {
+    let m = document.getElementById('split-mask');
+    if (!m) {
+        m = document.createElement('div');
+        m.id = 'split-mask';
+        els.editorArea.appendChild(m);
+    }
+    return m;
+}
+
+function showSplitMask() {
+    if (!dropZone) return;
+    const area = els.editorArea.getBoundingClientRect();
+    const r = dropZone.rect;
+    let mx = r.x, my = r.y, mw = r.w, mh = r.h;
+    if (dropZone.zone === 'left' || dropZone.zone === 'right') mw = r.w / 2;
+    if (dropZone.zone === 'right') mx = r.x + r.w / 2;
+    if (dropZone.zone === 'top' || dropZone.zone === 'bottom') mh = r.h / 2;
+    if (dropZone.zone === 'bottom') my = r.y + r.h / 2;
+    const m = ensureSplitMask();
+    m.style.left = Math.round(mx - area.x) + 'px';
+    m.style.top = Math.round(my - area.y) + 'px';
+    m.style.width = Math.round(mw) + 'px';
+    m.style.height = Math.round(mh) + 'px';
+    m.style.display = 'block';
+}
+
+function hideSplitMask() {
+    const m = document.getElementById('split-mask');
+    if (m) m.style.display = 'none';
+}
+
+function performDrop(dz, srcId) {
+    const doc = docs.find((d) => d.id === srcId);
+    if (!doc) { renderTabs(); return; }
+    const srcG = groupOfDoc(doc.id);
+    if (!srcG) { renderTabs(); return; }
+    if (dz.zone === 'center' || (srcG.id === dz.gid && srcG.docIds.length <= 1)) {
+        activateDoc(doc);
+        renderTabs();
+        return;
+    }
+    const dir = (dz.zone === 'left' || dz.zone === 'right') ? 'col' : 'row';
+    const side = (dz.zone === 'left' || dz.zone === 'top') ? 'before' : 'after';
+    // 从源组移除
+    srcG.docIds = srcG.docIds.filter((id) => id !== doc.id);
+    if (srcG.activeId === doc.id) srcG.activeId = srcG.docIds[0] || null;
+    removeGroupIfEmpty(srcG.id);
+    // 目标组保留剩余文档，新组获得被拖文档
+    const tg = groupById(dz.gid);
+    if (!tg) { activateDoc(doc); renderTabs(); return; }
+    tg.docIds = tg.docIds.filter((id) => id !== doc.id);
+    if (tg.activeId === doc.id) tg.activeId = tg.docIds[0] || null;
+    const ng = createGroup([doc.id]);
+    ng.activeId = doc.id;
+    // 单组尚未成树时以该组为根直接生成两层；已有树则替换对应叶子
+    const base = splitRoot || dz.gid;
+    splitRoot = (typeof base === 'string')
+        ? { dir, ratio: 0.5, a: side === 'before' ? ng.id : base, b: side === 'before' ? base : ng.id }
+        : splitReplaceLeaf(base, dz.gid, dir, side, ng.id);
+    focusedGroupId = ng.id;
+    renderTabs();
+    activateDoc(doc);
 }
 
 function renderBreadcrumb(path) {
@@ -4085,8 +4382,10 @@ function setFilename(name, path) {
     icon.dataset.fi = spec.id;
 }
 
+let __ucDepth = 0;
 function updateDocChrome() {
-    if (!file) return;
+    if (++__ucDepth > 60) { window.__ucLoop = new Error('updateDocChrome depth ' + __ucDepth).stack; __ucDepth--; return; }
+    if (!file) { __ucDepth--; return; }
     setFilename(file.name, file.path);
     renderBreadcrumb(file.path);
     showBanner(file, file.parseError);
@@ -4098,9 +4397,15 @@ function updateDocChrome() {
     updateStatus();
     updateSearchState();
     renderTabs();
+    __ucDepth--;
 }
 
 function showWelcome() {
+    if (!docs.length) {
+        editorGroups = [];
+        splitRoot = null;
+        focusedGroupId = null;
+    }
     cancelAutoSave();
     if (editor) {
         editor.destroy();
@@ -4136,7 +4441,19 @@ function showWelcome() {
 let activateToken = 0;
 
 async function activateDoc(doc) {
-    if (!doc || doc === file) return;
+    if (!doc) return;
+    if (doc === file) {
+        const g0 = groupOfDoc(doc.id);
+        if (g0) { g0.activeId = doc.id; focusedGroupId = g0.id; }
+        return;
+    }
+    let g = groupOfDoc(doc.id);
+    if (!g) {
+        g = focusedGroup() || createGroup();
+        if (!g.docIds.includes(doc.id)) g.docIds.push(doc.id);
+    }
+    g.activeId = doc.id;
+    focusedGroupId = g.id;
     const token = ++activateToken;
     cancelAutoSave();
     if (settings.autoSave && file && dirty && file.path && !file.large) {
@@ -4149,10 +4466,13 @@ async function activateDoc(doc) {
     currentMode = doc.mode || 'tree';
     els.welcome.classList.add('hidden');
     els.editor.classList.remove('hidden');
-    for (const d of docs) {
+    if (!els.editor.querySelector('.egroup[data-gid="' + g.id + '"]')) renderEditorLayout();
+    for (const d of groupDocs(g)) {
         if (d.pane) d.pane.classList.remove('active');
     }
     if (!doc.editor) createDocEditor(doc);
+    const host = els.editor.querySelector('.egroup[data-gid="' + g.id + '"] .ehost');
+    if (host && doc.pane && doc.pane.parentElement !== host) host.appendChild(doc.pane);
     doc.pane.classList.add('active');
     editor = doc.editor;
     updateDocChrome();
@@ -4194,7 +4514,16 @@ function closeDocNow(doc) {
         doc.pane.remove();
         doc.pane = null;
     }
+    const g = groupOfDoc(doc.id);
+    if (g) {
+        g.docIds = g.docIds.filter((id) => id !== doc.id);
+        if (g.activeId === doc.id) g.activeId = g.docIds[0] || null;
+        removeGroupIfEmpty(g.id);
+    }
     if (docs.length === 0) {
+        editorGroups = [];
+        splitRoot = null;
+        focusedGroupId = null;
         editor = null;
         showWelcome();
         return;
@@ -4203,7 +4532,17 @@ function closeDocNow(doc) {
         editor = null;
         file = null;
         dirty = false;
-        const next = docs[Math.min(idx, docs.length - 1)];
+        let next = null;
+        if (g && g.docIds.length) {
+            const at = Math.min(idx, g.docIds.length - 1);
+            next = docs.find((d) => d.id === g.docIds[at]) || docs.find((d) => d.id === g.docIds[0]);
+        }
+        if (!next) {
+            const fg = focusedGroup();
+            next = fg ? docs.find((d) => d.id === fg.activeId) : null;
+        }
+        if (!next) next = docs[Math.min(idx, docs.length - 1)] || docs[0];
+        renderTabs();
         activateDoc(next);
     } else {
         renderTabs();
@@ -4237,15 +4576,17 @@ function reopenClosedTab() {
 
 function showTabMenu(doc, x, y) {
     if (!ctxMenu || !doc) return;
-    const idx = docs.indexOf(doc);
-    const others = docs.filter((d) => d !== doc);
-    const left = docs.slice(0, Math.max(0, idx));
-    const clean = docs.filter((d) => !d.dirty);
+    const g0 = groupOfDoc(doc.id);
+    const gdocs = g0 ? groupDocs(g0) : docs.slice();
+    const idx = gdocs.indexOf(doc);
+    const others = gdocs.filter((d) => d !== doc);
+    const left = gdocs.slice(0, Math.max(0, idx));
+    const clean = gdocs.filter((d) => !d.dirty);
     const hasPath = !!doc.path;
     ctxMenu.open([
         {label: '关闭', shortcut: 'Ctrl+W / Shift+点击', icon: 'E8BB', action: () => requestCloseDoc(doc)},
         {label: '关闭其他标签页', disabled: !others.length, action: () => closeDocsWithConfirm(others)},
-        {label: '关闭所有标签页', action: () => closeDocsWithConfirm(docs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
+        {label: '关闭所有标签页', action: () => closeDocsWithConfirm(gdocs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
         {label: '关闭左侧标签页', disabled: !left.length, action: () => closeDocsWithConfirm(left)},
         {label: '关闭未修改标签页', disabled: !clean.length, action: () => closeDocsWithConfirm(clean)},
         {sep: true},
@@ -6105,13 +6446,14 @@ document.querySelectorAll('.about-link').forEach((a) => {
     });
 });
 
-els.tabbar.addEventListener('wheel', (e) => {
-    if (els.tabbar.scrollWidth <= els.tabbar.clientWidth) return;
+els.editor.addEventListener('wheel', (e) => {
+    const strip = e.target && e.target.closest ? e.target.closest('.etabs') : null;
+    if (!strip || strip.scrollWidth <= strip.clientWidth) return;
     const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
     if (!delta) return;
-    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? els.tabbar.clientWidth : 1;
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? strip.clientWidth : 1;
     e.preventDefault();
-    els.tabbar.scrollLeft += delta * unit;
+    strip.scrollLeft += delta * unit;
 }, {passive: false});
 
 initContextMenus();

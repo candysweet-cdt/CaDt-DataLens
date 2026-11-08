@@ -1071,7 +1071,55 @@ html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
 #editor-wrap { flex: 1; position: relative; min-height: 0; display: flex; }
 #main-pane { flex: 1; position: relative; min-width: 0; display: flex; flex-direction: column; }
 #editor-area { position: relative; flex: 1; min-height: 0; }
-#editor { position: absolute; inset: 0; }
+#editor { position: absolute; inset: 0; display: flex; }
+#editor > .esplit, #editor > .egroup { flex: 1; min-width: 0; min-height: 0; }
+/* 编辑器分栏（编辑器组 + 分割树） */
+.esplit { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.esplit-col { flex-direction: row; }
+.esplit-row { flex-direction: column; }
+.esplit-child { display: flex; min-width: 0; min-height: 0; overflow: hidden; position: relative; }
+.esplit-child:first-child { flex: 0 0 auto; }
+.esplit-child:last-child { flex: 1 1 0; }
+.esplit-child > .esplit, .esplit-child > .egroup { flex: 1; min-width: 0; min-height: 0; }
+.esplit-divider { flex: none; position: relative; z-index: 5; background: transparent; }
+.esplit-col > .esplit-divider { width: 5px; cursor: col-resize; }
+.esplit-row > .esplit-divider { height: 5px; cursor: row-resize; }
+.esplit-divider::before { content: ''; position: absolute; background: transparent; transition: background 0.12s ease; }
+.esplit-col > .esplit-divider::before { top: 0; bottom: 0; left: 2px; right: 2px; }
+.esplit-row > .esplit-divider::before { left: 0; right: 0; top: 2px; bottom: 2px; }
+.esplit-divider:hover::before, .esplit-divider:active::before { background: var(--accent); }
+.esplit-col > .esplit-child:first-child { border-right: 1px solid var(--border); }
+.esplit-row > .esplit-child:first-child { border-bottom: 1px solid var(--border); }
+.egroup { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; background: var(--bg); }
+.etabs {
+    display: flex;
+    align-items: stretch;
+    height: 30px;
+    flex: none;
+    flex-shrink: 0;
+    gap: 4px;
+    padding: 3px 8px 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    user-select: none;
+}
+.etabs::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.etabs.hidden { display: none; }
+.ehost { flex: 1; min-width: 0; min-height: 0; position: relative; overflow: hidden; background: var(--bg); }
+#split-mask {
+    position: absolute;
+    display: none;
+    background: rgba(0, 0, 0, 0.52);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 40;
+    box-sizing: border-box;
+}
 #editor.hidden { display: none; }
 .jsoneditor-pane { position: absolute; inset: 0; display: none; }
 .jsoneditor-pane.active { display: block; }
