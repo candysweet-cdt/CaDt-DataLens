@@ -11,6 +11,9 @@ The following components are licensed under the MIT License:
 - js-yaml — Copyright (C) 2011-2015 by Vitaly Puzrin
 - fast-xml-parser — Copyright (c) 2017 Amit Kumar Gupta
 - Papa Parse — Copyright (c) 2015 Matthew Holt
+- markdown-it — Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin
+- KaTeX — Copyright (c) 2013-2020 Khan Academy and other contributors
+- @vscode/markdown-it-katex — Copyright (c) Microsoft Corporation
 
 ```text
 MIT License
@@ -34,13 +37,19 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+The license texts for markdown-it, KaTeX and @vscode/markdown-it-katex are in
+[frontend/public/vendor/licenses](frontend/public/vendor/licenses).
+
 ## Apache License 2.0
 
 - JSON Editor (jsoneditor) — Copyright (C) 2011-2026 Jos de Jong
   https://github.com/josdejong/jsoneditor
+- DOMPurify — https://github.com/cure53/DOMPurify
 
 The full license text is in [frontend/public/vendor/LICENSE.jsoneditor](frontend/public/vendor/LICENSE.jsoneditor).
 The upstream notice is in [frontend/public/vendor/NOTICE.jsoneditor](frontend/public/vendor/NOTICE.jsoneditor).
+DOMPurify may be used under Apache-2.0 or MPL-2.0; the Apache text is in
+[frontend/public/vendor/licenses/dompurify.LICENSE](frontend/public/vendor/licenses/dompurify.LICENSE).
 
 ## SIL Open Font License 1.1
 
@@ -54,8 +63,11 @@ The full OFL 1.1 text and attributions are in [frontend/public/fonts/OFL.txt](fr
 
 - Ace editor language modes — Copyright (c) 2010, Ajax.org B.V.
   https://ace.c9.io/
+- highlight.js — Copyright (c) 2006 Ivan Sagalaev
+  https://highlightjs.org/
 
-The full license text is in [frontend/public/vendor/ace/LICENSE](frontend/public/vendor/ace/LICENSE).
+The Ace license text is in [frontend/public/vendor/ace/LICENSE](frontend/public/vendor/ace/LICENSE).
+The highlight.js license text is in [frontend/public/vendor/licenses/highlight.js.LICENSE](frontend/public/vendor/licenses/highlight.js.LICENSE).
 
 ## Other Go dependencies
 

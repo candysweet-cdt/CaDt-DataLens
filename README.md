@@ -13,11 +13,13 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 
 - 结构化格式：JSON / JSONC / JSON5、JSONL / NDJSON、YAML / YML、XML / SVG、CSV / TSV。
 - JSONL 按行解析为数组显示，树视图编辑后仍按“一行一个 JSON 值”保存。
-- 文本格式：txt、md、log、ini、toml、html、css、js、ts、py、go、java、sql 等。
-- 多种编辑视图：
+- 文本格式：txt、log、ini、toml、html、css、js、ts、py、go、java、sql 等。
+- Markdown 文件默认打开预览：标题、列表、表格、引用、代码块和 KaTeX 行内/块级公式；代码块带行号并按当前主题高亮。预览只读，可切回代码/文本视图编辑。原始 HTML 不执行，外部链接交给系统浏览器打开。
+- 多种视图：
   - **树视图**：展开/收起节点，直接编辑键和值。
   - **代码视图**：Ace 编辑器，带行号、语法高亮、括号匹配。按扩展名启用 YAML、XML/SVG、JS/TS、Python、Markdown、HTML/CSS、Shell/PowerShell/Batch、Go/Java/Kotlin/Lua/SQL、TOML/INI/Properties 等语法模式。
   - **文本视图**：纯文本编辑框，适合看原始内容和最简单的文本修改。
+  - **预览**（Markdown）：只读渲染；支持代码块语法高亮和数学公式。
   - **表格视图**（CSV / TSV）：冻结表头与行号，拖动表头边缘可调整列宽；点击单元格直接编辑（Enter 确认并下移、Tab 换格、Esc 取消），支持撤销/重做；超过 5000 行时只预览前 5000 行，编辑仍会保留全部行。
 - 每个格式可单独配置默认视图，修改后对当前同类文件立即生效。
 - 代码视图支持自动换行开关（设置 → 通用设置或视图菜单），默认关闭，长行横向滚动。
@@ -87,13 +89,14 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 | YAML | `.yaml` `.yml` | 树视图 / 代码视图 / 文本视图 |
 | XML | `.xml` `.svg` | 树视图 / 代码视图 / 文本视图 |
 | CSV | `.csv` `.tsv` | 表格视图 / 树视图 / 文本视图 |
-| 文本 | `.txt` `.md` `.log` `.ini` `.toml` `.html` `.css` `.js` `.ts` `.py` `.go` `.java` `.sql` 等 | 代码视图 |
+| Markdown | `.md` `.markdown` | 预览 / 代码视图 / 文本视图 |
+| 文本 | `.txt` `.log` `.ini` `.toml` `.html` `.css` `.js` `.ts` `.py` `.go` `.java` `.sql` 等 | 代码视图 |
 | 图片 | `.png` `.jpg` `.jpeg` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` `.heic` `.psd` 等 | 只读字节数据 |
 | 其他 | 任意扩展名 | 文本按纯文本；含 NUL/大量控制字符按只读十六进制 |
 
 ## 示例数据
 
-`docs/samples/` 按格式提供可直接打开的合成示例，说明见 [示例说明](docs/samples/README.md)。包含 12 层嵌套 JSON、JSONL 逐行记录、约 211 KB / 4944 个方块的长蓝图、长日志、CSV、SVG，以及 PNG/JPEG/GIF/BMP/WebP/ICO/TIFF/AVIF 和原始字节等二进制样本。
+`docs/samples/` 按格式提供可直接打开的合成示例，说明见 [示例说明](docs/samples/README.md)。包含 12 层嵌套 JSON、JSONL 逐行记录、约 211 KB / 4944 个方块的长蓝图、长日志、CSV、SVG、带代码块和数学公式的 Markdown 示例，以及 PNG/JPEG/GIF/BMP/WebP/ICO/TIFF/AVIF 和原始字节等二进制样本。
 
 ## 构建
 

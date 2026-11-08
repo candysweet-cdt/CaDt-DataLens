@@ -1,4 +1,9 @@
+import 'katex/dist/katex.min.css';
 import './style.css';
+import MarkdownIt from 'markdown-it';
+import DOMPurify from 'dompurify';
+import hljs from 'highlight.js/lib/common';
+import markdownItKatex from '@vscode/markdown-it-katex';
 import {aceModeFor, detectFormat, formats, isSupportedFile} from './formats.js';
 import {createExplorer} from './explorer.js';
 import {createContextMenu} from './contextmenu.js';
@@ -313,6 +318,7 @@ const formatDefs = [
     {id: 'yaml', name: 'YAML'},
     {id: 'xml', name: 'XML'},
     {id: 'csv', name: 'CSV'},
+    {id: 'markdown', name: 'Markdown'},
     {id: 'text', name: '纯文本'},
 ];
 function defaultFormatSettings() {
@@ -320,7 +326,7 @@ function defaultFormatSettings() {
         encoding: 'auto',
         indent: '2',
         eol: 'follow',
-        view: f.id === 'csv' ? 'table' : f.id === 'text' ? 'code' : 'tree',
+        view: f.id === 'csv' ? 'table' : f.id === 'markdown' ? 'preview' : f.id === 'text' ? 'code' : 'tree',
     }]));
 }
 const defaultSettings = {
@@ -369,6 +375,9 @@ if (!settings.csvTableMigrated) {
 }
 if (!['table', 'tree', 'text'].includes(settings.formatSettings.csv.view)) {
     settings.formatSettings.csv.view = 'table';
+}
+if (!['preview', 'code', 'text'].includes(settings.formatSettings.markdown.view)) {
+    settings.formatSettings.markdown.view = 'preview';
 }
 
 function getFormatSettings(id) {
@@ -655,15 +664,31 @@ const INDENTS = [['2', '2 空格'], ['4', '4 空格'], ['tab', 'Tab']];
 const EOLS = [['follow', '跟随原文件'], ['lf', 'LF'], ['crlf', 'CRLF']];
 const VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
 const CSV_VIEWS = [['table', '表格视图'], ['tree', '树视图'], ['text', '文本视图']];
+const MARKDOWN_VIEWS = [['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
 const CSV_TABLE_ROW_LIMIT = 5000;
 const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
 
 function viewOptionsFor(fmt) {
+    if (fmt && fmt.id === 'markdown') return MARKDOWN_VIEWS;
     return fmt && (fmt.table || fmt.id === 'csv') ? CSV_VIEWS : VIEWS;
 }
 
+function viewDisabled(mode) {
+    if (!file) return true;
+    if (mode === 'tree') return !file.treeAvailable;
+    if (mode === 'text') return !(file.treeAvailable || (file.format && file.format.preview));
+    if (mode === 'preview') return !(file.format && file.format.preview) || !!file.large;
+    return false;
+}
+
+function viewDisabledTitle(mode) {
+    if (mode === 'preview' && file && file.large) return '大文件不支持预览';
+    return '当前文件只支持代码视图';
+}
+
 function viewLabel(mode) {
+    if (mode === 'preview') return '预览';
     if (mode === 'table') return '表格视图';
     if (mode === 'text') return '文本视图';
     if (mode === 'code') return '代码视图';
@@ -678,6 +703,54 @@ const editorLocale = {
         showAll: '显示全部',
     },
 };
+
+const markdownRenderer = new MarkdownIt({
+    html: false,
+    linkify: true,
+    breaks: false,
+});
+markdownRenderer.use(markdownItKatex, {throwOnError: false, errorColor: '#f75464'});
+
+function renderMarkdownCodeBlock(text, info) {
+    const code = String(text || '').replace(/\n$/, '');
+    const language = String(info || '').trim().split(/\s+/)[0];
+    let highlighted = '';
+    if (language && hljs.getLanguage(language)) {
+        try {
+            highlighted = hljs.highlight(code, {language, ignoreIllegals: true}).value;
+        } catch (e) {}
+    }
+    if (!highlighted) highlighted = markdownRenderer.utils.escapeHtml(code);
+    const lineCount = Math.max(1, code.split('\n').length);
+    const numbers = Array.from({length: lineCount}, (_, i) => String(i + 1)).join('\n');
+    const langClass = language ? ' language-' + language.replace(/[^A-Za-z0-9_+.-]/g, '') : '';
+    return '<div class="md-code-frame">' +
+        '<pre class="md-code-gutter" aria-hidden="true">' + numbers + '</pre>' +
+        '<pre class="md-code-pre"><code class="hljs' + langClass + '">' + highlighted + '</code></pre>' +
+        '</div>\n';
+}
+
+markdownRenderer.renderer.rules.fence = (tokens, idx) => renderMarkdownCodeBlock(tokens[idx].content, tokens[idx].info);
+markdownRenderer.renderer.rules.code_block = (tokens, idx) => renderMarkdownCodeBlock(tokens[idx].content, '');
+const defaultLinkOpen = markdownRenderer.renderer.rules.link_open ||
+    ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
+markdownRenderer.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+    const token = tokens[idx];
+    const href = token.attrGet('href') || '';
+    if (href && !href.startsWith('#')) {
+        token.attrSet('target', '_blank');
+        token.attrSet('rel', 'noopener noreferrer');
+    }
+    return defaultLinkOpen(tokens, idx, options, env, self);
+};
+
+function renderMarkdownHtml(text) {
+    const html = markdownRenderer.render(text || '');
+    return DOMPurify.sanitize(html, {
+        USE_PROFILES: {html: true, mathMl: true, svg: true},
+        ADD_ATTR: ['target', 'rel'],
+    });
+}
 
 function makeSelect(options, value, onChange) {
     const sel = document.createElement('select');
@@ -799,13 +872,12 @@ async function renderEncodingMenu() {
 
 function renderViewMenu() {
     footPopover.appendChild(popTitle('视图'));
-    const treeAvailable = !!(file && file.treeAvailable);
     for (const [mode, label] of viewOptionsFor(file && file.format)) {
-        const disabled = (mode === 'tree' || mode === 'text') && !treeAvailable;
+        const disabled = viewDisabled(mode);
         footPopover.appendChild(popItem(label, {
             current: currentMode === mode,
             disabled,
-            disabledTitle: '当前文件只支持代码视图',
+            disabledTitle: viewDisabledTitle(mode),
             onClick: () => { switchMode(mode); closeFootPopover(); },
         }));
     }
@@ -1221,8 +1293,10 @@ function createDocEditor(doc) {
     const fs = getFormatSettings(fmt.id);
     const showJsonErrors = fmt.id === 'json' && /\.json$/i.test(doc.name || '');
     const tableRequested = !!fmt.table && doc.mode === 'table';
+    const previewRequested = !!fmt.preview && doc.mode === 'preview';
     let startMode = !doc.treeAvailable ? 'code' : (doc.mode === 'code' || doc.mode === 'text' ? doc.mode : 'tree');
     if (tableRequested) startMode = 'text';
+    if (previewRequested) startMode = 'code';
     let initialText = null;
     let initialValue = null;
     if (startMode === 'code' || startMode === 'text') {
@@ -1290,10 +1364,12 @@ function createDocEditor(doc) {
             ed.aceEditor.session.setUseWrapMode(!!settings.codeWrap);
         } catch (e) {}
     }
-    doc.mode = tableRequested ? 'table' : startMode;
+    doc.mode = previewRequested ? 'preview' : tableRequested ? 'table' : startMode;
     doc.text = ed.getText();
     if (fmt.table) createCsvTableView(doc);
+    if (fmt.preview) createMarkdownPreview(doc);
     if (tableRequested) showCsvTableView(doc);
+    if (previewRequested) showMarkdownPreview(doc);
     if (!doc.dirty) doc.bases[doc.mode] = doc.text;
     doc.content = null;
     doc.loading = false;
@@ -1623,6 +1699,103 @@ function tableHistory(action) {
     renderCsvTableView(doc);
 }
 
+function createMarkdownPreview(doc) {
+    if (doc.previewEl || !doc.pane) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'md-preview-view';
+    const scroll = document.createElement('div');
+    scroll.className = 'md-preview-scroll';
+    const body = document.createElement('div');
+    body.className = 'md-preview';
+    scroll.appendChild(body);
+    wrap.appendChild(scroll);
+    doc.pane.appendChild(wrap);
+    doc.previewEl = wrap;
+    doc.previewScroll = scroll;
+    doc.previewBody = body;
+    wrap.addEventListener('click', (e) => {
+        const a = e.target.closest('a');
+        if (!a) return;
+        const href = a.getAttribute('href') || '';
+        if (!href || href.startsWith('#')) return;
+        e.preventDefault();
+        if (!/^(https?:|mailto:)/i.test(href)) return;
+        if (rt && rt.BrowserOpenURL) rt.BrowserOpenURL(href);
+        else window.open(href, '_blank', 'noopener');
+    });
+}
+
+function renderMarkdownPreview(doc) {
+    if (!doc || !doc.editor || !doc.previewBody) return;
+    const scrollTop = doc.previewScroll ? doc.previewScroll.scrollTop : 0;
+    try {
+        doc.previewBody.innerHTML = renderMarkdownHtml(doc.editor.getText());
+    } catch (e) {
+        doc.previewBody.textContent = 'Markdown 渲染失败：' + e.message;
+    }
+    if (doc.previewScroll) doc.previewScroll.scrollTop = scrollTop;
+}
+
+function showMarkdownPreview(doc) {
+    if (!doc || !doc.format.preview) return;
+    createMarkdownPreview(doc);
+    if (doc.pane) doc.pane.classList.add('preview-active');
+    renderMarkdownPreview(doc);
+}
+
+function hideMarkdownPreview(doc) {
+    if (!doc || !doc.pane) return;
+    doc.pane.classList.remove('preview-active');
+    if (doc === file && doc.editor && doc.editor.aceEditor) {
+        try {
+            doc.editor.aceEditor.resize();
+        } catch (e) {}
+    }
+}
+
+function enterMarkdownPreview(doc) {
+    if (!doc || !doc.format.preview || !doc.editor) return;
+    if (doc.large) {
+        flash('大文件不支持 Markdown 预览', true);
+        return;
+    }
+    const text = doc.editor.getText();
+    doc.loading = true;
+    try {
+        doc.editor.setMode('code');
+        doc.editor.setText(text);
+        doc.text = text;
+        if (!doc.dirty && doc.bases.preview == null) doc.bases.preview = text;
+        doc.mode = 'preview';
+        currentMode = 'preview';
+        showMarkdownPreview(doc);
+        updateStatus();
+        updateSearchState();
+    } catch (e) {
+        flash('切换预览失败：' + e.message, true);
+    } finally {
+        doc.loading = false;
+    }
+}
+
+function leaveMarkdownPreview(doc, mode) {
+    if (!doc || !doc.editor) return;
+    hideMarkdownPreview(doc);
+    doc.mode = mode;
+    currentMode = mode;
+    const loading = doc.loading;
+    doc.loading = true;
+    try {
+        doc.editor.setMode(mode);
+    } catch (e) {
+        flash('切换视图失败：' + e.message, true);
+    } finally {
+        doc.loading = loading;
+    }
+    updateStatus();
+    updateSearchState();
+}
+
 function showCsvTableView(doc) {
     if (!doc || !doc.format.table) return;
     createCsvTableView(doc);
@@ -1747,9 +1920,11 @@ function createDoc(data) {
             parseError = e;
         }
     }
-    const preferredMode = format.table
-        ? (['table', 'tree', 'text'].includes(fs.view) ? fs.view : 'table')
-        : (fs.view === 'code' || fs.view === 'text' ? fs.view : 'tree');
+    const preferredMode = format.preview
+        ? (['preview', 'code', 'text'].includes(fs.view) ? fs.view : 'preview')
+        : format.table
+            ? (['table', 'tree', 'text'].includes(fs.view) ? fs.view : 'table')
+            : (fs.view === 'code' || fs.view === 'text' ? fs.view : 'tree');
     return {
         id: ++docSeq,
         path: data.path,
@@ -1763,13 +1938,13 @@ function createDoc(data) {
         format,
         treeAvailable,
         parseError,
-        mode: treeAvailable ? preferredMode : 'code',
+        mode: format.preview ? (data.large ? 'code' : preferredMode) : (treeAvailable ? preferredMode : 'code'),
         text: null,
         rawText: treeAvailable ? data.content : null,
         dirty: false,
         untitled: false,
         binary: false,
-        bases: {tree: null, code: null, text: null, table: null},
+        bases: {tree: null, code: null, text: null, table: null, preview: null},
     };
 }
 
@@ -2120,7 +2295,7 @@ function initContextMenus() {
             showBlankMenu(e.clientX, e.clientY);
             return;
         }
-        if (currentMode === 'tree' || currentMode === 'table') return;
+        if (currentMode === 'tree' || currentMode === 'table' || currentMode === 'preview') return;
         e.preventDefault();
         e.stopPropagation();
         showEditorMenu(e.clientX, e.clientY);
@@ -2385,11 +2560,20 @@ async function reloadActive() {
         doc.tableMeta = null;
         doc.tableUndo = [];
         doc.tableRedo = [];
+        doc.previewEl = null;
+        doc.previewScroll = null;
+        doc.previewBody = null;
         doc.loading = false;
         Object.assign(doc, fresh, {id: doc.id, dirty: false, untitled: false, text: null, content: data.content});
         let nextMode = keepMode;
-        if (!doc.treeAvailable) nextMode = 'code';
-        else if (!['code', 'text', 'table'].includes(nextMode)) nextMode = 'tree';
+        if (doc.format.preview) {
+            if (doc.large) nextMode = 'code';
+            else if (!['preview', 'code', 'text'].includes(nextMode)) nextMode = 'preview';
+        } else if (!doc.treeAvailable) {
+            nextMode = 'code';
+        } else if (!['code', 'text', 'table'].includes(nextMode)) {
+            nextMode = 'tree';
+        }
         if (nextMode === 'table' && !doc.format.table) nextMode = 'tree';
         doc.mode = nextMode;
         editor = null;
@@ -2654,6 +2838,14 @@ function formatDocument() {
 function switchMode(mode) {
     if (!editor || currentMode === mode) return;
     const doc = file;
+    if (mode === 'preview') {
+        if (doc && doc.format.preview) enterMarkdownPreview(doc);
+        return;
+    }
+    if (currentMode === 'preview') {
+        if (doc) leaveMarkdownPreview(doc, mode);
+        return;
+    }
     if (mode === 'table') {
         if (doc && doc.format.table) enterCsvTable(doc);
         return;
@@ -2793,7 +2985,7 @@ function menuItems(kind) {
             const items = viewOptionsFor(file && file.format).map(([mode, label]) => ({
                 label,
                 checked: currentMode === mode,
-                disabled: (mode === 'tree' || mode === 'text') && !structured,
+                disabled: viewDisabled(mode),
                 action: () => switchMode(mode),
             }));
             items.push(

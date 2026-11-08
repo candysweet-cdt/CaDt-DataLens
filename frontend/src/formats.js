@@ -110,10 +110,18 @@ export const formats = {
             return Papa.unparse(value, {newline: '\n'});
         },
     },
+    markdown: {
+        id: 'markdown',
+        name: 'Markdown',
+        extensions: ['md', 'markdown'],
+        aceMode: 'markdown',
+        rawOnly: true,
+        preview: true,
+    },
     text: {
         id: 'text',
         name: '纯文本',
-        extensions: ['txt', 'md', 'markdown', 'log', 'ini', 'properties', 'conf', 'cfg', 'toml',
+        extensions: ['txt', 'log', 'ini', 'properties', 'conf', 'cfg', 'toml',
             'html', 'htm', 'css', 'js', 'ts', 'py', 'sh', 'bat', 'ps1', 'go', 'java', 'kt', 'lua', 'sql'],
         aceMode: 'text',
         rawOnly: true,
