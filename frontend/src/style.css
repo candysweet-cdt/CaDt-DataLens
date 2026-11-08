@@ -632,7 +632,7 @@ html, body {
     font: inherit;
     text-align: left;
     border-radius: 4px;
-    cursor: default;
+    cursor: pointer;
 }
 .menu-item:hover { background: var(--hover); }
 .menu-item.disabled { opacity: 0.4; pointer-events: none; }
@@ -836,7 +836,7 @@ html, body {
     font-family: "Segoe MDL2 Assets", sans-serif;
     font-size: 10px;
     border-radius: 4px;
-    cursor: default;
+    cursor: pointer;
 }
 .dialog-close:hover { background: #e81123; color: #fff; }
 .dialog-body {
@@ -865,7 +865,7 @@ html, body {
 .about-repo { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .about-repo-label { color: var(--muted); }
 .about-repo-sep { color: var(--faint); }
-.about-link { color: var(--accent); text-decoration: none; cursor: default; }
+.about-link { color: var(--accent); text-decoration: none; cursor: pointer; }
 .about-link:hover { color: var(--text); text-decoration: underline; }
 .about-banner {
     width: 100%;
@@ -906,7 +906,7 @@ html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
     border: 1px solid var(--border);
     border-radius: 5px;
     font: inherit;
-    cursor: default;
+    cursor: pointer;
 }
 .dlg-btn:hover { border-color: var(--accent); }
 .dlg-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
@@ -989,7 +989,7 @@ html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
     border-radius: 3px;
     background: transparent;
     color: inherit;
-    cursor: default;
+    cursor: pointer;
     opacity: 0.7;
 }
 .banner-close svg { width: 12px; height: 12px; }
@@ -1061,7 +1061,7 @@ html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
     font-family: "Segoe MDL2 Assets", sans-serif;
     font-size: 9px;
     visibility: hidden;
-    cursor: default;
+    cursor: pointer;
 }
 .tab:hover .tab-close, .tab.active .tab-close { visibility: visible; }
 .tab-close:hover { background: var(--hover); color: var(--text); }
@@ -1424,7 +1424,7 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
     border-radius: 5px;
     background: none;
     color: var(--muted);
-    cursor: default;
+    cursor: pointer;
 }
 .ab-btn:hover { background: var(--hover); color: var(--text); }
 .ab-btn:focus { outline: none; }
@@ -1491,7 +1491,7 @@ aside[data-sidebar-view="git"] #git-panel { display: flex; flex: 1; min-height: 
     border-radius: 4px;
     background: transparent;
     color: var(--muted);
-    cursor: default;
+    cursor: pointer;
 }
 .sb-tool svg { width: 14px; height: 14px; }
 .sb-tool:hover { background: var(--hover); color: var(--text); }
@@ -1617,7 +1617,7 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
     color: var(--text);
     font: inherit;
     font-size: 12px;
-    cursor: default;
+    cursor: pointer;
 }
 .sb-empty-btn:hover { border-color: var(--accent); }
 .sb-toggle {
@@ -1633,7 +1633,7 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
     border-radius: 4px;
     background: transparent;
     color: var(--muted);
-    cursor: default;
+    cursor: pointer;
 }
 .sb-toggle svg { width: 14px; height: 14px; }
 .sb-toggle:hover { background: var(--hover); color: var(--text); }
@@ -1686,7 +1686,7 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
     color: var(--muted);
     font: inherit;
     font-variant-numeric: tabular-nums;
-    cursor: default;
+    cursor: pointer;
 }
 .st-zoom:hover { background: var(--hover); color: var(--text); }
 .st-zoom:focus { outline: none; }
@@ -1723,7 +1723,7 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
     border-radius: 4px;
     background: transparent;
     color: var(--muted);
-    cursor: default;
+    cursor: pointer;
 }
 .status-lock svg { width: 14px; height: 14px; }
 .status-lock:hover { background: var(--hover); color: var(--text); }
@@ -1945,7 +1945,7 @@ div.jsoneditor-value.jsoneditor-color-value { color: var(--muted); }
     color: var(--muted) !important;
     font: 16px/24px var(--ui-font) !important;
     text-align: center !important;
-    cursor: default !important;
+    cursor: pointer !important;
     opacity: 1 !important;
 }
 .jsoneditor-modal .pico-close:hover {
@@ -2022,7 +2022,7 @@ div.jsoneditor-modal td, div.jsoneditor-modal th { font-family: var(--ui-font); 
     padding: 5px 14px !important;
     border-radius: 5px !important;
     font: inherit !important;
-    cursor: default;
+    cursor: pointer;
 }
 .jsoneditor-modal input[type="submit"]:hover { filter: brightness(1.08); }
 
@@ -2083,7 +2083,7 @@ div.jsoneditor-tree .jsoneditor-fold-text { color: var(--text); }
 div.jsoneditor-tree div.jsoneditor-show-more a {
     color: var(--accent);
     text-decoration: none;
-    cursor: default;
+    cursor: pointer;
 }
 div.jsoneditor-tree div.jsoneditor-show-more a:hover {
     color: var(--text);
@@ -2522,7 +2522,7 @@ a.jsoneditor-poweredBy { display: none !important; }
     color: var(--muted);
     font: inherit;
     font-size: 11px;
-    cursor: default;
+    cursor: pointer;
     white-space: nowrap;
 }
 .term-tab.active { background: var(--hover); color: var(--text); }
@@ -2533,7 +2533,7 @@ a.jsoneditor-poweredBy { display: none !important; }
     border: none;
     background: none;
     color: var(--muted);
-    cursor: default;
+    cursor: pointer;
     font: inherit;
     padding: 2px 7px;
     border-radius: 4px;
@@ -2658,7 +2658,7 @@ div.jsoneditor-tree textarea { user-select: text; }
     padding: 1px 6px;
     margin: -1px -2px;
     border-radius: 4px;
-    cursor: default;
+    cursor: pointer;
 }
 #st-enc:hover, #st-mode:hover, #st-eol:hover { background: var(--hover); }
 #st-enc.active, #st-mode.active, #st-eol.active { background: var(--accent-weak); }
@@ -2693,7 +2693,7 @@ div.jsoneditor-tree textarea { user-select: text; }
     font: inherit;
     text-align: left;
     border-radius: 4px;
-    cursor: default;
+    cursor: pointer;
 }
 .enc-item:hover { background: var(--hover); }
 .enc-item.current { background: var(--accent-weak); }
@@ -2716,3 +2716,5 @@ div.jsoneditor-tree textarea { user-select: text; }
     margin-top: 4px;
 }
 .enc-foot b { color: var(--text); font-weight: 400; }
+
+.dlg-btn:disabled { cursor: default; }
