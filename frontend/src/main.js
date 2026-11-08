@@ -2483,7 +2483,7 @@ function makeSplitDivider(node) {
         const rectA = childA.getBoundingClientRect();
         const total = horiz ? (rectA.width + childB.getBoundingClientRect().width) : (rectA.height + childB.getBoundingClientRect().height);
         const startRatio = node.ratio;
-        document.body.style.cursor = horiz ? 'col-resize' : 'row-resize';
+        setDragCursor(horiz ? 'ew' : 'ns');
         document.body.style.userSelect = 'none';
         const move = (ev) => {
             const delta = (horiz ? ev.clientX : ev.clientY) - start;
@@ -2493,7 +2493,7 @@ function makeSplitDivider(node) {
         const up = () => {
             window.removeEventListener('mousemove', move);
             window.removeEventListener('mouseup', up);
-            document.body.style.cursor = '';
+            setDragCursor(null);
             document.body.style.userSelect = '';
         };
         window.addEventListener('mousemove', move);
@@ -6569,6 +6569,35 @@ els.editor.addEventListener('wheel', (e) => {
 initContextMenus();
 initExplorer();
 initActivityBar();
+
+// ===== Win11/系统调整光标（后端读注册表当前主题 + 内置候选，失败回落 CSS 关键字） =====
+let sysCursor = null;
+function setDragCursor(kind) {
+    document.body.classList.toggle('cursor-ew', kind === 'ew');
+    document.body.classList.toggle('cursor-ns', kind === 'ns');
+}
+function applySystemCursors() {
+    if (!sysCursor) return;
+    const parts = [];
+    if (sysCursor.ew) {
+        parts.push('.sidebar-resize, .esplit-col > .esplit-divider { cursor: url("' + sysCursor.ew + '"), ew-resize; }');
+        parts.push('body.cursor-ew { cursor: url("' + sysCursor.ew + '"), ew-resize; }');
+    }
+    if (sysCursor.ns) {
+        parts.push('.term-resize, .git-splitter, .esplit-row > .esplit-divider { cursor: url("' + sysCursor.ns + '"), ns-resize; }');
+        parts.push('body.cursor-ns { cursor: url("' + sysCursor.ns + '"), ns-resize; }');
+    }
+    if (!parts.length) return;
+    const style = document.createElement('style');
+    style.id = 'sys-cursors';
+    style.textContent = parts.join('\n');
+    document.head.appendChild(style);
+}
+if (backend.GetSystemCursors) {
+    backend.GetSystemCursors().then((c) => {
+        if (c && (c.ew || c.ns)) { sysCursor = c; applySystemCursors(); }
+    }).catch(() => {});
+}
 // ===== 内置终端 =====
 const terminalUI = {open: false, sessions: new Map(), order: [], activeId: null};
 const cmdOutHandlers = new Map();
@@ -6918,7 +6947,7 @@ if (els.gitSplitter) {
         gitSplitting = true;
         gitSplitStartY = e.clientY;
         gitSplitStartH = els.gitCommitArea.offsetHeight;
-        document.body.style.cursor = 'row-resize';
+        setDragCursor('ns');
         document.body.style.userSelect = 'none';
         e.preventDefault();
     });
@@ -6931,7 +6960,7 @@ if (els.gitSplitter) {
     window.addEventListener('mouseup', () => {
         if (!gitSplitting) return;
         gitSplitting = false;
-        document.body.style.cursor = '';
+        setDragCursor(null);
         document.body.style.userSelect = '';
         settings.gitCommitAreaHeight = Math.min(300, Math.max(90, els.gitCommitArea.offsetHeight));
         applySettings();
@@ -6997,7 +7026,7 @@ if (els.sidebarResize) {
         sidebarResizing = true;
         sidebarStartX = e.clientX;
         sidebarStartW = els.sidebar.offsetWidth;
-        document.body.style.cursor = 'col-resize';
+        setDragCursor('ew');
         document.body.style.userSelect = 'none';
         e.preventDefault();
     });
@@ -7009,7 +7038,7 @@ if (els.sidebarResize) {
     window.addEventListener('mouseup', () => {
         if (!sidebarResizing) return;
         sidebarResizing = false;
-        document.body.style.cursor = '';
+        setDragCursor(null);
         document.body.style.userSelect = '';
         settings.sidebarWidth = Math.min(500, Math.max(160, els.sidebar.offsetWidth));
         applySettings();
@@ -7025,7 +7054,7 @@ if (els.terminalResize) {
         termResizing = true;
         termResizeStartY = e.clientY;
         termResizeStartH = els.terminalPanel.offsetHeight;
-        document.body.style.cursor = 'row-resize';
+        setDragCursor('ns');
         e.preventDefault();
     });
     window.addEventListener('mousemove', (e) => {
@@ -7037,7 +7066,7 @@ if (els.terminalResize) {
     window.addEventListener('mouseup', () => {
         if (!termResizing) return;
         termResizing = false;
-        document.body.style.cursor = '';
+        setDragCursor(null);
         fitActiveTerm();
         settings.terminalHeight = Math.min(480, Math.max(120, els.terminalPanel.offsetHeight));
         applySettings();
