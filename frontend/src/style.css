@@ -168,6 +168,16 @@ html[data-theme="darcula"] {
     --mask: rgba(0, 0, 0, 0.5);
     --banner-bg: #3a3520;
     --banner-fg: #bbb529;
+    --syn-keyword: #cc7832;
+    --syn-operator: #a9b7c6;
+    --syn-comment: #808080;
+    --syn-tag: #e8bf6a;
+    --syn-attr: #bababa;
+    --syn-attr-value: #a5c261;
+    --syn-yaml-key: #cc7832;
+    --syn-json-key: #9876aa;
+    --syn-function: #ffc66d;
+    --syn-heading: #bbbbbb;
 }
 
 html[data-theme="idea-dark"] {
@@ -212,6 +222,16 @@ html[data-theme="idea-dark"] {
     --mask: rgba(0, 0, 0, 0.5);
     --banner-bg: #3a3520;
     --banner-fg: #d5b778;
+    --syn-keyword: #cf8e6d;
+    --syn-operator: #bcbec4;
+    --syn-comment: #7a7e85;
+    --syn-tag: #d5b778;
+    --syn-attr: #bcbec4;
+    --syn-attr-value: #a5c261;
+    --syn-yaml-key: #cf8e6d;
+    --syn-json-key: #c77dbb;
+    --syn-function: #56a8f5;
+    --syn-heading: #bbbbbb;
 }
 
 html[data-theme="idea-light"] {
@@ -257,6 +277,16 @@ html[data-theme="idea-light"] {
     --banner-bg: #fff8e1;
     --banner-fg: #7a5d00;
     --icons: url('/vendor/img/jsoneditor-icons-light.svg');
+    --syn-keyword: #0033b3;
+    --syn-operator: #000000;
+    --syn-comment: #8c8c8c;
+    --syn-tag: #e8bf6a;
+    --syn-attr: #bababa;
+    --syn-attr-value: #a5c261;
+    --syn-yaml-key: #0033b3;
+    --syn-json-key: #871094;
+    --syn-function: #00627a;
+    --syn-heading: #000000;
 }
 
 html[data-theme="github"] {
@@ -1599,33 +1629,46 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 .jsoneditor textarea,
 .jsoneditor [contenteditable="true"] { caret-color: var(--text); }
 .jsoneditor .ace_string { color: var(--val-string); }
-.jsoneditor .ace_variable { color: var(--val-key); }
+.jsoneditor .ace_variable { color: var(--text); }
+.jsoneditor .ace-mode-json .ace_variable,
+.jsoneditor .ace-mode-json5 .ace_variable { color: var(--syn-json-key, var(--val-key)); }
 .jsoneditor .ace_constant.ace_numeric { color: var(--val-number); }
 .jsoneditor .ace_constant.ace_language.ace_boolean { color: var(--val-bool); }
 .jsoneditor .ace_constant.ace_language.ace_null { color: var(--val-null); }
 .jsoneditor .ace_paren, .jsoneditor .ace_punctuation { color: var(--ace-punct); }
 .jsoneditor .ace_text-layer { color: var(--text); }
-.jsoneditor .ace_keyword { color: var(--accent); }
-.jsoneditor .ace_keyword.ace_operator { color: var(--ace-punct); }
+.jsoneditor .ace_keyword { color: var(--syn-keyword, var(--accent)); }
+.jsoneditor .ace_keyword.ace_operator { color: var(--syn-operator, var(--ace-punct)); }
 .jsoneditor .ace_meta.ace_tag,
 .jsoneditor .ace_entity.ace_name.ace_tag,
-.jsoneditor .ace_meta.ace_tag.ace_tag-name { color: var(--val-key); }
+.jsoneditor .ace_meta.ace_tag.ace_tag-name { color: var(--syn-tag, var(--val-key)); }
 .jsoneditor .ace_entity { color: var(--val-key); }
 .jsoneditor .ace_entity.ace_other.ace_attribute-name,
-.jsoneditor .ace_entity.ace_name.ace_attribute-name { color: var(--orange); }
+.jsoneditor .ace_entity.ace_name.ace_attribute-name { color: var(--syn-attr, var(--orange)); }
 .jsoneditor .ace_constant { color: var(--val-number); }
 .jsoneditor .ace_constant.ace_language { color: var(--val-bool); }
-.jsoneditor .ace_storage { color: var(--val-null); }
-.jsoneditor .ace_comment { color: var(--muted); font-style: italic; }
+.jsoneditor .ace_storage { color: var(--syn-keyword, var(--val-null)); }
+.jsoneditor .ace_comment { color: var(--syn-comment, var(--muted)); font-style: italic; }
 .jsoneditor .ace_markup.ace_heading,
-.jsoneditor .ace_heading { color: var(--accent); font-weight: 600; }
+.jsoneditor .ace_heading { color: var(--syn-heading, var(--accent)); font-weight: 600; }
 .jsoneditor .ace_list { color: var(--text); }
 .jsoneditor .ace_markup.ace_list { color: var(--accent); }
 .jsoneditor .ace_markup.ace_underline { color: var(--accent); text-decoration: underline; }
 .jsoneditor .ace_bold { font-weight: 600; }
 .jsoneditor .ace_italic { font-style: italic; }
 .jsoneditor .ace_function,
-.jsoneditor .ace_support.ace_function { color: var(--accent); }
+.jsoneditor .ace_support.ace_function,
+.jsoneditor .ace_entity.ace_name.ace_function { color: var(--syn-function, var(--accent)); }
+html[data-theme="idea-dark"] .ace-mode-yaml .ace_meta.ace_tag,
+html[data-theme="idea-light"] .ace-mode-yaml .ace_meta.ace_tag,
+html[data-theme="darcula"] .ace-mode-yaml .ace_meta.ace_tag { color: var(--syn-yaml-key); }
+html[data-theme="idea-dark"] .ace-mode-xml .ace_string,
+html[data-theme="idea-light"] .ace-mode-xml .ace_string,
+html[data-theme="darcula"] .ace-mode-xml .ace_string { color: var(--syn-attr-value); }
+html[data-theme="idea-dark"] .ace-mode-html .ace_attribute-value { color: #2fbaa3; }
+html[data-theme="idea-light"] .ace-mode-html .ace_attribute-value,
+html[data-theme="darcula"] .ace-mode-html .ace_attribute-value { color: var(--syn-attr-value); }
+html[data-theme="idea-dark"] .jsoneditor .ace_comment { font-style: normal; }
 .jsoneditor .ace_indent-guide {
     background: linear-gradient(to right, transparent 0, transparent calc(100% - 1px), var(--ace-indent) calc(100% - 1px), var(--ace-indent) 100%) !important;
 }

@@ -1171,6 +1171,11 @@ function applyAceMode() {
         if (editor.aceEditor.session.getMode().$id !== want) {
             editor.aceEditor.session.setMode(want);
         }
+        const container = editor.aceEditor.container;
+        for (const cls of Array.from(container.classList)) {
+            if (cls.startsWith('ace-mode-')) container.classList.remove(cls);
+        }
+        container.classList.add('ace-mode-' + want.split('/').pop());
         const pureJson = !!(file && file.format && file.format.id === 'json' && /\.json$/i.test(file.name || ''));
         editor.aceEditor.session.setUseWorker(pureJson);
         editor.aceEditor.setFontSize(settings.editorFont);
