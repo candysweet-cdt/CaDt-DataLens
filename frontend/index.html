@@ -165,6 +165,15 @@
                         </div>
                         <div class="fmt-hint hint-indent">关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧 × 只关闭当前提示。</div>
                         <div class="popover-row">
+                            <span class="popover-label">文件图标主题</span>
+                            <select id="opt-icon-theme" class="opt-select">
+                                <option value="opensource">开源图标集（vscode-icons）</option>
+                                <option value="mono">文字缩写 + 底板</option>
+                                <option value="plain">无特殊图标</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent">开源图标集缺失的类型自动回退到文字缩写图标；插件可通过 cadt.registerIconTheme 注册自定义主题。</div>
+                        <div class="popover-row">
                             <span class="popover-label">树视图展开</span>
                             <select id="opt-tree-expand" class="opt-select">
                                 <option value="expand">默认全展开</option>

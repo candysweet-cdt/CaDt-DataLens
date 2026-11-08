@@ -1,3 +1,5 @@
+import {OS_ICONS} from './fileicons-os.js';
+
 const BADGE_OPEN = '<svg viewBox="0 0 16 16" aria-hidden="true">' +
     '<rect x="1.6" y="1.6" width="12.8" height="12.8" rx="3.2" fill="currentColor" opacity="0.13"></rect>' +
     '<rect x="1.6" y="1.6" width="12.8" height="12.8" rx="3.2" fill="none" stroke="currentColor" stroke-width="0.9" opacity="0.55"></rect>';
@@ -77,6 +79,29 @@ const EXTENSIONS = {
     lua: 'lua',
 };
 
+// ===== 图标主题体系 =====
+// 主题解析链：所选主题图标 → 文字缩写+底板（mono）→ 通用文件图标（plain）
+// built-in: opensource（vscode-icons MIT）/ mono / plain；插件可通过 cadt.registerIconTheme 注册
+let activeThemeId = 'opensource';
+let pluginIconThemes = {};
+
+export function setFileIconTheme(themeId, pluginThemes) {
+    activeThemeId = themeId || 'opensource';
+    pluginIconThemes = pluginThemes || {};
+}
+
+const PLAIN_FILE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.5h5.5L12.5 4.6V14.5H4z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>';
+
+function themeIconFor(id) {
+    if (activeThemeId === 'opensource' && OS_ICONS[id]) return OS_ICONS[id];
+    const pt = pluginIconThemes[activeThemeId];
+    if (pt && pt.icons) {
+        if (pt.icons[id]) return pt.icons[id];
+        if (pt.icons['default_file']) return pt.icons['default_file'];
+    }
+    return null;
+}
+
 export function fileIconSpec(fileName) {
     const base = String(fileName || '').split(/[\\/]/).pop().toLowerCase();
     const dot = base.lastIndexOf('.');
@@ -90,6 +115,12 @@ export function createFileIcon(fileName, extraClass) {
     const span = document.createElement('span');
     span.className = (extraClass ? extraClass + ' ' : '') + spec.className;
     span.dataset.fi = spec.id;
-    span.innerHTML = spec.svg;
+    let svg = null;
+    if (activeThemeId === 'plain') {
+        svg = PLAIN_FILE; // 纯净主题：文件一律通用纸页图标
+    } else {
+        svg = themeIconFor(spec.id) || ICONS[spec.id] || PLAIN_FILE;
+    }
+    span.innerHTML = svg;
     return span;
 }

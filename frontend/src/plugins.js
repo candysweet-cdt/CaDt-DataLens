@@ -22,6 +22,12 @@ export function getPluginCommands() {
     return commands;
 }
 
+const iconThemes = {};
+
+export function getPluginIconThemes() {
+    return iconThemes;
+}
+
 function pluginError(plugin, message) {
     return new Error(`[${plugin.name || plugin.id}] ${message}`);
 }
@@ -52,6 +58,29 @@ function apiFor(plugin) {
                 throw pluginError(plugin, `命令 ${id} 已注册`);
             }
             commands.push({id: `${plugin.id}:${id}`, pluginId: plugin.id, label, run: spec.run});
+        },
+        // 注册文件图标主题：{id, name, icons: {json: '<svg…>', default_file: '<svg…>', …}}
+        // icons 缺失的类型自动回退到内置文字缩写图标
+        registerIconTheme(spec) {
+            if (!spec || typeof spec !== 'object') {
+                throw pluginError(plugin, 'registerIconTheme 需要一个主题对象');
+            }
+            const id = String(spec.id || '').trim();
+            if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+                throw pluginError(plugin, `图标主题 id 无效：${JSON.stringify(spec.id)}`);
+            }
+            if (!spec.icons || typeof spec.icons !== 'object') {
+                throw pluginError(plugin, 'registerIconTheme 缺少 icons 映射');
+            }
+            const icons = {};
+            for (const [k, v] of Object.entries(spec.icons)) {
+                if (typeof v === 'string' && v.includes('<svg')) icons[k] = v;
+            }
+            if (!Object.keys(icons).length) {
+                throw pluginError(plugin, 'registerIconTheme 的 icons 为空');
+            }
+            iconThemes[id] = {id, name: String(spec.name || id), icons};
+            host.addPluginIconTheme({id, name: String(spec.name || id), icons});
         },
         // 注册主题：{id, name, bg, accent, css}，css 里用 html[data-theme="<id>"] 选择器
         addTheme(spec) {
