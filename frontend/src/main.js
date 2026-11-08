@@ -137,7 +137,6 @@ const mockTree = {
         {name: 'sample.csv', path: 'mock://samples/sample.csv', isDir: false},
         {name: 'sample.json', path: 'mock://samples/sample.json', isDir: false},
         {name: 'sample.jsonl', path: 'mock://samples/sample.jsonl', isDir: false},
-        {name: 'sample.toml', path: 'mock://samples/sample.toml', isDir: false},
         {name: 'sample.ini', path: 'mock://samples/sample.ini', isDir: false},
         {name: 'sample.png', path: 'mock://samples/sample.png', isDir: false},
         {name: 'sample.xml', path: 'mock://samples/sample.xml', isDir: false},
@@ -6576,7 +6575,8 @@ function applyGitBadges() {
         }
         const key = row.dataset.path.replace(/\\/g, '/').replace(/\/+$/, '');
         const st = gitStateCache.map.get(key);
-        if (st) row.classList.add('git-' + st);
+        // 已删除文件磁盘上不存在、不会出现在文件树；灰色删除态只在 Git 提交面板显示
+        if (st && st !== 'deleted') row.classList.add('git-' + st);
         else if (gitStateCache.ignoredSet.has(key)) row.classList.add('git-ignored');
     });
 }
