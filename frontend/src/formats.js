@@ -94,6 +94,20 @@ export const formats = {
     },
 };
 
+export const imageExtensions = [
+    'png', 'jpg', 'jpeg', 'jfif', 'gif', 'bmp', 'webp', 'ico', 'tif', 'tiff',
+    'avif', 'heic', 'heif', 'psd', 'raw', 'cr2', 'nef', 'arw', 'dng',
+];
+
+export function isSupportedFile(name) {
+    const base = String(name || '').split(/[\\/]/).pop();
+    const dot = base.lastIndexOf('.');
+    if (dot < 0) return false;
+    const ext = base.slice(dot + 1).toLowerCase();
+    if (imageExtensions.includes(ext)) return true;
+    return Object.values(formats).some((f) => f.extensions.includes(ext));
+}
+
 export const openFileFilters = [
     {display: '结构化数据 (*.json;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv)', pattern: '*.json;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv'},
     {display: '所有文件 (*.*)', pattern: '*.*'},

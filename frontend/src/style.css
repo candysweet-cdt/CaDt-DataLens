@@ -860,11 +860,147 @@ html, body {
 .tab:hover .tab-close, .tab.active .tab-close { visibility: visible; }
 .tab-close:hover { background: var(--hover); color: var(--text); }
 
-#editor-wrap { flex: 1; position: relative; min-height: 0; }
+#editor-wrap { flex: 1; position: relative; min-height: 0; display: flex; }
+#main-pane { flex: 1; position: relative; min-width: 0; }
 #editor { position: absolute; inset: 0; }
 #editor.hidden { display: none; }
 .jsoneditor-pane { position: absolute; inset: 0; display: none; }
 .jsoneditor-pane.active { display: block; }
+
+#sidebar {
+    width: 264px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    user-select: none;
+}
+#sidebar.hidden { display: none; }
+.sb-head {
+    height: 34px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 6px 0 10px;
+    border-bottom: 1px solid var(--border);
+}
+.sb-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 12px;
+}
+.sb-tools { display: flex; gap: 1px; }
+.sb-tool {
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    cursor: default;
+}
+.sb-tool svg { width: 14px; height: 14px; }
+.sb-tool:hover { background: var(--hover); color: var(--text); }
+.sb-tool:focus, .sb-toggle:focus, .sb-empty-btn:focus { outline: none; }
+.sb-tool.active { color: var(--accent); background: var(--accent-weak); }
+.sb-tool:disabled { opacity: 0.4; background: transparent; }
+.sb-body { flex: 1; min-height: 0; overflow: auto; padding: 3px 0 10px; }
+.sb-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 24px;
+    padding: 0 10px 0 8px;
+    font-size: 12.5px;
+    line-height: 1.4;
+    color: var(--text);
+    white-space: nowrap;
+    cursor: default;
+}
+.sb-row:hover { background: var(--hover); }
+.sb-row.current { background: var(--tree-highlight-active); }
+.sb-chev {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+}
+.sb-chev svg { width: 12px; height: 12px; transition: transform 0.1s ease; }
+.sb-chev.open svg { transform: rotate(90deg); }
+.sb-icon {
+    flex: none;
+    width: 15px;
+    height: 15px;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+}
+.sb-icon svg { width: 14px; height: 14px; }
+.sb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sb-children { margin-left: 14px; border-left: 1px solid var(--border); }
+.sb-status { color: var(--muted); }
+.sb-status.error { color: var(--red); }
+.sb-status .sb-icon { visibility: hidden; }
+.sb-root .sb-name { font-weight: 500; }
+.sb-ft-json { color: var(--accent); }
+.sb-ft-yaml { color: var(--orange); }
+.sb-ft-xml { color: var(--red); }
+.sb-ft-csv { color: var(--green); }
+.sb-ft-image { color: var(--val-null); }
+.sb-ft-text { color: var(--muted); }
+.sb-empty {
+    padding: 20px 16px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.7;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+.sb-empty-btn {
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--panel2);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    cursor: default;
+}
+.sb-empty-btn:hover { border-color: var(--accent); }
+.sb-toggle {
+    flex: none;
+    align-self: center;
+    width: 22px;
+    height: 20px;
+    display: grid;
+    place-items: center;
+    margin: 0 2px 0 -4px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    cursor: default;
+}
+.sb-toggle svg { width: 14px; height: 14px; }
+.sb-toggle:hover { background: var(--hover); color: var(--text); }
+.sb-toggle.active { background: var(--accent-weak); color: var(--accent); }
+@media (max-width: 900px) { #sidebar { width: 220px; } }
 
 #welcome {
     position: absolute;

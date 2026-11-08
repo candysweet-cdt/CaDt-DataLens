@@ -1,5 +1,6 @@
 import './style.css';
-import {detectFormat, formats} from './formats.js';
+import {detectFormat, formats, isSupportedFile} from './formats.js';
+import {createExplorer} from './explorer.js';
 
 const hasWails = !!(window.go && window.go.main && window.go.main.App);
 
@@ -56,6 +57,28 @@ const mockFiles = {
     text: {name: 'notes.md', content: sampleText},
     json: {name: 'sample.json', content: sampleJson},
 };
+const mockTree = {
+    'mock://samples': [
+        {name: 'config', path: 'mock://samples/config', isDir: true},
+        {name: 'images', path: 'mock://samples/images', isDir: true},
+        {name: 'notes.md', path: 'mock://samples/notes.md', isDir: false},
+        {name: 'sample.csv', path: 'mock://samples/sample.csv', isDir: false},
+        {name: 'sample.json', path: 'mock://samples/sample.json', isDir: false},
+        {name: 'sample.png', path: 'mock://samples/sample.png', isDir: false},
+        {name: 'sample.xml', path: 'mock://samples/sample.xml', isDir: false},
+        {name: 'sample.yaml', path: 'mock://samples/sample.yaml', isDir: false},
+        {name: 'secrets.bin', path: 'mock://samples/secrets.bin', isDir: false},
+    ],
+    'mock://samples/config': [
+        {name: 'deep_well.json', path: 'mock://samples/config/deep_well.json', isDir: false},
+        {name: 'nested.yaml', path: 'mock://samples/config/nested.yaml', isDir: false},
+        {name: 'readme.txt', path: 'mock://samples/config/readme.txt', isDir: false},
+    ],
+    'mock://samples/images': [
+        {name: 'logo.png', path: 'mock://samples/images/logo.png', isDir: false},
+        {name: 'preview.jpg', path: 'mock://samples/images/preview.jpg', isDir: false},
+    ],
+};
 
 const mockBackend = {
     async GetStartupFiles() {
@@ -71,12 +94,21 @@ const mockBackend = {
     },
     async OpenFile(path, enc) {
         window.__mockLastOpenEnc = enc;
+        const dirKey = String(path || '').replace(/\/+$/, '');
+        if (mockTree[dirKey]) {
+            return {path: dirKey, name: dirKey.split('/').pop(), isDir: true};
+        }
         const base = path.split('/').pop();
         if (base.toLowerCase().endsWith('.png')) {
             return {path, name: base, content: mockHex, size: 16, eol: 'lf', hasBom: false, large: false, enc: 'binary', binary: true};
         }
         const fileEnc = path.includes('gbk') ? 'gbk' : 'utf-8';
-        const key = Object.keys(mockFiles).find(k => mockFiles[k].name === base) || 'json';
+        const ext = (base.split('.').pop() || '').toLowerCase();
+        const byExt = ['yaml', 'yml'].includes(ext) ? 'yaml'
+            : ['xml', 'svg'].includes(ext) ? 'xml'
+                : ['csv', 'tsv'].includes(ext) ? 'csv'
+                    : ['md', 'txt', 'log'].includes(ext) ? 'text' : 'json';
+        const key = Object.keys(mockFiles).find(k => mockFiles[k].name === base) || byExt;
         let content = mockFiles[key].content;
         let large = false;
         if (path.includes('large')) large = true;
@@ -89,6 +121,21 @@ const mockBackend = {
     async OpenFilesDialog() {
         if (mockScenario.has('multi')) return [mockDir + 'sample.json', mockDir + 'sample.yaml'];
         return [mockDir + 'sample.json'];
+    },
+    async OpenFolderDialog() { return 'mock://samples'; },
+    async ReadDir(path, limit) {
+        const key = String(path || '').replace(/\/+$/, '');
+        let entries = mockTree[key];
+        if (!entries) throw new Error('目录不存在');
+        if (mockScenario.has('many') && key === 'mock://samples') {
+            const many = Array.from({length: 240}, (_, i) => {
+                const name = 'data-' + String(i + 1).padStart(3, '0') + '.json';
+                return {name, path: 'mock://samples/' + name, isDir: false};
+            });
+            entries = entries.concat(many);
+        }
+        const cap = limit > 0 ? limit : 1000;
+        return {entries: entries.slice(0, cap), truncated: entries.length > cap};
     },
     async SaveFileDialog(name) { return 'mock://' + (window.__mockSaveDialogName || name); },
     async SaveFile(path, content, eol, hasBom, enc) {
@@ -150,6 +197,13 @@ const els = {
     breadcrumb: document.getElementById('breadcrumb'),
     searchInput: document.getElementById('search-input'),
     tabbar: document.getElementById('tabbar'),
+    sidebar: document.getElementById('sidebar'),
+    sbBody: document.getElementById('sb-body'),
+    sbTitle: document.getElementById('sb-title'),
+    sbRefresh: document.getElementById('sb-refresh'),
+    sbModeList: document.getElementById('sb-mode-list'),
+    sbModeTree: document.getElementById('sb-mode-tree'),
+    btnSidebar: document.getElementById('btn-sidebar'),
 };
 
 let editor = null;
@@ -157,12 +211,16 @@ let file = null;
 let docs = [];
 let docSeq = 0;
 let autoSaveTimer = 0;
+let explorer = null;
+let workspaceFolder = null;
 window.__lens = {
     get editor() { return editor; },
     get file() { return file; },
     get docs() { return docs; },
+    get explorer() { return explorer; },
     openCloseConfirm,
     openPaths,
+    openFolderWorkspace,
     setTheme,
 };
 let dirty = false;
@@ -222,6 +280,8 @@ const defaultSettings = {
     fixedKeys: true,
     autoSave: false,
     openMode: 'tab',
+    sidebarMode: 'tree',
+    showSidebar: false,
     keyWidth: 160,
     editorFont: 13,
     theme: 'dark',
@@ -247,6 +307,8 @@ if (!cjkFonts.some((f) => f.id === settings.uiCjkFont)) settings.uiCjkFont = 'au
 if (!cjkFonts.some((f) => f.id === settings.editorCjkFont)) settings.editorCjkFont = 'auto';
 settings.autoSave = !!settings.autoSave;
 if (settings.openMode !== 'window') settings.openMode = 'tab';
+if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
+settings.showSidebar = !!settings.showSidebar;
 
 function getFormatSettings(id) {
     return settings.formatSettings[id] || defaultFormatSettings()[id] || {encoding: 'auto', indent: '2', eol: 'follow', view: 'tree'};
@@ -1155,6 +1217,7 @@ function showWelcome() {
     renderTabs();
     updateBackendDirty();
     updateWindowTitle();
+    syncExplorerActive();
 }
 
 let activateToken = 0;
@@ -1188,6 +1251,7 @@ async function activateDoc(doc) {
             if (editor === doc.editor && editor && editor.aceEditor) editor.aceEditor.resize();
         }, 0);
     }
+    syncExplorerActive();
 }
 
 function requestCloseDoc(doc) {
@@ -1251,6 +1315,10 @@ async function openPathsHere(paths) {
             const preview = detectFormat(base, '');
             const enc = getFormatSettings(preview.id).encoding;
             const data = await backend.OpenFile(path, enc);
+            if (data && data.isDir) {
+                openFolderWorkspace(data.path);
+                continue;
+            }
             const doc = createDoc(data);
             docs.push(doc);
             target = doc;
@@ -1299,6 +1367,111 @@ async function openDialog() {
     } catch (e) {
         flash('打开失败：' + e, true);
     }
+}
+
+function baseNameOf(path) {
+    const s = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const i = s.lastIndexOf('/');
+    return i >= 0 ? s.slice(i + 1) : s;
+}
+
+function defaultFolderDir() {
+    if (workspaceFolder) return workspaceFolder;
+    if (file && file.path) {
+        const s = String(file.path).replace(/\\/g, '/');
+        const i = s.lastIndexOf('/');
+        if (i > 0) return s.slice(0, i);
+    }
+    return '';
+}
+
+async function openFolderDialog() {
+    try {
+        const dir = await backend.OpenFolderDialog(defaultFolderDir());
+        if (dir) openFolderWorkspace(dir);
+    } catch (e) {
+        flash('打开文件夹失败：' + e, true);
+    }
+}
+
+function openFolderWorkspace(dir) {
+    if (!dir) return;
+    workspaceFolder = dir;
+    settings.sidebarMode = 'tree';
+    settings.showSidebar = true;
+    applySettings();
+    if (explorer) {
+        explorer.setMode('tree', false);
+        explorer.setRoot(dir);
+    }
+    applySidebarUI();
+    flash('已打开文件夹：' + (baseNameOf(dir) || dir));
+}
+
+function closeFolder() {
+    if (!workspaceFolder) return;
+    workspaceFolder = null;
+    if (explorer) explorer.setRoot(null);
+    flash('已关闭文件夹');
+}
+
+function applySidebarUI() {
+    if (!els.sidebar) return;
+    els.sidebar.classList.toggle('hidden', !settings.showSidebar);
+    if (els.btnSidebar) {
+        els.btnSidebar.classList.toggle('active', !!settings.showSidebar);
+        els.btnSidebar.setAttribute('aria-pressed', String(!!settings.showSidebar));
+    }
+    if (explorer) explorer.setVisible(!!settings.showSidebar);
+    requestAnimationFrame(() => {
+        if (!editor) return;
+        try {
+            if (editor.resize) editor.resize();
+            if (editor.aceEditor) editor.aceEditor.resize();
+        } catch (e) {}
+    });
+}
+
+function toggleSidebar(force) {
+    settings.showSidebar = typeof force === 'boolean' ? force : !settings.showSidebar;
+    applySettings();
+    applySidebarUI();
+}
+
+function setSidebarMode(mode) {
+    if (mode !== 'list' && mode !== 'tree') return;
+    settings.sidebarMode = mode;
+    settings.showSidebar = true;
+    applySettings();
+    if (explorer) explorer.setMode(mode, false);
+    applySidebarUI();
+}
+
+function syncExplorerActive() {
+    if (explorer) explorer.setActive(file && file.path ? file.path : null);
+}
+
+function initExplorer() {
+    if (!els.sbBody) return;
+    explorer = createExplorer({
+        body: els.sbBody,
+        titleEl: els.sbTitle,
+        refreshBtn: els.sbRefresh,
+        listBtn: els.sbModeList,
+        treeBtn: els.sbModeTree,
+        readDir: (path, limit) => backend.ReadDir(path, limit),
+        openPath: (path) => openPath(path),
+        openFolder: () => openFolderDialog(),
+        openFileDialog: () => openDialog(),
+        isSupported: isSupportedFile,
+        onModeChange: (mode) => {
+            settings.sidebarMode = mode;
+            applySettings();
+        },
+    });
+    explorer.setMode(settings.sidebarMode, false);
+    applySidebarUI();
+    if (els.btnSidebar) els.btnSidebar.addEventListener('click', () => toggleSidebar());
 }
 
 let untitledSeq = 0;
@@ -1471,7 +1644,9 @@ async function save(opts = {}) {
 }
 
 async function saveAs() {
-    return saveDoc(file, {saveAs: true});
+    const ok = await saveDoc(file, {saveAs: true});
+    if (ok) syncExplorerActive();
+    return ok;
 }
 
 async function saveAll() {
@@ -1695,6 +1870,8 @@ function menuItems(kind) {
                 {label: '新建窗口', shortcut: 'Ctrl+Shift+N', icon: 'E8A7', action: openNewWindow},
                 {sep: true},
                 {label: '打开…', shortcut: 'Ctrl+O', icon: 'E8E5', action: openDialog},
+                {label: '打开文件夹…', icon: 'E8B7', action: openFolderDialog},
+                {label: '关闭文件夹', icon: 'E8BB', disabled: !workspaceFolder, action: closeFolder},
                 {sep: true},
                 {label: '保存', shortcut: 'Ctrl+S', icon: 'E74E', disabled: !canSave, action: () => save()},
                 {label: '另存为…', shortcut: 'Ctrl+Shift+S', icon: 'E74E', disabled: !canSave, action: saveAs},
@@ -1731,6 +1908,10 @@ function menuItems(kind) {
                 {label: '树视图', checked: currentMode === 'tree', disabled: !structured, action: () => switchMode('tree')},
                 {label: '代码视图', checked: currentMode === 'code', action: () => switchMode('code')},
                 {label: '文本视图', checked: currentMode === 'text', disabled: !structured, action: () => switchMode('text')},
+                {sep: true},
+                {label: '文件侧边栏', shortcut: 'Alt+1', checked: !!settings.showSidebar, action: () => toggleSidebar()},
+                {label: '文件列表', checked: settings.sidebarMode === 'list', action: () => setSidebarMode('list')},
+                {label: '文件树', checked: settings.sidebarMode === 'tree', action: () => setSidebarMode('tree')},
                 {sep: true},
                 {label: '展开全部', shortcut: 'Ctrl+Shift+=', disabled: !tree, action: () => editor && editor.expandAll()},
                 {label: '收起全部', shortcut: 'Ctrl+Shift+-', disabled: !tree, action: () => editor && editor.collapseAll()},
@@ -1865,7 +2046,11 @@ function updateSearchState() {
 
 window.addEventListener('keydown', (e) => {
     const key = e.key.toLowerCase();
-    if (e.ctrlKey && e.altKey && (key === 'l' || e.code === 'KeyL')) {
+    if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit1' || e.key === '1')) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSidebar();
+    } else if (e.ctrlKey && e.altKey && (key === 'l' || e.code === 'KeyL')) {
         e.preventDefault();
         e.stopPropagation();
         formatDocument();
@@ -1942,6 +2127,8 @@ if (rt) {
     rt.EventsOn('open-files', (paths) => openPaths(paths));
     rt.EventsOn('confirm-close', () => openCloseConfirm());
 }
+
+initExplorer();
 
 (async () => {
     if (backend.GetOpenMode) {

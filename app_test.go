@@ -147,17 +147,17 @@ func TestCheckEncoding(t *testing.T) {
 	}
 }
 
-func TestFirstFileArgSkipsExeAndFlags(t *testing.T) {
+func TestFirstPathArgSkipsExeAndFlags(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "a.json")
 	if err := os.WriteFile(f, []byte("{}"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	exe, _ := os.Executable()
-	if got := firstFileArg([]string{exe, "-flag", dir, f}); got != f {
-		t.Fatalf("got %q, want %q", got, f)
+	if got := firstPathArg([]string{exe, "-flag", dir, f}); got != dir {
+		t.Fatalf("got %q, want %q", got, dir)
 	}
-	if got := firstFileArg([]string{"-x", dir}); got != "" {
+	if got := firstPathArg([]string{"-x"}); got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}
 }
@@ -234,7 +234,7 @@ func TestUniqueIDForArgs(t *testing.T) {
 	}
 }
 
-func TestFileArgsKeepsAllFiles(t *testing.T) {
+func TestPathArgsKeepsFilesAndDirs(t *testing.T) {
 	dir := t.TempDir()
 	a := filepath.Join(dir, "a.json")
 	b := filepath.Join(dir, "b.yaml")
@@ -243,8 +243,49 @@ func TestFileArgsKeepsAllFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := fileArgs([]string{"-flag", a, dir, b})
-	if len(got) != 2 || got[0] != a || got[1] != b {
-		t.Fatalf("fileArgs = %v, want [%s %s]", got, a, b)
+	got := pathArgs([]string{"-flag", a, dir, b})
+	if len(got) != 3 || got[0] != a || got[1] != dir || got[2] != b {
+		t.Fatalf("pathArgs = %v, want [%s %s %s]", got, a, dir, b)
+	}
+}
+
+func TestOpenFileDetectsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	data, err := NewApp().OpenFile(dir, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !data.IsDir || data.Name == "" || data.Path != dir {
+		t.Fatalf("OpenFile(dir) = %+v", data)
+	}
+}
+
+func TestReadDirListsAndTruncates(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"b.json", "a.yaml"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	all, err := app.ReadDir(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.Truncated || len(all.Entries) != 3 {
+		t.Fatalf("ReadDir all = %+v", all)
+	}
+	if all.Entries[0].Name != "a.yaml" || all.Entries[1].Name != "b.json" || !all.Entries[2].IsDir {
+		t.Fatalf("unexpected order: %+v", all.Entries)
+	}
+	part, err := app.ReadDir(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !part.Truncated || len(part.Entries) != 2 {
+		t.Fatalf("ReadDir limit = %+v", part)
 	}
 }

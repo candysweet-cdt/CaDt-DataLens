@@ -42,6 +42,7 @@ type FileData struct {
 	Large   bool   `json:"large"`
 	Enc     string `json:"enc"`
 	Binary  bool   `json:"binary"`
+	IsDir   bool   `json:"isDir"`
 }
 
 func NewApp() *App {
@@ -50,39 +51,39 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.startupFiles = fileArgs(os.Args[1:])
+	a.startupFiles = pathArgs(os.Args[1:])
 	runtime.OnFileDrop(ctx, func(x, y int, paths []string) {
-		if files := fileArgs(paths); len(files) > 0 {
+		if files := pathArgs(paths); len(files) > 0 {
 			runtime.EventsEmit(ctx, "open-files", files)
 		}
 	})
 }
 
 func (a *App) secondInstance(data options.SecondInstanceData) {
-	if files := fileArgs(data.Args); len(files) > 0 {
+	if files := pathArgs(data.Args); len(files) > 0 {
 		runtime.EventsEmit(a.ctx, "open-files", files)
 	}
 	runtime.WindowUnminimise(a.ctx)
 	runtime.WindowShow(a.ctx)
 }
 
-func fileArgs(args []string) []string {
+func pathArgs(args []string) []string {
 	exe, _ := os.Executable()
-	var files []string
+	var paths []string
 	for _, arg := range args {
 		if arg == "" || strings.HasPrefix(arg, "-") || strings.EqualFold(arg, exe) {
 			continue
 		}
-		if info, err := os.Stat(arg); err == nil && !info.IsDir() {
-			files = append(files, arg)
+		if _, err := os.Stat(arg); err == nil {
+			paths = append(paths, arg)
 		}
 	}
-	return files
+	return paths
 }
 
-func firstFileArg(args []string) string {
-	if files := fileArgs(args); len(files) > 0 {
-		return files[0]
+func firstPathArg(args []string) string {
+	if paths := pathArgs(args); len(paths) > 0 {
+		return paths[0]
 	}
 	return ""
 }
@@ -98,6 +99,13 @@ func (a *App) OpenFile(path string, enc string) (*FileData, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
+	}
+	if info.IsDir() {
+		name := filepath.Base(path)
+		if name == "." || name == string(filepath.Separator) || name == "" {
+			name = path
+		}
+		return &FileData{Path: path, Name: name, IsDir: true}, nil
 	}
 	if info.Size() > maxFileBytes {
 		return nil, fmt.Errorf("文件超过 100 MB，拒绝打开：%s", filepath.Base(path))
@@ -354,6 +362,60 @@ func (a *App) OpenFilesDialog() ([]string, error) {
 			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
 		},
 	})
+}
+
+func (a *App) OpenFolderDialog(defaultDir string) (string, error) {
+	opts := runtime.OpenDialogOptions{Title: "打开文件夹"}
+	if strings.TrimSpace(defaultDir) != "" {
+		opts.DefaultDirectory = defaultDir
+	}
+	return runtime.OpenDirectoryDialog(a.ctx, opts)
+}
+
+type DirEntry struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	IsDir bool   `json:"isDir"`
+}
+
+type DirListing struct {
+	Entries   []DirEntry `json:"entries"`
+	Truncated bool       `json:"truncated"`
+}
+
+func (a *App) ReadDir(path string, limit int) (*DirListing, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("没有目录路径")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("不是目录：%s", path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 5000 {
+		limit = 1000
+	}
+	truncated := false
+	if len(entries) > limit {
+		entries = entries[:limit]
+		truncated = true
+	}
+	out := make([]DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, DirEntry{
+			Name:  entry.Name(),
+			Path:  filepath.Join(path, entry.Name()),
+			IsDir: entry.IsDir(),
+		})
+	}
+	return &DirListing{Entries: out, Truncated: truncated}, nil
 }
 
 func (a *App) SaveFileDialog(defaultName string) (string, error) {
