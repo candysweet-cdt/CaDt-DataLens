@@ -675,3 +675,17 @@ func mustSelfPath(t *testing.T) string {
 	}
 	return exe
 }
+
+func TestOpenDirInNewWindowValidation(t *testing.T) {
+	app := NewApp()
+	if err := app.OpenDirInNewWindow(""); err == nil {
+		t.Fatal("空目录应报错")
+	}
+	if err := app.OpenDirInNewWindow(mustSelfPath(t)); err == nil {
+		t.Fatal("exe 是文件不是目录，应报错")
+	}
+	if err := app.OpenDirInNewWindow(filepath.Join(t.TempDir(), "no-such-dir")); err == nil {
+		t.Fatal("不存在的目录应报错")
+	}
+	// 有效目录会真的拉起进程，这里只验证参数校验路径，不触发启动。
+}

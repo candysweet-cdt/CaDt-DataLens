@@ -584,6 +584,7 @@ const mockBackend = {
     },
     async OpenInNewWindows(paths) { window.__mockNewWindows = (window.__mockNewWindows || []).concat([paths]); },
     async OpenNewWindow() { window.__mockNewWindow = (window.__mockNewWindow || 0) + 1; },
+    async OpenDirInNewWindow(dir) { window.__mockNewWindowDir = dir; window.__mockNewWindows = (window.__mockNewWindows || []).concat([[dir]]); },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
     async CopyText(text) { window.__mockCopied = text; window.__mockClipboard = text; },
     async GetClipboardText() { return window.__mockClipboard || ''; },
@@ -619,9 +620,14 @@ const mockRt = {
     Quit() { this._calls.push('quit'); },
     WindowSetTitle(title) { this._title = title; this._calls.push('title:' + title); },
     WindowSetAlwaysOnTop(b) { window.__mockAlwaysOnTop = !!b; this._topmost = !!b; this._calls.push('topmost:' + !!b); },
+    WindowFullscreen() { this._fs = true; this._calls.push('fs:on'); },
+    WindowUnfullscreen() { this._fs = false; this._calls.push('fs:off'); },
+    async WindowIsFullscreen() { return !!this._fs; },
     BrowserOpenURL(url) { window.__mockOpenUrl = url; this._calls.push('url:' + url); },
     EventsOn() {},
 };
+// 调试/测试用：暴露 mock 运行时（仅 mock 场景存在）
+window.__mockRt = mockRt;
 const rt = window.runtime || (mockScenario.has('winctl') ? mockRt : null);
 
 const els = {
@@ -994,6 +1000,38 @@ function applyAlwaysOnTop() {
     try {
         rt.WindowSetAlwaysOnTop(!!settings.alwaysOnTop);
     } catch (e) {}
+}
+
+let rtFullscreen = false;
+
+async function syncFullscreenState() {
+    if (!rt || !rt.WindowIsFullscreen) return;
+    try {
+        rtFullscreen = !!(await rt.WindowIsFullscreen());
+    } catch (e) {}
+}
+
+async function toggleFullscreen() {
+    if (!rt || !rt.WindowFullscreen) return;
+    await syncFullscreenState();
+    try {
+        if (rtFullscreen) {
+            rt.WindowUnfullscreen();
+            rtFullscreen = false;
+        } else {
+            rt.WindowFullscreen();
+            rtFullscreen = true;
+        }
+        flash('全屏：' + (rtFullscreen ? '开' : '关'));
+    } catch (e) {
+        flash('全屏切换失败：' + e, true);
+    }
+}
+
+function toggleAlwaysOnTop() {
+    settings.alwaysOnTop = !settings.alwaysOnTop;
+    applySettings();
+    flash('窗口置顶：' + (settings.alwaysOnTop ? '开' : '关'));
 }
 
 function toggleCodeWrap() {
@@ -5523,7 +5561,7 @@ async function openPathsHere(paths) {
             const enc = getFormatSettings(preview.id).encoding;
             const data = await backend.OpenFile(path, enc);
             if (data && data.isDir) {
-                openFolderWorkspace(data.path);
+                await openFolderSmart(data.path);
                 continue;
             }
             const doc = createDoc(data);
@@ -5652,7 +5690,7 @@ function defaultFolderDir() {
 async function openFolderDialog() {
     try {
         const dir = await backend.OpenFolderDialog(defaultFolderDir());
-        if (dir) openFolderWorkspace(dir);
+        if (dir) await openFolderSmart(dir);
     } catch (e) {
         flash('打开文件夹失败：' + e, true);
     }
@@ -5670,6 +5708,28 @@ function openFolderWorkspace(dir) {
     }
     applySidebarUI();
     flash('已打开文件夹：' + (baseNameOf(dir) || dir));
+}
+
+// 一目录一窗口：本窗口已有工作区目录时，新目录另开窗口；
+// 当前窗口没有目录时才在本窗口打开。
+async function openFolderSmart(dir) {
+    if (!dir) return;
+    if (workspaceFolder) {
+        const norm = (s) => String(s).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        if (norm(dir) === norm(workspaceFolder)) {
+            flash('该目录已在当前窗口打开');
+            return;
+        }
+        try {
+            if (backend.OpenDirInNewWindow) await backend.OpenDirInNewWindow(dir);
+            else await backend.OpenInNewWindows([dir]);
+            flash('已在新窗口打开：' + (baseNameOf(dir) || dir));
+        } catch (e) {
+            flash('打开新窗口失败：' + e, true);
+        }
+        return;
+    }
+    openFolderWorkspace(dir);
 }
 
 function closeFolder() {
@@ -6442,6 +6502,9 @@ function menuItems(kind) {
                 {label: '自动换行', checked: !!settings.codeWrap, action: toggleCodeWrap},
                 {label: '展开全部', shortcut: 'Ctrl+Shift+=', disabled: !tree, action: () => editor && editor.expandAll()},
                 {label: '收起全部', shortcut: 'Ctrl+Shift+-', disabled: !tree, action: () => editor && editor.collapseAll()},
+                {sep: true},
+                {label: '全屏', shortcut: 'F11', checked: !!rtFullscreen, action: toggleFullscreen},
+                {label: '窗口置顶', checked: !!settings.alwaysOnTop, action: toggleAlwaysOnTop},
             );
             return items;
         }
@@ -6689,6 +6752,10 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         openSettings('general');
+    } else if (e.key === 'F11' && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleFullscreen();
     } else if (e.altKey && e.key === 'F12') {
         e.preventDefault();
         e.stopPropagation();

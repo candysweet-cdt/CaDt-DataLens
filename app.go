@@ -1077,6 +1077,33 @@ func (a *App) OpenNewWindow() error {
 	return nil
 }
 
+// OpenDirInNewWindow 在独立新窗口打开目录（一目录一窗口）。
+// 带 --new-window 参数让新实例拿到独立 SingleInstanceLock ID，从而真正开出新窗口；
+// 不改动配置里的默认打开模式（文件仍按 openMode 走）。
+func (a *App) OpenDirInNewWindow(dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		return fmt.Errorf("没有目录")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("不是目录：%s", dir)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "--new-window", dir)
+	cmd.Dir = dir
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_ = cmd.Process.Release()
+	return nil
+}
+
 func (a *App) ShowInFolder(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("没有文件路径")
