@@ -2537,12 +2537,31 @@ a.jsoneditor-poweredBy { display: none !important; }
 .term-session { position: absolute; inset: 0; padding: 2px 4px; }
 .term-session.hidden { display: none; }
 /* git 浅集成角标 */
-.git-new .sb-name { color: #57a65a; }
-.git-untracked .sb-name { color: #57a65a; }
+/* git 状态着色（JetBrains 式）：绿=新增 蓝=修改 红=未版本管理 灰=删除 橙=冲突 棕=忽略 */
+.git-added .sb-name, .git-new .sb-name { color: #57a65a; }
 .git-modified .sb-name { color: #6897bb; }
-.git-deleted .sb-name { color: #d86a6a; text-decoration: line-through; }
-.git-renamed .sb-name { color: #57a65a; }
+.git-renamed .sb-name { color: #6897bb; }
+.git-untracked .sb-name { color: #d86a6a; }
+.git-deleted .sb-name { color: #8c8c8c; text-decoration: line-through; }
 .git-conflict .sb-name { color: #e8912d; }
+.git-ignored .sb-name { color: #a17249; }
+
+/* 提交面板行：文件名按状态着色 + 淡灰父目录小字 */
+.git-file-row .git-fname.git-st-added { color: #57a65a; }
+.git-file-row .git-fname.git-st-modified,
+.git-file-row .git-fname.git-st-renamed { color: #6897bb; }
+.git-file-row .git-fname.git-st-untracked { color: #d86a6a; }
+.git-file-row .git-fname.git-st-deleted { color: #8c8c8c; text-decoration: line-through; }
+.git-file-row .git-fname.git-st-conflict { color: #e8912d; }
+.git-file-row .git-fpath {
+    color: var(--faint);
+    font-size: 11px;
+    margin-left: -2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1 1 auto;
+    min-width: 0;
+}
 .font-preview {
     display: flex;
     flex-direction: column;

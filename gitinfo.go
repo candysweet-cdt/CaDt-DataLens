@@ -56,8 +56,11 @@ func gitRun(dir string, args []string, timeoutMs int) (string, int, error) {
 	return stdout.String(), code, nil
 }
 
-// gitBadgeState 返回细分状态：untracked/added/modified/deleted/renamed/conflict。
+// gitBadgeState 返回细分状态：untracked/added/modified/deleted/renamed/conflict/ignored。
 func gitBadgeState(x, y byte) string {
+	if x == '!' || y == '!' {
+		return "ignored"
+	}
 	if x == '?' || y == '?' {
 		return "untracked"
 	}
@@ -103,7 +106,7 @@ func (a *App) GitStatusFor(dir string) (*GitTreeStatus, error) {
 	if branch, bcode, _ := gitRun(dir, []string{"rev-parse", "--abbrev-ref", "HEAD"}, 5000); bcode == 0 {
 		status.Branch = strings.TrimSpace(branch)
 	}
-	raw, code, err := gitRun(dir, []string{"status", "--porcelain=v1", "-z", "--untracked-files=normal"}, 10000)
+	raw, code, err := gitRun(dir, []string{"status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignored"}, 10000)
 	if err != nil || code != 0 {
 		return status, nil
 	}
@@ -118,6 +121,8 @@ func (a *App) GitStatusFor(dir string) (*GitTreeStatus, error) {
 		if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
 			i++ // 重命名的旧路径占一个 NUL 字段
 		}
+		// 忽略目录在 porcelain 输出中带尾斜杠（!! dir/），去掉以匹配文件树行路径
+		path = strings.TrimSuffix(path, "/")
 		status.Entries = append(status.Entries, GitFileState{
 			Path:  filepath.ToSlash(filepath.Join(status.Root, filepath.FromSlash(path))),
 			State: gitBadgeState(x, y),

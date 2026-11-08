@@ -130,6 +130,7 @@ const mockFiles = {
 };
 const mockTree = {
     'mock://samples': [
+        {name: 'cache', path: 'mock://samples/cache', isDir: true},
         {name: 'config', path: 'mock://samples/config', isDir: true},
         {name: 'images', path: 'mock://samples/images', isDir: true},
         {name: 'notes.md', path: 'mock://samples/notes.md', isDir: false},
@@ -142,6 +143,10 @@ const mockTree = {
         {name: 'sample.xml', path: 'mock://samples/sample.xml', isDir: false},
         {name: 'sample.yaml', path: 'mock://samples/sample.yaml', isDir: false},
         {name: 'secrets.bin', path: 'mock://samples/secrets.bin', isDir: false},
+    ],
+    'mock://samples/cache': [
+        {name: 'data-001.bin', path: 'mock://samples/cache/data-001.bin', isDir: false},
+        {name: 'data-002.bin', path: 'mock://samples/cache/data-002.bin', isDir: false},
     ],
     'mock://samples/config': [
         {name: 'deep_well.json', path: 'mock://samples/config/deep_well.json', isDir: false},
@@ -449,9 +454,13 @@ const mockBackend = {
             branch: 'mock/main',
             entries: [
                 {path: dir + '\\sample.json', state: 'modified'},
-                {path: dir + '\\sample.yaml', state: 'new'},
+                {path: dir + '\\sample.yaml', state: 'added'},
                 {path: dir + '\\sample.toml', state: 'deleted'},
                 {path: dir + '\\sample.ini', state: 'conflict'},
+                {path: dir + '\\config\\nested.yaml', state: 'modified'},
+                {path: dir + '\\新文件.md', state: 'untracked'},
+                {path: dir + '\\secrets.bin', state: 'ignored'},
+                {path: dir + '\\cache', state: 'ignored'},
             ],
         };
     },
@@ -6060,6 +6069,17 @@ let cmdSeq = 0;
 
 
 
+// gitRelParentDir 返回 path 相对仓库根的父目录（JetBrains 式灰字，Windows 反斜杠显示）。
+function gitRelParentDir(path) {
+    const root = (gitStateCache.dir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const p = String(path || '').replace(/\\/g, '/');
+    if (!root || !p.toLowerCase().startsWith(root.toLowerCase() + '/')) return '';
+    const rel = p.slice(root.length + 1);
+    const idx = rel.lastIndexOf('/');
+    if (idx <= 0) return '';
+    return rel.slice(0, idx).replace(/\//g, '\\');
+}
+
 function renderGitPanel() {
     if (!els.gitChanges) return;
     const available = gitStateCache.available && gitStateCache.dir;
@@ -6088,14 +6108,25 @@ function renderGitPanel() {
         els.gitChanges.appendChild(empty);
         return;
     }
-    const makeRow = (path, checked) => {
+    const makeRow = (path, checked, state) => {
         const row = document.createElement('label');
         row.className = 'git-file-row';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = checked;
         cb.dataset.path = path;
-        row.append(cb, document.createTextNode(path.replace(/^.*[\\/]/, '')));
+        const name = document.createElement('span');
+        name.className = 'git-fname git-st-' + (state || 'modified');
+        name.textContent = path.replace(/^.*[\\/]/, '');
+        row.append(cb, name);
+        // JetBrains 式：文件名后跟一行淡灰小字 = 相对仓库根的父目录
+        const relParent = gitRelParentDir(path);
+        if (relParent) {
+            const dirSpan = document.createElement('span');
+            dirSpan.className = 'git-fpath';
+            dirSpan.textContent = relParent;
+            row.append(dirSpan);
+        }
         row.title = path;
         row.addEventListener('contextmenu', (e) => {
             e.preventDefault();
@@ -6120,7 +6151,7 @@ function renderGitPanel() {
         head.textContent = '更改（' + changes.length + ' 个文件）';
         els.gitChanges.appendChild(head);
         for (const item of changes) {
-            const row = makeRow(item.path, true);
+            const row = makeRow(item.path, true, item.state);
             row.querySelector('input').dataset.path = item.path;
             row.addEventListener('dblclick', () => showGitDiff(item.path));
             els.gitChanges.appendChild(row);
@@ -6132,7 +6163,7 @@ function renderGitPanel() {
         head.textContent = '未进行版本管理的文件（' + untracked.length + ' 个文件）';
         els.gitChanges.appendChild(head);
         for (const path of untracked) {
-            const row = makeRow(path, true);
+            const row = makeRow(path, true, 'untracked');
             row.addEventListener('dblclick', () => showGitDiff(path));
             els.gitChanges.appendChild(row);
         }
@@ -6487,7 +6518,7 @@ function openVirtualDoc(name, content) {
 }
 
 // ===== git 浅集成 =====
-const gitStateCache = {dir: '', map: new Map(), branch: '', available: false, reason: '', untrackedSet: new Set()};
+const gitStateCache = {dir: '', map: new Map(), branch: '', available: false, reason: '', untrackedSet: new Set(), ignoredSet: new Set()};
 let gitTimer = null;
 
 function gitRootDir() {
@@ -6519,9 +6550,15 @@ async function refreshGitStatus() {
             gitStateCache.branch = status.branch || '';
             gitStateCache.map.clear();
             gitStateCache.untrackedSet.clear();
+            gitStateCache.ignoredSet.clear();
             for (const entry of status.entries || []) {
-                gitStateCache.map.set(entry.path.replace(/\\/g, '/'), entry.state);
-                if (entry.state === 'untracked') gitStateCache.untrackedSet.add(entry.path.replace(/\\/g, '/'));
+                const p = entry.path.replace(/\\/g, '/').replace(/\/+$/, '');
+                if (entry.state === 'ignored') {
+                    gitStateCache.ignoredSet.add(p);
+                    continue;
+                }
+                gitStateCache.map.set(p, entry.state);
+                if (entry.state === 'untracked') gitStateCache.untrackedSet.add(p);
             }
         }
     } catch (e) {}
@@ -6537,8 +6574,10 @@ function applyGitBadges() {
         for (const cls of Array.from(row.classList)) {
             if (cls.startsWith('git-')) row.classList.remove(cls);
         }
-        const st = gitStateCache.map.get(row.dataset.path.replace(/\\/g, '/'));
-        if (st) row.classList.add('git-' + (st === 'untracked' || st === 'added' ? 'new' : st));
+        const key = row.dataset.path.replace(/\\/g, '/').replace(/\/+$/, '');
+        const st = gitStateCache.map.get(key);
+        if (st) row.classList.add('git-' + st);
+        else if (gitStateCache.ignoredSet.has(key)) row.classList.add('git-ignored');
     });
 }
 
