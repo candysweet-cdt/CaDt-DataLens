@@ -692,7 +692,6 @@ html, body {
 #app-logo {
     width: 18px;
     height: 18px;
-    image-rendering: pixelated;
     border-radius: 4px;
     flex: none;
 }
