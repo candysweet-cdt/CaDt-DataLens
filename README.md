@@ -61,6 +61,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、YAML、XML、CSV 和普通文本，�
 | 关闭标签 | `Ctrl+W` |
 | 设置 | `Ctrl+,` |
 | 撤销 / 重做 | `Ctrl+Z` / `Ctrl+Y` |
+| 格式化 | `Ctrl+Alt+L` |
 | 搜索节点 | `Ctrl+F`（树视图） |
 | 展开 / 收起节点 | `Ctrl+=` / `Ctrl+-` |
 | 全部展开 / 收起 | `Ctrl+Shift+=` / `Ctrl+Shift+-` |

@@ -1579,6 +1579,46 @@ function clickEditorButton(sel) {
     if (btn) btn.click();
 }
 
+function formatDocument() {
+    if (!editor || !file) return;
+    const doc = file;
+    if (doc.large || doc.binary || (doc.format && doc.format.rawOnly)) {
+        flash('当前文件不支持格式化', true);
+        return;
+    }
+    if (currentMode === 'tree') {
+        flash('格式化请在代码视图或文本视图中使用');
+        return;
+    }
+    const text = editor.getText();
+    let value;
+    try {
+        value = doc.format.parse(text);
+    } catch (e) {
+        flash(doc.format.name + ' 无效，无法格式化：' + e.message, true);
+        return;
+    }
+    let formatted;
+    if (doc.format.id === 'json') {
+        const indent = getFormatSettings('json').indent;
+        formatted = JSON.stringify(value, null, indent === 'tab' ? '\t' : Number(indent));
+    } else {
+        formatted = doc.format.stringify(value);
+    }
+    if (formatted === text) return;
+    doc.loading = true;
+    try {
+        editor.setText(formatted);
+    } catch (e) {
+        flash('格式化失败：' + e.message, true);
+        return;
+    } finally {
+        doc.loading = false;
+    }
+    markDocDirty(doc);
+    updateStatus();
+}
+
 function switchMode(mode) {
     if (!editor || currentMode === mode) return;
     const doc = file;
@@ -1679,7 +1719,7 @@ function menuItems(kind) {
             ];
         case 'format':
             return [
-                {label: '格式化', action: () => clickEditorButton('.jsoneditor-format')},
+                {label: '格式化', shortcut: 'Ctrl+Alt+L', action: formatDocument},
                 {label: '压缩', action: () => clickEditorButton('.jsoneditor-compact')},
                 {sep: true},
                 {label: '排序', disabled: !tree, action: () => clickEditorButton('.jsoneditor-sort')},
@@ -1825,7 +1865,11 @@ function updateSearchState() {
 
 window.addEventListener('keydown', (e) => {
     const key = e.key.toLowerCase();
-    if (e.ctrlKey && e.shiftKey && key === 's') {
+    if (e.ctrlKey && e.altKey && (key === 'l' || e.code === 'KeyL')) {
+        e.preventDefault();
+        e.stopPropagation();
+        formatDocument();
+    } else if (e.ctrlKey && e.shiftKey && key === 's') {
         e.preventDefault();
         e.stopPropagation();
         saveAs();
