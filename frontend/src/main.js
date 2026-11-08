@@ -156,6 +156,7 @@ const mockFiles = {
     gosum: {name: 'go.sum', content: sampleGoSum},
     bak: {name: 'sample.bak', content: sampleJson},
     py: {name: 'sample.py', content: samplePy},
+    brokensvg: {name: 'broken.svg', content: '{ not a svg {'},
 };
 const mockTree = {
     'mock://samples': [
@@ -166,6 +167,7 @@ const mockTree = {
         {name: 'sample.csv', path: 'mock://samples/sample.csv', isDir: false},
         {name: 'sample.json', path: 'mock://samples/sample.json', isDir: false},
         {name: 'diagram.svg', path: 'mock://samples/diagram.svg', isDir: false},
+        {name: 'broken.svg', path: 'mock://samples/broken.svg', isDir: false},
         {name: 'sample.jsonl', path: 'mock://samples/sample.jsonl', isDir: false},
         {name: 'sample.py', path: 'mock://samples/sample.py', isDir: false},
         {name: 'sample.ini', path: 'mock://samples/sample.ini', isDir: false},
@@ -233,7 +235,7 @@ const mockBackend = {
         if (mockScenario.has('image')) return [mockDir + 'sample.png'];
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
         if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
-        for (const key of ['yaml', 'xml', 'svg', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak', 'py']) {
+        for (const key of ['yaml', 'xml', 'svg', 'brokensvg', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak', 'py']) {
             if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
         }
         return [mockDir + 'sample.json'];
@@ -1903,7 +1905,7 @@ const CSV_VIEWS = [['table', '表格视图'], ['tree', '树视图'], ['text', '�
 const MARKDOWN_VIEWS = [['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
 const IMAGE_VIEWS = [['image', '图片视图'], ['binary', '二进制视图'], ['text', '文本视图']];
 const BINARY_VIEWS = [['binary', '二进制视图'], ['text', '文本视图']];
-const SVG_VIEWS = [['render', '渲染视图'], ['code', '代码视图'], ['text', '文本视图']];
+const SVG_VIEWS = [['render', '渲染视图'], ['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
 
 function isSvgDoc(doc) {
     return !!(doc && /\.svg$/i.test(doc.name || ''));
@@ -2158,7 +2160,7 @@ async function renderEncodingMenu() {
 
 function renderViewMenu() {
     footPopover.appendChild(popTitle('视图'));
-    for (const [mode, label] of viewOptionsFor(file && file.format)) {
+    for (const [mode, label] of viewOptionsFor(file && file.format, file)) {
         const disabled = viewDisabled(mode);
         footPopover.appendChild(popItem(label, {
             current: currentMode === mode,
@@ -4483,6 +4485,15 @@ function enterSvgRender(doc) {
     if (!doc || !doc.editor) return;
     doc.loading = true;
     try {
+        // 记录退出渲染视图时的 SVG 源文本：
+        // 树模式下 getText() 是树值的 JSON 序列化，必须用 format.stringify 还原 XML 源
+        let src = null;
+        if (doc.mode === 'tree') {
+            try { src = doc.format.stringify(doc.editor.get()); } catch (e) {}
+        }
+        if (!src || !src.trim()) src = doc.editor.getText();
+        if (!src || !src.trim()) src = doc.rawText != null ? doc.rawText : (doc.content || '');
+        doc._svgSrcText = src;
         doc.editor.setMode('code');
         doc.mode = 'render';
         currentMode = 'render';
@@ -6383,7 +6394,29 @@ function switchMode(mode) {
         return;
     }
     if (currentMode === 'render') {
-        if (doc) hideSvgRender(doc);
+        if (doc) {
+            hideSvgRender(doc);
+            // 退出渲染视图：先恢复 SVG 源文本到 code 模式编辑器，
+            // 再按 code 视图继续走通用切换（render→tree 走 XML 解析建树）
+            doc.loading = true;
+            try {
+                doc.editor.setMode('code');
+                const src = doc._svgSrcText != null && doc._svgSrcText.trim()
+                    ? doc._svgSrcText
+                    : (doc.rawText != null ? doc.rawText : (doc.text || ''));
+                doc.editor.setText(src);
+                doc.text = src;
+            } catch (e) {
+                console.warn('leave render view failed', e);
+            } finally {
+                doc.loading = false;
+            }
+            doc.mode = 'code';
+            currentMode = 'code';
+            delete doc._svgSrcText;
+            updateStatus();
+            updateSearchState();
+        }
     }
     if (currentMode === 'preview') {
         if (doc) leaveMarkdownPreview(doc, mode);
