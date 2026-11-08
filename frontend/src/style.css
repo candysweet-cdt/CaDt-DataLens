@@ -1446,6 +1446,8 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 }
 .sb-chev svg { width: 12px; height: 12px; transition: transform 0.1s ease; }
 .sb-chev.open svg { transform: rotate(90deg); }
+.sb-tree-row.sb-dir .sb-chev { cursor: pointer; }
+.sb-tree-row.sb-dir .sb-chev:hover { color: var(--text); }
 .sb-icon {
     flex: none;
     width: 15px;

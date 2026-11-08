@@ -137,7 +137,10 @@ export function createExplorer(options) {
         row.tabIndex = -1;
         if (node.path) row.title = node.path;
         const chev = el('span', 'sb-chev' + (node.isDir && node.expanded ? ' open' : ''));
-        if (node.isDir) chev.innerHTML = ICONS.chevron;
+        if (node.isDir) {
+            chev.innerHTML = ICONS.chevron;
+            chev.title = node.expanded ? '收起目录' : '展开目录';
+        }
         let icon;
         if (node.isDir) {
             icon = el('span', 'sb-icon sb-dir-icon');
@@ -149,12 +152,20 @@ export function createExplorer(options) {
         row.append(chev, icon, name);
         row.addEventListener('click', (e) => {
             row.focus({preventScroll: true});
+            const onChevron = node.isDir && e.target && e.target.closest ? e.target.closest('.sb-chev') : null;
+            if (onChevron) {
+                if (e.detail > 1) return;
+                if (!selectionHas(node.path)) selectOnly(node);
+                toggleNode(node);
+                return;
+            }
             if (e.ctrlKey || e.metaKey) toggleSelection(node);
             else selectOnly(node);
         });
         row.addEventListener('dblclick', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            if (e.target && e.target.closest && e.target.closest('.sb-chev')) return;
             if (e.ctrlKey || e.metaKey) return;
             if (node.isDir) toggleNode(node);
             else if (typeof openPath === 'function') openPath(node.path);
