@@ -214,7 +214,7 @@ html[data-theme="idea-dark"] {
     --ace-active: #26282e;
     --ace-indent: #33363d;
     --ace-punct: #bcbec4;
-    --ace-gutter: #606366;
+    --ace-gutter: #4b4e55;
     --scroll-thumb: #4a4d52;
     --scroll-thumb-hover: #5a5d63;
     --shadow: rgba(0, 0, 0, 0.5);
@@ -224,7 +224,7 @@ html[data-theme="idea-dark"] {
     --banner-fg: #d5b778;
     --syn-keyword: #cf8e6d;
     --syn-operator: #bcbec4;
-    --syn-comment: #7a7e85;
+    --syn-comment: #7e8084;
     --syn-tag: #d5b778;
     --syn-attr: #bcbec4;
     --syn-attr-value: #a5c261;
@@ -2141,6 +2141,11 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 .jsoneditor .ace_function,
 .jsoneditor .ace_support.ace_function,
 .jsoneditor .ace_entity.ace_name.ace_function { color: var(--syn-function, var(--accent)); }
+html[data-theme="idea-dark"] .jsoneditor .ace_gutter { background: var(--bg); }
+html[data-theme="idea-dark"] .jsoneditor .ace_gutter-active-line { background: var(--ace-active); }
+html[data-theme="idea-dark"] .jsoneditor .ace-mode-python span[class^="ace_support ace_function"] { color: var(--syn-keyword); }
+html[data-theme="idea-dark"] .jsoneditor .ace-mode-python span[class^="ace_function ace_support"] { color: var(--text); }
+html[data-theme="idea-dark"] .jsoneditor .ace-mode-python .py-kwarg { color: var(--syn-keyword); }
 html[data-theme="idea-dark"] .ace-mode-yaml .ace_meta.ace_tag,
 html[data-theme="idea-light"] .ace-mode-yaml .ace_meta.ace_tag,
 html[data-theme="darcula"] .ace-mode-yaml .ace_meta.ace_tag { color: var(--syn-yaml-key); }

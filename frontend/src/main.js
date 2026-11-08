@@ -524,6 +524,7 @@ const defaultSettings = {
     sidebarFont: 12.5,
     treeGuides: false,
     treeRefreshInterval: 3,
+    codeGuides: false,
     editorFont: 13,
     codeWrap: false,
     mdLineNumbers: false,
@@ -555,6 +556,7 @@ if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
 settings.treeGuides = !!settings.treeGuides;
+settings.codeGuides = !!settings.codeGuides;
 settings.treeRefreshInterval = Number(settings.treeRefreshInterval);
 if (![0, 1, 2, 3, 5, 10].includes(settings.treeRefreshInterval)) settings.treeRefreshInterval = 3;
 settings.codeWrap = !!settings.codeWrap;
@@ -589,6 +591,7 @@ const elsSettings = {
     sidebarFontVal: document.getElementById('opt-sidebar-font-val'),
     treeGuides: document.getElementById('opt-tree-guides'),
     treeRefresh: document.getElementById('opt-tree-refresh'),
+    codeGuides: document.getElementById('opt-code-guides'),
     codeWrap: document.getElementById('opt-code-wrap'),
     mdLineNumbers: document.getElementById('opt-md-line-numbers'),
     showBanners: document.getElementById('opt-show-banners'),
@@ -683,6 +686,18 @@ function applyCodeWrap() {
     if (editor && editor.aceEditor) {
         try {
             editor.aceEditor.resize();
+        } catch (e) {}
+    }
+}
+
+function applyCodeGuides() {
+    for (const doc of docs) {
+        const ace = doc && doc.editor && doc.editor.aceEditor;
+        if (!ace) continue;
+        try {
+            ace.setDisplayIndentGuides(!!settings.codeGuides);
+            ace.setHighlightIndentGuides(!!settings.codeGuides);
+            ace.renderer.updateFull(true);
         } catch (e) {}
     }
 }
@@ -793,6 +808,7 @@ function applySettings() {
     elsSettings.treeRefresh.value = String(settings.treeRefreshInterval);
     if (explorer && explorer.setAutoRefresh) explorer.setAutoRefresh(settings.treeRefreshInterval);
     elsSettings.autoSave.checked = !!settings.autoSave;
+    elsSettings.codeGuides.checked = !!settings.codeGuides;
     elsSettings.codeWrap.checked = !!settings.codeWrap;
     elsSettings.mdLineNumbers.checked = !!settings.mdLineNumbers;
     elsSettings.showBanners.checked = !!settings.showBanners;
@@ -816,6 +832,7 @@ function applySettings() {
         } catch (e) {}
     }
     applyCodeWrap();
+    applyCodeGuides();
     applyReadOnlyMode();
     try {
         localStorage.setItem(settingsKey, JSON.stringify(settings));
@@ -1831,9 +1848,10 @@ function applyAceMode() {
             editor.aceEditor.session.setUseSoftTabs(!tab);
             editor.aceEditor.session.setTabSize(tab ? 4 : Number(fs.indent));
         }
-        editor.aceEditor.setDisplayIndentGuides(true);
-        editor.aceEditor.setHighlightIndentGuides(true);
+        editor.aceEditor.setDisplayIndentGuides(!!settings.codeGuides);
+        editor.aceEditor.setHighlightIndentGuides(!!settings.codeGuides);
         hookCodeFoldPreviews(editor.aceEditor);
+        hookPythonTokenClasses(editor.aceEditor);
         updateCodeFoldPreviews(editor.aceEditor);
     } catch (e) {
         console.warn('ace mode switch failed', e);
@@ -2045,6 +2063,55 @@ function hookCodeFoldPreviews(ace) {
     ace.session.on('change', schedule);
 }
 
+function applyPythonTokenClasses(ace) {
+    if (!ace || !ace.container || !ace.container.classList.contains('ace-mode-python')) return;
+    const layer = ace.container.querySelector('.ace_text-layer');
+    if (!layer) return;
+    for (const el of layer.querySelectorAll('.py-kwarg')) el.classList.remove('py-kwarg');
+    for (const line of layer.querySelectorAll('.ace_line')) {
+        const spans = [...line.children];
+        let depth = 0;
+        let isDefinition = false;
+        for (const span of spans) {
+            if (span.classList.contains('ace_keyword') && /^(def|class)$/.test(span.textContent || '')) isDefinition = true;
+        }
+        if (isDefinition) continue;
+        for (let i = 0; i < spans.length; i++) {
+            const span = spans[i];
+            const text = span.textContent || '';
+            for (const ch of text) {
+                if (ch === '(') depth++;
+                else if (ch === ')') depth = Math.max(0, depth - 1);
+            }
+            if (depth <= 0 || !span.classList.contains('ace_identifier')) continue;
+            const next = spans[i + 1];
+            if (next && next.classList.contains('ace_keyword') && next.classList.contains('ace_operator') && next.textContent === '=') {
+                span.classList.add('py-kwarg');
+            }
+        }
+    }
+}
+
+function hookPythonTokenClasses(ace) {
+    if (!ace || ace._pythonTokenHooked) return;
+    const layer = ace.container && ace.container.querySelector('.ace_text-layer');
+    if (!layer) return;
+    ace._pythonTokenHooked = true;
+    let timer = 0;
+    const schedule = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            timer = 0;
+            applyPythonTokenClasses(ace);
+        }, 30);
+    };
+    new MutationObserver(schedule).observe(layer, {childList: true, subtree: true});
+    try {
+        ace.renderer.on('afterRender', schedule);
+    } catch (e) {}
+    schedule();
+}
+
 function showCodeFoldHover(lineEl) {
     const found = codeFoldForLine(lineEl);
     if (!found) return;
@@ -2241,6 +2308,8 @@ function createDocEditor(doc) {
     if (ed.aceEditor) {
         try {
             ed.aceEditor.session.setUseWrapMode(!!settings.codeWrap);
+            ed.aceEditor.setDisplayIndentGuides(!!settings.codeGuides);
+            ed.aceEditor.setHighlightIndentGuides(!!settings.codeGuides);
         } catch (e) {}
     }
     doc.mode = previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : binaryMode ? 'binary' : startMode;
@@ -4361,6 +4430,10 @@ elsSettings.fixed.addEventListener('change', () => {
 });
 elsSettings.autoSave.addEventListener('change', () => {
     settings.autoSave = elsSettings.autoSave.checked;
+    applySettings();
+});
+elsSettings.codeGuides.addEventListener('change', () => {
+    settings.codeGuides = elsSettings.codeGuides.checked;
     applySettings();
 });
 elsSettings.codeWrap.addEventListener('change', () => {
