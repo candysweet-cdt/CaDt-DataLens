@@ -299,6 +299,15 @@ const cjkFonts = [
     {id: 'fangsong', name: '仿宋', family: '"FangSong", "仿宋"'},
     {id: 'jhenghei', name: '微软正黑体', family: '"Microsoft JhengHei UI", "Microsoft JhengHei", "微软正黑体"'},
 ];
+const treeFonts = [
+    {id: 'follow', name: '跟随界面字体', family: null},
+    ...uiFonts.map((f) => ({id: 'ui-' + f.id, name: f.name, family: f.family})),
+    ...editorFonts.map((f) => ({id: 'editor-' + f.id, name: f.name + '（等宽）', family: f.family})),
+];
+const treeCjkFonts = [
+    {id: 'follow', name: '跟随界面中文字体', family: null},
+    ...cjkFonts.filter((f) => f.id !== 'auto'),
+];
 const formatDefs = [
     {id: 'json', name: 'JSON'},
     {id: 'jsonl', name: 'JSONL'},
@@ -323,6 +332,7 @@ const defaultSettings = {
     showSidebar: false,
     csvTableMigrated: false,
     keyWidth: 160,
+    sidebarFont: 12.5,
     editorFont: 13,
     codeWrap: false,
     theme: 'dark',
@@ -351,6 +361,9 @@ if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
 settings.codeWrap = !!settings.codeWrap;
+settings.sidebarFont = Number(settings.sidebarFont);
+if (!Number.isFinite(settings.sidebarFont)) settings.sidebarFont = 12.5;
+settings.sidebarFont = Math.min(20, Math.max(10, settings.sidebarFont));
 if (!settings.csvTableMigrated) {
     settings.formatSettings.csv.view = 'table';
     settings.csvTableMigrated = true;
@@ -369,6 +382,8 @@ const elsSettings = {
     widthVal: document.getElementById('opt-key-width-val'),
     font: document.getElementById('opt-font-size'),
     fontVal: document.getElementById('opt-font-size-val'),
+    sidebarFont: document.getElementById('opt-sidebar-font'),
+    sidebarFontVal: document.getElementById('opt-sidebar-font-val'),
     codeWrap: document.getElementById('opt-code-wrap'),
     autoSave: document.getElementById('opt-auto-save'),
     openMode: document.getElementById('opt-open-mode'),
@@ -475,11 +490,14 @@ function applySettings() {
     elsSettings.widthVal.textContent = String(settings.keyWidth);
     elsSettings.font.value = String(settings.editorFont);
     elsSettings.fontVal.textContent = String(settings.editorFont);
+    elsSettings.sidebarFont.value = String(settings.sidebarFont);
+    elsSettings.sidebarFontVal.textContent = String(settings.sidebarFont);
     elsSettings.autoSave.checked = !!settings.autoSave;
     elsSettings.codeWrap.checked = !!settings.codeWrap;
     elsSettings.openMode.value = settings.openMode;
     syncOpenMode();
     document.documentElement.style.setProperty('--editor-font', settings.editorFont + 'px');
+    document.documentElement.style.setProperty('--sidebar-font', settings.sidebarFont + 'px');
     const uiFace = uiFonts.find((f) => f.id === settings.uiFont) || uiFonts[0];
     const editorFace = editorFonts.find((f) => f.id === settings.editorFontFamily) || editorFonts[0];
     const uiCjk = cjkFonts.find((f) => f.id === settings.uiCjkFont) || cjkFonts[0];
@@ -2412,6 +2430,10 @@ elsSettings.width.addEventListener('input', () => {
 });
 elsSettings.font.addEventListener('input', () => {
     settings.editorFont = Number(elsSettings.font.value);
+    applySettings();
+});
+elsSettings.sidebarFont.addEventListener('input', () => {
+    settings.sidebarFont = Number(elsSettings.sidebarFont.value);
     applySettings();
 });
 elsSettings.uiFont.addEventListener('change', () => {
