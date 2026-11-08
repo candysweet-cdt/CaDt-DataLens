@@ -2329,6 +2329,18 @@ function updateTabDirty(doc) {
     if (el) el.classList.toggle('dirty', !!doc.dirty);
 }
 
+let dragTabId = null;
+function moveTabDoc(srcId, targetId, before) {
+    if (srcId === null || srcId === undefined || srcId === targetId) return;
+    const si = docs.findIndex((d) => d.id === srcId);
+    const ti = docs.findIndex((d) => d.id === targetId);
+    if (si === -1 || ti === -1) return;
+    const [moved] = docs.splice(si, 1);
+    const index = docs.findIndex((x) => x.id === targetId);
+    docs.splice(before ? index : index + 1, 0, moved);
+    renderTabs();
+}
+
 function renderTabs() {
     els.tabbar.textContent = '';
     const hide = docs.length === 0 || (settings.openMode === 'window' && docs.length === 1);
@@ -2372,6 +2384,41 @@ function renderTabs() {
                 e.preventDefault();
                 requestCloseDoc(doc);
             }
+        });
+        // 拖动排序：HTML5 DnD，落在目标左半=插到其前，右半=插到其后
+        tab.draggable = true;
+        tab.addEventListener('dragstart', (e) => {
+            dragTabId = doc.id;
+            tab.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            try { e.dataTransfer.setData('text/plain', String(doc.id)); } catch (err) {}
+        });
+        tab.addEventListener('dragend', () => {
+            dragTabId = null;
+            tab.classList.remove('dragging');
+            els.tabbar.querySelectorAll('.tab.drop-before, .tab.drop-after').forEach((t) => {
+                t.classList.remove('drop-before', 'drop-after');
+            });
+        });
+        tab.addEventListener('dragover', (e) => {
+            if (dragTabId === null || dragTabId === doc.id) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            const r = tab.getBoundingClientRect();
+            const before = e.clientX < r.x + r.width / 2;
+            tab.classList.toggle('drop-before', before);
+            tab.classList.toggle('drop-after', !before);
+        });
+        tab.addEventListener('dragleave', () => tab.classList.remove('drop-before', 'drop-after'));
+        tab.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const r = tab.getBoundingClientRect();
+            const before = e.clientX < r.x + r.width / 2;
+            tab.classList.remove('drop-before', 'drop-after');
+            const srcId = dragTabId;
+            dragTabId = null;
+            moveTabDoc(srcId, doc.id, before);
         });
         tab.append(icon, dot, name, close);
         els.tabbar.appendChild(tab);

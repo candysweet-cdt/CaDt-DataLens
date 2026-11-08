@@ -1030,6 +1030,9 @@ html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
 }
 .tab:hover { background: var(--hover); color: var(--text); }
 .tab.active { background: var(--accent-weak); color: var(--text); }
+.tab.dragging { opacity: 0.45; }
+.tab.drop-before { box-shadow: -2px 0 0 0 var(--accent); }
+.tab.drop-after { box-shadow: 2px 0 0 0 var(--accent); }
 .tab-icon { flex: none; width: 15px; height: 15px; display: grid; place-items: center; opacity: 0.82; }
 .tab-icon svg { width: 14px; height: 14px; }
 .tab:hover .tab-icon, .tab.active .tab-icon { opacity: 1; }
