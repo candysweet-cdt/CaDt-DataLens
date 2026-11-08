@@ -1,0 +1,44 @@
+title: 深嵌套 YAML
+depth: 10
+tree:
+  level: 10
+  title: 第 10 层
+  values: [level, 20, 30]
+  child:
+    level: 9
+    title: 第 9 层
+    values: [level, 18, 27]
+    child:
+      level: 8
+      title: 第 8 层
+      values: [level, 16, 24]
+      child:
+        level: 7
+        title: 第 7 层
+        values: [level, 14, 21]
+        child:
+          level: 6
+          title: 第 6 层
+          values: [level, 12, 18]
+          child:
+            level: 5
+            title: 第 5 层
+            values: [level, 10, 15]
+            child:
+              level: 4
+              title: 第 4 层
+              values: [level, 8, 12]
+              child:
+                level: 3
+                title: 第 3 层
+                values: [level, 6, 9]
+                child:
+                  level: 2
+                  title: 第 2 层
+                  values: [level, 4, 6]
+                  child:
+                    level: 1
+                    title: 第 1 层
+                    values: [level, 2, 3]
+                    child:
+                      leaf: true

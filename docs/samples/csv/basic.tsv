@@ -1,0 +1,4 @@
+id	name	count	enabled
+demo:cable	示例电缆	64	true
+demo:machine	示例机器	1	true
+demo:tank	示例储罐	4	false

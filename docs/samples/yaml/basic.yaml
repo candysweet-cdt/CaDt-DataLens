@@ -1,0 +1,22 @@
+# CaDt-DataLens YAML 示例
+title: CaDt-DataLens
+version: "1.0.0"
+enabled: true
+count: 42
+nothing: null
+tags:
+  - 模组
+  - 数据
+author:
+  name: CandySweet
+  members:
+    - name: OraSkyC
+      role: owner
+    - name: 示例成员
+      role: collaborator
+description: |
+  这是 YAML 的多行文本示例。
+  第二行用于测试文本视图和代码视图。
+matrix:
+  - [1, 2, 3]
+  - [4, 5, 6]

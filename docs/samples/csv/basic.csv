@@ -1,0 +1,4 @@
+id,name,rarity,count,enabled,tags
+demo:cable,示例电缆,common,64,true,"物流,能源"
+demo:machine,示例机器,rare,1,true,"加工,多方块"
+demo:tank,示例储罐,uncommon,4,false,"储能,流体"

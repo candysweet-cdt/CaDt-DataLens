@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog name="CaDt-DataLens 示例" count="3">
+  <description>包含属性、文本和嵌套节点的 XML 示例。</description>
+  <items>
+    <item id="demo:cable" count="64" enabled="true">示例电缆</item>
+    <item id="demo:machine" count="1" enabled="true">示例机器</item>
+    <item id="demo:controller" count="2" enabled="false">示例控制器</item>
+  </items>
+  <metadata>
+    <author>CandySweet</author>
+    <license>Apache-2.0</license>
+  </metadata>
+</catalog>

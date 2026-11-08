@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root title="深嵌套 XML">
+  <level index="1" label="第 1 层">
+    <level index="2" label="第 2 层">
+      <level index="3" label="第 3 层">
+        <level index="4" label="第 4 层">
+          <level index="5" label="第 5 层">
+            <level index="6" label="第 6 层">
+              <level index="7" label="第 7 层">
+                <level index="8" label="第 8 层">
+                  <level index="9" label="第 9 层">
+                    <level index="10" label="第 10 层">
+                      <leaf>最深一层</leaf>
+                    </level>
+                  </level>
+                </level>
+              </level>
+            </level>
+          </level>
+        </level>
+      </level>
+    </level>
+  </level>
+</root>

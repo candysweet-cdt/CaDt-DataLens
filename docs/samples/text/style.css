@@ -1,0 +1,24 @@
+:root {
+  --bg: #1e1f24;
+  --panel: #26272d;
+  --text: #d6d8de;
+  --accent: #4f8cff;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", sans-serif;
+}
+
+header {
+  padding: 48px 32px;
+  background: var(--panel);
+  text-align: center;
+}
+
+h1 { color: var(--accent); }
+
+main { max-width: 760px; margin: 32px auto; line-height: 1.8; }
+footer { padding: 24px; text-align: center; color: #8a8d94; }

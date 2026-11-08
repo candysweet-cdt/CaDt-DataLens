@@ -86,6 +86,10 @@ CaDt-DataLens 用桌面窗口打开 JSON、YAML、XML、CSV 和普通文本，�
 | 图片 | `.png` `.jpg` `.jpeg` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` `.heic` `.psd` 等 | 只读字节数据 |
 | 其他 | 任意扩展名 | 纯文本 |
 
+## 示例数据
+
+`docs/samples/` 按格式提供可直接打开的合成示例，说明见 [示例说明](docs/samples/README.md)。包含 12 层嵌套 JSON、约 211 KB / 4944 个方块的长蓝图、长日志、CSV、SVG，以及 PNG/JPEG/GIF/BMP/WebP/ICO/TIFF/AVIF 和原始字节等二进制样本。
+
 ## 构建
 
 前置条件：

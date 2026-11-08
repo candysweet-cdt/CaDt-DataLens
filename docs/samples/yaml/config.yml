@@ -1,0 +1,23 @@
+app:
+  name: CaDt-DataLens
+  window:
+    width: 1280
+    height: 800
+    theme: dark
+  editor:
+    font: JetBrains Mono
+    size: 13
+    wrap: false
+formats:
+  json:
+    extensions: [json, jsonc, json5]
+    view: tree
+  yaml:
+    extensions: [yaml, yml]
+    view: tree
+  xml:
+    extensions: [xml, svg]
+    view: tree
+  csv:
+    extensions: [csv, tsv]
+    view: tree

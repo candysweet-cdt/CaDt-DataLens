@@ -1,0 +1,21 @@
+title = "CaDt-DataLens 示例"
+
+[app]
+name = "CaDt-DataLens"
+version = "1.0.0"
+theme = "dark"
+
+[editor]
+font = "JetBrains Mono"
+size = 13
+wrap = false
+
+[[formats]]
+id = "json"
+extensions = ["json", "jsonc", "json5"]
+view = "tree"
+
+[[formats]]
+id = "yaml"
+extensions = ["yaml", "yml"]
+view = "tree"
