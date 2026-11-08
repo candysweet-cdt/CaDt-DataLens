@@ -13,7 +13,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 
 - 结构化格式：JSON / JSONC / JSON5、JSONL / NDJSON、YAML / YML、XML / SVG、CSV / TSV、TOML、INI / Properties。
 - JSONL 按行解析为数组显示，树视图编辑后仍按“一行一个 JSON 值”保存。
-- 文本格式：txt、log、conf、html、css、js、ts、py、go、java、sql 等。
+- 文本格式：txt、log、conf 默认以文本视图打开；html、css、js、ts、py、go、java、sql 等代码类扩展名默认代码视图，可在视图菜单切换。
 - Markdown 文件默认打开预览：标题、列表、表格、引用、代码块和 KaTeX 行内/块级公式；代码块按当前主题高亮，行号可在设置中开启（默认关闭）。预览只读，可切回代码/文本视图编辑。原始 HTML 不执行，外部链接交给系统浏览器打开。
 - 多种视图：
   - **树视图**：展开/收起节点，直接编辑键和值。

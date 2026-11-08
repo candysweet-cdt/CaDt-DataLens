@@ -11,6 +11,7 @@ import {createFileIcon, fileIconSpec} from './fileicons.js';
 
 const UNLOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2.4 2.4 0 0 1 10.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
 const LOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2 2 0 0 1 10 5.6V7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
+const plainTextExtensions = new Set(['txt', 'log', 'conf']);
 
 const hasWails = !!(window.go && window.go.main && window.go.main.App);
 
@@ -1059,7 +1060,7 @@ function viewDisabled(mode) {
     if (mode === 'image') return !file.image;
     if (mode === 'binary') return !file.binary;
     if (mode === 'tree') return !file.treeAvailable;
-    if (mode === 'text') return !(file.treeAvailable || (file.format && file.format.preview));
+    if (mode === 'text') return !!(file.image || file.binary);
     if (mode === 'preview') return !(file.format && file.format.preview) || !!file.large;
     return false;
 }
@@ -2219,7 +2220,7 @@ function createDocEditor(doc) {
     const previewRequested = !!fmt.preview && doc.mode === 'preview';
     const imageRequested = !!fmt.image && doc.mode === 'image';
     const binaryMode = !!fmt.image || fmt.id === 'bytes';
-    let startMode = !doc.treeAvailable ? 'code' : (doc.mode === 'code' || doc.mode === 'text' ? doc.mode : 'tree');
+    let startMode = doc.mode === 'text' ? 'text' : (!doc.treeAvailable ? 'code' : (doc.mode === 'code' ? 'code' : 'tree'));
     if (tableRequested) startMode = 'text';
     if (previewRequested) startMode = 'code';
     let initialText = null;
@@ -2262,7 +2263,7 @@ function createDocEditor(doc) {
     doc.loading = true;
     const ed = new JSONEditor(pane, {
         mode: startMode,
-        modes: fmt.table ? ['tree', 'text'] : (doc.treeAvailable ? ['tree', 'code', 'text'] : ['code']),
+        modes: fmt.table ? ['tree', 'text'] : (doc.treeAvailable ? ['tree', 'code', 'text'] : ['code', 'text']),
         mainMenuBar: true,
         navigationBar: !fmt.rawOnly,
         statusBar: false,
@@ -3086,7 +3087,9 @@ function createDoc(data) {
             parseError = e;
         }
     }
-    const preferredMode = format.preview
+    const ext = String(data.name || '').split('.').pop().toLowerCase();
+    const plainTextView = format.id === 'text' && plainTextExtensions.has(ext) && !data.large;
+    const preferredMode = plainTextView ? 'text' : format.preview
         ? (['preview', 'code', 'text'].includes(fs.view) ? fs.view : 'preview')
         : format.table
             ? (['table', 'tree', 'text'].includes(fs.view) ? fs.view : 'table')
@@ -3104,7 +3107,7 @@ function createDoc(data) {
         format,
         treeAvailable,
         parseError,
-        mode: format.preview ? (data.large ? 'code' : preferredMode) : (treeAvailable ? preferredMode : 'code'),
+        mode: plainTextView ? 'text' : format.preview ? (data.large ? 'code' : preferredMode) : (treeAvailable ? preferredMode : 'code'),
         text: null,
         rawText: treeAvailable ? data.content : null,
         dirty: false,
