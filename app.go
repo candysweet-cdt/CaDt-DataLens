@@ -894,7 +894,54 @@ func (a *App) SetDirty(dirty bool) {
 }
 
 type appConfig struct {
-	OpenMode string `json:"openMode"`
+	OpenMode        string   `json:"openMode"`
+	PluginsPathMode string   `json:"pluginsPathMode,omitempty"`
+	DisabledPlugins []string `json:"disabledPlugins,omitempty"`
+}
+
+func defaultAppConfig() appConfig {
+	return appConfig{OpenMode: "tab", PluginsPathMode: "portable"}
+}
+
+func readAppConfig() appConfig {
+	cfg := defaultAppConfig()
+	path := configFilePath()
+	if path == "" {
+		return cfg
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return cfg
+	}
+	var stored appConfig
+	if json.Unmarshal(raw, &stored) != nil {
+		return cfg
+	}
+	if stored.OpenMode == "window" {
+		cfg.OpenMode = "window"
+	}
+	if stored.PluginsPathMode == "appdata" {
+		cfg.PluginsPathMode = "appdata"
+	}
+	if stored.DisabledPlugins != nil {
+		cfg.DisabledPlugins = stored.DisabledPlugins
+	}
+	return cfg
+}
+
+func saveAppConfig(cfg appConfig) error {
+	path := configFilePath()
+	if path == "" {
+		return fmt.Errorf("无法定位配置目录")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0644)
 }
 
 func webviewDataPath() string {
@@ -914,19 +961,7 @@ func configFilePath() string {
 }
 
 func readOpenMode() string {
-	path := configFilePath()
-	if path == "" {
-		return "tab"
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "tab"
-	}
-	var cfg appConfig
-	if json.Unmarshal(raw, &cfg) != nil || cfg.OpenMode != "window" {
-		return "tab"
-	}
-	return "window"
+	return readAppConfig().OpenMode
 }
 
 func randomLaunchID() string {
@@ -957,18 +992,9 @@ func (a *App) SetOpenMode(mode string) error {
 	if mode != "window" {
 		mode = "tab"
 	}
-	path := configFilePath()
-	if path == "" {
-		return fmt.Errorf("无法定位配置目录")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(appConfig{OpenMode: mode}, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, raw, 0644)
+	cfg := readAppConfig()
+	cfg.OpenMode = mode
+	return saveAppConfig(cfg)
 }
 
 func (a *App) OpenNewWindow() error {

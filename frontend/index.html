@@ -90,6 +90,10 @@
             <button class="menu-label">视图(V)</button>
             <div class="dropdown hidden"></div>
         </div>
+        <div class="menu" data-menu="tools">
+            <button class="menu-label">工具(U)</button>
+            <div class="dropdown hidden"></div>
+        </div>
         <div class="menu" data-menu="theme">
             <button class="menu-label">主题(T)</button>
             <div class="dropdown hidden"></div>
@@ -124,6 +128,7 @@
                     </div>
                     <button type="button" class="snav-item" data-pane="shortcuts">快捷键</button>
                     <button type="button" class="snav-item" data-pane="integration">系统集成</button>
+                    <button type="button" class="snav-item" data-pane="plugins">插件</button>
                     <button type="button" class="snav-item" data-pane="about">关于我们</button>
                 </div>
                 <div class="settings-content">
@@ -307,6 +312,25 @@
                             <button type="button" id="opt-refresh-integration" class="dlg-btn">刷新状态</button>
                         </div>
                         <div class="fmt-hint">只写入 HKCU，无需管理员权限；程序移动位置后重新勾选即可更新路径。</div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="plugins">
+                        <div class="fmt-pane-title">插件</div>
+                        <div class="fmt-pane-sub">扩展新的文件格式、工具菜单命令与主题</div>
+                        <div class="plugin-toolbar">
+                            <button type="button" id="plugin-add" class="dlg-btn">添加插件…</button>
+                            <button type="button" id="plugin-import" class="dlg-btn">导入插件(.zip)…</button>
+                            <button type="button" id="plugin-open-dir" class="dlg-btn">打开插件目录</button>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">插件目录</span>
+                            <select id="plugin-path-mode" class="opt-select">
+                                <option value="portable">程序目录（exe 旁 plugins）</option>
+                                <option value="appdata">应用数据目录（%APPDATA%）</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent" id="plugin-dir-line">插件目录：—</div>
+                        <div class="plugin-list" id="plugin-list"></div>
+                        <div class="fmt-hint">插件在之后打开的文件上生效，已打开的文件不受影响；插件代码会在界面内运行，请只安装可信来源的插件。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="about">
                         <div class="about-body">

@@ -4,10 +4,11 @@ import MarkdownIt from 'markdown-it';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
 import markdownItKatex from '@vscode/markdown-it-katex';
-import {aceModeFor, detectFormat, formats, isSupportedFile} from './formats.js';
+import {aceModeFor, detectFormat, formats, isSupportedFile, pluginFormats} from './formats.js';
 import {createExplorer} from './explorer.js';
 import {createContextMenu} from './contextmenu.js';
 import {createFileIcon, fileIconSpec} from './fileicons.js';
+import {getPluginCommands, initPluginRuntime, loadPlugins} from './plugins.js';
 
 const UNLOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2.4 2.4 0 0 1 10.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
 const LOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2 2 0 0 1 10 5.6V7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
@@ -121,6 +122,7 @@ const mockFiles = {
     ini: {name: 'sample.ini', content: sampleIni},
     gomod: {name: 'go.mod', content: sampleGoMod},
     gosum: {name: 'go.sum', content: sampleGoSum},
+    bak: {name: 'sample.bak', content: sampleJson},
 };
 const mockTree = {
     'mock://samples': [
@@ -192,7 +194,7 @@ const mockBackend = {
         if (mockScenario.has('image')) return [mockDir + 'sample.png'];
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
         if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
-        for (const key of ['yaml', 'xml', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum']) {
+        for (const key of ['yaml', 'xml', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak']) {
             if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
         }
         return [mockDir + 'sample.json'];
@@ -396,6 +398,86 @@ const mockBackend = {
         }
         window.__mockSkill.registered = !!enabled;
     },
+    async GetPlugins() {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        if (!st.present) return [];
+        return [{
+            id: 'demo-format',
+            name: '演示插件',
+            version: '1.0.0',
+            author: 'CandySweet',
+            description: '注册 .bak 为 JSON 查看，并演示工具命令与主题',
+            dir: 'C:\\plugins\\demo-format',
+            entry: 'main.js',
+            extensions: ['bak'],
+            enabled: !st.disabled['demo-format'],
+            entryOk: true,
+        }];
+    },
+    async GetPluginsDir() {
+        return 'C:\\plugins';
+    },
+    async GetPluginsPathMode() {
+        return (window.__mockPlugins || {}).mode || 'portable';
+    },
+    async SetPluginsPathMode(mode) {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        st.mode = mode === 'appdata' ? 'appdata' : 'portable';
+    },
+    async AddPluginFromFolder() {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        st.present = true;
+        delete st.disabled['demo-format'];
+        const list = await this.GetPlugins();
+        return list[0];
+    },
+    async ImportPluginFromZip() {
+        return this.AddPluginFromFolder();
+    },
+    async DeletePlugin(id) {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        if (id === 'demo-format') st.present = false;
+    },
+    async SetPluginEnabled(id, enabled) {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        if (enabled) delete st.disabled[id];
+        else st.disabled[id] = true;
+    },
+    async GetPluginSources() {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        if (!st.present || st.disabled['demo-format']) return [];
+        return [{
+            id: 'demo-format',
+            name: '演示插件',
+            version: '1.0.0',
+            dir: 'C:\\plugins\\demo-format',
+            code: [
+                "cadt.registerFormat({",
+                "  id: 'demo-bak-json',",
+                "  name: 'JSON 备份',",
+                "  extensions: ['bak'],",
+                "  parse: (text) => JSON.parse(text),",
+                "  stringify: (value) => JSON.stringify(value, null, 2),",
+                "});",
+                "cadt.addCommand({",
+                "  id: 'char-count',",
+                "  label: '统计当前文件字符数',",
+                "  run() {",
+                "    const f = cadt.getActiveFile();",
+                "    const t = cadt.getActiveText();",
+                "    cadt.flash((f ? f.name : '无文件') + ' 共 ' + (t ? t.length : 0) + ' 字符');",
+                "  },",
+                "});",
+                "cadt.addTheme({",
+                "  id: 'plugin-demo',",
+                "  name: '演示主题',",
+                "  bg: '#241f31',",
+                "  accent: '#c58af9',",
+                "  css: 'html[data-theme=\"plugin-demo\"] { --bg: #241f31; --text: #e8e3f2; --muted: #9d94b8; --border: #3a3350; --hover: #2e2842; --accent: #c58af9; --on-accent: #1b1626; }',",
+                "});",
+            ].join('\n'),
+        }];
+    },
     async OpenInNewWindows(paths) { window.__mockNewWindows = (window.__mockNewWindows || []).concat([paths]); },
     async OpenNewWindow() { window.__mockNewWindow = (window.__mockNewWindow || 0) + 1; },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
@@ -411,6 +493,8 @@ const mockBackend = {
 };
 
 const backend = hasWails ? window.go.main.App : mockBackend;
+// 暴露给插件作者与调试：生产环境插件同样可以直接访问 window.go
+window.__backend = backend;
 
 
 const mockRt = {
@@ -509,7 +593,6 @@ const themes = [
     {id: 'pixyll', name: 'Pixyll', group: 'classic', bg: '#fdfbf7', accent: '#c24266'},
     {id: 'whitey', name: 'Whitey', group: 'classic', bg: '#ffffff', accent: '#2b6cb0'},
 ];
-const themeIds = new Set(themes.map((t) => t.id));
 const uiFonts = [
     {id: 'inter', name: 'Inter', family: '"Inter"'},
     {id: 'system', name: 'Segoe UI', family: '"Segoe UI"'},
@@ -550,6 +633,11 @@ const formatDefs = [
     {id: 'markdown', name: 'Markdown'},
     {id: 'text', name: '纯文本'},
 ];
+
+function allFormatDefs() {
+    return formatDefs.concat(pluginFormats.map((f) => ({id: f.id, name: f.name})));
+}
+
 function defaultFormatSettings() {
     return Object.fromEntries(formatDefs.map((f) => [f.id, {
         encoding: 'auto',
@@ -593,7 +681,7 @@ try {
         settings.formatSettings[f.id] = {...defaultFormatSettings()[f.id], ...(settings.formatSettings[f.id] || {})};
     }
 } catch (e) {}
-if (!themeIds.has(settings.theme)) settings.theme = 'dark';
+// 未知主题（可能是已卸载插件注册的）先保留，等插件加载后 CSS 生效
 if (!uiFonts.some((f) => f.id === settings.uiFont)) settings.uiFont = 'inter';
 if (!editorFonts.some((f) => f.id === settings.editorFontFamily)) settings.editorFontFamily = 'jetbrains';
 if (!cjkFonts.some((f) => f.id === settings.uiCjkFont)) settings.uiCjkFont = 'auto';
@@ -725,7 +813,7 @@ function applyTheme() {
 }
 
 function setTheme(id) {
-    if (!themeIds.has(id)) return;
+    if (!themes.some((t) => t.id === id)) return;
     settings.theme = id;
     applySettings();
     flash('主题：' + currentTheme().name);
@@ -944,6 +1032,7 @@ function selectSettingsPane(pane) {
     }
     if (pane === 'formats') renderFmtTable();
     else if (String(pane).startsWith('fmt-')) renderFormatPane(pane.slice(4));
+    else if (pane === 'plugins') renderPluginsPane();
 }
 
 function openSettings(pane = 'general') {
@@ -1259,12 +1348,211 @@ document.querySelector('.settings-nav').addEventListener('click', (e) => {
 });
 setupFormatSettings();
 
+function refreshPluginUI() {
+    // 清掉已失效的插件格式导航与面板（插件被禁用/删除后）
+    const children = document.querySelector('#snav-formats .snav-children');
+    const content = document.querySelector('.settings-content');
+    if (children && content) {
+        const valid = new Set(allFormatDefs().map((f) => 'fmt-' + f.id));
+        for (const nav of [...children.querySelectorAll('.snav-fmt')]) {
+            if (!valid.has(nav.dataset.pane)) {
+                const pane = content.querySelector(`.settings-pane[data-pane="${nav.dataset.pane}"]`);
+                if (pane) pane.remove();
+                nav.remove();
+            }
+        }
+    }
+    setupFormatSettings();
+    if (elsDialogs.settings && !elsDialogs.settings.classList.contains('hidden')) {
+        const active = document.querySelector('.snav-item.active');
+        if (active && active.dataset.pane === 'plugins') renderPluginsPane();
+    }
+}
+
+initPluginRuntime({
+    flash,
+    getActiveFile: () => file ? {path: file.path || '', name: file.name || '', size: file.size || 0, formatId: file.format ? file.format.id : null} : null,
+    getActiveText: () => {
+        if (!file) return null;
+        if (currentMode === 'code' && editor && editor.aceEditor) return editor.aceEditor.getValue();
+        if (currentMode === 'tree' && editor && file.format && typeof file.format.stringify === 'function') {
+            try {
+                return file.format.stringify(editor.get());
+            } catch (e) {
+                return null;
+            }
+        }
+        const ta = textArea();
+        if (ta) return ta.value;
+        return file.binary ? null : file.content;
+    },
+    openPath: (p) => {
+        if (p) openPaths([p]);
+    },
+    addPluginTheme: (theme) => {
+        if (themes.some((t) => t.id === theme.id)) {
+            throw new Error(`主题 ${theme.id} 与内置主题冲突`);
+        }
+        themes.push({...theme, group: 'plugin'});
+    },
+    onPluginsChanged: () => refreshPluginUI(),
+});
+
+async function reloadPluginErrors(prefix) {
+    const errors = await loadPlugins(backend);
+    for (const err of errors) flash(prefix + err, true);
+}
+
 if (elsSettings.fileAssoc) {
     elsSettings.fileAssoc.addEventListener('change', () => applyIntegration('SetFileAssociation', elsSettings.fileAssoc, '文件关联'));
     elsSettings.contextMenu.addEventListener('change', () => applyIntegration('SetContextMenu', elsSettings.contextMenu, '右键菜单'));
     elsSettings.agentSkill.addEventListener('change', () => applyIntegration('SetAgentSkill', elsSettings.agentSkill, 'Agent Skill '));
     elsSettings.refreshIntegration.addEventListener('click', syncIntegrationStatus);
 }
+
+function setupPluginsSettings() {
+    const addBtn = document.getElementById('plugin-add');
+    const importBtn = document.getElementById('plugin-import');
+    const openDirBtn = document.getElementById('plugin-open-dir');
+    const modeSel = document.getElementById('plugin-path-mode');
+    if (!addBtn) return;
+    addBtn.addEventListener('click', async () => {
+        if (!backend.AddPluginFromFolder) return flash('当前版本不支持插件', true);
+        try {
+            const installed = await backend.AddPluginFromFolder();
+            if (installed) {
+                await reloadPluginErrors('');
+                flash('已添加插件：' + installed.name);
+            }
+        } catch (e) {
+            flash('添加插件失败：' + e, true);
+        }
+        renderPluginsPane();
+    });
+    importBtn.addEventListener('click', async () => {
+        if (!backend.ImportPluginFromZip) return flash('当前版本不支持插件', true);
+        try {
+            const installed = await backend.ImportPluginFromZip();
+            if (installed) {
+                await reloadPluginErrors('');
+                flash('已导入插件：' + installed.name);
+            }
+        } catch (e) {
+            flash('导入插件失败：' + e, true);
+        }
+        renderPluginsPane();
+    });
+    openDirBtn.addEventListener('click', async () => {
+        try {
+            const dir = backend.GetPluginsDir ? await backend.GetPluginsDir() : '';
+            if (dir) await backend.ShowInFolder(dir);
+        } catch (e) {
+            flash('打开插件目录失败：' + e, true);
+        }
+    });
+    modeSel.addEventListener('change', async () => {
+        try {
+            await backend.SetPluginsPathMode(modeSel.value);
+            await reloadPluginErrors('');
+            flash('插件目录已切换，重新打开文件生效');
+        } catch (e) {
+            flash('切换插件目录失败：' + e, true);
+        }
+        renderPluginsPane();
+    });
+}
+
+async function renderPluginsPane() {
+    const listEl = document.getElementById('plugin-list');
+    if (!listEl) return;
+    const modeSel = document.getElementById('plugin-path-mode');
+    try {
+        const plugins = backend.GetPlugins ? await backend.GetPlugins() : [];
+        const dir = backend.GetPluginsDir ? await backend.GetPluginsDir() : '—';
+        if (modeSel && backend.GetPluginsPathMode) {
+            modeSel.value = await backend.GetPluginsPathMode();
+        }
+        if (document.getElementById('plugin-dir-line')) {
+            document.getElementById('plugin-dir-line').textContent = '插件目录：' + dir;
+        }
+        listEl.textContent = '';
+        if (!plugins || !plugins.length) {
+            const empty = document.createElement('div');
+            empty.className = 'plugin-empty';
+            empty.textContent = '暂无插件。点「添加插件」选择包含 plugin.json 的文件夹，或导入 .zip 插件包；插件可注册新的文件格式、工具菜单命令和主题。';
+            listEl.appendChild(empty);
+            return;
+        }
+        for (const p of plugins) {
+            const item = document.createElement('div');
+            item.className = 'plugin-item';
+            const head = document.createElement('div');
+            head.className = 'plugin-head';
+            const name = document.createElement('span');
+            name.className = 'plugin-name';
+            name.textContent = p.name;
+            const ver = document.createElement('span');
+            ver.className = 'plugin-version';
+            ver.textContent = p.version ? 'v' + p.version : '';
+            const enabledLabel = document.createElement('label');
+            enabledLabel.className = 'popover-label plugin-enabled';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = !!p.enabled;
+            cb.addEventListener('change', async () => {
+                try {
+                    await backend.SetPluginEnabled(p.id, cb.checked);
+                    await reloadPluginErrors('');
+                } catch (e) {
+                    flash('切换失败：' + e, true);
+                }
+                renderPluginsPane();
+            });
+            enabledLabel.append(cb, document.createTextNode('启用'));
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'dlg-btn plugin-del';
+            del.textContent = '删除';
+            del.addEventListener('click', async () => {
+                if (!del.dataset.armed) {
+                    del.dataset.armed = '1';
+                    del.textContent = '确认删除？';
+                    del.classList.add('danger');
+                    setTimeout(() => {
+                        if (del.isConnected) {
+                            del.dataset.armed = '';
+                            del.textContent = '删除';
+                            del.classList.remove('danger');
+                        }
+                    }, 3000);
+                    return;
+                }
+                try {
+                    await backend.DeletePlugin(p.id);
+                    await reloadPluginErrors('');
+                    flash('插件已删除：' + p.name);
+                } catch (e) {
+                    flash('删除失败：' + e, true);
+                }
+                renderPluginsPane();
+            });
+            head.append(name, ver, enabledLabel, del);
+            const desc = document.createElement('div');
+            desc.className = 'plugin-desc';
+            desc.textContent = [p.description, p.author].filter(Boolean).join(' · ') || '无描述';
+            const exts = document.createElement('div');
+            exts.className = 'plugin-exts';
+            const extText = p.extensions && p.extensions.length ? '扩展名：' + p.extensions.join('、') : '';
+            exts.textContent = [extText, p.entryOk ? '' : '入口文件缺失或过大'].filter(Boolean).join(' · ') || ' ';
+            item.append(head, desc, exts);
+            listEl.appendChild(item);
+        }
+    } catch (e) {
+        flash('读取插件失败：' + e, true);
+    }
+}
+
+setupPluginsSettings();
 
 const ENCODINGS = [['auto', '自动'], ['utf-8', 'UTF-8'], ['gbk', 'GBK'], ['gb18030', 'GB18030'], ['iso-8859-1', 'ISO-8859-1'], ['us-ascii', 'US-ASCII']];
 const CONVERT_ENCODINGS = [['utf-8', 'UTF-8'], ['gbk', 'GBK'], ['gb18030', 'GB18030'], ['iso-8859-1', 'ISO-8859-1'], ['us-ascii', 'US-ASCII']];
@@ -1624,7 +1912,8 @@ function setupFormatSettings() {
     const children = document.querySelector('#snav-formats .snav-children');
     const content = document.querySelector('.settings-content');
     if (!children || !content) return;
-    for (const f of formatDefs) {
+    for (const f of allFormatDefs()) {
+        if (children.querySelector(`[data-pane="fmt-${f.id}"]`)) continue;
         const nav = document.createElement('button');
         nav.type = 'button';
         nav.className = 'snav-item snav-child snav-fmt';
@@ -1641,7 +1930,7 @@ function setupFormatSettings() {
 }
 
 function renderFormatPane(id) {
-    const f = formatDefs.find((item) => item.id === id);
+    const f = allFormatDefs().find((item) => item.id === id);
     const pane = document.querySelector(`.settings-pane[data-pane="fmt-${id}"]`);
     if (!f || !pane) return;
     const fs = getFormatSettings(id);
@@ -1695,7 +1984,7 @@ function renderFmtTable() {
         head.appendChild(cell);
     }
     table.appendChild(head);
-    for (const f of formatDefs) {
+    for (const f of allFormatDefs()) {
         const fs = getFormatSettings(f.id);
         const row = document.createElement('div');
         row.className = 'fmt-row';
@@ -5212,6 +5501,13 @@ function menuItems(kind) {
             });
             return items;
         }
+        case 'tools': {
+            const cmds = getPluginCommands();
+            if (!cmds.length) {
+                return [{label: '（暂无插件命令）', disabled: true}];
+            }
+            return cmds.map((cmd) => ({label: cmd.label, action: () => cmd.run()}));
+        }
         case 'help':
             return [
                 {label: '快捷键', action: () => openSettings('shortcuts')},
@@ -5521,6 +5817,16 @@ initCodeFoldHover();
                 applySettings();
             }
         } catch (e) {}
+    }
+    if (backend.GetPluginSources) {
+        try {
+            const errors = await loadPlugins(backend);
+            window.__pluginLoadErrors = errors;
+            for (const err of errors) flash(err, true);
+        } catch (e) {
+            window.__pluginLoadErrors = ['异常：' + (e && e.stack || e)];
+            flash('插件加载失败：' + e, true);
+        }
     }
     let targets = [];
     if (backend.GetStartupTargets) {

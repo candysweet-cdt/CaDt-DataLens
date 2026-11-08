@@ -244,6 +244,43 @@ export const imageExtensions = [
     'avif', 'heic', 'heif', 'psd', 'raw', 'cr2', 'nef', 'arw', 'dng',
 ];
 
+// 插件注册的自定义格式；内置格式优先，插件格式不能覆盖内置格式
+export const pluginFormats = [];
+
+export function registerPluginFormat(driver) {
+    if (!driver || typeof driver !== 'object') {
+        throw new Error('registerFormat 需要一个格式对象');
+    }
+    const id = String(driver.id || '').trim();
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+        throw new Error(`格式 id 无效（只允许小写字母、数字和连字符）：${JSON.stringify(driver.id)}`);
+    }
+    if (formats[id]) {
+        throw new Error(`格式 id ${id} 与内置格式冲突`);
+    }
+    if (pluginFormats.some((f) => f.id === id)) {
+        throw new Error(`格式 id ${id} 已被注册`);
+    }
+    if (!Array.isArray(driver.extensions) || !driver.extensions.length) {
+        throw new Error(`格式 ${id} 缺少 extensions`);
+    }
+    if (typeof driver.parse !== 'function' || typeof driver.stringify !== 'function') {
+        throw new Error(`格式 ${id} 缺少 parse 或 stringify`);
+    }
+    const normalized = {
+        ...driver,
+        id,
+        name: String(driver.name || id),
+        extensions: driver.extensions.map((e) => String(e).toLowerCase().replace(/^\./, '')),
+    };
+    pluginFormats.push(normalized);
+    return normalized;
+}
+
+export function unregisterAllPluginFormats() {
+    pluginFormats.length = 0;
+}
+
 export function isSupportedFile(name) {
     const base = String(name || '').split(/[\\/]/).pop();
     if (knownFileNames.has(base.toLowerCase())) return true;
@@ -251,6 +288,7 @@ export function isSupportedFile(name) {
     if (dot < 0) return false;
     const ext = base.slice(dot + 1).toLowerCase();
     if (imageExtensions.includes(ext)) return true;
+    if (pluginFormats.some((f) => f.extensions.includes(ext))) return true;
     return Object.values(formats).some((f) => f.extensions.includes(ext));
 }
 
@@ -266,6 +304,14 @@ export function detectFormat(fileName, content) {
         if (f.extensions.includes(ext)) {
             driver = f;
             break;
+        }
+    }
+    if (driver === formats.text) {
+        for (const f of pluginFormats) {
+            if (f.extensions.includes(ext)) {
+                driver = f;
+                break;
+            }
         }
     }
     if (driver.id === 'xml') {

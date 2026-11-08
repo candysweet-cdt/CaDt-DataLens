@@ -2348,6 +2348,26 @@ a.jsoneditor-poweredBy { display: none !important; }
 .settings-content select:disabled { opacity: 0.4; }
 .settings-content option { background: var(--bg); color: var(--text); }
 .settings-pane .popover-row select { width: 200px; flex: none; }
+.plugin-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+.plugin-list { display: flex; flex-direction: column; gap: 8px; }
+.plugin-item {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+}
+.plugin-head { display: flex; align-items: center; gap: 8px; }
+.plugin-name { font-weight: 600; color: var(--text); font-size: 12.5px; }
+.plugin-version { color: var(--muted); font-size: 11px; }
+.plugin-enabled { margin-left: auto; font-size: 12px; cursor: pointer; }
+.plugin-del { min-width: 64px; }
+.plugin-del.danger { border-color: #e81123; color: #e81123; }
+.plugin-desc { color: var(--muted); font-size: 11.5px; line-height: 1.6; }
+.plugin-exts { color: var(--faint); font-size: 11px; }
+.plugin-empty { color: var(--muted); font-size: 12px; padding: 10px 2px; line-height: 1.7; }
 .font-preview {
     display: flex;
     flex-direction: column;

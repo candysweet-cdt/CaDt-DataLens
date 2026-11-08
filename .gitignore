@@ -2,6 +2,7 @@ node_modules/
 frontend/dist/
 build/bin/
 frontend/wailsjs/
+/plugins/
 
 # local IDE / stray builds
 .idea/

@@ -1,0 +1,9 @@
+{
+    "id": "bak-json",
+    "name": "JSON 备份查看",
+    "version": "1.0.0",
+    "author": "CandySweet",
+    "description": "把 .bak 文件按 JSON 解析；解析失败时自动退回文本视图，并附演示命令与主题",
+    "entry": "main.js",
+    "extensions": ["bak"]
+}
