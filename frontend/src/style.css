@@ -1604,6 +1604,28 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 .jsoneditor .ace_constant.ace_language.ace_boolean { color: var(--val-bool); }
 .jsoneditor .ace_constant.ace_language.ace_null { color: var(--val-null); }
 .jsoneditor .ace_paren, .jsoneditor .ace_punctuation { color: var(--ace-punct); }
+.jsoneditor .ace_text-layer { color: var(--text); }
+.jsoneditor .ace_keyword { color: var(--accent); }
+.jsoneditor .ace_keyword.ace_operator { color: var(--ace-punct); }
+.jsoneditor .ace_meta.ace_tag,
+.jsoneditor .ace_entity.ace_name.ace_tag,
+.jsoneditor .ace_meta.ace_tag.ace_tag-name { color: var(--val-key); }
+.jsoneditor .ace_entity { color: var(--val-key); }
+.jsoneditor .ace_entity.ace_other.ace_attribute-name,
+.jsoneditor .ace_entity.ace_name.ace_attribute-name { color: var(--orange); }
+.jsoneditor .ace_constant { color: var(--val-number); }
+.jsoneditor .ace_constant.ace_language { color: var(--val-bool); }
+.jsoneditor .ace_storage { color: var(--val-null); }
+.jsoneditor .ace_comment { color: var(--muted); font-style: italic; }
+.jsoneditor .ace_markup.ace_heading,
+.jsoneditor .ace_heading { color: var(--accent); font-weight: 600; }
+.jsoneditor .ace_list { color: var(--text); }
+.jsoneditor .ace_markup.ace_list { color: var(--accent); }
+.jsoneditor .ace_markup.ace_underline { color: var(--accent); text-decoration: underline; }
+.jsoneditor .ace_bold { font-weight: 600; }
+.jsoneditor .ace_italic { font-style: italic; }
+.jsoneditor .ace_function,
+.jsoneditor .ace_support.ace_function { color: var(--accent); }
 .jsoneditor .ace_indent-guide {
     background: linear-gradient(to right, transparent 0, transparent calc(100% - 1px), var(--ace-indent) calc(100% - 1px), var(--ace-indent) 100%) !important;
 }

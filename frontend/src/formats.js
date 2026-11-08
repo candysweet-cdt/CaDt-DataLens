@@ -60,7 +60,7 @@ export const formats = {
         id: 'yaml',
         name: 'YAML',
         extensions: ['yaml', 'yml'],
-        aceMode: 'text',
+        aceMode: 'yaml',
         parse(text) {
             const value = yamlLoad(text);
             if (value === undefined) throw new Error('空文档');
@@ -74,7 +74,7 @@ export const formats = {
         id: 'xml',
         name: 'XML',
         extensions: ['xml', 'svg'],
-        aceMode: 'text',
+        aceMode: 'xml',
         parse(text) {
             const result = XMLValidator.validate(text);
             if (result !== true) {
@@ -170,4 +170,24 @@ export function detectFormat(fileName, content) {
 
 export function formatName(driver) {
     return driver ? driver.name : '未知';
+}
+
+const extensionAceModes = {
+    json: 'json', jsonc: 'json5', json5: 'json5', jsonl: 'json', ndjson: 'json',
+    yaml: 'yaml', yml: 'yaml', xml: 'xml', svg: 'xml',
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+    ts: 'typescript', tsx: 'typescript',
+    py: 'python',
+    md: 'markdown', markdown: 'markdown',
+    html: 'html', htm: 'html', css: 'css',
+    sh: 'sh', bash: 'sh', zsh: 'sh', bat: 'batchfile', ps1: 'powershell',
+    go: 'golang', java: 'java', kt: 'kotlin', lua: 'lua', sql: 'sql',
+    toml: 'toml', ini: 'ini', properties: 'properties', conf: 'ini', cfg: 'ini',
+};
+
+export function aceModeFor(fileName, driver) {
+    const base = String(fileName || '').split(/[\\/]/).pop().toLowerCase();
+    const dot = base.lastIndexOf('.');
+    const ext = dot < 0 ? '' : base.slice(dot + 1);
+    return 'ace/mode/' + (extensionAceModes[ext] || (driver && driver.aceMode) || 'text');
 }

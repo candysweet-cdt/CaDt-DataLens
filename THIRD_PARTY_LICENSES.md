@@ -50,6 +50,13 @@ The upstream notice is in [frontend/public/vendor/NOTICE.jsoneditor](frontend/pu
 
 The full OFL 1.1 text and attributions are in [frontend/public/fonts/OFL.txt](frontend/public/fonts/OFL.txt).
 
+## BSD 3-Clause License
+
+- Ace editor language modes — Copyright (c) 2010, Ajax.org B.V.
+  https://ace.c9.io/
+
+The full license text is in [frontend/public/vendor/ace/LICENSE](frontend/public/vendor/ace/LICENSE).
+
 ## Other Go dependencies
 
 The full dependency graph and versions are listed in [go.mod](go.mod) and [go.sum](go.sum).

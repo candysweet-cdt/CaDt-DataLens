@@ -1,5 +1,5 @@
 import './style.css';
-import {detectFormat, formats, isSupportedFile} from './formats.js';
+import {aceModeFor, detectFormat, formats, isSupportedFile} from './formats.js';
 import {createExplorer} from './explorer.js';
 import {createContextMenu} from './contextmenu.js';
 
@@ -1166,11 +1166,13 @@ countObserver.observe(els.editor, {childList: true, subtree: true, characterData
 
 function applyAceMode() {
     if (currentMode !== 'code' || !editor || !editor.aceEditor) return;
-    const want = file && file.format && file.format.aceMode === 'json' ? 'ace/mode/json' : 'ace/mode/text';
+    const want = aceModeFor(file && file.name, file && file.format);
     try {
         if (editor.aceEditor.session.getMode().$id !== want) {
             editor.aceEditor.session.setMode(want);
         }
+        const pureJson = !!(file && file.format && file.format.id === 'json' && /\.json$/i.test(file.name || ''));
+        editor.aceEditor.session.setUseWorker(pureJson);
         editor.aceEditor.setFontSize(settings.editorFont);
         editor.aceEditor.session.setUseWrapMode(!!settings.codeWrap);
         if (file && file.format) {
@@ -1212,6 +1214,7 @@ function createDocEditor(doc) {
     if (doc.editor) return;
     const fmt = doc.format;
     const fs = getFormatSettings(fmt.id);
+    const showJsonErrors = fmt.id === 'json' && /\.json$/i.test(doc.name || '');
     const tableRequested = !!fmt.table && doc.mode === 'table';
     let startMode = !doc.treeAvailable ? 'code' : (doc.mode === 'code' || doc.mode === 'text' ? doc.mode : 'tree');
     if (tableRequested) startMode = 'text';
@@ -1239,7 +1242,7 @@ function createDocEditor(doc) {
         mainMenuBar: true,
         navigationBar: !fmt.rawOnly,
         statusBar: false,
-        showErrorTable: fmt.id === 'json',
+        showErrorTable: showJsonErrors,
         maxVisibleChilds: TREE_MAX_CHILDREN,
         language: 'zh-CN',
         languages: editorLocale,
@@ -2666,7 +2669,7 @@ function switchMode(mode) {
         }
         return;
     }
-    if ((mode === 'code' || mode === 'text') && currentMode === 'tree' && doc && doc.format.id === 'jsonl') {
+    if ((mode === 'code' || mode === 'text') && currentMode === 'tree' && doc && doc.format.id !== 'json') {
         let value;
         try {
             value = editor.get();

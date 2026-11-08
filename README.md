@@ -16,7 +16,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 - 文本格式：txt、md、log、ini、toml、html、css、js、ts、py、go、java、sql 等。
 - 多种编辑视图：
   - **树视图**：展开/收起节点，直接编辑键和值。
-  - **代码视图**：Ace 编辑器，带行号、语法高亮、括号匹配。
+  - **代码视图**：Ace 编辑器，带行号、语法高亮、括号匹配。按扩展名启用 YAML、XML/SVG、JS/TS、Python、Markdown、HTML/CSS、Shell/PowerShell/Batch、Go/Java/Kotlin/Lua/SQL、TOML/INI/Properties 等语法模式。
   - **文本视图**：纯文本编辑框，适合看原始内容和最简单的文本修改。
   - **表格视图**（CSV / TSV）：冻结表头与行号，拖动表头边缘可调整列宽；点击单元格直接编辑（Enter 确认并下移、Tab 换格、Esc 取消），支持撤销/重做；超过 5000 行时只预览前 5000 行，编辑仍会保留全部行。
 - 每个格式可单独配置默认视图，修改后对当前同类文件立即生效。
