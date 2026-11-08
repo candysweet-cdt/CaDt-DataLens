@@ -47,6 +47,11 @@ const sampleText = `# 时空纪元 开发笔记
 - 机器：2.10+ 运行时配方
 `;
 
+const sampleJsonl = `{"id":"spacetime:cable","name":"线缆","count":64,"tags":["物流","能源"]}
+{"id":"spacetime:machine","name":"机器","count":1,"meta":{"tier":2,"multiblock":true}}
+{"id":"spacetime:tank","name":"储罐","count":4,"meta":{"tier":1,"capacity":8000}}
+`;
+
 const mockScenario = new URLSearchParams(location.search);
 const mockDir = 'mock://samples/';
 const mockHex = '// 图片文件：sample.png\n// 文件大小：16 字节，以十六进制字节数据只读展示\n\n' +
@@ -57,6 +62,7 @@ const mockFiles = {
     csv: {name: 'sample.csv', content: sampleCsv},
     text: {name: 'notes.md', content: sampleText},
     json: {name: 'sample.json', content: sampleJson},
+    jsonl: {name: 'sample.jsonl', content: sampleJsonl},
 };
 const mockTree = {
     'mock://samples': [
@@ -65,6 +71,7 @@ const mockTree = {
         {name: 'notes.md', path: 'mock://samples/notes.md', isDir: false},
         {name: 'sample.csv', path: 'mock://samples/sample.csv', isDir: false},
         {name: 'sample.json', path: 'mock://samples/sample.json', isDir: false},
+        {name: 'sample.jsonl', path: 'mock://samples/sample.jsonl', isDir: false},
         {name: 'sample.png', path: 'mock://samples/sample.png', isDir: false},
         {name: 'sample.xml', path: 'mock://samples/sample.xml', isDir: false},
         {name: 'sample.yaml', path: 'mock://samples/sample.yaml', isDir: false},
@@ -88,7 +95,7 @@ const mockBackend = {
         if (mockScenario.has('image')) return [mockDir + 'sample.png'];
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
         if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
-        for (const key of ['yaml', 'xml', 'csv', 'text']) {
+        for (const key of ['yaml', 'xml', 'csv', 'text', 'jsonl']) {
             if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
         }
         return [mockDir + 'sample.json'];
@@ -108,7 +115,8 @@ const mockBackend = {
         const byExt = ['yaml', 'yml'].includes(ext) ? 'yaml'
             : ['xml', 'svg'].includes(ext) ? 'xml'
                 : ['csv', 'tsv'].includes(ext) ? 'csv'
-                    : ['md', 'txt', 'log'].includes(ext) ? 'text' : 'json';
+                    : ['jsonl', 'ndjson'].includes(ext) ? 'jsonl'
+                        : ['md', 'txt', 'log'].includes(ext) ? 'text' : 'json';
         const key = Object.keys(mockFiles).find(k => mockFiles[k].name === base) || byExt;
         let content = mockFiles[key].content;
         let large = false;
@@ -293,6 +301,7 @@ const cjkFonts = [
 ];
 const formatDefs = [
     {id: 'json', name: 'JSON'},
+    {id: 'jsonl', name: 'JSONL'},
     {id: 'yaml', name: 'YAML'},
     {id: 'xml', name: 'XML'},
     {id: 'csv', name: 'CSV'},
@@ -2529,6 +2538,27 @@ function switchMode(mode) {
             editor.setText(doc.rawText);
         } catch (e) {
             console.warn('switch mode failed', e);
+        } finally {
+            doc.loading = false;
+        }
+        return;
+    }
+    if ((mode === 'code' || mode === 'text') && currentMode === 'tree' && doc && doc.format.id === 'jsonl') {
+        let value;
+        try {
+            value = editor.get();
+        } catch (e) {
+            flash('无法读取树内容：' + e.message, true);
+            return;
+        }
+        const text = doc.format.stringify(value);
+        doc.loading = true;
+        try {
+            editor.setMode(mode);
+            editor.setText(text);
+            doc.text = text;
+        } catch (e) {
+            flash('切换视图失败：' + e.message, true);
         } finally {
             doc.loading = false;
         }

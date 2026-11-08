@@ -1,0 +1,6 @@
+{"id": "spacetime:cable", "name": "线缆", "tier": 1, "enabled": true, "count": 64, "tags": ["物流", "能源"], "meta": {"width": 1, "height": 1}}
+{"id": "spacetime:machine", "name": "示例机器", "tier": 2, "enabled": true, "count": 1, "tags": ["加工", "多方块"], "meta": {"width": 3, "height": 3, "inputs": ["spacetime:cable", "minecraft:iron_ingot"], "recipe": "spacetime:machine_core"}}
+{"id": "spacetime:tank", "name": "示例储罐", "tier": 1, "enabled": false, "count": 4, "tags": ["储能", "流体"], "meta": {"capacity": 8000, "fluids": ["water", "lava"]}}
+{"id": "spacetime:lamp", "name": "照明灯带", "tier": 0, "enabled": true, "count": 128, "tags": ["装饰", "光照"], "meta": {"light": 15, "color": "#ffd479"}}
+{"id": "spacetime:controller", "name": "总线控制器", "tier": 3, "enabled": true, "count": 1, "tags": ["控制", "红石"], "note": "第一行：长文本测试\n第二行：包含换行和引号 \"quoted\"。", "meta": {"channels": 16, "redstone": true}}
+{"id": "spacetime:void_filter", "name": "虚空过滤器", "tier": 2, "enabled": false, "count": 2, "tags": ["过滤"], "meta": {"rule": "drop-any", "whitelist": []}}

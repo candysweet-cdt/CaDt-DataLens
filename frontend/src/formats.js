@@ -33,6 +33,29 @@ export const formats = {
             return JSON.stringify(value, null, 2);
         },
     },
+    jsonl: {
+        id: 'jsonl',
+        name: 'JSONL',
+        extensions: ['jsonl', 'ndjson'],
+        aceMode: 'json',
+        parse(text) {
+            const values = [];
+            const lines = String(text).split(/\r?\n/);
+            for (let i = 0; i < lines.length; i++) {
+                if (!lines[i].trim()) continue;
+                try {
+                    values.push(JSON.parse(lines[i]));
+                } catch (e) {
+                    throw new Error('第 ' + (i + 1) + ' 行：' + e.message);
+                }
+            }
+            return values;
+        },
+        stringify(value) {
+            const items = Array.isArray(value) ? value : [value];
+            return items.map((item) => JSON.stringify(item)).join('\n');
+        },
+    },
     yaml: {
         id: 'yaml',
         name: 'YAML',
@@ -119,7 +142,7 @@ export function isSupportedFile(name) {
 }
 
 export const openFileFilters = [
-    {display: '结构化数据 (*.json;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv)', pattern: '*.json;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv'},
+    {display: '结构化数据 (*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv)', pattern: '*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv'},
     {display: '所有文件 (*.*)', pattern: '*.*'},
 ];
 

@@ -25,7 +25,7 @@ const (
 )
 
 var assocExtensions = []string{
-	"json", "jsonc", "json5",
+	"json", "jsonc", "json5", "jsonl", "ndjson",
 	"yaml", "yml",
 	"xml", "svg",
 	"csv", "tsv",

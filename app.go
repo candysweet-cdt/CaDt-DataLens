@@ -358,7 +358,7 @@ func (a *App) OpenFilesDialog() ([]string, error) {
 	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "打开文件",
 		Filters: []runtime.FileFilter{
-			{DisplayName: "结构化数据 (*.json;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv)", Pattern: "*.json;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv"},
+			{DisplayName: "结构化数据 (*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv)", Pattern: "*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv"},
 			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
 		},
 	})

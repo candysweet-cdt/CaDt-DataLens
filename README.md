@@ -5,13 +5,14 @@
 
 ![主界面](docs/screenshots/main-dark.png)
 
-CaDt-DataLens 用桌面窗口打开 JSON、YAML、XML、CSV 和普通文本，不依赖浏览器，不上传文件，所有读写都在本机完成。
+CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文本，不依赖浏览器，不上传文件，所有读写都在本机完成。
 
 ## 功能
 
 ### 格式与视图
 
-- 结构化格式：JSON / JSONC / JSON5、YAML / YML、XML / SVG、CSV / TSV。
+- 结构化格式：JSON / JSONC / JSON5、JSONL / NDJSON、YAML / YML、XML / SVG、CSV / TSV。
+- JSONL 按行解析为数组显示，树视图编辑后仍按“一行一个 JSON 值”保存。
 - 文本格式：txt、md、log、ini、toml、html、css、js、ts、py、go、java、sql 等。
 - 多种编辑视图：
   - **树视图**：展开/收起节点，直接编辑键和值。
@@ -35,7 +36,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、YAML、XML、CSV 和普通文本，�
 - 拖入一个或多个文件即可打开；支持文件对话框多选，也可以直接打开文件夹。
 - 文件侧边栏（`Alt+1`）：列表视图列出当前文件所在目录的数据文件，超过 200 个时提示改用文件树视图；文件树视图按 IDE 风格懒加载目录，支持展开/收起和直接打开文件。
 - 右键菜单：标签页可关闭/关闭其他/全部/左侧/未修改、复制路径、在新窗口打开、重新打开关闭的标签页；侧边栏文件或目录可打开、复制路径、在文件管理器中显示、刷新、设为文件树根；代码/文本内容区可剪切复制粘贴、查找、格式化、重新加载、折叠。
-- 设置 → 系统集成：可把当前程序注册到注册表（加入 JSON/YAML/XML/CSV/文本等格式的“打开方式”）和资源管理器右键菜单（文件/文件夹/文件夹空白处）；只写 HKCU，无需管理员权限，默认程序仍需在 Windows 中确认。
+- 设置 → 系统集成：可把当前程序注册到注册表（加入 JSON/JSONL/YAML/XML/CSV/文本等格式的“打开方式”）和资源管理器右键菜单（文件/文件夹/文件夹空白处）；只写 HKCU，无需管理员权限，默认程序仍需在 Windows 中确认。
 - UTF-8 / GBK / GB18030 / ISO-8859-1 / US-ASCII 编码，自动检测；保留原文件换行符与 UTF-8 BOM。
 - 大文件与二进制文件自动只读。
 
@@ -81,6 +82,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、YAML、XML、CSV 和普通文本，�
 | 类型 | 扩展名 | 默认处理 |
 | --- | --- | --- |
 | JSON | `.json` `.jsonc` `.json5` | 树视图 / 代码视图 / 文本视图 |
+| JSONL | `.jsonl` `.ndjson` | 树视图 / 代码视图 / 文本视图 |
 | YAML | `.yaml` `.yml` | 树视图 / 代码视图 / 文本视图 |
 | XML | `.xml` `.svg` | 树视图 / 代码视图 / 文本视图 |
 | CSV | `.csv` `.tsv` | 表格视图 / 树视图 / 文本视图 |
@@ -90,7 +92,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、YAML、XML、CSV 和普通文本，�
 
 ## 示例数据
 
-`docs/samples/` 按格式提供可直接打开的合成示例，说明见 [示例说明](docs/samples/README.md)。包含 12 层嵌套 JSON、约 211 KB / 4944 个方块的长蓝图、长日志、CSV、SVG，以及 PNG/JPEG/GIF/BMP/WebP/ICO/TIFF/AVIF 和原始字节等二进制样本。
+`docs/samples/` 按格式提供可直接打开的合成示例，说明见 [示例说明](docs/samples/README.md)。包含 12 层嵌套 JSON、JSONL 逐行记录、约 211 KB / 4944 个方块的长蓝图、长日志、CSV、SVG，以及 PNG/JPEG/GIF/BMP/WebP/ICO/TIFF/AVIF 和原始字节等二进制样本。
 
 ## 构建
 
@@ -124,7 +126,7 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:5173/`。可用的 mock 场景：`?yaml`、`?xml`、`?csv`、`?text`、`?image`、`?large`、`?invalid`、`?multi`、`?empty`、`?gbk`。mock 路径使用 `mock://samples/`，不会读写真实磁盘文件。
+打开 `http://localhost:5173/`。可用的 mock 场景：`?jsonl`、`?yaml`、`?xml`、`?csv`、`?text`、`?image`、`?large`、`?invalid`、`?multi`、`?empty`、`?gbk`。mock 路径使用 `mock://samples/`，不会读写真实磁盘文件。
 
 ## 项目结构
 
@@ -133,7 +135,7 @@ app.go                     Go 后端：文件读写、编码、剪贴板、系�
 main.go                    Wails 配置、单实例/多窗口启动
 app_test.go                Go 单元测试
 frontend/src/main.js       界面、标签页、设置、编辑器、文件菜单
-frontend/src/formats.js    格式驱动（JSON/YAML/XML/CSV/文本/字节）
+frontend/src/formats.js    格式驱动（JSON/JSONL/YAML/XML/CSV/文本/字节）
 frontend/src/style.css     布局、主题、Ace/jsoneditor 样式
 frontend/index.html        窗口结构、菜单、设置对话框
 frontend/public/vendor     jsoneditor 及图标资源

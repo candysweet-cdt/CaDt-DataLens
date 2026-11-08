@@ -40,7 +40,7 @@ function fileKind(name) {
     const base = String(name || '').toLowerCase();
     const dot = base.lastIndexOf('.');
     const ext = dot < 0 ? '' : base.slice(dot + 1);
-    if (['json', 'jsonc', 'json5'].includes(ext)) return 'json';
+    if (['json', 'jsonc', 'json5', 'jsonl', 'ndjson'].includes(ext)) return 'json';
     if (['yaml', 'yml'].includes(ext)) return 'yaml';
     if (['xml', 'svg'].includes(ext)) return 'xml';
     if (['csv', 'tsv'].includes(ext)) return 'csv';
