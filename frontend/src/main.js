@@ -656,6 +656,8 @@ const EOLS = [['follow', '跟随原文件'], ['lf', 'LF'], ['crlf', 'CRLF']];
 const VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
 const CSV_VIEWS = [['table', '表格视图'], ['tree', '树视图'], ['text', '文本视图']];
 const CSV_TABLE_ROW_LIMIT = 5000;
+const CSV_ROW_NUM_WIDTH = 44;
+const CSV_COL_MIN_WIDTH = 56;
 
 function viewOptionsFor(fmt) {
     return fmt && (fmt.table || fmt.id === 'csv') ? CSV_VIEWS : VIEWS;
@@ -1299,7 +1301,9 @@ function createCsvTableView(doc) {
     meta.className = 'csv-table-meta';
     const hint = document.createElement('span');
     hint.className = 'csv-table-hint';
-    hint.textContent = doc.large ? '文件超过 10 MB，表格只读' : '点击单元格编辑，Enter 确认，Esc 取消';
+    hint.textContent = doc.large
+        ? '文件超过 10 MB，表格只读；可拖表头边缘调列宽'
+        : '点击单元格编辑；拖表头边缘调列宽；Enter 确认，Esc 取消';
     bar.append(meta, hint);
     const scroll = document.createElement('div');
     scroll.className = 'csv-table-scroll';
@@ -1334,6 +1338,9 @@ function renderCsvTableView(doc) {
     const shown = Math.min(rows.length, CSV_TABLE_ROW_LIMIT);
     doc.tableHeaders = headers;
     doc.tableRows = rows;
+    if (!Array.isArray(doc.tableColWidths) || doc.tableColWidths.length !== headers.length) {
+        doc.tableColWidths = null;
+    }
     if (!doc.tableUndo) doc.tableUndo = [];
     if (!doc.tableRedo) doc.tableRedo = [];
     doc.tableMeta.textContent = rows.length + ' 行 × ' + headers.length + ' 列' +
@@ -1347,16 +1354,31 @@ function renderCsvTableView(doc) {
     }
     const table = document.createElement('table');
     table.className = 'csv-table';
+    if (Array.isArray(doc.tableColWidths) && doc.tableColWidths.length === headers.length) {
+        table.classList.add('fixed-layout');
+        table.appendChild(buildCsvColgroup(doc.tableColWidths));
+        table.style.width = (CSV_ROW_NUM_WIDTH + doc.tableColWidths.reduce((sum, w) => sum + w, 0)) + 'px';
+    }
     const thead = document.createElement('thead');
     const headRow = document.createElement('tr');
     const corner = document.createElement('th');
     corner.className = 'csv-rownum';
     corner.textContent = '#';
     headRow.appendChild(corner);
-    for (const header of headers) {
+    for (let col = 0; col < headers.length; col++) {
+        const header = headers[col];
         const th = document.createElement('th');
-        th.textContent = header === '' ? '(空列名)' : header;
+        th.className = 'csv-col-head';
         th.title = header;
+        const label = document.createElement('span');
+        label.className = 'csv-head-text';
+        label.textContent = header === '' ? '(空列名)' : header;
+        const handle = document.createElement('span');
+        handle.className = 'csv-col-resize';
+        handle.title = '拖动调整列宽';
+        handle.dataset.col = String(col);
+        handle.addEventListener('pointerdown', (e) => startCsvColumnResize(doc, col, e));
+        th.append(label, handle);
         headRow.appendChild(th);
     }
     thead.appendChild(headRow);
@@ -1396,6 +1418,82 @@ function renderCsvTableView(doc) {
     scroll.appendChild(table);
     scroll.scrollTop = keepTop;
     scroll.scrollLeft = keepLeft;
+}
+
+function buildCsvColgroup(widths) {
+    const group = document.createElement('colgroup');
+    group.className = 'csv-colgroup';
+    const rowCol = document.createElement('col');
+    rowCol.style.width = CSV_ROW_NUM_WIDTH + 'px';
+    group.appendChild(rowCol);
+    for (const width of widths) {
+        const col = document.createElement('col');
+        col.style.width = width + 'px';
+        group.appendChild(col);
+    }
+    return group;
+}
+
+function applyCsvColumnLayout(doc) {
+    if (!doc || doc !== file || !doc.tableScroll || !doc.tableColWidths) return;
+    const table = doc.tableScroll.querySelector('table.csv-table');
+    if (!table) return;
+    const headers = doc.tableHeaders || [];
+    if (doc.tableColWidths.length !== headers.length) return;
+    table.classList.add('fixed-layout');
+    let group = table.querySelector('colgroup.csv-colgroup');
+    if (!group || group.children.length !== doc.tableColWidths.length + 1) {
+        if (group) group.remove();
+        group = buildCsvColgroup(doc.tableColWidths);
+        table.insertBefore(group, table.firstChild);
+    } else {
+        for (let i = 0; i < doc.tableColWidths.length; i++) {
+            group.children[i + 1].style.width = doc.tableColWidths[i] + 'px';
+        }
+    }
+    table.style.width = (CSV_ROW_NUM_WIDTH + doc.tableColWidths.reduce((sum, w) => sum + w, 0)) + 'px';
+}
+
+function freezeCsvColumnWidths(doc) {
+    if (!doc || doc !== file || !doc.tableScroll) return;
+    const headers = doc.tableHeaders || [];
+    if (!headers.length) return;
+    if (Array.isArray(doc.tableColWidths) && doc.tableColWidths.length === headers.length) return;
+    const ths = Array.from(doc.tableScroll.querySelectorAll('thead th.csv-col-head'));
+    if (ths.length !== headers.length) return;
+    doc.tableColWidths = ths.map((th) => Math.max(CSV_COL_MIN_WIDTH, Math.round(th.getBoundingClientRect().width)));
+    applyCsvColumnLayout(doc);
+}
+
+function startCsvColumnResize(doc, colIndex, e) {
+    if (!doc || doc !== file || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    freezeCsvColumnWidths(doc);
+    if (!doc.tableColWidths || !doc.tableColWidths[colIndex]) return;
+    try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+    } catch (err) {}
+    const startX = e.clientX;
+    const startWidth = doc.tableColWidths[colIndex];
+    const onMove = (ev) => {
+        const next = Math.max(CSV_COL_MIN_WIDTH, Math.round(startWidth + ev.clientX - startX));
+        if (next === doc.tableColWidths[colIndex]) return;
+        doc.tableColWidths[colIndex] = next;
+        applyCsvColumnLayout(doc);
+    };
+    const cleanup = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', cleanup);
+        window.removeEventListener('pointercancel', cleanup);
+        window.removeEventListener('blur', cleanup);
+        document.body.classList.remove('csv-col-resizing');
+    };
+    document.body.classList.add('csv-col-resizing');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', cleanup);
+    window.addEventListener('pointercancel', cleanup);
+    window.addEventListener('blur', cleanup);
 }
 
 function onCsvCellKeyDown(doc, e) {
