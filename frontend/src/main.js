@@ -8,6 +8,9 @@ import {aceModeFor, detectFormat, formats, isSupportedFile} from './formats.js';
 import {createExplorer} from './explorer.js';
 import {createContextMenu} from './contextmenu.js';
 
+const UNLOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2.4 2.4 0 0 1 10.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
+const LOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2 2 0 0 1 10 5.6V7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
+
 const hasWails = !!(window.go && window.go.main && window.go.main.App);
 
 const sampleJson = `{
@@ -244,6 +247,7 @@ const els = {
     sbModeList: document.getElementById('sb-mode-list'),
     sbModeTree: document.getElementById('sb-mode-tree'),
     btnSidebar: document.getElementById('btn-sidebar'),
+    lock: document.getElementById('btn-lock'),
 };
 
 let editor = null;
@@ -343,6 +347,7 @@ const defaultSettings = {
     editorFont: 13,
     codeWrap: false,
     mdLineNumbers: false,
+    readOnlyMode: false,
     theme: 'dark',
     uiFont: 'inter',
     uiCjkFont: 'auto',
@@ -370,6 +375,7 @@ if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 settings.showSidebar = !!settings.showSidebar;
 settings.codeWrap = !!settings.codeWrap;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
+settings.readOnlyMode = !!settings.readOnlyMode;
 settings.sidebarFont = Number(settings.sidebarFont);
 if (!Number.isFinite(settings.sidebarFont)) settings.sidebarFont = 12.5;
 settings.sidebarFont = Math.min(20, Math.max(10, settings.sidebarFont));
@@ -493,6 +499,82 @@ function toggleCodeWrap() {
     flash('代码视图自动换行：' + (settings.codeWrap ? '开' : '关'));
 }
 
+let appliedReadOnly = null;
+
+function updateLockButton() {
+    if (!els.lock) return;
+    const locked = !!settings.readOnlyMode;
+    els.lock.classList.toggle('locked', locked);
+    els.lock.setAttribute('aria-pressed', String(locked));
+    els.lock.title = locked ? '解除只读锁定' : '只读锁定';
+    els.lock.innerHTML = locked ? LOCK_ICON : UNLOCK_ICON;
+}
+
+function installReadOnlyGuards(pane) {
+    if (!pane) return;
+    const inTreeField = (target) => target && target.closest && target.closest('.jsoneditor-field, .jsoneditor-value');
+    pane.addEventListener('beforeinput', (e) => {
+        if (!settings.readOnlyMode || !inTreeField(e.target)) return;
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
+    pane.addEventListener('keydown', (e) => {
+        if (!settings.readOnlyMode || !inTreeField(e.target)) return;
+        const key = e.key;
+        if ((e.ctrlKey || e.metaKey) && ['c', 'C', 'a', 'A'].includes(key)) return;
+        if (['Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(key)) return;
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
+    for (const type of ['paste', 'cut', 'drop']) {
+        pane.addEventListener(type, (e) => {
+            if (!settings.readOnlyMode || !inTreeField(e.target)) return;
+            e.preventDefault();
+            e.stopPropagation();
+        }, true);
+    }
+    pane.addEventListener('contextmenu', (e) => {
+        if (!settings.readOnlyMode) return;
+        if (e.target.closest && e.target.closest('.jsoneditor-tree')) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
+}
+
+function applyReadOnlyToDoc(doc) {
+    if (!doc || !doc.editor) return;
+    const locked = !!settings.readOnlyMode;
+    if (doc.editor.aceEditor) {
+        try {
+            doc.editor.aceEditor.setReadOnly(!!(doc.large || doc.binary || locked));
+        } catch (e) {}
+    }
+    if (doc.pane) {
+        doc.pane.classList.toggle('app-readonly', locked);
+        const textarea = doc.pane.querySelector('textarea.jsoneditor-text');
+        if (textarea) textarea.readOnly = locked;
+        doc.pane.querySelectorAll('.jsoneditor-tree input, .jsoneditor-tree select').forEach((control) => {
+            control.disabled = locked;
+        });
+        if (doc.format && doc.format.table && doc.tableEl && doc.pane.classList.contains('table-active')) {
+            renderCsvTableView(doc);
+        }
+    }
+}
+
+function applyReadOnlyMode() {
+    updateLockButton();
+    const locked = !!settings.readOnlyMode;
+    if (appliedReadOnly === locked) return;
+    appliedReadOnly = locked;
+    document.documentElement.classList.toggle('app-locked', locked);
+    for (const doc of docs) applyReadOnlyToDoc(doc);
+    if (file) updateStatus();
+    if (locked) cancelAutoSave();
+    else if (settings.autoSave && dirty) scheduleAutoSave();
+}
+
 function applySettings() {
     document.documentElement.classList.toggle('keycol-natural', !settings.fixedKeys);
     applyTheme();
@@ -528,11 +610,12 @@ function applySettings() {
         } catch (e) {}
     }
     applyCodeWrap();
+    applyReadOnlyMode();
     try {
         localStorage.setItem(settingsKey, JSON.stringify(settings));
     } catch (e) {}
-    if (settings.autoSave && dirty) scheduleAutoSave();
-    else if (!settings.autoSave) cancelAutoSave();
+    if (settings.autoSave && dirty && !settings.readOnlyMode) scheduleAutoSave();
+    else cancelAutoSave();
 }
 
 function openDialogEl(dlg) {
@@ -1059,7 +1142,7 @@ function cancelAutoSave() {
 
 function scheduleAutoSave() {
     cancelAutoSave();
-    if (!settings.autoSave || !dirty || !file || file.large || file.binary || !file.path || !editor) return;
+    if (!settings.autoSave || settings.readOnlyMode || !dirty || !file || file.large || file.binary || !file.path || !editor) return;
     autoSaveTimer = setTimeout(() => {
         autoSaveTimer = 0;
         if (dirty && file && settings.autoSave) save({auto: true});
@@ -1152,7 +1235,7 @@ function textArea() {
 }
 
 function doUndo() {
-    if (!editor) return;
+    if (!editor || settings.readOnlyMode) return;
     if (currentMode === 'tree') treeHistory('undo');
     else if (currentMode === 'table') tableHistory('undo');
     else if (currentMode === 'code' && editor.aceEditor) editor.aceEditor.execCommand('undo');
@@ -1166,7 +1249,7 @@ function doUndo() {
 }
 
 function doRedo() {
-    if (!editor) return;
+    if (!editor || settings.readOnlyMode) return;
     if (currentMode === 'tree') treeHistory('redo');
     else if (currentMode === 'table') tableHistory('redo');
     else if (currentMode === 'code' && editor.aceEditor) editor.aceEditor.execCommand('redo');
@@ -1195,7 +1278,7 @@ function updateStatus() {
     if (!file) return;
     const fmt = file.format;
     const view = viewLabel(currentMode);
-    els.stMode.textContent = fmt.name + ' · ' + view + (file.large || file.binary ? ' · 只读' : '');
+    els.stMode.textContent = fmt.name + ' · ' + view + (file.large || file.binary || settings.readOnlyMode ? ' · 只读' : '');
     let sizeText = fmtSize(file.size);
     if (file.image && currentMode === 'image' && file.imageWidth) {
         sizeText += ' · ' + file.imageWidth + ' × ' + file.imageHeight;
@@ -1275,6 +1358,7 @@ function applyAceMode() {
         container.classList.add('ace-mode-' + want.split('/').pop());
         const pureJson = !!(file && file.format && file.format.id === 'json' && /\.json$/i.test(file.name || ''));
         editor.aceEditor.session.setUseWorker(pureJson);
+        editor.aceEditor.setReadOnly(!!(file && (file.large || file.binary)) || !!settings.readOnlyMode);
         editor.aceEditor.setFontSize(settings.editorFont);
         editor.aceEditor.session.setUseWrapMode(!!settings.codeWrap);
         if (file && file.format) {
@@ -1341,6 +1425,7 @@ function createDocEditor(doc) {
     const pane = document.createElement('div');
     pane.className = 'jsoneditor-pane active';
     els.editor.appendChild(pane);
+    installReadOnlyGuards(pane);
     doc.loading = true;
     const ed = new JSONEditor(pane, {
         mode: startMode,
@@ -1370,6 +1455,7 @@ function createDocEditor(doc) {
                 if (!doc.editor || doc.mode !== mode) return;
                 doc.text = doc.editor.getText();
                 if (!doc.dirty) doc.bases[mode] = doc.text;
+                applyReadOnlyToDoc(doc);
             }, 0);
         },
         onError(err) {
@@ -1383,7 +1469,7 @@ function createDocEditor(doc) {
     } else {
         ed.set(initialValue);
     }
-    if ((doc.large || doc.binary) && ed.aceEditor) {
+    if ((doc.large || doc.binary || settings.readOnlyMode) && ed.aceEditor) {
         ed.aceEditor.setReadOnly(true);
     }
     if (ed.aceEditor) {
@@ -1400,6 +1486,7 @@ function createDocEditor(doc) {
     if (previewRequested) showMarkdownPreview(doc);
     if (imageRequested) showImageView(doc);
     if (!doc.dirty) doc.bases[doc.mode] = doc.text;
+    applyReadOnlyToDoc(doc);
     doc.content = null;
     doc.loading = false;
 }
@@ -1498,7 +1585,7 @@ function renderCsvTableView(doc) {
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
     const fragment = document.createDocumentFragment();
-    const editable = !doc.large && !doc.binary;
+    const editable = !doc.large && !doc.binary && !settings.readOnlyMode;
     for (let i = 0; i < shown; i++) {
         const row = rows[i] || [];
         const tr = document.createElement('tr');
@@ -1687,7 +1774,7 @@ function applyCsvTableText(doc, text) {
 }
 
 function commitCsvCell(doc, td) {
-    if (!doc || doc !== file || doc.large || !doc.tableRows || !doc.tableHeaders || !td) return;
+    if (!doc || doc !== file || doc.large || settings.readOnlyMode || !doc.tableRows || !doc.tableHeaders || !td) return;
     const rowIndex = Number(td.dataset.row);
     const colIndex = Number(td.dataset.col);
     const row = doc.tableRows[rowIndex];
@@ -2398,11 +2485,11 @@ function showEditorMenu(x, y) {
     const code = currentMode === 'code' && !!editor && !!editor.aceEditor;
     const text = currentMode === 'text';
     const editable = code || text;
-    const readonly = !!file.binary || !!file.large;
+    const readonly = !!file.binary || !!file.large || !!settings.readOnlyMode;
     const hasPath = !!file.path;
     ctxMenu.open([
-        {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', action: doUndo},
-        {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', action: doRedo},
+        {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', disabled: readonly, action: doUndo},
+        {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', disabled: readonly, action: doRedo},
         {sep: true},
         {label: '剪切', shortcut: 'Ctrl+X', icon: 'E8C6', disabled: !editable || readonly, action: ctxCut},
         {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !editable, action: ctxCopy},
@@ -2642,6 +2729,16 @@ function initExplorer() {
     explorer.setMode(settings.sidebarMode, false);
     applySidebarUI();
     if (els.btnSidebar) els.btnSidebar.addEventListener('click', () => toggleSidebar());
+    if (els.lock) els.lock.addEventListener('click', () => {
+        settings.readOnlyMode = !settings.readOnlyMode;
+        applySettings();
+        if (settings.readOnlyMode) {
+            const hasDirty = docs.some((doc) => doc.dirty);
+            flash(hasDirty ? '已切换为只读；有未保存修改，解锁后可保存' : '已切换为只读');
+        } else {
+            flash('已解除只读锁定');
+        }
+    });
 }
 
 let untitledSeq = 0;
@@ -2764,6 +2861,10 @@ async function reloadActive() {
 
 async function saveDoc(doc, opts = {}) {
     if (!doc || doc.large || doc.binary || !doc.editor) return false;
+    if (settings.readOnlyMode) {
+        if (!opts.auto && !opts.silent) flash('只读锁定中，解锁后才能保存', true);
+        return false;
+    }
     if (doc === file) flushCsvCellEditor();
     const fmt = doc.format;
     const fs = getFormatSettings(fmt.id);
@@ -2973,6 +3074,10 @@ function formatDocument() {
     if (!editor || !file) return;
     flushCsvCellEditor();
     const doc = file;
+    if (settings.readOnlyMode) {
+        flash('只读锁定中，解锁后才能格式化', true);
+        return;
+    }
     if (doc.large || doc.binary || (doc.format && doc.format.rawOnly)) {
         flash('当前文件不支持格式化', true);
         return;

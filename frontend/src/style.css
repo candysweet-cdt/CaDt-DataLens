@@ -1441,6 +1441,32 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 }
 #st-message.error { color: var(--red); }
 #st-dirty { color: var(--orange); }
+.status-lock {
+    flex: none;
+    width: 22px;
+    height: 20px;
+    display: grid;
+    place-items: center;
+    margin-left: -6px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    cursor: default;
+}
+.status-lock svg { width: 14px; height: 14px; }
+.status-lock:hover { background: var(--hover); color: var(--text); }
+.status-lock:focus { outline: none; }
+.status-lock.locked { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+
+.jsoneditor-pane.app-readonly .jsoneditor-append,
+.jsoneditor-pane.app-readonly .jsoneditor-insert,
+.jsoneditor-pane.app-readonly .jsoneditor-remove,
+.jsoneditor-pane.app-readonly .jsoneditor-dragarea,
+.jsoneditor-pane.app-readonly .jsoneditor-duplicate { display: none !important; }
+.jsoneditor-pane.app-readonly .jsoneditor-tree input,
+.jsoneditor-pane.app-readonly .jsoneditor-tree select { pointer-events: none; }
 
 /* ---- jsoneditor dark theme ---- */
 
