@@ -82,6 +82,23 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 | 调整编辑器字号 | `Ctrl+滚轮` |
 | 标签栏横向滚动 | 鼠标滚轮悬停在标签栏 |
 
+## 命令行
+
+支持直接指定文件和行号，打开后切到代码视图（CSV 为文本视图）并整行选中：
+
+```bat
+CaDt-DataLens.exe "D:\data\sample.json:42"
+CaDt-DataLens.exe "D:\data\sample.json:42:8"
+CaDt-DataLens.exe "D:\data\sample.json" --line 42
+CaDt-DataLens.exe --line 42 "D:\data\sample.json"
+CaDt-DataLens.exe -g "D:\data\sample.json:42"
+```
+
+- 行、列从 1 开始；列可省略。
+- 支持 `--line/-l`、`--column/-c`、`--goto/-g`。
+- 可一次传多个文件；图片和二进制文件会忽略行号。
+- 程序已在运行时，新命令会转发到现有窗口并定位。
+
 ## 支持的文件类型
 
 | 类型 | 扩展名 | 默认处理 |
@@ -132,7 +149,7 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:5173/`。可用的 mock 场景：`?jsonl`、`?yaml`、`?xml`、`?csv`、`?text`、`?image`、`?large`、`?invalid`、`?multi`、`?empty`、`?gbk`。mock 路径使用 `mock://samples/`，不会读写真实磁盘文件。
+打开 `http://localhost:5173/`。可用的 mock 场景：`?jsonl`、`?yaml`、`?xml`、`?csv`、`?text`、`?image`、`?line`、`?large`、`?invalid`、`?multi`、`?empty`、`?gbk`。mock 路径使用 `mock://samples/`，不会读写真实磁盘文件。
 
 ## 项目结构
 

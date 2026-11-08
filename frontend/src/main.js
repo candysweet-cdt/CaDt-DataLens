@@ -108,6 +108,11 @@ const mockBackend = {
         }
         return [mockDir + 'sample.json'];
     },
+    async GetStartupTargets() {
+        if (mockScenario.has('line')) return [{path: mockDir + 'sample.json', line: 5, column: 3}];
+        const files = await this.GetStartupFiles();
+        return files.map((path) => ({path, line: 0, column: 0}));
+    },
     async OpenFile(path, enc) {
         window.__mockLastOpenEnc = enc;
         const dirKey = String(path || '').replace(/\/+$/, '');
@@ -270,6 +275,7 @@ window.__lens = {
     get closedTabs() { return closedTabs; },
     openCloseConfirm,
     openPaths,
+    openTargets,
     openFolderWorkspace,
     reopenClosedTab,
     setTheme,
@@ -2748,6 +2754,62 @@ async function openPath(path) {
     await openPaths([path]);
 }
 
+function waitUntil(check, timeout = 1200) {
+    return new Promise((resolve) => {
+        const start = Date.now();
+        const tick = () => {
+            try {
+                if (check()) return resolve(true);
+            } catch (e) {}
+            if (Date.now() - start >= timeout) return resolve(false);
+            setTimeout(tick, 30);
+        };
+        tick();
+    });
+}
+
+async function selectLineInDoc(doc, line, column = 0) {
+    if (!doc || doc.binary || !doc.editor) return;
+    if (doc !== file) await activateDoc(doc);
+    const mode = doc.format && doc.format.table ? 'text' : 'code';
+    if (currentMode !== mode) switchMode(mode);
+    if (mode === 'code') {
+        const ready = await waitUntil(() => doc.editor && doc.editor.aceEditor);
+        if (!ready) return;
+        const ace = doc.editor.aceEditor;
+        const lineCount = ace.session.getLength();
+        const lineNo = Math.max(1, Math.min(Number(line) || 1, lineCount));
+        ace.gotoLine(lineNo, Math.max(0, (Number(column) || 1) - 1), false);
+        ace.selection.selectLine();
+        ace.scrollToLine(lineNo, true, true, () => {});
+        ace.focus();
+        return;
+    }
+    const ready = await waitUntil(() => doc.pane && doc.pane.querySelector('textarea.jsoneditor-text'));
+    if (!ready) return;
+    const textarea = doc.pane.querySelector('textarea.jsoneditor-text');
+    const lines = textarea.value.split('\n');
+    const index = Math.max(0, Math.min((Number(line) || 1) - 1, lines.length - 1));
+    let start = 0;
+    for (let i = 0; i < index; i++) start += lines[i].length + 1;
+    const end = start + lines[index].length;
+    textarea.focus();
+    textarea.setSelectionRange(start, end);
+    const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
+    textarea.scrollTop = Math.max(0, index * lineHeight - textarea.clientHeight / 2);
+}
+
+async function openTargets(targets) {
+    const list = Array.isArray(targets) ? targets : [];
+    for (const target of list) {
+        if (!target || !target.path) continue;
+        await openPaths([target.path]);
+        if (!target.line) continue;
+        const doc = findDocByPath(target.path);
+        if (doc) await selectLineInDoc(doc, target.line, target.column);
+    }
+}
+
 async function openDialog() {
     try {
         const paths = await backend.OpenFilesDialog();
@@ -3661,6 +3723,7 @@ for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
 }
 
 if (rt) {
+    rt.EventsOn('open-targets', (targets) => openTargets(targets));
     rt.EventsOn('open-files', (paths) => openPaths(paths));
     rt.EventsOn('confirm-close', () => {
         flushCsvCellEditor();
@@ -3701,6 +3764,16 @@ initExplorer();
             }
         } catch (e) {}
     }
-    const files = await backend.GetStartupFiles();
-    if (files && files.length) await openPaths(files);
+    let targets = [];
+    if (backend.GetStartupTargets) {
+        try {
+            targets = await backend.GetStartupTargets();
+        } catch (e) {}
+    }
+    if (targets && targets.length) {
+        await openTargets(targets);
+    } else {
+        const files = await backend.GetStartupFiles();
+        if (files && files.length) await openPaths(files);
+    }
 })();

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -29,10 +30,16 @@ const (
 )
 
 type App struct {
-	ctx          context.Context
-	startupFiles []string
-	dirty        bool
-	forceClose   bool
+	ctx            context.Context
+	startupTargets []OpenTarget
+	dirty          bool
+	forceClose     bool
+}
+
+type OpenTarget struct {
+	Path   string `json:"path"`
+	Line   int    `json:"line,omitempty"`
+	Column int    `json:"column,omitempty"`
 }
 
 type FileData struct {
@@ -56,17 +63,17 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.startupFiles = pathArgs(os.Args[1:])
+	a.startupTargets = parseOpenTargets(os.Args[1:])
 	runtime.OnFileDrop(ctx, func(x, y int, paths []string) {
-		if files := pathArgs(paths); len(files) > 0 {
-			runtime.EventsEmit(ctx, "open-files", files)
+		if targets := parseOpenTargets(paths); len(targets) > 0 {
+			runtime.EventsEmit(ctx, "open-targets", targets)
 		}
 	})
 }
 
 func (a *App) secondInstance(data options.SecondInstanceData) {
-	if files := pathArgs(data.Args); len(files) > 0 {
-		runtime.EventsEmit(a.ctx, "open-files", files)
+	if targets := parseOpenTargets(data.Args); len(targets) > 0 {
+		runtime.EventsEmit(a.ctx, "open-targets", targets)
 	}
 	runtime.WindowUnminimise(a.ctx)
 	runtime.WindowShow(a.ctx)
@@ -93,11 +100,121 @@ func firstPathArg(args []string) string {
 	return ""
 }
 
-func (a *App) GetStartupFiles() []string {
-	if a.startupFiles == nil {
-		return []string{}
+func positiveInt(value string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n <= 0 {
+		return 0
 	}
-	return a.startupFiles
+	return n
+}
+
+func splitPathLine(arg string) (string, int, int, bool) {
+	lastColon := strings.LastIndex(arg, ":")
+	if lastColon <= 0 {
+		return "", 0, 0, false
+	}
+	line, err := strconv.Atoi(arg[lastColon+1:])
+	if err != nil || line <= 0 {
+		return "", 0, 0, false
+	}
+	prefix := arg[:lastColon]
+	if _, err := os.Stat(prefix); err == nil {
+		return prefix, line, 0, true
+	}
+	prevColon := strings.LastIndex(prefix, ":")
+	if prevColon <= 0 {
+		return "", 0, 0, false
+	}
+	middle, err := strconv.Atoi(prefix[prevColon+1:])
+	if err != nil || middle <= 0 {
+		return "", 0, 0, false
+	}
+	path := prefix[:prevColon]
+	if _, err := os.Stat(path); err == nil {
+		return path, middle, line, true
+	}
+	return "", 0, 0, false
+}
+
+func parseOpenTargets(args []string) []OpenTarget {
+	exe, _ := os.Executable()
+	targets := []OpenTarget{}
+	pendingLine, pendingColumn := 0, 0
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" || strings.EqualFold(arg, exe) || arg == "--new-window" {
+			continue
+		}
+		if arg == "--goto" || arg == "-g" {
+			continue
+		}
+		if strings.HasPrefix(arg, "--line=") {
+			pendingLine = positiveInt(strings.TrimPrefix(arg, "--line="))
+			continue
+		}
+		if arg == "--line" || arg == "-l" {
+			if i+1 < len(args) {
+				i++
+				pendingLine = positiveInt(args[i])
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--column=") {
+			pendingColumn = positiveInt(strings.TrimPrefix(arg, "--column="))
+			continue
+		}
+		if arg == "--column" || arg == "-c" {
+			if i+1 < len(args) {
+				i++
+				pendingColumn = positiveInt(args[i])
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		path := arg
+		line, column := pendingLine, pendingColumn
+		if _, err := os.Stat(path); err != nil {
+			if p, l, c, ok := splitPathLine(arg); ok {
+				path = p
+				line = l
+				if c > 0 {
+					column = c
+				}
+			}
+		}
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		targets = append(targets, OpenTarget{Path: path, Line: line, Column: column})
+		pendingLine, pendingColumn = 0, 0
+	}
+	if len(targets) > 0 {
+		last := &targets[len(targets)-1]
+		if pendingLine > 0 && last.Line == 0 {
+			last.Line = pendingLine
+		}
+		if pendingColumn > 0 && last.Column == 0 {
+			last.Column = pendingColumn
+		}
+	}
+	return targets
+}
+
+func (a *App) GetStartupTargets() []OpenTarget {
+	if a.startupTargets == nil {
+		return []OpenTarget{}
+	}
+	return a.startupTargets
+}
+
+func (a *App) GetStartupFiles() []string {
+	files := make([]string, 0, len(a.startupTargets))
+	for _, target := range a.startupTargets {
+		files = append(files, target.Path)
+	}
+	return files
 }
 
 func (a *App) OpenFile(path string, enc string) (*FileData, error) {

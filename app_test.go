@@ -342,6 +342,52 @@ func TestPathArgsKeepsFilesAndDirs(t *testing.T) {
 	}
 }
 
+func TestParseOpenTargets(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.json")
+	b := filepath.Join(dir, "b.json")
+	for _, f := range []string{a, b} {
+		if err := os.WriteFile(f, []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exe, _ := os.Executable()
+	cases := []struct {
+		name  string
+		args  []string
+		path  string
+		line  int
+		col   int
+		count int
+	}{
+		{"plain", []string{a}, a, 0, 0, 1},
+		{"line-suffix", []string{a + ":12"}, a, 12, 0, 1},
+		{"line-column", []string{a + ":12:7"}, a, 12, 7, 1},
+		{"line-flag-before", []string{"--line", "9", a}, a, 9, 0, 1},
+		{"line-flag-after", []string{a, "--line=8"}, a, 8, 0, 1},
+		{"goto", []string{"-g", a + ":3"}, a, 3, 0, 1},
+		{"column-and-line", []string{"--column", "4", "--line", "6", a}, a, 6, 4, 1},
+		{"skip-exe-and-flags", []string{exe, "-flag", a}, a, 0, 0, 1},
+		{"invalid-number", []string{a + ":abc"}, "", 0, 0, 0},
+		{"missing-file", []string{filepath.Join(dir, "missing.json") + ":2"}, "", 0, 0, 0},
+		{"multiple", []string{a + ":2", b + ":3"}, a, 2, 0, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseOpenTargets(tc.args)
+			if len(got) != tc.count {
+				t.Fatalf("parseOpenTargets(%v) count = %d, want %d: %+v", tc.args, len(got), tc.count, got)
+			}
+			if tc.count == 0 {
+				return
+			}
+			if got[0].Path != tc.path || got[0].Line != tc.line || got[0].Column != tc.col {
+				t.Fatalf("parseOpenTargets(%v) first = %+v, want %s:%d:%d", tc.args, got[0], tc.path, tc.line, tc.col)
+			}
+		})
+	}
+}
+
 func TestOpenFileDetectsDirectory(t *testing.T) {
 	dir := t.TempDir()
 	data, err := NewApp().OpenFile(dir, "auto")
