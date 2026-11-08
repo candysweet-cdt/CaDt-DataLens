@@ -16,7 +16,7 @@
 | `yaml/` | 基本 YAML、10 层嵌套 YAML、应用配置（`.yml`） |
 | `xml/` | 带属性的 XML、10 层嵌套 XML、SVG 示例 |
 | `csv/` | 基本 CSV、带逗号/引号/换行的 CSV、500 行 CSV、TSV |
-| `text/` | 文本/代码扩展各一份：txt、log、conf、html、htm、css、js、ts、py、sh、bat、ps1、go、java、kt、lua、sql；`config.toml`、`app.properties`、`settings.ini`、`device.cfg` 以树视图打开；`markdown-demo.md` 演示预览、代码块高亮和数学公式 |
+| `text/` | 文本/代码扩展各一份：txt、log、conf、html、htm、css、js、ts、py、sh、bat、ps1、go、java、kt、lua、sql；`go.mod` / `go.sum`、`main.cpp`、`Program.cs`、`lib.rs`、`index.php`、`Dockerfile`、`Makefile`、`CMakeLists.txt`、`.gitignore` 演示对应语言的代码视图语法高亮；`config.toml`、`app.properties`、`settings.ini`、`device.cfg` 以树视图打开；`markdown-demo.md` 演示预览、代码块高亮和数学公式 |
 | `binary/` | PNG、JPEG/JPG/JFIF、GIF、BMP、WebP、ICO、TIF/TIFF、AVIF；`magic-image.dat` 是改扩展名的 PNG，用于测试文件头识别；`sample.bin` 是包含控制字节的任意数据，会按二进制十六进制视图展示 |
 
 ## 说明

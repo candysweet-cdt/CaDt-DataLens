@@ -71,7 +71,7 @@ const EXTENSIONS = {
     ps1: 'ps', psm1: 'ps',
     bat: 'bat', cmd: 'bat',
     sql: 'sql',
-    go: 'go',
+    go: 'go', mod: 'go', work: 'go', sum: 'go',
     java: 'java',
     kt: 'kotlin', kts: 'kotlin',
     lua: 'lua',

@@ -84,6 +84,28 @@ const sampleJsonl = `{"id":"spacetime:cable","name":"线缆","count":64,"tags":[
 {"id":"spacetime:tank","name":"储罐","count":4,"meta":{"tier":1,"capacity":8000}}
 `;
 
+const sampleGoMod = `module candysweet.example/datalens-samples
+
+go 1.22
+
+require (
+\tgithub.com/pkg/errors v0.9.1
+\tgolang.org/x/text v0.14.0
+)
+
+require github.com/google/uuid v1.6.0 // indirect
+
+replace golang.org/x/text => "golang.org/x/text" v0.13.0
+
+exclude github.com/pkg/errors v0.8.1
+`;
+
+const sampleGoSum = `github.com/google/uuid v1.6.0 h1:GHsaKmPqE5XjG0dJXuXY9X2cQ8vY0McZn2PQ3XW9sL4=
+github.com/google/uuid v1.6.0/go.mod h1:UHvbB7d8MzUiGb3ZPQTb5s68v2mMB6dWX0OcdSFvnlM=
+github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTqv4=
+github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+G2So6ik+0qS4yXaDcB7MSkZKcHbnS8k=
+`;
+
 const mockScenario = new URLSearchParams(location.search);
 const mockDir = 'mock://samples/';
 const mockHex = '00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|';
@@ -97,6 +119,8 @@ const mockFiles = {
     jsonl: {name: 'sample.jsonl', content: sampleJsonl},
     toml: {name: 'sample.toml', content: sampleToml},
     ini: {name: 'sample.ini', content: sampleIni},
+    gomod: {name: 'go.mod', content: sampleGoMod},
+    gosum: {name: 'go.sum', content: sampleGoSum},
 };
 const mockTree = {
     'mock://samples': [
@@ -168,7 +192,7 @@ const mockBackend = {
         if (mockScenario.has('image')) return [mockDir + 'sample.png'];
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
         if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
-        for (const key of ['yaml', 'xml', 'csv', 'text', 'jsonl', 'toml', 'ini']) {
+        for (const key of ['yaml', 'xml', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum']) {
             if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
         }
         return [mockDir + 'sample.json'];
@@ -892,7 +916,6 @@ function selectSettingsPane(pane) {
     const group = document.getElementById('snav-formats');
     if (group) {
         const inFormats = pane === 'formats' || String(pane).startsWith('fmt-');
-        group.classList.toggle('has-active', inFormats);
         if (inFormats && !group.classList.contains('expanded')) {
             group.classList.add('expanded');
             const parent = group.querySelector('.snav-parent');

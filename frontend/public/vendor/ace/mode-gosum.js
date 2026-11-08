@@ -1,0 +1,7 @@
+ace.define("ace/mode/gosum_highlight_rules",["require","exports","module","ace/lib/oop","ace/mode/text_highlight_rules"],function(require,exports,module){"use strict";var oop=require("../lib/oop"),TextHighlightRules=require("./text_highlight_rules").TextHighlightRules,GoSumHighlightRules=function(){this.$rules={start:[{token:"comment",regex:/\/\/.*$/},{token:"constant.numeric",regex:/\bv\d+(?:\.\d+)*(?:[-+][\w.-]+)?(?:\/go\.mod)?\b/},{token:"comment",regex:/\bh[0-9]+:[A-Za-z0-9+\/=]+/}]},this.normalizeRules()};oop.inherits(GoSumHighlightRules,TextHighlightRules),exports.GoSumHighlightRules=GoSumHighlightRules}),ace.define("ace/mode/gosum",["require","exports","module","ace/lib/oop","ace/mode/text","ace/mode/gosum_highlight_rules"],function(require,exports,module){"use strict";var oop=require("../lib/oop"),TextMode=require("./text").Mode,HighlightRules=require("./gosum_highlight_rules").GoSumHighlightRules,Mode=function(){this.HighlightRules=HighlightRules,this.$behaviour=this.$defaultBehaviour};oop.inherits(Mode,TextMode),function(){this.$id="ace/mode/gosum"}.call(Mode.prototype),exports.Mode=Mode});                (function() {
+                    ace.require(["ace/mode/gosum"], function(m) {
+                        if (typeof module == "object" && typeof exports == "object" && module) {
+                            module.exports = m;
+                        }
+                    });
+                })();

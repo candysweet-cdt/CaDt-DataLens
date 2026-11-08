@@ -201,7 +201,7 @@ export const formats = {
     markdown: {
         id: 'markdown',
         name: 'Markdown',
-        extensions: ['md', 'markdown'],
+        extensions: ['md', 'markdown', 'mdx'],
         aceMode: 'markdown',
         rawOnly: true,
         preview: true,
@@ -210,7 +210,15 @@ export const formats = {
         id: 'text',
         name: '纯文本',
         extensions: ['txt', 'log', 'conf',
-            'html', 'htm', 'css', 'js', 'ts', 'py', 'sh', 'bat', 'ps1', 'go', 'java', 'kt', 'lua', 'sql'],
+            'html', 'htm', 'xhtml', 'css', 'scss', 'less',
+            'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts', 'cts', 'vue',
+            'py', 'pyw', 'pyi', 'sh', 'bash', 'zsh', 'ksh', 'bat', 'cmd', 'ps1', 'psm1', 'psd1',
+            'go', 'mod', 'work', 'sum', 'java', 'kt', 'kts', 'lua', 'sql',
+            'c', 'h', 'cpp', 'cc', 'cxx', 'c++', 'hpp', 'hh', 'hxx', 'ino',
+            'cs', 'rs', 'rb', 'php', 'phtml', 'swift', 'm', 'mm', 'pl', 'pm', 't', 'r',
+            'dart', 'scala', 'sc', 'groovy', 'gradle', 'nf', 'mak', 'mk', 'cmake', 'dockerfile',
+            'diff', 'patch', 'proto', 'graphql', 'gql', 'plist', 'mdx',
+            'gitignore', 'gitattributes', 'gitmodules'],
         aceMode: 'text',
         rawOnly: true,
     },
@@ -238,6 +246,7 @@ export const imageExtensions = [
 
 export function isSupportedFile(name) {
     const base = String(name || '').split(/[\\/]/).pop();
+    if (knownFileNames.has(base.toLowerCase())) return true;
     const dot = base.lastIndexOf('.');
     if (dot < 0) return false;
     const ext = base.slice(dot + 1).toLowerCase();
@@ -278,20 +287,49 @@ export function formatName(driver) {
 
 const extensionAceModes = {
     json: 'json', jsonc: 'json5', json5: 'json5', jsonl: 'json', ndjson: 'json',
-    yaml: 'yaml', yml: 'yaml', xml: 'xml', svg: 'xml',
+    yaml: 'yaml', yml: 'yaml', xml: 'xml', svg: 'xml', xsd: 'xml', xsl: 'xml', xslt: 'xml', plist: 'xml',
     js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
-    ts: 'typescript', tsx: 'typescript',
-    py: 'python',
-    md: 'markdown', markdown: 'markdown',
-    html: 'html', htm: 'html', css: 'css',
-    sh: 'sh', bash: 'sh', zsh: 'sh', bat: 'batchfile', ps1: 'powershell',
-    go: 'golang', java: 'java', kt: 'kotlin', lua: 'lua', sql: 'sql',
+    ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
+    py: 'python', pyw: 'python', pyi: 'python',
+    md: 'markdown', markdown: 'markdown', mdx: 'markdown',
+    html: 'html', htm: 'html', xhtml: 'html', css: 'css', scss: 'scss', less: 'less',
+    sh: 'sh', bash: 'sh', zsh: 'sh', ksh: 'sh', bat: 'batchfile', cmd: 'batchfile',
+    ps1: 'powershell', psm1: 'powershell', psd1: 'powershell',
+    go: 'golang', mod: 'gomod', work: 'gomod', sum: 'gosum',
+    java: 'java', kt: 'kotlin', kts: 'kotlin', lua: 'lua', sql: 'sql',
     toml: 'toml', ini: 'ini', properties: 'properties', conf: 'ini', cfg: 'ini',
+    c: 'c_cpp', h: 'c_cpp', cpp: 'c_cpp', cc: 'c_cpp', cxx: 'c_cpp', 'c++': 'c_cpp',
+    hpp: 'c_cpp', hh: 'c_cpp', hxx: 'c_cpp', ino: 'c_cpp',
+    cs: 'csharp', rs: 'rust', rb: 'ruby', php: 'php', phtml: 'php', swift: 'swift',
+    m: 'objectivec', mm: 'objectivec', pl: 'perl', pm: 'perl', t: 'perl', r: 'r',
+    dart: 'dart', scala: 'scala', sc: 'scala', groovy: 'groovy', gradle: 'groovy', nf: 'groovy',
+    mak: 'makefile', mk: 'makefile', cmake: 'cmake', dockerfile: 'dockerfile',
+    diff: 'diff', patch: 'diff',
+    vue: 'vue', proto: 'protobuf', graphql: 'graphqlschema', gql: 'graphqlschema',
+};
+
+// 无扩展名或约定文件名按整体名匹配（base 一律小写后比较）
+const fileNameAceModes = {
+    dockerfile: 'dockerfile',
+    makefile: 'makefile', gnumakefile: 'makefile',
+    'cmakelists.txt': 'cmake',
+    jenkinsfile: 'groovy',
+    gemfile: 'ruby', rakefile: 'ruby',
+    '.gitignore': 'gitignore', '.gitattributes': 'gitignore', '.gitmodules': 'gitignore', '.dockerignore': 'gitignore',
+    '.editorconfig': 'ini', '.env': 'ini',
+    '.babelrc': 'json', '.prettierrc': 'json', '.eslintrc': 'json',
 };
 
 export function aceModeFor(fileName, driver) {
     const base = String(fileName || '').split(/[\\/]/).pop().toLowerCase();
+    const nameMode = fileNameAceModes[base] || fileNameAceModes[base.replace(/\.[^.]*$/, '')];
     const dot = base.lastIndexOf('.');
     const ext = dot < 0 ? '' : base.slice(dot + 1);
-    return 'ace/mode/' + (extensionAceModes[ext] || (driver && driver.aceMode) || 'text');
+    return 'ace/mode/' + (nameMode || extensionAceModes[ext] || (driver && driver.aceMode) || 'text');
 }
+
+const knownFileNames = new Set([
+    'dockerfile', 'makefile', 'gnumakefile', 'cmakelists.txt', 'jenkinsfile', 'gemfile', 'rakefile',
+    '.gitignore', '.gitattributes', '.gitmodules', '.dockerignore', '.editorconfig', '.env',
+    '.babelrc', '.prettierrc', '.eslintrc',
+]);
