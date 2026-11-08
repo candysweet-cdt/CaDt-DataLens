@@ -1032,6 +1032,12 @@ html, body {
     font-size: 11px;
 }
 .csv-table-hint { margin-left: auto; color: var(--muted); }
+.csv-table-zoom {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    min-width: 36px;
+    text-align: right;
+}
 .csv-table-scroll { flex: 1; min-height: 0; overflow: auto; }
 .csv-table {
     border-collapse: separate;
@@ -1040,6 +1046,7 @@ html, body {
     font-family: var(--editor-font-family);
     font-size: 12px;
     color: var(--text);
+    zoom: var(--csv-zoom, 1);
 }
 .csv-table th,
 .csv-table td {

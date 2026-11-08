@@ -2351,9 +2351,13 @@ function createCsvTableView(doc) {
     const hint = document.createElement('span');
     hint.className = 'csv-table-hint';
     hint.textContent = doc.large
-        ? '文件超过 10 MB，表格只读；可拖表头边缘调列宽'
-        : '点击单元格编辑；拖表头边缘调列宽；Enter 确认，Esc 取消';
-    bar.append(meta, hint);
+        ? '文件超过 10 MB，表格只读；可拖表头边缘调列宽；Ctrl+滚轮缩放'
+        : '点击单元格编辑；拖表头边缘调列宽；Ctrl+滚轮缩放；Enter 确认，Esc 取消';
+    const zoom = document.createElement('span');
+    zoom.className = 'csv-table-zoom';
+    zoom.title = 'Ctrl+滚轮缩放表格';
+    zoom.textContent = '100%';
+    bar.append(meta, hint, zoom);
     const scroll = document.createElement('div');
     scroll.className = 'csv-table-scroll';
     wrap.append(bar, scroll);
@@ -2361,6 +2365,27 @@ function createCsvTableView(doc) {
     doc.tableEl = wrap;
     doc.tableMeta = meta;
     doc.tableScroll = scroll;
+    doc.tableZoomLabel = zoom;
+    if (!doc.tableZoom) doc.tableZoom = 1;
+    applyCsvTableZoom(doc);
+}
+
+function applyCsvTableZoom(doc) {
+    if (!doc || !doc.tableEl) return;
+    const zoom = doc.tableZoom || 1;
+    doc.tableEl.style.setProperty('--csv-zoom', String(zoom));
+    if (doc.tableZoomLabel) doc.tableZoomLabel.textContent = Math.round(zoom * 100) + '%';
+}
+
+function zoomCsvTable(doc, deltaY) {
+    if (!doc || !doc.tableEl || !deltaY) return;
+    const dir = deltaY < 0 ? 1 : -1;
+    const current = doc.tableZoom || 1;
+    const next = Math.min(3, Math.max(0.5, Math.round((current + dir * 0.1) * 10) / 10));
+    if (next === current) return;
+    doc.tableZoom = next;
+    applyCsvTableZoom(doc);
+    flash('表格缩放 ' + Math.round(next * 100) + '%');
 }
 
 function renderCsvTableView(doc) {
@@ -2510,7 +2535,8 @@ function freezeCsvColumnWidths(doc) {
     if (Array.isArray(doc.tableColWidths) && doc.tableColWidths.length === headers.length) return;
     const ths = Array.from(doc.tableScroll.querySelectorAll('thead th.csv-col-head'));
     if (ths.length !== headers.length) return;
-    doc.tableColWidths = ths.map((th) => Math.max(CSV_COL_MIN_WIDTH, Math.round(th.getBoundingClientRect().width)));
+    const zoom = doc.tableZoom || 1;
+    doc.tableColWidths = ths.map((th) => Math.max(CSV_COL_MIN_WIDTH, Math.round(th.getBoundingClientRect().width / zoom)));
     applyCsvColumnLayout(doc);
 }
 
@@ -2525,8 +2551,9 @@ function startCsvColumnResize(doc, colIndex, e) {
     } catch (err) {}
     const startX = e.clientX;
     const startWidth = doc.tableColWidths[colIndex];
+    const zoom = doc.tableZoom || 1;
     const onMove = (ev) => {
-        const next = Math.max(CSV_COL_MIN_WIDTH, Math.round(startWidth + ev.clientX - startX));
+        const next = Math.max(CSV_COL_MIN_WIDTH, Math.round(startWidth + (ev.clientX - startX) / zoom));
         if (next === doc.tableColWidths[colIndex]) return;
         doc.tableColWidths[colIndex] = next;
         applyCsvColumnLayout(doc);
@@ -4538,6 +4565,10 @@ window.addEventListener('wheel', (e) => {
     if (!e.ctrlKey) return;
     e.preventDefault();
     if (!els.editor.contains(e.target)) return;
+    if (currentMode === 'table' && file && file.format.table) {
+        zoomCsvTable(file, e.deltaY);
+        return;
+    }
     if (currentMode === 'image' && file && file.image) {
         zoomImageBy(file, e.deltaY);
         return;
