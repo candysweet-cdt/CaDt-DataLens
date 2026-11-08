@@ -1609,37 +1609,176 @@ function showBanner(data, parseError) {
     }
 }
 
+function foldDomCount(el) {
+    const raw = el.textContent.trim();
+    const exact = raw.match(/^[[{]\s*(\d+)\s*[\]}]$/);
+    if (exact) return Number(exact[1]);
+    const loose = raw.match(/[[{]\s*(\d+)/);
+    if (loose) return Number(loose[1]);
+    if (el.dataset.count != null) return Number(el.dataset.count);
+    return null;
+}
+
+function foldValueAtPath(root, path) {
+    let value = root;
+    for (const segment of path) {
+        if (value == null) return undefined;
+        if (Array.isArray(value)) value = value[Number(segment)];
+        else if (typeof value === 'object') value = value[segment];
+        else return undefined;
+    }
+    return value;
+}
+
+function foldRowPaths(tbody) {
+    const paths = new Map();
+    const stack = [];
+    for (const tr of tbody.children) {
+        if (!tr || tr.tagName !== 'TR') continue;
+        const table = tr.querySelector('table.jsoneditor-values');
+        const keyEl = table ? table.querySelector('.jsoneditor-field, .jsoneditor-readonly') : null;
+        if (!keyEl) continue;
+        const key = keyEl.textContent.trim();
+        if (!key) continue;
+        const margin = table ? parseInt(table.style.marginLeft || '0', 10) : 0;
+        const depth = Math.max(0, Math.round(margin / 24));
+        if (depth === 0) {
+            stack.length = 0;
+            stack[0] = null;
+        } else {
+            stack.length = depth;
+            stack[depth] = key;
+        }
+        paths.set(tr, stack.slice(1, depth + 1));
+    }
+    return paths;
+}
+
+function foldPrimitive(value) {
+    if (typeof value === 'string') return {text: JSON.stringify(value), cls: 'jsoneditor-fold-string'};
+    if (value === null || value === undefined) return {text: 'null', cls: 'jsoneditor-fold-null'};
+    if (typeof value === 'boolean') return {text: String(value), cls: 'jsoneditor-fold-bool'};
+    if (typeof value === 'number') return {text: String(value), cls: 'jsoneditor-fold-number'};
+    if (Array.isArray(value)) return {text: '[...]', cls: 'jsoneditor-fold-nested'};
+    if (typeof value === 'object') return {text: '{...}', cls: 'jsoneditor-fold-nested'};
+    return {text: String(value), cls: 'jsoneditor-fold-nested'};
+}
+
+function clipFoldText(text, max) {
+    if (text.length <= max) return text;
+    return text.slice(0, max) + (text.startsWith('"') ? '"' : '');
+}
+
+function foldObjectSpec(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const keys = Object.keys(value);
+    if (!keys.length) return {kind: 'empty'};
+    const keyText = clipFoldText(JSON.stringify(keys[0]), 36);
+    const primitive = foldPrimitive(value[keys[0]]);
+    return {
+        kind: 'object',
+        keyText,
+        valueText: clipFoldText(primitive.text, 30),
+        valueClass: primitive.cls,
+    };
+}
+
+function foldSpan(parent, text, className) {
+    const span = document.createElement('span');
+    span.className = className;
+    span.textContent = text;
+    parent.appendChild(span);
+}
+
+function renderFoldPreview(el, sig, build) {
+    if (el.dataset.foldSig === sig && el.querySelector('.jsoneditor-fold-preview')) return;
+    el.textContent = '';
+    const wrap = document.createElement('span');
+    wrap.className = 'jsoneditor-fold-preview';
+    build(wrap);
+    el.appendChild(wrap);
+    el.dataset.foldSig = sig;
+}
+
 function humanizeCounts() {
-    if (!editor) return;
+    if (!editor || currentMode !== 'tree') return;
     const root = file && file.pane ? file.pane : els.editor;
     const nodes = root.querySelectorAll('div.jsoneditor-value.jsoneditor-object, div.jsoneditor-value.jsoneditor-array');
+    const pathMaps = new WeakMap();
+    let rootValue;
+    let rootLoaded = false;
+    const rootData = () => {
+        if (!rootLoaded) {
+            try {
+                rootValue = editor.get();
+            } catch (e) {
+                rootValue = undefined;
+            }
+            rootLoaded = true;
+        }
+        return rootValue;
+    };
     nodes.forEach((el) => {
         const isObject = el.classList.contains('jsoneditor-object');
         const collapsed = !!el.closest('tr.jsoneditor-collapsed');
-        const raw = el.textContent.trim();
-        let count = null;
-        const exact = raw.match(/^[[{]\s*(\d+)\s*[\]}]$/);
-        if (exact) count = Number(exact[1]);
-        else {
-            const loose = raw.match(/[[{]\s*(\d+)/);
-            if (loose) count = Number(loose[1]);
-            else if (el.dataset.count != null) count = Number(el.dataset.count);
+        const row = el.closest('tr.jsoneditor-expandable');
+        let path = null;
+        if (row && row.parentElement) {
+            if (!pathMaps.has(row.parentElement)) pathMaps.set(row.parentElement, foldRowPaths(row.parentElement));
+            const map = pathMaps.get(row.parentElement);
+            if (map.has(row)) path = map.get(row);
         }
+        const value = path ? foldValueAtPath(rootData(), path) : undefined;
+        let count = foldDomCount(el);
+        if (isObject && value && typeof value === 'object' && !Array.isArray(value)) count = Object.keys(value).length;
+        else if (!isObject && Array.isArray(value)) count = value.length;
         if (!Number.isFinite(count)) return;
         el.dataset.count = String(count);
-        const text = collapsed ? (isObject ? '{...}' : '[...]') : count + ' 项';
-        if (el.textContent !== text) el.textContent = text;
+        if (collapsed) {
+            if (isObject) {
+                const spec = foldObjectSpec(value);
+                if (spec && spec.kind === 'empty') {
+                    renderFoldPreview(el, 'o:empty', (wrap) => foldSpan(wrap, '{}', 'jsoneditor-fold-punct'));
+                } else if (spec) {
+                    renderFoldPreview(el, 'o:' + JSON.stringify(spec), (wrap) => {
+                        foldSpan(wrap, '{', 'jsoneditor-fold-punct');
+                        foldSpan(wrap, spec.keyText, 'jsoneditor-fold-key');
+                        foldSpan(wrap, ': ', 'jsoneditor-fold-punct');
+                        foldSpan(wrap, spec.valueText, spec.valueClass);
+                        foldSpan(wrap, '...', 'jsoneditor-fold-punct');
+                        foldSpan(wrap, '}', 'jsoneditor-fold-punct');
+                    });
+                } else {
+                    renderFoldPreview(el, 'of:' + count, (wrap) => {
+                        foldSpan(wrap, '{' + count + ' 项}', 'jsoneditor-fold-punct');
+                    });
+                }
+            } else if (count === 0) {
+                renderFoldPreview(el, 'a:0', (wrap) => foldSpan(wrap, '[]', 'jsoneditor-fold-punct'));
+            } else {
+                renderFoldPreview(el, 'a:' + count, (wrap) => {
+                    foldSpan(wrap, '[ ', 'jsoneditor-fold-punct');
+                    foldSpan(wrap, count + ' 个元素', 'jsoneditor-fold-count');
+                    foldSpan(wrap, '... ]', 'jsoneditor-fold-punct');
+                });
+            }
+        } else {
+            const text = count + ' 项';
+            if (el.textContent !== text || el.querySelector('.jsoneditor-fold-preview')) el.textContent = text;
+            el.dataset.foldSig = 'e:' + count;
+        }
         el.classList.toggle('value-fold', collapsed);
         el.classList.toggle('value-count', !collapsed);
-        el.title = (isObject ? '对象' : '数组') + '，共 ' + count + ' 项';
+        el.title = (isObject ? '对象' : '数组') + '，共 ' + count + ' 项' + (collapsed ? '（点击展开）' : '');
     });
 }
 
-let countRaf = 0;
+let countQueued = false;
 const countObserver = new MutationObserver(() => {
-    if (countRaf) return;
-    countRaf = requestAnimationFrame(() => {
-        countRaf = 0;
+    if (countQueued) return;
+    countQueued = true;
+    queueMicrotask(() => {
+        countQueued = false;
         humanizeCounts();
     });
 });
@@ -1727,6 +1866,25 @@ function createDocEditor(doc) {
     pane.className = 'jsoneditor-pane active';
     els.editor.appendChild(pane);
     installReadOnlyGuards(pane);
+    pane.addEventListener('click', (e) => {
+        const target = e.target;
+        if (!target || !target.closest) return;
+        const fold = target.closest('.jsoneditor-value.value-fold');
+        if (fold) {
+            const row = fold.closest('tr.jsoneditor-expandable');
+            const button = row ? row.querySelector('button.jsoneditor-collapsed') : null;
+            if (button) {
+                e.preventDefault();
+                e.stopPropagation();
+                button.click();
+                queueMicrotask(humanizeCounts);
+                return;
+            }
+        }
+        if (target.closest('button.jsoneditor-collapsed, button.jsoneditor-expanded')) {
+            queueMicrotask(humanizeCounts);
+        }
+    }, true);
     doc.loading = true;
     const ed = new JSONEditor(pane, {
         mode: startMode,
