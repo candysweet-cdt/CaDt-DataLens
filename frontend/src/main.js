@@ -3452,8 +3452,9 @@ const countObserver = new MutationObserver(() => {
 });
 countObserver.observe(els.editor, {childList: true, subtree: true, characterData: true});
 
-function applyAceMode() {
-    if ((currentMode !== 'code' && currentMode !== 'binary') || !editor || !editor.aceEditor) return;
+function applyAceMode(force) {
+    if (!force && (currentMode !== 'code' && currentMode !== 'binary')) return;
+    if (!editor || !editor.aceEditor) return;
     const want = aceModeFor(file && file.name, file && file.format);
     try {
         if (editor.aceEditor.session.getMode().$id !== want) {
@@ -3466,6 +3467,10 @@ function applyAceMode() {
         container.classList.add('ace-mode-' + want.split('/').pop());
         const pureJson = !!(file && file.format && file.format.id === 'json' && /\.json$/i.test(file.name || ''));
         editor.aceEditor.session.setUseWorker(pureJson);
+        // 关闭 worker 后旧 JSON 校验注解不会自动消失（切到 Markdown 等模式仍留红叉）
+        if (!pureJson) {
+            try { editor.aceEditor.session.clearAnnotations(); } catch (e) {}
+        }
         editor.aceEditor.setReadOnly(!!(file && (file.large || file.binary)) || !!settings.readOnlyMode);
         editor.aceEditor.setFontSize(settings.editorFont);
         editor.aceEditor.session.setUseWrapMode(!!settings.codeWrap);
@@ -4411,6 +4416,9 @@ function leaveMarkdownPreview(doc, mode) {
     } finally {
         doc.loading = loading;
     }
+    // 预览底层编辑器本来就是 code 模式，setMode('code') 不会触发 onModeChange，
+    // 必须显式应用 Markdown 等语法模式（否则残留 jsoneditor 默认 JSON 模式）
+    if (doc === file && mode === 'code') applyAceMode(true);
     updateStatus();
     updateSearchState();
 }
