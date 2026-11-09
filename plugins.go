@@ -5,17 +5,17 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"os/exec"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 	"syscall"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -77,14 +77,15 @@ type PluginSource struct {
 	Code    string `json:"code"`
 }
 
-// pluginsRootFor 返回插件安装根目录：portable = exe 旁 plugins，appdata = %APPDATA%。
+// pluginsRootFor 返回插件安装根目录：portable = exe 旁 plugins，
+// appdata = %APPDATA%\CandySweet\CaDt-DataLens\plugins。
 func pluginsRootFor(mode string) (string, error) {
 	if mode == "appdata" {
-		dir, err := os.UserConfigDir()
-		if err != nil {
-			return "", fmt.Errorf("无法定位应用数据目录：%w", err)
+		root := appDataRoot()
+		if root == "" {
+			return "", fmt.Errorf("无法定位应用数据目录")
 		}
-		return filepath.Join(dir, "CaDt-DataLens", "plugins"), nil
+		return filepath.Join(root, "plugins"), nil
 	}
 	exe, err := os.Executable()
 	if err != nil {

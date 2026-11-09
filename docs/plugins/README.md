@@ -46,7 +46,7 @@ my-plugin/
 | `minAppVersion` | | 需要的最低应用版本（如 `1.0.2`）；当前应用版本过低时列表会黄字提醒 |
 | `icon` | | 图标文件（相对路径，png/jpg/svg，≤128 KB），显示在插件列表 |
 
-安装方式（设置 → 插件）：**添加插件** 选文件夹；**导入插件(.zip)** 选压缩包（zip 里 `plugin.json` 在根目录或唯一顶层子目录都可以）。插件目录默认在 exe 旁的 `plugins\`，可在设置里切换到 `%APPDATA%\CaDt-DataLens\plugins`。
+安装方式（设置 → 插件）：**添加插件** 选文件夹；**导入插件(.zip)** 选压缩包（zip 里 `plugin.json` 在根目录或唯一顶层子目录都可以）。插件目录默认在 exe 旁的 `plugins\`，可在设置里切换到 `%APPDATA%\CandySweet\CaDt-DataLens\plugins`。
 
 ## 插件 API
 
@@ -157,7 +157,7 @@ cadt.openVirtualDoc('Git 差异 — main.diff', patchText);  // 扩展名决定�
 ## 目录与切换
 
 - 默认（便携）：`<exe 目录>\plugins\<插件 id>\`，跟程序走，复制目录即可带走。
-- 可选（应用数据）：`%APPDATA%\CaDt-DataLens\plugins\<插件 id>\`。
+- 可选（应用数据）：`%APPDATA%\CandySweet\CaDt-DataLens\plugins\<插件 id>\`。
 - 在 设置 → 插件 里切换目录模式；切换后列表按新目录展示，已安装插件不会自动迁移。
 
 ## 安全说明

@@ -972,22 +972,6 @@ func saveAppConfig(cfg appConfig) error {
 	return os.WriteFile(path, raw, 0644)
 }
 
-func webviewDataPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "CaDt-DataLens.exe")
-}
-
-func configFilePath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "CaDt-DataLens", "config.json")
-}
-
 func readOpenMode() string {
 	return readAppConfig().OpenMode
 }

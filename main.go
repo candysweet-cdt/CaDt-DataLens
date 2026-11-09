@@ -13,6 +13,8 @@ import (
 var assets embed.FS
 
 func main() {
+	ensureAppDataDir()
+
 	app := NewApp()
 
 	err := wails.Run(&options.App{

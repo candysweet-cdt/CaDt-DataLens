@@ -57,7 +57,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 - 编辑器字号 9–24，可用 `Ctrl+滚轮` 调整。
 - 文件树字号 10–20（步进 0.5）可单独设置，只影响左侧文件列表/目录树。
 - 窗口置顶默认关闭，可在通用设置开启。
-- 所有设置本地持久化。
+- 所有设置本地持久化，统一存放在 `%APPDATA%\CandySweet\CaDt-DataLens\`：`config.json` 保存打开方式等后端配置，界面设置与 WebView2 数据在 `WebView2\` 子目录，应用数据模式的插件在 `plugins\` 子目录。
 
 ### 多文件
 
