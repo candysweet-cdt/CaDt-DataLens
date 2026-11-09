@@ -314,6 +314,7 @@
                             <div><span>撤销 / 重做</span><span class="kbd">Ctrl+Z / Ctrl+Y</span></div>
                             <div><span>格式化</span><span class="kbd">Ctrl+Alt+L</span></div>
                             <div><span>文件侧边栏</span><span class="kbd">Alt+1</span></div>
+                            <div><span>结构视图</span><span class="kbd">Alt+7</span></div>
                             <div><span>文件树中打开 / 展开</span><span class="kbd">双击</span></div>
                             <div><span>文件树中展开 / 收起目录</span><span class="kbd">单击箭头</span></div>
                             <div><span>文件树中多选</span><span class="kbd">Ctrl+单击</span></div>
@@ -468,6 +469,9 @@
                 <button type="button" id="ab-files" class="ab-btn" title="文件树 (Alt+1)" aria-label="文件树" aria-pressed="false">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5.4c0-.9.7-1.6 1.6-1.6h3.1l1.7 1.9h5c.9 0 1.6.7 1.6 1.6v7.3c0 .9-.7 1.6-1.6 1.6H4.6c-.9 0-1.6-.7-1.6-1.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
                 </button>
+                <button type="button" id="ab-structure" class="ab-btn" title="结构 (Alt+7)" aria-label="结构" aria-pressed="false">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4.5h12M6.5 8h9.5M9 11.5h7M11.5 15h4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
                 <button type="button" id="ab-search" class="ab-btn" title="搜索节点 (Ctrl+F)" aria-label="搜索节点">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="m12.8 12.8 3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 </button>
@@ -505,6 +509,16 @@
                 </div>
             </div>
             <div id="sb-body" class="sb-body"></div>
+            <div id="structure-panel">
+                <div class="sb-head">
+                    <span class="sb-title">结构</span>
+                    <div class="sb-tools">
+                        <button type="button" id="structure-collapse" class="sb-tool" title="全部折叠"></button>
+                        <button type="button" id="structure-refresh" class="sb-tool" title="刷新结构"></button>
+                    </div>
+                </div>
+                <div id="structure-body" class="sb-body structure-body"></div>
+            </div>
             <div id="git-panel" class="hidden">
                 <div class="git-toolbar">
                     <span class="sb-title">提交</span>

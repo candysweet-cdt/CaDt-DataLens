@@ -6,6 +6,7 @@ import hljs from 'highlight.js/lib/common';
 import markdownItKatex from '@vscode/markdown-it-katex';
 import {aceModeFor, detectFormat, formats, isSupportedFile, pluginFormats} from './formats.js';
 import {createExplorer} from './explorer.js';
+import {createStructurePanel} from './structure.js';
 import {createContextMenu} from './contextmenu.js';
 import {createFileIcon, fileIconSpec} from './fileicons.js';
 import {getPluginCommands, initPluginRuntime, loadPlugins} from './plugins.js';
@@ -138,6 +139,125 @@ if __name__ == "__main__":
     sum(1, 2)
 `;
 
+const sampleAgentsMd = [
+    '# 星轨工坊 (Starrail Workshop)',
+    '',
+    '## 0. 你手上只有这一个仓库',
+    '',
+    '- 先读 README',
+    '',
+    '## 1. 必读（按任务挑，但前两行必读）',
+    '',
+    '```bash',
+    '# 这是代码块里的注释，不应出现在结构里',
+    'git status',
+    '```',
+    '',
+    '### 1.1 子标题',
+    '',
+    '## 2. 硬规则（违反即返工）',
+    '',
+    '## 3. 常见任务从哪进',
+    '',
+    '## 4. 提交前必须过',
+    '',
+    '## 5. 分支、提交、协作',
+    '',
+    '## 6. 当前状态（截至 2026-10-26，改之前先知道）',
+].join('\n');
+
+const sampleHtml = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CaDt-DataLens</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
+`;
+
+const sampleJs = `import {readFileSync} from 'node:fs';
+
+export class MachineBase {
+  static LIMIT = 3;
+  #secret = 1;
+
+  constructor(system, dimension) {
+    this.system = system;
+  }
+
+  get(key, defaultValue = null) {
+    return this.system.get(key, defaultValue);
+  }
+
+  async load() {
+    const parse = (text) => JSON.parse(text);
+    return parse('{}');
+  }
+}
+
+export function beGet(data, key, defaultVal = null) {
+  return data.get(key, defaultVal);
+}
+
+const formatText = (value) => String(value);
+export const LEVEL_COMP_CACHE = new Map();
+`;
+
+const sampleGo = `package main
+
+type MachineBase struct {
+    ID string
+    Name string
+}
+
+type Handler interface {
+    Handle(key string) error
+}
+
+func (m *MachineBase) Get(key string) string {
+    return m.ID
+}
+
+func beGet(data map[string]string) string {
+    return data["x"]
+}
+
+const LEVEL_CACHE = "x"
+`;
+
+const sampleMachinePy = `#!/usr/bin/env python3
+"""机器结构示例。"""
+STALE_CLOCK_KEYS = {"a", "b"}
+_LEVEL_COMP_CACHE = {}
+
+class MachineBase(object):
+    """机器基类。"""
+    LIMIT = 3
+
+    def __init__(self, system, dimension, pos, block):
+        self.system = system
+
+    @staticmethod
+    def fix_stale_clock(data, now):
+        return data
+
+    def data(self):
+        return {"x": 1}
+
+def be_get(data, key, default=None):
+    return data.get(key, default)
+
+async def fetch(url: str) -> dict:
+    return {}
+`;
+
 const mockScenario = new URLSearchParams(location.search);
 const mockDir = 'mock://samples/';
 const mockHex = '00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|';
@@ -156,6 +276,11 @@ const mockFiles = {
     gosum: {name: 'go.sum', content: sampleGoSum},
     bak: {name: 'sample.bak', content: sampleJson},
     py: {name: 'sample.py', content: samplePy},
+    md: {name: 'AGENTS.md', content: sampleAgentsMd},
+    html: {name: 'index.html', content: sampleHtml},
+    js: {name: 'app.js', content: sampleJs},
+    go: {name: 'server.go', content: sampleGo},
+    machine: {name: 'machine.py', content: sampleMachinePy},
     brokensvg: {name: 'broken.svg', content: '{ not a svg {'},
 };
 const mockTree = {
@@ -163,7 +288,12 @@ const mockTree = {
         {name: 'cache', path: 'mock://samples/cache', isDir: true},
         {name: 'config', path: 'mock://samples/config', isDir: true},
         {name: 'images', path: 'mock://samples/images', isDir: true},
+        {name: 'AGENTS.md', path: 'mock://samples/AGENTS.md', isDir: false},
         {name: 'notes.md', path: 'mock://samples/notes.md', isDir: false},
+        {name: 'index.html', path: 'mock://samples/index.html', isDir: false},
+        {name: 'app.js', path: 'mock://samples/app.js', isDir: false},
+        {name: 'server.go', path: 'mock://samples/server.go', isDir: false},
+        {name: 'machine.py', path: 'mock://samples/machine.py', isDir: false},
         {name: 'sample.csv', path: 'mock://samples/sample.csv', isDir: false},
         {name: 'sample.json', path: 'mock://samples/sample.json', isDir: false},
         {name: 'diagram.svg', path: 'mock://samples/diagram.svg', isDir: false},
@@ -235,7 +365,7 @@ const mockBackend = {
         if (mockScenario.has('image')) return [mockDir + 'sample.png'];
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
         if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
-        for (const key of ['yaml', 'xml', 'svg', 'brokensvg', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak', 'py']) {
+        for (const key of ['yaml', 'xml', 'svg', 'brokensvg', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak', 'py', 'md', 'html', 'js', 'go', 'machine']) {
             if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
         }
         return [mockDir + 'sample.json'];
@@ -689,10 +819,15 @@ const els = {
     sbRefresh: document.getElementById('sb-refresh'),
     sbModeList: document.getElementById('sb-mode-list'),
     sbModeTree: document.getElementById('sb-mode-tree'),
+    structurePanel: document.getElementById('structure-panel'),
+    structureBody: document.getElementById('structure-body'),
+    structureRefresh: document.getElementById('structure-refresh'),
+    structureCollapse: document.getElementById('structure-collapse'),
     btnSidebar: document.getElementById('btn-sidebar'),
     lock: document.getElementById('btn-lock'),
     activityBar: document.getElementById('activity-bar'),
     abFiles: document.getElementById('ab-files'),
+    abStructure: document.getElementById('ab-structure'),
     abSearch: document.getElementById('ab-search'),
     abMore: document.getElementById('ab-more'),
     abTerminal: document.getElementById('ab-terminal'),
@@ -725,6 +860,8 @@ let docs = [];
 let docSeq = 0;
 let autoSaveTimer = 0;
 let explorer = null;
+let structurePanel = null;
+let structureRefreshTimer = 0;
 let workspaceFolder = null;
 let fileClipboard = null;
 let ctxMenu = null;
@@ -734,6 +871,7 @@ window.__lens = {
     get file() { return file; },
     get docs() { return docs; },
     get explorer() { return explorer; },
+    get structurePanel() { return structurePanel; },
     get closedTabs() { return closedTabs; },
     openCloseConfirm,
     openPaths,
@@ -817,6 +955,7 @@ const defaultSettings = {
     autoSave: false,
     openMode: 'tab',
     sidebarMode: 'tree',
+    sidebarView: 'files',
     showSidebar: false,
     csvTableMigrated: false,
     keyWidth: 160,
@@ -859,6 +998,7 @@ if (!cjkFonts.some((f) => f.id === settings.editorCjkFont)) settings.editorCjkFo
 settings.autoSave = !!settings.autoSave;
 if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
+if (!['files', 'git', 'structure'].includes(settings.sidebarView)) settings.sidebarView = 'files';
 settings.showSidebar = !!settings.showSidebar;
 settings.treeGuides = !!settings.treeGuides;
 settings.treeCounts = !!settings.treeCounts;
@@ -1452,6 +1592,7 @@ function jumpToPosition(line, column) {
         ace.scrollToLine(targetLine - 1, true, true);
         ace.focus();
         updateCursorPosition();
+        if (structurePanel) structurePanel.setCursor(targetLine);
         return true;
     }
     if (currentMode === 'text' && file && file.pane) {
@@ -1469,6 +1610,7 @@ function jumpToPosition(line, column) {
         const lineHeight = parseFloat(style.lineHeight) || (parseFloat(style.fontSize) || 13) * 1.45;
         textarea.scrollTop = Math.max(0, (targetLine - 1) * lineHeight - textarea.clientHeight / 2 + lineHeight);
         updateCursorPosition();
+        if (structurePanel) structurePanel.setCursor(targetLine);
         return true;
     }
     return false;
@@ -3099,6 +3241,7 @@ function updateStatus() {
     const enc = (file.enc || 'utf-8').toUpperCase();
     els.stEnc.textContent = enc + (file.hasBom && enc === 'UTF-8' ? ' BOM' : '');
     scheduleCursorPosition();
+    if (typeof scheduleStructureRefresh === 'function') scheduleStructureRefresh(file);
 }
 
 function hideBanner() {
@@ -3532,7 +3675,10 @@ function hookCursorTracking(ace) {
     if (!ace || ace._cursorTracked) return;
     ace._cursorTracked = true;
     const update = () => {
-        if (file && currentMode === 'code' && file.editor && file.editor.aceEditor === ace) updateCursorPosition();
+        if (file && currentMode === 'code' && file.editor && file.editor.aceEditor === ace) {
+            updateCursorPosition();
+            if (structurePanel) structurePanel.setCursor(ace.getCursorPosition().row + 1);
+        }
     };
     try {
         ace.selection.on('changeCursor', update);
@@ -3696,6 +3842,7 @@ function markDocDirty(doc) {
         updateTabDirty(doc);
         updateBackendDirty();
     }
+    if (typeof scheduleStructureRefresh === 'function') scheduleStructureRefresh(doc);
 }
 
 function createDocEditor(doc) {
@@ -4825,6 +4972,7 @@ function showWelcome() {
     updateBackendDirty();
     updateWindowTitle();
     syncExplorerActive();
+    if (structurePanel) structurePanel.setDoc(null);
 }
 
 let activateToken = 0;
@@ -4874,6 +5022,7 @@ async function activateDoc(doc) {
         }, 0);
     }
     syncExplorerActive();
+    if (structurePanel) structurePanel.setDoc(doc);
 }
 
 function requestCloseDoc(doc) {
@@ -5701,6 +5850,45 @@ async function selectLineInDoc(doc, line, column = 0) {
     textarea.scrollTop = Math.max(0, index * lineHeight - textarea.clientHeight / 2);
 }
 
+// 结构视图读取的源文本：树视图用打开时的原文（行号与源文件一致），
+// 代码/文本/预览用编辑器当前内容，SVG 渲染视图用进入渲染前保存的原文。
+function structureTextForDoc(doc) {
+    if (!doc || doc.binary) return '';
+    if (doc === file && doc.editor) {
+        if (currentMode === 'render') {
+            return doc._svgSrcText || doc.rawText || doc.text || '';
+        }
+        if (currentMode === 'tree' && doc.format && !doc.format.rawOnly) {
+            return doc.rawText != null ? doc.rawText : (doc.text || '');
+        }
+        if (currentMode === 'table' && doc.pane) {
+            const textarea = doc.pane.querySelector('textarea.jsoneditor-text');
+            if (textarea) return textarea.value;
+        }
+        return doc.editor.getText() || '';
+    }
+    return doc.rawText != null ? doc.rawText : (doc.text || doc.content || '');
+}
+
+async function jumpToStructureNode(node) {
+    if (!file || !node || file.binary) return;
+    const line = Math.max(1, Number(node.line) || 1);
+    const column = Math.max(1, Number(node.column) || 1);
+    await selectLineInDoc(file, line, column);
+    if (structurePanel) structurePanel.setCursor(line);
+}
+
+function scheduleStructureRefresh(doc) {
+    if (!structurePanel || !settings.showSidebar || currentSidebarView() !== 'structure') return;
+    if (doc && file && doc !== file) return;
+    clearTimeout(structureRefreshTimer);
+    structureRefreshTimer = setTimeout(() => {
+        structureRefreshTimer = 0;
+        if (!structurePanel || !settings.showSidebar || currentSidebarView() !== 'structure') return;
+        structurePanel.refresh();
+    }, 500);
+}
+
 async function openTargets(targets) {
     const list = Array.isArray(targets) ? targets : [];
     for (const target of list) {
@@ -5808,7 +5996,14 @@ function applySidebarUI() {
         els.abGit.classList.toggle('active', gitActive);
         els.abGit.setAttribute('aria-pressed', String(gitActive));
     }
-    if (explorer) explorer.setVisible(!!settings.showSidebar);
+    if (els.abStructure) {
+        const structureActive = !!settings.showSidebar && settings.sidebarView === 'structure';
+        els.abStructure.classList.toggle('active', structureActive);
+        els.abStructure.setAttribute('aria-pressed', String(structureActive));
+    }
+    const filesVisible = !!settings.showSidebar && currentSidebarView() === 'files';
+    if (explorer) explorer.setVisible(filesVisible);
+    if (structurePanel) structurePanel.setVisible(!!settings.showSidebar && currentSidebarView() === 'structure');
     requestAnimationFrame(() => {
         if (!editor) return;
         try {
@@ -5840,6 +6035,7 @@ function syncExplorerActive() {
 function initActivityBar() {
     if (!els.activityBar) return;
     if (els.abFiles) els.abFiles.addEventListener('click', () => toggleSidebarView('files'));
+    if (els.abStructure) els.abStructure.addEventListener('click', () => toggleSidebarView('structure'));
     if (els.abSearch) els.abSearch.addEventListener('click', () => {
         if (els.searchInput.disabled) {
             flash('当前视图不支持节点搜索', true);
@@ -5897,6 +6093,27 @@ function initExplorer() {
         e.stopPropagation();
         dismissBanner();
     });
+}
+
+function initStructurePanel() {
+    if (!els.structureBody) return;
+    structurePanel = createStructurePanel({
+        body: els.structureBody,
+        refreshBtn: els.structureRefresh,
+        collapseBtn: els.structureCollapse,
+        getText: (doc) => structureTextForDoc(doc),
+        getCursorLine: () => {
+            try {
+                return file && file.editor && file.editor.aceEditor
+                    ? file.editor.aceEditor.getCursorPosition().row + 1 : 0;
+            } catch (e) {
+                return 0;
+            }
+        },
+        onJump: (node) => jumpToStructureNode(node),
+    });
+    structurePanel.setDoc(file);
+    applySidebarUI();
 }
 
 let untitledSeq = 0;
@@ -6571,6 +6788,7 @@ function menuItems(kind) {
                 {label: '文件侧边栏', shortcut: 'Alt+1', checked: !!settings.showSidebar, action: () => toggleSidebar()},
                 {label: '文件列表', checked: settings.sidebarMode === 'list', action: () => setSidebarMode('list')},
                 {label: '文件树', checked: settings.sidebarMode === 'tree', action: () => setSidebarMode('tree')},
+                {label: '结构视图', shortcut: 'Alt+7', checked: !!settings.showSidebar && currentSidebarView() === 'structure', action: () => toggleSidebarView('structure')},
                 {sep: true},
                 {label: '自动换行', checked: !!settings.codeWrap, action: toggleCodeWrap},
                 {label: '展开全部', shortcut: 'Ctrl+Shift+=', disabled: !tree, action: () => editor && editor.expandAll()},
@@ -6762,6 +6980,10 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         toggleSidebar();
+    } else if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit7' || e.key === '7')) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSidebarView('structure');
     } else if (e.shiftKey && e.key === 'F4') {
         e.preventDefault();
         e.stopPropagation();
@@ -6960,6 +7182,7 @@ window.addEventListener('keydown', (e) => {
 
 initContextMenus();
 initExplorer();
+initStructurePanel();
 initActivityBar();
 
 // ===== Win11/系统调整光标（后端读注册表当前主题 + 内置候选，失败回落 CSS 关键字） =====
@@ -7282,12 +7505,14 @@ function renderGitPanel() {
 }
 
 function currentSidebarView() {
-    return settings.sidebarView === 'git' ? 'git' : 'files';
+    if (settings.sidebarView === 'git' || settings.sidebarView === 'structure') return settings.sidebarView;
+    return 'files';
 }
 
 function switchSidebarView(view) {
-    if (!['files', 'git'].includes(view)) view = 'files';
+    if (!['files', 'git', 'structure'].includes(view)) view = 'files';
     settings.sidebarView = view;
+    if (structurePanel && view === 'structure') structurePanel.setDoc(file);
     applySettings();
     if (view === 'git') {
         refreshGitStatus().then(() => renderGitPanel()).catch(() => renderGitPanel());

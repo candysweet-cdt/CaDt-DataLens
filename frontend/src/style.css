@@ -1552,10 +1552,16 @@ html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 .ab-btn svg { width: 18px; height: 18px; display: block; }
 .ab-sep { width: 20px; height: 1px; background: var(--border); margin: 4px 0 2px; }
 
-aside[data-sidebar-view="git"] .sb-head,
-aside[data-sidebar-view="git"] #sb-body { display: none; }
-aside[data-sidebar-view="files"] #git-panel { display: none; }
+aside[data-sidebar-view="git"] > .sb-head,
+aside[data-sidebar-view="git"] > #sb-body,
+aside[data-sidebar-view="structure"] > .sb-head,
+aside[data-sidebar-view="structure"] > #sb-body { display: none; }
+aside[data-sidebar-view="files"] #git-panel,
+aside[data-sidebar-view="files"] #structure-panel,
+aside[data-sidebar-view="git"] #structure-panel,
+aside[data-sidebar-view="structure"] #git-panel { display: none; }
 aside[data-sidebar-view="git"] #git-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; padding: 6px 10px 8px; gap: 6px; overflow: hidden; }
+aside[data-sidebar-view="structure"] #structure-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .sidebar-resize {
     position: absolute;
     top: 0;
@@ -1689,6 +1695,55 @@ aside[data-sidebar-view="git"] #git-panel { display: flex; flex: 1; min-height: 
 html.tree-guides .sb-children { border-left: 1px solid var(--border); }
 .sb-status { color: var(--muted); }
 .sb-status.error { color: var(--red); }
+.structure-body { padding: 3px 0 10px; }
+.st-row .st-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.st-row .st-detail {
+    flex: none;
+    max-width: 45%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 11px;
+}
+.st-row.st-current .st-label { color: var(--accent); }
+.st-row.st-root .st-label { font-weight: 500; }
+.st-icon {
+    flex: none;
+    width: 15px;
+    height: 15px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--st-color, var(--muted)) 18%, transparent);
+    color: var(--st-color, var(--muted));
+    font-size: 8.5px;
+    font-weight: 700;
+    line-height: 1;
+}
+.st-icon.st-kind-tag { font-size: 6.8px; letter-spacing: -0.2px; }
+.st-icon.st-kind-heading { border-radius: 4px; font-size: 9.5px; }
+.st-kind-class { --st-color: var(--accent); }
+.st-kind-interface { --st-color: var(--val-key); }
+.st-kind-enum { --st-color: var(--orange); }
+.st-kind-function { --st-color: var(--red); }
+.st-kind-method { --st-color: var(--val-key); }
+.st-kind-variable, .st-kind-field { --st-color: var(--orange); }
+.st-kind-tag { --st-color: var(--red); }
+.st-kind-key, .st-kind-type { --st-color: var(--accent); }
+.st-kind-section { --st-color: var(--orange); }
+.st-kind-module { --st-color: var(--muted); }
+.st-kind-heading { --st-color: var(--accent); }
+.st-status, .st-empty-hint { color: var(--muted); }
+.st-status { padding-left: 30px; }
+.st-empty-hint { font-size: 11px; line-height: 1.6; }
+
 .sb-status .sb-icon { visibility: hidden; }
 .sb-root .sb-name { font-weight: 500; }
 .fi-json { color: var(--orange); }
