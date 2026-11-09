@@ -545,6 +545,11 @@ const mockBackend = {
         mockDropPath(src);
         return target;
     },
+    async DeleteEntry(path) {
+        const key = String(path || '').replace(/\/+$/, '');
+        if (!mockFindEntry(key)) throw new Error('文件不存在');
+        mockDropPath(key);
+    },
     async ReadImageDataURL() { return mockImageDataUrl; },
     async SaveFileDialog(name) { return 'mock://' + (window.__mockSaveDialogName || name); },
     async SaveFile(path, content, eol, hasBom, enc) {
@@ -5075,11 +5080,11 @@ function requestCloseDoc(doc) {
     }
 }
 
-function closeDocNow(doc) {
+function closeDocNow(doc, remember = true) {
     const idx = docs.indexOf(doc);
     if (idx < 0) return;
     const wasActive = doc === file;
-    if (doc.path) {
+    if (doc.path && remember) {
         closedTabs.push({path: doc.path, name: doc.name});
         if (closedTabs.length > 12) closedTabs.shift();
     }
@@ -5520,6 +5525,70 @@ function applyRenamedPath(oldPath, newPath) {
     flash('已重命名为：' + baseNameOf(newPath));
 }
 
+function deleteExplorerEntries(targets) {
+    const list = clipboardItems(targets);
+    if (!list.length) return;
+    if (!backend.DeleteEntry) {
+        flash('当前版本不支持删除', true);
+        return;
+    }
+    if (settings.readOnlyMode) {
+        flash('只读模式下不能删除', true);
+        return;
+    }
+    const rootPath = explorer && explorer.getRoot ? explorer.getRoot() : '';
+    const deletable = list.filter((item) => !(rootPath && samePathValue(rootPath, item.path)));
+    if (!deletable.length) {
+        flash('不能删除文件树的根目录', true);
+        return;
+    }
+    const openDocs = docs.filter((doc) => doc.path && deletable.some((item) =>
+        item.isDir ? pathWithinValue(item.path, doc.path) : samePathValue(item.path, doc.path)));
+    const dirty = openDocs.some((doc) => doc.dirty);
+    const what = deletable.length === 1 ? '“' + deletable[0].name + '”' : '选中的 ' + deletable.length + ' 个项目';
+    const message = dirty
+        ? what + '已打开且有未保存的修改，删除后这些修改会一并丢失。\n确定移到回收站吗？'
+        : what + '将被移到回收站，确定继续吗？';
+    openCloseConfirm(message, async () => {
+        const deleted = [];
+        const failures = [];
+        for (const item of deletable) {
+            try {
+                await backend.DeleteEntry(item.path);
+                deleted.push(item);
+            } catch (e) {
+                failures.push(item.name + '：' + ((e && e.message) || e));
+            }
+        }
+        if (deleted.length) {
+            for (const doc of docs.slice()) {
+                if (!doc.path) continue;
+                if (deleted.some((item) =>
+                    item.isDir ? pathWithinValue(item.path, doc.path) : samePathValue(item.path, doc.path))) {
+                    closeDocNow(doc, false);
+                }
+            }
+            closedTabs = closedTabs.filter((entry) => !deleted.some((item) =>
+                item.isDir ? pathWithinValue(item.path, entry.path) : samePathValue(item.path, entry.path)));
+            if (fileClipboard && fileClipboard.cut) {
+                fileClipboard.items = fileClipboard.items.filter((item) => !deleted.some((target) =>
+                    target.isDir ? pathWithinValue(target.path, item.path) : samePathValue(target.path, item.path)));
+                if (!fileClipboard.items.length) fileClipboard = null;
+            }
+            if (explorer) {
+                for (const item of deleted) explorer.removePath(item.path);
+                explorer.setCutPaths(fileClipboard && fileClipboard.cut ? fileClipboard.items.map((item) => item.path) : []);
+                explorer.refresh();
+            }
+        }
+        if (failures.length) {
+            flash('删除失败：' + failures[0] + (failures.length > 1 ? '（另有 ' + (failures.length - 1) + ' 项失败）' : ''), true);
+        } else {
+            flash(deleted.length > 1 ? '已删除 ' + deleted.length + ' 个项目' : '已删除：' + deleted[0].name);
+        }
+    }, '删除', '删除');
+}
+
 function openRenameEntryDialog(info) {
     openNameDialog({
         title: info.isDir ? '重命名文件夹' : '重命名文件',
@@ -5567,6 +5636,8 @@ function showExplorerMenu(info, x, y, node) {
     const isDir = !!info.isDir;
     const selected = explorer ? explorer.getSelection() : [];
     const targets = selected.length ? selected : [{path: info.path, name: info.name, isDir}];
+    const rootPath = explorer && explorer.getRoot ? explorer.getRoot() : '';
+    const deletable = targets.filter((item) => !(rootPath && samePathValue(rootPath, item.path)));
     const items = [];
     if (isDir) {
         items.push({
@@ -5623,6 +5694,14 @@ function showExplorerMenu(info, x, y, node) {
         icon: 'E8AC',
         disabled: !!settings.readOnlyMode || targets.length !== 1,
         action: () => openRenameEntryDialog(info),
+    });
+    items.push({
+        label: '删除',
+        shortcut: 'Delete',
+        icon: 'E74D',
+        danger: true,
+        disabled: !!settings.readOnlyMode || !deletable.length,
+        action: () => deleteExplorerEntries(targets),
     });
     items.push({label: '复制路径', icon: 'E8C8', submenu: copyPathMenuItems(targets)});
     items.push({label: '在文件管理器中显示', icon: 'E8B7', action: () => showPathInFolder(info.path)});
@@ -7073,6 +7152,13 @@ window.addEventListener('keydown', (e) => {
             e.preventDefault();
             e.stopPropagation();
             openRenameEntryDialog(selected[0]);
+        }
+    } else if (e.key === 'Delete' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        const selected = treeShortcutSelection();
+        if (selected && selected.length) {
+            e.preventDefault();
+            e.stopPropagation();
+            deleteExplorerEntries(selected);
         }
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey && (key === 'c' || key === 'x' || key === 'v')) {
         const selected = treeShortcutSelection();

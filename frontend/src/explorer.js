@@ -180,7 +180,7 @@ export function createExplorer(options) {
             e.stopPropagation();
             selectForContext(node);
             if (typeof onContextMenu === 'function') {
-                onContextMenu({kind: 'tree', name: node.name, path: node.path, isDir: node.isDir}, e.clientX, e.clientY, node);
+                onContextMenu({kind: 'tree', name: node.name, path: node.path, isDir: node.isDir, isRoot: !!node.root}, e.clientX, e.clientY, node);
             }
         });
         return row;
@@ -950,20 +950,18 @@ export function createExplorer(options) {
     }
 
     function removePath(path) {
-        if (!tree || !path) return false;
+        if (!path) return false;
+        dropPathFromSelection(path);
+        if (!tree) return false;
         if (samePath(tree.path, path)) {
             tree = null;
             treeSeq++;
             revealSeq++;
-            dropPathFromSelection(path);
             if (visible) renderTree();
             return true;
         }
         const removed = detachNode(tree, path);
-        if (removed) {
-            dropPathFromSelection(path);
-            if (visible) renderTree();
-        }
+        if (removed && visible) renderTree();
         return removed;
     }
 
