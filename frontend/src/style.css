@@ -1629,6 +1629,9 @@ aside[data-sidebar-view="structure"] #structure-panel { display: flex; flex: 1; 
     display: flex;
     align-items: center;
     gap: 5px;
+    width: max-content;
+    min-width: 100%;
+    box-sizing: border-box;
     min-height: 24px;
     padding: 2px 10px 2px 8px;
     font-size: var(--sidebar-font, 12.5px);
@@ -1690,24 +1693,18 @@ aside[data-sidebar-view="structure"] #structure-panel { display: flex; flex: 1; 
     color: var(--muted);
 }
 .sb-icon svg { width: 14px; height: 14px; }
-.sb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sb-name { flex: none; white-space: nowrap; }
 .sb-children { margin-left: 14px; }
 html.tree-guides .sb-children { border-left: 1px solid var(--border); }
 .sb-status { color: var(--muted); }
 .sb-status.error { color: var(--red); }
 .structure-body { padding: 3px 0 10px; }
 .st-row .st-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex: none;
     white-space: nowrap;
 }
 .st-row .st-detail {
     flex: none;
-    max-width: 45%;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--muted);
     font-size: 11px;
@@ -2774,13 +2771,14 @@ a.jsoneditor-poweredBy { display: none !important; }
     display: flex;
     align-items: center;
     gap: 7px;
+    width: max-content;
+    min-width: 100%;
+    box-sizing: border-box;
     padding: 2px 6px 2px 48px;
     border-radius: 4px;
     font-size: 12px;
     color: var(--text);
-    overflow: hidden;
     white-space: nowrap;
-    text-overflow: ellipsis;
     cursor: default;
 }
 .git-file-row:hover { background: var(--hover); }
@@ -2844,10 +2842,8 @@ a.jsoneditor-poweredBy { display: none !important; }
     color: var(--faint);
     font-size: 11px;
     margin-left: -2px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex: 1 1 auto;
-    min-width: 0;
+    flex: none;
+    white-space: nowrap;
 }
 .font-preview {
     display: flex;
