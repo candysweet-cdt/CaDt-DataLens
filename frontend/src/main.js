@@ -432,6 +432,18 @@ const mockBackend = {
         window.__mockStructuredDir = lines.join('\n');
         return window.__mockStructuredDir;
     },
+    async ExportStructureDir(dir) {
+        const text = await this.StructureDir(dir);
+        const name = (String(dir || '').replace(/\/+$/, '').split('/').pop() || '目录') + '-目录结构.txt';
+        // 浏览器 mock 没有系统保存对话框，用 prompt 模拟选择路径（测试可通过 __mockExportPath 指定）
+        let path;
+        if (window.__mockExportPath !== undefined) path = window.__mockExportPath;
+        else path = window.prompt('导出结构化目录到（模拟路径）', 'mock://' + name);
+        if (path == null || !String(path).trim()) return '';
+        path = String(path).trim();
+        await this.SaveFile(path, text, 'lf', false, 'utf-8');
+        return path;
+    },
     async ReadDir(path, limit) {
         const key = String(path || '').replace(/\/+$/, '');
         let entries = mockTree[key];
@@ -5600,7 +5612,7 @@ function showExplorerMenu(info, x, y, node) {
             iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14M5.5 8.5h11.5M8 12.5h9M10.5 16.5h6.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
             submenu: [
                 {label: '复制', icon: 'E8C8', action: () => copyStructuredDir(info.path)},
-                {label: '导出', icon: 'E74E', action: () => exportStructuredDir(info.path)},
+                {label: '导出…', icon: 'E74E', action: () => exportStructuredDir(info.path)},
             ],
         });
         items.push({sep: true});
@@ -6217,17 +6229,16 @@ async function copyStructuredDir(dir) {
 }
 
 async function exportStructuredDir(dir) {
-    if (!backend.StructureDir) {
-        flash('当前版本不支持结构化目录', true);
+    if (!backend.ExportStructureDir) {
+        flash('当前版本不支持导出结构化目录', true);
         return;
     }
-    flash('正在生成结构化目录…');
     try {
-        const text = await backend.StructureDir(dir);
-        const defaultName = (baseNameOf(dir) || '目录') + '-目录结构.txt';
-        const path = await backend.SaveFileDialog(defaultName);
-        if (!path) return;
-        await backend.SaveFile(path, text, 'lf', false, 'utf-8');
+        const path = await backend.ExportStructureDir(dir);
+        if (!path) {
+            flash('已取消导出');
+            return;
+        }
         flash('已导出结构化目录：' + (baseNameOf(path) || path));
     } catch (e) {
         flash('导出结构化目录失败：' + e, true);

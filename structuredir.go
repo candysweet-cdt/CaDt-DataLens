@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // 与参考脚本保持一致：结构化目录时跳过这两类目录
@@ -131,30 +133,69 @@ func writeStructureTree(b *strings.Builder, children []*structureNode, prefix st
 	}
 }
 
-// StructureDir 生成当前目录的结构化文本（目录名在首行，子项用 ├──/└── 连接）
-func (a *App) StructureDir(dir string) (string, error) {
+func structureDirRoot(dir string) (string, string, error) {
 	if strings.TrimSpace(dir) == "" {
-		return "", fmt.Errorf("没有目录")
+		return "", "", fmt.Errorf("没有目录")
 	}
 	info, err := os.Stat(dir)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("不是目录：%s", dir)
+		return "", "", fmt.Errorf("不是目录：%s", dir)
 	}
 	clean := filepath.Clean(dir)
-	children, err := structureChildren(clean)
-	if err != nil {
-		return "", err
-	}
 	rootName := filepath.Base(clean)
 	if rootName == "" || rootName == "." || rootName == string(filepath.Separator) {
 		rootName = clean
+	}
+	return clean, rootName, nil
+}
+
+// StructureDir 生成当前目录的结构化文本（目录名在首行，子项用 ├──/└── 连接）
+func (a *App) StructureDir(dir string) (string, error) {
+	clean, rootName, err := structureDirRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	children, err := structureChildren(clean)
+	if err != nil {
+		return "", err
 	}
 	var b strings.Builder
 	b.WriteString(rootName)
 	b.WriteByte('\n')
 	writeStructureTree(&b, children, "")
 	return b.String(), nil
+}
+
+// ExportStructureDir 先弹出系统保存对话框选择导出路径，再生成并写入；
+// 用户取消时返回空路径且不写文件。
+func (a *App) ExportStructureDir(dir string) (string, error) {
+	clean, rootName, err := structureDirRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "导出结构化目录",
+		DefaultFilename: rootName + "-目录结构.txt",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "文本文件 (*.txt)", Pattern: "*.txt"},
+			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", nil
+	}
+	text, err := a.StructureDir(clean)
+	if err != nil {
+		return "", err
+	}
+	if err := a.SaveFile(path, text, "lf", false, "utf-8"); err != nil {
+		return "", err
+	}
+	return path, nil
 }
