@@ -412,6 +412,26 @@ const mockBackend = {
         return [mockDir + 'sample.json'];
     },
     async OpenFolderDialog() { return 'mock://samples'; },
+    async StructureDir(dir) {
+        const norm = String(dir || '').replace(/\/+$/, '');
+        const ignored = new Set(['.git', '__pycache__']);
+        const lines = [norm.split('/').pop() || norm];
+        const walk = (path, prefix) => {
+            const entries = (mockTree[path] || []).filter((entry) => !ignored.has(entry.name)).slice();
+            entries.sort((a, b) => {
+                if (!!a.isDir !== !!b.isDir) return a.isDir ? -1 : 1;
+                return a.name.localeCompare(b.name, 'zh-CN', {numeric: true, sensitivity: 'base'});
+            });
+            entries.forEach((entry, index) => {
+                const last = index === entries.length - 1;
+                lines.push(prefix + (last ? '└── ' : '├── ') + entry.name);
+                if (entry.isDir) walk(entry.path, prefix + (last ? '    ' : '│   '));
+            });
+        };
+        walk(norm, '');
+        window.__mockStructuredDir = lines.join('\n');
+        return window.__mockStructuredDir;
+    },
     async ReadDir(path, limit) {
         const key = String(path || '').replace(/\/+$/, '');
         let entries = mockTree[key];
@@ -5575,6 +5595,14 @@ function showExplorerMenu(info, x, y, node) {
             action: () => explorer && explorer.toggleNode(node),
         });
         items.push({label: '设为文件树根目录', icon: 'E8B7', action: () => openFolderWorkspace(info.path)});
+        items.push({
+            label: '结构化目录',
+            iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14M5.5 8.5h11.5M8 12.5h9M10.5 16.5h6.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+            submenu: [
+                {label: '复制', icon: 'E8C8', action: () => copyStructuredDir(info.path)},
+                {label: '导出', icon: 'E74E', action: () => exportStructuredDir(info.path)},
+            ],
+        });
         items.push({sep: true});
     }
     items.push({
@@ -6171,6 +6199,38 @@ async function copyText(text, label) {
     } catch (e) {
         flash('复制失败：' + e, true);
         return false;
+    }
+}
+
+async function copyStructuredDir(dir) {
+    if (!backend.StructureDir) {
+        flash('当前版本不支持结构化目录', true);
+        return;
+    }
+    flash('正在生成结构化目录…');
+    try {
+        const text = await backend.StructureDir(dir);
+        await copyText(text, '结构化目录');
+    } catch (e) {
+        flash('复制结构化目录失败：' + e, true);
+    }
+}
+
+async function exportStructuredDir(dir) {
+    if (!backend.StructureDir) {
+        flash('当前版本不支持结构化目录', true);
+        return;
+    }
+    flash('正在生成结构化目录…');
+    try {
+        const text = await backend.StructureDir(dir);
+        const defaultName = (baseNameOf(dir) || '目录') + '-目录结构.txt';
+        const path = await backend.SaveFileDialog(defaultName);
+        if (!path) return;
+        await backend.SaveFile(path, text, 'lf', false, 'utf-8');
+        flash('已导出结构化目录：' + (baseNameOf(path) || path));
+    } catch (e) {
+        flash('导出结构化目录失败：' + e, true);
     }
 }
 
