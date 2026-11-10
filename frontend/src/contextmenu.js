@@ -1,4 +1,4 @@
-const SUBMENU_ARROW = '\uE76C';
+import {iconSvg, renderMenuIcon} from './icons.js';
 
 function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -31,9 +31,19 @@ export function createContextMenu() {
         panel.classList.remove('hidden');
         panel.style.left = '0px';
         panel.style.top = '0px';
-        const width = panel.offsetWidth;
-        const height = panel.offsetHeight;
+        panel.style.maxHeight = '';
+        panel.style.overflowY = '';
+        let width = panel.offsetWidth;
+        let height = panel.offsetHeight;
         const margin = 8;
+        // 菜单比视口还高时限制高度并内部滚动，避免被窗口截断
+        const maxH = window.innerHeight - margin * 2;
+        if (height > maxH) {
+            panel.style.maxHeight = maxH + 'px';
+            panel.style.overflowY = 'auto';
+            height = maxH;
+            width = panel.offsetWidth;
+        }
         let left = Math.min(x, window.innerWidth - width - margin);
         let top = Math.min(y, window.innerHeight - height - margin);
         left = Math.max(margin, left);
@@ -46,10 +56,19 @@ export function createContextMenu() {
         panel.classList.remove('hidden');
         panel.style.left = '0px';
         panel.style.top = '0px';
+        panel.style.maxHeight = '';
+        panel.style.overflowY = '';
         const rect = anchor.getBoundingClientRect();
-        const width = panel.offsetWidth;
-        const height = panel.offsetHeight;
+        let width = panel.offsetWidth;
+        let height = panel.offsetHeight;
         const margin = 8;
+        const maxH = window.innerHeight - margin * 2;
+        if (height > maxH) {
+            panel.style.maxHeight = maxH + 'px';
+            panel.style.overflowY = 'auto';
+            height = maxH;
+            width = panel.offsetWidth;
+        }
         let left = rect.right + 2;
         if (left + width > window.innerWidth - margin) left = rect.left - width - 2;
         left = Math.max(margin, left);
@@ -78,22 +97,15 @@ export function createContextMenu() {
             }
             const row = el('button', 'menu-item ctx-item' + (item.disabled ? ' disabled' : '') + (item.danger ? ' danger' : ''));
             row.type = 'button';
-            const icon = el('span', 'mi-icon' + (item.checked ? ' checked' : '') +
-                (item.iconClass ? ' ' + item.iconClass : ''));
-            if (item.checked) icon.textContent = '\uE73E';
-            else if (item.swatch) {
-                const dot = el('span', 'mi-swatch');
-                dot.style.background = 'linear-gradient(135deg, ' + item.swatch + ' 55%, ' + item.swatchAccent + ' 55%)';
-                icon.appendChild(dot);
-            } else if (item.iconHtml) {
-                icon.innerHTML = item.iconHtml;
-                if (item.iconClass) icon.dataset.fi = item.iconClass.replace(/^fi-/, '');
-            } else if (item.icon) icon.textContent = String.fromCharCode(parseInt(item.icon, 16));
+            const icon = el('span', 'mi-icon');
+            renderMenuIcon(icon, item);
             const label = el('span', 'mi-label', item.label);
             const key = el('span', 'mi-key', item.shortcut || '');
             row.append(icon, label, key);
             if (item.submenu && item.submenu.length) {
-                row.appendChild(el('span', 'ctx-arrow', SUBMENU_ARROW));
+                const arrow = el('span', 'ctx-arrow');
+                arrow.innerHTML = iconSvg('chevron-right', 10);
+                row.appendChild(arrow);
                 row.addEventListener('mouseenter', () => {
                     if (!item.disabled) openSubmenu(row, item.submenu, depth);
                 });

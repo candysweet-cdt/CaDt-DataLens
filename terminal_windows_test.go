@@ -80,3 +80,57 @@ func TestTermShellCommandRejectsUnknown(t *testing.T) {
 		t.Fatal("未知 shell 应被拒绝")
 	}
 }
+
+func TestTermShellAutoDefault(t *testing.T) {
+	args, err := termShellArgs("")
+	if err != nil {
+		t.Fatalf("默认 shell 应可用: %v", err)
+	}
+	if pwsh := findPwsh(); pwsh != "" {
+		if strings.ToLower(args[0]) != strings.ToLower(pwsh) {
+			t.Fatalf("默认应使用 pwsh，实际: %v", args)
+		}
+		return
+	}
+	if strings.ToLower(args[0]) != "powershell.exe" {
+		t.Fatalf("无 pwsh 时默认应回退 powershell，实际: %v", args)
+	}
+}
+
+func TestTermShellsList(t *testing.T) {
+	app := &App{}
+	shells := app.TermShells()
+	ids := map[string]bool{}
+	for _, s := range shells {
+		ids[s["id"]] = true
+	}
+	if !ids["powershell"] || !ids["cmd"] {
+		t.Fatalf("shell 列表应始终包含 powershell 与 cmd: %v", shells)
+	}
+	if pwsh := findPwsh(); pwsh != "" {
+		if !ids["pwsh"] {
+			t.Fatalf("本机有 PowerShell 7（%s）但列表未包含 pwsh", pwsh)
+		}
+		args, err := termShellArgs("pwsh")
+		if err != nil {
+			t.Fatalf("pwsh 参数生成失败: %v", err)
+		}
+		if strings.ToLower(args[0]) != strings.ToLower(pwsh) {
+			t.Fatalf("pwsh 参数异常: %v", args)
+		}
+	} else if ids["pwsh"] {
+		t.Fatalf("本机没有 pwsh，但列表包含 pwsh: %v", shells)
+	}
+	if bash := findGitBash(); bash != "" {
+		if !ids["gitbash"] {
+			t.Fatalf("本机有 Git Bash（%s）但列表未包含 gitbash", bash)
+		}
+		args, err := termShellArgs("gitbash")
+		if err != nil {
+			t.Fatalf("gitbash 参数生成失败: %v", err)
+		}
+		if !strings.Contains(strings.ToLower(args[0]), "bash.exe") || len(args) < 3 {
+			t.Fatalf("gitbash 参数异常: %v", args)
+		}
+	}
+}

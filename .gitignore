@@ -1,6 +1,7 @@
 node_modules/
 frontend/dist/
 build/bin/
+build/windows/installer/tmp/
 frontend/wailsjs/
 /plugins/
 

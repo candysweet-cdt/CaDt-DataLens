@@ -3,8 +3,8 @@ package main
 import (
 	"archive/zip"
 	"fmt"
-	"os/exec"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -267,7 +267,6 @@ func TestInstallPluginFromUrlInvalid(t *testing.T) {
 	}
 }
 
-
 func TestGitRollbackForReal(t *testing.T) {
 	// 在本仓库里做真实回滚测试
 	target := filepath.Join("docs", "plugins", "examples", "bak-json", "main.js")
@@ -312,5 +311,59 @@ func TestGitFileHistoryAndRecentLog(t *testing.T) {
 	}
 	if strings.Count(log, "\n") < 1 {
 		t.Fatalf("最近提交应有多条: %q", log)
+	}
+}
+
+func TestEnsurePluginsDirCreatesDirectory(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	app := NewApp()
+	if err := app.SetPluginsPathMode("appdata"); err != nil {
+		t.Fatalf("SetPluginsPathMode: %v", err)
+	}
+	dir, err := app.ensurePluginsDir()
+	if err != nil {
+		t.Fatalf("ensurePluginsDir: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("插件目录未创建: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("插件目录不是目录: %s", dir)
+	}
+}
+
+func TestReplacePluginDirSwapsContent(t *testing.T) {
+	root := t.TempDir()
+	dest := filepath.Join(root, "installed")
+	src := filepath.Join(root, "staged")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "plugin.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "sub", "asset.txt"), []byte("asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := replacePluginDir(dest, src); err != nil {
+		t.Fatalf("replacePluginDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "old.txt")); !os.IsNotExist(err) {
+		t.Fatal("旧文件应被移除")
+	}
+	for _, name := range []string{"new.txt", filepath.Join("sub", "asset.txt")} {
+		if _, err := os.Stat(filepath.Join(dest, name)); err != nil {
+			t.Fatalf("新文件 %s 未复制：%v", name, err)
+		}
 	}
 }

@@ -7,6 +7,8 @@
 
 CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文本，不依赖浏览器，不上传文件，所有读写都在本机完成。
 
+更新内容见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 功能
 
 ### 格式与视图
@@ -34,14 +36,18 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 
 - 新建、打开、保存、另存为、保存全部、重新加载、关闭标签。
 - 撤销/重做；内容恢复到原版后会自动清除“未保存”标记。
+- 内容区查找栏：`Ctrl+F` 打开 IDEA 风格浮动查找栏，支持区分大小写、全字匹配、正则表达式、结果计数、上一个/下一个、`↑`/`↓` 或 `Enter`/`Shift+Enter` 跳转；代码视图高亮全部匹配，文本视图定位到匹配项。
+- 快速切换面板：按 Ctrl + 反引号打开 IDEA 式“切换”弹窗，可按数字或点击进入主题、视图模式、编辑器字体、字号、缩进、布局、打开方式；数字键或点击应用，Esc 返回或关闭。
 - 文件未编辑时，代码/文本视图保留磁盘原文格式；未修改直接保存也不会重排格式。
 - 关闭有未保存修改的标签或窗口时确认。
 - 自动保存开关：停止输入 1 秒后静默保存当前文件。
 - 打开文件位置、复制文件路径/文件名。
 - 拖入一个或多个文件即可打开；支持文件对话框多选，也可以直接打开文件夹。
 - 文件侧边栏（`Alt+1`）：列表视图列出当前文件所在目录的数据文件，超过 200 个时提示改用文件树视图；文件树视图按 IDE 风格懒加载目录。单击只选中，选中项为圆角高亮，连续多选合并为一整块（仅首尾圆角）；单击目录前的箭头可展开/收起，双击打开文件或展开/收起目录，`Ctrl+单击` 可多选文件/目录，`Shift+单击` 从上次锚点连续选择，`Ctrl+Shift+单击` 追加一段范围；选中单个文件或目录后可按 `F2` / `Shift+F6` 重命名，多选后可批量复制、剪切、粘贴。当前打开文件不再额外加背景高亮。缩进参考线默认关闭，可在通用设置中开启。文件树/列表默认每 3 秒自动同步一次，切回应用时立即刷新；可在通用设置调整间隔或关闭。折叠对象/数组显示带主题底色的 IDEA 式预览（IDEA Light 为浅绿底）：对象显示首项键值对（如 `{"id": "..."...}`），数组显示 `[ N 个元素... ]`，预览与字段垂直居中，点击预览即可展开；展开行默认不显示项数，可在通用设置开启「文件树显示对象/数组项数」；文件名过长时侧边栏显示横向滚动条，不再用省略号截断。
-- 左侧工具条：IDEA 风格竖向工具窗口栏，文件树左边常驻显示；包含文件树开关、结构视图、节点搜索、视图/工具窗口“更多”、只读锁、主题、设置和关于。文件树开关与底部状态栏按钮状态同步。
+- 左侧工具条：IDEA 风格竖向工具窗口栏，文件树左边常驻显示；包含文件树开关、结构视图、内容搜索、视图/工具窗口“更多”、只读锁、主题、设置和关于。文件树开关与底部状态栏按钮状态同步。
+- 标题栏：打开文件夹后，顶部显示“项目徽标 + 项目名 + 当前 Git 分支”（无 git 仓库时只显示项目），替代原来的“未打开文件”占位。点击项目打开项目选择器（打开…、克隆仓库…、当前项目与路径、在文件资源管理器中显示、最近的项目）；点击分支打开 IDEA 式分支弹窗：搜索分支和操作、更新项目、提交、推送、新建分支、签出标记或修订，最近/本地/远程/标签分组，本地分支按 `/` 前缀折叠，支持签出、键盘上下选择、固定窗口和获取远程分支；本地分支每次打开刷新，远程分支列表缓存，只在顶部刷新按钮（`git fetch`）或推送/更新后重读。文件侧边栏标题固定显示“项目”。
 - 右键菜单：标签页可关闭/关闭其他/全部/左侧/未修改、复制路径、在新窗口打开、重新打开关闭的标签页；侧边栏目录可新建常见格式文件（JSON / TXT / Markdown / YAML / XML / CSV / TOML / JSONL / INI / Properties 及常用代码文件）或文件夹，文件和目录都可复制、剪切、粘贴、重命名、删除（移到回收站，`Delete` 键；已打开文件的标签会一并关闭）；粘贴到同名位置时会先给出“名称 - 副本”建议再确认；复制路径子菜单提供绝对路径、相对当前打开目录的路径（不带 `./`）和文件名；目录另有「结构化目录 → 复制 / 导出…」，导出时先弹出系统保存对话框选择路径（取消则不导出），生成与参考脚本一致的目录树（首行为当前目录名，忽略 `.git` / `__pycache__`，文件夹优先、自然排序）；代码/文本内容区可剪切复制粘贴、查找、格式化、重新加载、折叠。
+- 帮助菜单：检查更新（读取 Gitee Release 的版本与说明，可直接打开安装包或发布页）、更新日志、问题反馈、用户协议与隐私协议；开启开发者模式后还会出现“开发者工具”。
 - 设置 → 系统集成：可把当前程序注册到注册表（加入 JSON/JSONL/YAML/XML/CSV/文本等格式的“打开方式”）和资源管理器右键菜单（文件/文件夹/文件夹空白处）；只写 HKCU，无需管理员权限，默认程序仍需在 Windows 中确认。
 - 设置 → 系统集成 → 注册全局 Agent Skill：把 `docs/skills/cadt-datalens` 里的使用说明注册到常用的 agent 全局技能目录（`~/.agents/skills`、`~/.claude/skills`），让 AI agent 学会用命令行打开文件并跳转到指定行:列（详见 [docs/skills/README.md](docs/skills/README.md)）。
 - 设置 → 插件：文件夹 / .zip 两种方式安装插件，可启用/禁用/删除；插件可注册新的文件格式（树/表格/代码/文本视图复用）、工具菜单命令和主题，插件目录默认在 exe 旁 `plugins\`、可切换到应用数据目录（详见 [docs/plugins/README.md](docs/plugins/README.md)）。
@@ -50,7 +56,7 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 
 ### 外观
 
-- 10 套配色：深色、浅色、Darcula、IDEA Dark、IDEA Light、Github、Newsprint、Night、Pixyll、Whitey。
+- 11 套配色：深色、浅色、Darcula、IDEA Dark、IDEA Light、Github、Newsprint、Night、Pixyll、Whitey、Harness（dsh / Qoder 一类 harness 的浅色方案）。
 - 内置字体：Inter、JetBrains Mono、Fira Code。
 - 界面字体、编辑器字体、界面中文字体、编辑器中文字体可分别选择，并带实时预览。
 - 固定键列与键列宽度可调。
@@ -80,6 +86,8 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 | 格式化 | `Ctrl+Alt+L` |
 | 文件侧边栏 | `Alt+1` |
 | 结构视图 | `Alt+7` |
+| AI 会话侧边栏 | `Alt+8` |
+| AI 助手面板 | `Alt+9` |
 | 文件树中打开文件 / 展开目录 | 双击 |
 | 文件树中选择 / 多选 | 单击 / `Ctrl+单击` |
 | 文件树中连续选择 / 追加范围 | `Shift+单击` / `Ctrl+Shift+单击` |
@@ -87,12 +95,18 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 | 文件树中删除（移到回收站） | `Delete` |
 | 文件树中复制 / 剪切 / 粘贴 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` |
 | 重新打开关闭的标签页 | `Ctrl+Shift+T` |
+| Git 提交（打开提交面板） | `Ctrl+K` |
+| Git 更新项目 | `Ctrl+T` |
+| Git 推送 | `Ctrl+Shift+K` |
+| Git 新建分支 | `Ctrl+Alt+N` |
 | 当前文件在新窗口打开 | `Shift+F4` |
-| 搜索节点 | `Ctrl+F`（树视图） |
+| 内容搜索 | `Ctrl+F`（代码/文本视图） |
+| 快速切换 | Ctrl + 反引号 |
 | 代码/文本视图转到行:列 | `Ctrl+G` |
 | 展开 / 收起节点 | `Ctrl+=` / `Ctrl+-` |
 | 全部展开 / 收起 | `Ctrl+Shift+=` / `Ctrl+Shift+-` |
 | 调整编辑器字号 | `Ctrl+滚轮` |
+| 调整 AI 助手字号 | `Ctrl+滚轮`（AI 面板内） |
 | 标签栏横向滚动 | 鼠标滚轮悬停在标签栏 |
 
 ## 命令行
@@ -145,10 +159,23 @@ CaDt-DataLens.exe -g "D:\data\sample.json:42"
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1
 git clone https://github.com/candysweet-cdt/CaDt-DataLens.git
 cd CaDt-DataLens
-wails build
+wails build -devtools
 ```
 
 产物在 `build/bin/CaDt-DataLens.exe`。可以运行 `wails doctor` 检查环境。
+
+### 安装包
+
+安装包使用 NSIS 构建（需先安装 [NSIS 3](https://nsis.sourceforge.io/) 并让 `makensis` 在 PATH 中）。完整的工具准备、版本号规则、升级/卸载行为、签名和发布检查清单见 **[打包与发布流程](docs/packaging.md)**。
+
+```bash
+wails build -nsis -installscope user                                  # 只打包
+powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1  # 构建 + 代码签名
+```
+
+产物在 `build/bin/CaDt-DataLens-amd64-installer.exe`，按当前用户安装到 `%LOCALAPPDATA%\Programs\CaDt-DataLens`，无需管理员权限。安装时可勾选文件关联、资源管理器右键菜单（默认勾选，写入 HKCU）、Agent Skill、用户 PATH、桌面快捷方式（默认不勾选）。安装包自动检测并静默安装 WebView2 运行时，创建开始菜单快捷方式和卸载项；覆盖安装沿用上次安装目录；卸载撤销注册表集成，但保留 `%APPDATA%\CandySweet\CaDt-DataLens` 下的配置和安装目录下的 `plugins\`。注册表集成由 `datalens.exe --integrate=... / --unintegrate=all` 完成，与程序内“设置 → 系统集成”共用同一套逻辑。
+
+签名默认使用本机的开发自签名证书（FriendlyName `CaDt-DataLens Self-Signed (Dev)`）；正式发布用 `-Certificate D:\path\code-signing.pfx -CertificatePassword ...` 换成 CA 证书，`-SkipSign` 跳过签名。自签名只在加入本机“受信任根”后不报错，分发给其他人仍会提示“未知发布者”。
 
 ## 开发
 

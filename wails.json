@@ -8,5 +8,12 @@
   "frontend:dev:serverUrl": "auto",
   "author": {
     "name": "CandySweet"
+  },
+  "info": {
+    "companyName": "CandySweet",
+    "productName": "CaDt-DataLens",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © 2026 CandySweet",
+    "comments": "JSON / YAML / XML / CSV 等本地数据文件查看与编辑工具"
   }
 }

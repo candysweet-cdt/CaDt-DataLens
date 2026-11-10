@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,7 +28,18 @@ const (
 	pluginZipMaxSize   = int64(64 << 20) // 解压总量上限 64 MB
 	pluginZipMaxFiles  = 1000
 	pluginIconMaxSize  = int64(128 << 10) // 图标上限 128 KB
+	pluginAssetMaxSize = int64(16 << 20)  // 单个资产上限 16 MB
 )
+
+var pluginAssetMimeTypes = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".bmp":  "image/bmp",
+	".svg":  "image/svg+xml",
+}
 
 var (
 	pluginIdPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -98,6 +110,26 @@ func (a *App) GetPluginsDir() (string, error) {
 	return pluginsRootFor(readAppConfig().PluginsPathMode)
 }
 
+func (a *App) ensurePluginsDir() (string, error) {
+	dir, err := a.GetPluginsDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("无法创建插件目录：%w", err)
+	}
+	return dir, nil
+}
+
+// OpenPluginsDir 确保插件目录存在后在资源管理器中打开它。
+func (a *App) OpenPluginsDir() error {
+	dir, err := a.ensurePluginsDir()
+	if err != nil {
+		return err
+	}
+	return a.ShowInFolder(dir)
+}
+
 func (a *App) SetPluginsPathMode(mode string) error {
 	if mode != "appdata" {
 		mode = "portable"
@@ -165,6 +197,66 @@ func readPluginManifest(dir string) (*pluginManifest, error) {
 		}
 	}
 	return &m, nil
+}
+
+// ReadPluginAsset 读取插件目录内的图片资产并转为 data URL。
+// relPath 相对插件目录，仅支持图片格式，且不允许越出插件目录。
+func (a *App) ReadPluginAsset(id, relPath string) (string, error) {
+	id = strings.TrimSpace(id)
+	if !pluginIdPattern.MatchString(id) {
+		return "", fmt.Errorf("插件 id 无效：%q", id)
+	}
+	rel := strings.TrimSpace(strings.ReplaceAll(relPath, "\\", "/"))
+	if rel == "" {
+		return "", fmt.Errorf("资产路径为空")
+	}
+	if strings.Contains(rel, "\x00") || strings.HasPrefix(rel, "/") {
+		return "", fmt.Errorf("资产路径无效：%q", relPath)
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == "" || seg == "." || seg == ".." || strings.Contains(seg, ":") {
+			return "", fmt.Errorf("资产路径无效：%q", relPath)
+		}
+	}
+	mime, ok := pluginAssetMimeTypes[strings.ToLower(filepath.Ext(rel))]
+	if !ok {
+		return "", fmt.Errorf("资产仅支持图片格式：%s", relPath)
+	}
+	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+	if err != nil {
+		return "", err
+	}
+	pluginDir := filepath.Join(root, id)
+	if info, statErr := os.Stat(pluginDir); statErr != nil || !info.IsDir() {
+		return "", fmt.Errorf("插件不存在：%s", id)
+	}
+	if info, statErr := os.Stat(filepath.Join(pluginDir, pluginManifestName)); statErr != nil || info.IsDir() {
+		return "", fmt.Errorf("插件不存在：%s", id)
+	}
+	realDir, err := filepath.EvalSymlinks(pluginDir)
+	if err != nil {
+		return "", fmt.Errorf("读取插件目录失败：%w", err)
+	}
+	realTarget, err := filepath.EvalSymlinks(filepath.Join(pluginDir, filepath.FromSlash(rel)))
+	if err != nil {
+		return "", fmt.Errorf("资产不存在：%s", relPath)
+	}
+	inside, err := filepath.Rel(realDir, realTarget)
+	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(os.PathSeparator)) || filepath.IsAbs(inside) {
+		return "", fmt.Errorf("资产路径越界：%s", relPath)
+	}
+	info, err := os.Stat(realTarget)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("资产不存在：%s", relPath)
+	}
+	if info.Size() > pluginAssetMaxSize {
+		return "", fmt.Errorf("资产过大（超过 %d MB）", pluginAssetMaxSize/(1<<20))
+	}
+	raw, err := os.ReadFile(realTarget)
+	if err != nil {
+		return "", fmt.Errorf("读取资产失败：%w", err)
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
 }
 
 // pluginIconData 读取插件图标并转为 data URL；无图标时返回空串。
@@ -369,9 +461,88 @@ func importPluginZipAt(root, zipPath string) (*PluginInfo, error) {
 
 // InstallPluginFromUrl 用系统 git 浅克隆插件仓库并安装；支持 https(s) 与 git@ 地址。
 func (a *App) InstallPluginFromUrl(rawUrl string) (*PluginInfo, error) {
+	if strings.TrimSpace(rawUrl) == "" {
+		return nil, nil
+	}
+	srcDir, cleanup, err := clonePluginRepo(rawUrl)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+	if err != nil {
+		return nil, err
+	}
+	return installPluginAt(root, srcDir)
+}
+
+// UpdatePluginFromUrl 拉取仓库最新版本并替换已安装的同 id 插件；失败时恢复旧版本。
+func (a *App) UpdatePluginFromUrl(id, rawUrl string) (*PluginInfo, error) {
+	id = strings.TrimSpace(id)
+	if !pluginIdPattern.MatchString(id) {
+		return nil, fmt.Errorf("插件 id 无效：%q", id)
+	}
+	srcDir, cleanup, err := clonePluginRepo(rawUrl)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	m, err := readPluginManifest(srcDir)
+	if err != nil {
+		return nil, err
+	}
+	if m.Id != id {
+		return nil, fmt.Errorf("仓库插件 id 为 %s，与要更新的插件 %s 不一致", m.Id, id)
+	}
+	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+	if err != nil {
+		return nil, err
+	}
+	disabled := map[string]bool{}
+	for _, item := range readAppConfig().DisabledPlugins {
+		disabled[item] = true
+	}
+	plugins, err := listPluginsAt(root, disabled)
+	if err != nil {
+		return nil, err
+	}
+	var current *PluginInfo
+	for _, p := range plugins {
+		if p.Id == id {
+			current = p
+			break
+		}
+	}
+	if current == nil {
+		return nil, fmt.Errorf("插件 %s 尚未安装", id)
+	}
+	if m.Version != "" && current.Version != "" && comparePluginVersion(m.Version, current.Version) <= 0 {
+		return nil, fmt.Errorf("已是最新版本（当前 v%s）", current.Version)
+	}
+	if err := replacePluginDir(current.Dir, srcDir); err != nil {
+		return nil, err
+	}
+	writeAppLog("info", "插件已更新：%s %s → %s", m.Name, current.Version, m.Version)
+	if refreshed, err := listPluginsAt(root, disabled); err == nil {
+		for _, p := range refreshed {
+			if p.Id == id {
+				return p, nil
+			}
+		}
+	}
+	return &PluginInfo{
+		Id: m.Id, Name: m.Name, Version: m.Version, Author: m.Author, Description: m.Description,
+		Dir: current.Dir, Entry: m.Entry, Extensions: m.Extensions, Homepage: m.Homepage,
+		Repository: m.Repository, License: m.License, Keywords: m.Keywords,
+		MinAppVersion: m.MinAppVersion, Enabled: !disabled[id], EntryOK: true,
+	}, nil
+}
+
+// clonePluginRepo 浅克隆插件仓库，返回包含 plugin.json 的目录与清理函数。
+func clonePluginRepo(rawUrl string) (string, func(), error) {
 	urlStr := strings.TrimSpace(rawUrl)
 	if urlStr == "" {
-		return nil, nil
+		return "", func() {}, fmt.Errorf("仓库地址为空")
 	}
 	if strings.HasPrefix(urlStr, "git@") {
 		urlStr = strings.TrimPrefix(urlStr, "git@")
@@ -383,32 +554,33 @@ func (a *App) InstallPluginFromUrl(rawUrl string) (*PluginInfo, error) {
 	}
 	urlStr = strings.TrimRight(urlStr, "/")
 	if !strings.Contains(strings.TrimPrefix(strings.TrimPrefix(urlStr, "https://"), "http://"), "/") {
-		return nil, fmt.Errorf("不是有效的仓库地址：%s", urlStr)
+		return "", func() {}, fmt.Errorf("不是有效的仓库地址：%s", urlStr)
 	}
 	if !strings.HasSuffix(urlStr, ".git") {
 		urlStr += ".git"
 	}
 	if _, err := exec.LookPath("git"); err != nil {
-		return nil, fmt.Errorf("未安装 git 或未加入 PATH，无法从仓库地址安装")
+		return "", func() {}, fmt.Errorf("未安装 git 或未加入 PATH，无法从仓库地址安装")
 	}
 	tmp, err := os.MkdirTemp("", "cadt-plugin-repo-")
 	if err != nil {
-		return nil, err
+		return "", func() {}, err
 	}
-	defer os.RemoveAll(tmp)
+	cleanup := func() { _ = os.RemoveAll(tmp) }
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--single-branch", urlStr, filepath.Join(tmp, "repo"))
 	cloneCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
 	if out, cloneErr := cloneCmd.CombinedOutput(); cloneErr != nil {
+		cleanup()
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("克隆超时（90 秒）")
+			return "", func() {}, fmt.Errorf("克隆超时（90 秒）")
 		}
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
 			msg = cloneErr.Error()
 		}
-		return nil, fmt.Errorf("克隆失败：%s", msg)
+		return "", func() {}, fmt.Errorf("克隆失败：%s", msg)
 	}
 	repoDir := filepath.Join(tmp, "repo")
 	var srcDir string
@@ -424,13 +596,73 @@ func (a *App) InstallPluginFromUrl(rawUrl string) (*PluginInfo, error) {
 		}
 	}
 	if srcDir == "" {
-		return nil, fmt.Errorf("仓库里没有找到 %s，不是有效的插件仓库", pluginManifestName)
+		cleanup()
+		return "", func() {}, fmt.Errorf("仓库里没有找到 %s，不是有效的插件仓库", pluginManifestName)
 	}
-	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+	return srcDir, cleanup, nil
+}
+
+// replacePluginDir 用新目录内容替换已安装插件目录；失败时恢复旧内容。
+func replacePluginDir(destDir, srcDir string) error {
+	backupRoot, err := os.MkdirTemp("", "cadt-plugin-backup-")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return installPluginAt(root, srcDir)
+	defer os.RemoveAll(backupRoot)
+	backupDir := filepath.Join(backupRoot, "plugin")
+	info, err := os.Stat(destDir)
+	if err != nil {
+		return fmt.Errorf("读取已安装插件失败：%w", err)
+	}
+	if err := copyEntry(destDir, backupDir, info); err != nil {
+		return fmt.Errorf("备份当前插件失败：%w", err)
+	}
+	srcInfo, err := os.Stat(srcDir)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(destDir); err != nil {
+		return fmt.Errorf("移除旧插件失败：%w", err)
+	}
+	if err := copyEntry(srcDir, destDir, srcInfo); err != nil {
+		_ = os.RemoveAll(destDir)
+		if restoreErr := copyEntry(backupDir, destDir, info); restoreErr != nil {
+			return fmt.Errorf("更新失败且恢复旧版本失败：%v（恢复错误：%v）", err, restoreErr)
+		}
+		return fmt.Errorf("更新失败，已恢复旧版本：%w", err)
+	}
+	return nil
+}
+
+// comparePluginVersion 比较数字版本号，返回 -1/0/1。
+func comparePluginVersion(a, b string) int {
+	parse := func(v string) []int {
+		v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+		parts := strings.Split(v, ".")
+		out := make([]int, 0, 3)
+		for _, part := range parts {
+			n, _ := strconv.Atoi(part)
+			out = append(out, n)
+		}
+		return out
+	}
+	ap, bp := parse(a), parse(b)
+	for i := 0; i < 3; i++ {
+		av, bv := 0, 0
+		if i < len(ap) {
+			av = ap[i]
+		}
+		if i < len(bp) {
+			bv = bp[i]
+		}
+		if av != bv {
+			if av > bv {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
 }
 
 func pluginSourceAt(dir string, m *pluginManifest) (*PluginSource, error) {

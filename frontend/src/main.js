@@ -8,8 +8,16 @@ import {aceModeFor, detectFormat, formats, isSupportedFile, pluginFormats} from 
 import {createExplorer} from './explorer.js';
 import {createStructurePanel} from './structure.js';
 import {createContextMenu} from './contextmenu.js';
+import {createDebugConsole} from './debugconsole.js';
+import {iconSvg, renderMenuIcon} from './icons.js';
+import {createPalette} from './palette.js';
+import {createAIPanel} from './ai-panel.js';
+import {repairJson} from './jsonrepair.js';
 import {createFileIcon, fileIconSpec} from './fileicons.js';
 import {getPluginCommands, initPluginRuntime, loadPlugins} from './plugins.js';
+import changelogText from '../../CHANGELOG.md?raw';
+import termsText from '../../docs/legal/terms.md?raw';
+import privacyText from '../../docs/legal/privacy.md?raw';
 
 window.addEventListener('error', (e) => {
     window.__modErr = (e.message || '') + ' @ ' + (e.filename || '').split('/').pop() + ':' + e.lineno + ':' + e.colno;
@@ -282,12 +290,17 @@ const mockFiles = {
     go: {name: 'server.go', content: sampleGo},
     machine: {name: 'machine.py', content: sampleMachinePy},
     brokensvg: {name: 'broken.svg', content: '{ not a svg {'},
+    aiMemory: {name: 'MEMORY.md', content: '# 记忆索引\n\n- 用户偏好：回答尽量简洁，先给结论（user-preferences.md）\n- 项目事实：这是一个用于演示 AI 面板的 mock 工作区。\n'},
+    aiPreferences: {name: 'user-preferences.md', content: '# 用户偏好\n\n- 喜欢简洁表格，先结论后细节。\n'},
+    aiSkill: {name: 'SKILL.md', content: '---\nname: demo-skill\ndescription: 演示技能：回答先给结论\n---\n\n# Demo Skill\n\n回答时先给结论，再列要点。\n'},
+    workspaceSkill: {name: 'workspace-skill.md', content: '---\nname: workspace-skill\ndescription: 工作区技能：回答附示例\n---\n\n# Workspace Skill\n\n回答时附一个最小示例。\n'},
 };
 const mockTree = {
     'mock://samples': [
         {name: 'cache', path: 'mock://samples/cache', isDir: true},
         {name: 'config', path: 'mock://samples/config', isDir: true},
         {name: 'images', path: 'mock://samples/images', isDir: true},
+        {name: 'empty-dir', path: 'mock://samples/empty-dir', isDir: true},
         {name: 'AGENTS.md', path: 'mock://samples/AGENTS.md', isDir: false},
         {name: 'notes.md', path: 'mock://samples/notes.md', isDir: false},
         {name: 'index.html', path: 'mock://samples/index.html', isDir: false},
@@ -306,6 +319,7 @@ const mockTree = {
         {name: 'sample.yaml', path: 'mock://samples/sample.yaml', isDir: false},
         {name: 'secrets.bin', path: 'mock://samples/secrets.bin', isDir: false},
     ],
+    'mock://samples/empty-dir': [],
     'mock://samples/cache': [
         {name: 'data-001.bin', path: 'mock://samples/cache/data-001.bin', isDir: false},
         {name: 'data-002.bin', path: 'mock://samples/cache/data-002.bin', isDir: false},
@@ -318,6 +332,35 @@ const mockTree = {
     'mock://samples/images': [
         {name: 'logo.png', path: 'mock://samples/images/logo.png', isDir: false},
         {name: 'preview.jpg', path: 'mock://samples/images/preview.jpg', isDir: false},
+    ],
+    'mock://samples/.cadt': [
+        {name: 'memory', path: 'mock://samples/.cadt/memory', isDir: true},
+        {name: 'skills', path: 'mock://samples/.cadt/skills', isDir: true},
+    ],
+    'mock://samples/.cadt/memory': [
+        {name: 'MEMORY.md', path: 'mock://samples/.cadt/memory/MEMORY.md', isDir: false},
+        {name: 'user-preferences.md', path: 'mock://samples/.cadt/memory/user-preferences.md', isDir: false},
+    ],
+    'mock://samples/.cadt/skills': [
+        {name: 'demo-skill', path: 'mock://samples/.cadt/skills/demo-skill', isDir: true},
+        {name: 'workspace-skill.md', path: 'mock://samples/.cadt/skills/workspace-skill.md', isDir: false},
+    ],
+    'mock://samples/.cadt/skills/demo-skill': [
+        {name: 'SKILL.md', path: 'mock://samples/.cadt/skills/demo-skill/SKILL.md', isDir: false},
+    ],
+    'mock://appdata/CandySweet/CaDt-DataLens': [
+        {name: 'ai-memory', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-memory', isDir: true},
+        {name: 'ai-skills', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-skills', isDir: true},
+    ],
+    'mock://appdata/CandySweet/CaDt-DataLens/ai-memory': [
+        {name: 'MEMORY.md', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-memory/MEMORY.md', isDir: false},
+        {name: 'user-preferences.md', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-memory/user-preferences.md', isDir: false},
+    ],
+    'mock://appdata/CandySweet/CaDt-DataLens/ai-skills': [
+        {name: 'demo-skill', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-skills/demo-skill', isDir: true},
+    ],
+    'mock://appdata/CandySweet/CaDt-DataLens/ai-skills/demo-skill': [
+        {name: 'SKILL.md', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-skills/demo-skill/SKILL.md', isDir: false},
     ],
 };
 
@@ -382,6 +425,18 @@ const mockBackend = {
             return {path: dirKey, name: dirKey.split('/').pop(), isDir: true};
         }
         const base = path.split('/').pop();
+        if (window.__mockWrites && Object.prototype.hasOwnProperty.call(window.__mockWrites, path)) {
+            const content = String(window.__mockWrites[path] || '');
+            return {path, name: base, content, size: content.length, eol: 'lf', hasBom: false, large: false, enc: 'utf-8'};
+        }
+        if (path.includes('new-file') || path.includes('missing')) {
+            throw new Error('The system cannot find the file specified.');
+        }
+        if (base === 'AGENTS.md' &&
+            !(window.__mockWrites && Object.prototype.hasOwnProperty.call(window.__mockWrites, path)) &&
+            !(window.__mockCreated && window.__mockCreated[path])) {
+            throw new Error('The system cannot find the file specified.');
+        }
         if (window.__mockCreated && window.__mockCreated[path]) {
             return {path, name: base, content: '', size: 0, eol: 'lf', hasBom: false, large: false, enc: 'utf-8'};
         }
@@ -405,6 +460,17 @@ const mockBackend = {
         return {
             path, name: base, content,
             size: content.length, eol: 'lf', hasBom: false, large, enc: fileEnc,
+        };
+    },
+    async GetPathInfo(path) {
+        const base = String(path || '').split('/').pop();
+        return {
+            path,
+            name: base,
+            isDir: false,
+            size: (mockFiles.base || mockFiles.json).content.length,
+            modified: Date.now() - 3600 * 1000,
+            readOnly: false,
         };
     },
     async OpenFilesDialog() {
@@ -550,12 +616,71 @@ const mockBackend = {
         if (!mockFindEntry(key)) throw new Error('文件不存在');
         mockDropPath(key);
     },
+    async SearchWorkspace(root, query, caseSensitive, maxResults) {
+        const text = String(query == null ? '' : query);
+        const limit = Math.max(1, Math.min(Number(maxResults) || 400, 1000));
+        const hits = [];
+        if (!text) return {hits, truncated: false, files: 0};
+        const needle = caseSensitive ? text : text.toLowerCase();
+        let files = 0;
+        for (const item of Object.values(mockFiles)) {
+            files++;
+            const lines = String(item.content || '').split('\n');
+            for (let i = 0; i < lines.length && hits.length < limit; i++) {
+                const line = lines[i].replace(/\r$/, '');
+                if (!line) continue;
+                const hay = caseSensitive ? line : line.toLowerCase();
+                let from = 0;
+                while (hits.length < limit) {
+                    const idx = hay.indexOf(needle, from);
+                    if (idx < 0) break;
+                    hits.push({
+                        path: mockDir + item.name,
+                        name: item.name,
+                        dir: 'samples',
+                        line: i + 1,
+                        column: idx + 1,
+                        length: text.length,
+                        preview: line,
+                        matchStart: idx,
+                        matchEnd: idx + text.length,
+                    });
+                    from = idx + Math.max(1, needle.length);
+                }
+            }
+        }
+        return {hits, truncated: hits.length >= limit, files};
+    },
     async ReadImageDataURL() { return mockImageDataUrl; },
     async SaveFileDialog(name) { return 'mock://' + (window.__mockSaveDialogName || name); },
+    async ShowSaveFileDialog(title, defaultName) {
+        return 'mock://' + (window.__mockExportName || defaultName || 'export.json');
+    },
+    async ShowOpenFileDialog(title, filter) {
+        return window.__mockOpenDialogPath || 'mock://import-ai-config.json';
+    },
+    async ExportDebugConsoleLog(defaultName, content) {
+        const path = 'mock://' + (window.__mockExportName || defaultName || 'debug-console.log');
+        window.__mockWrites = window.__mockWrites || {};
+        window.__mockWrites[path] = String(content == null ? '' : content);
+        window.__mockSaves = (window.__mockSaves || []).concat([{path, content, eol: 'lf', hasBom: false, enc: 'utf-8'}]);
+        window.__mockLastSavePath = path;
+        return path;
+    },
     async SaveFile(path, content, eol, hasBom, enc) {
         window.__mockLastSaveEnc = enc;
         window.__mockLastSavePath = path;
         window.__mockSaves = (window.__mockSaves || []).concat([{path, content, eol, hasBom, enc}]);
+        window.__mockWrites = window.__mockWrites || {};
+        window.__mockWrites[path] = String(content == null ? '' : content);
+        try {
+            const idx = String(path).lastIndexOf('/');
+            const dir = idx > 0 ? String(path).slice(0, idx) : '';
+            const name = idx > 0 ? String(path).slice(idx + 1) : String(path);
+            if (dir && mockTree[dir] && !mockTree[dir].some((entry) => entry.name === name)) {
+                mockTree[dir].push({name, path, isDir: false});
+            }
+        } catch (e) {}
         localStorage.setItem('datalens-mock-save', content);
         console.info('[mock] SaveFile', path, content.length, 'chars', enc);
     },
@@ -616,12 +741,13 @@ const mockBackend = {
     async TermCreate(cols, rows, shell, cwd) {
         window.__mockTermSeq = (window.__mockTermSeq || 0) + 1;
         const id = 'term-' + window.__mockTermSeq;
+        const usedShell = shell || 'pwsh';
         setTimeout(() => {
             if (rt && rt.EventsEmit) {
                 rt.EventsEmit('term-out', {id, data: 'CaDt-DataLens 模拟终端（开发预览）\r\nPS ' + (cwd || 'C:\\') + '> '});
             }
         }, 200);
-        return {id};
+        return {id, shell: usedShell};
     },
     async TermWrite(id, data) {
         if (rt && rt.EventsEmit && data && !data.includes('\r')) {
@@ -632,6 +758,18 @@ const mockBackend = {
     async TermClose() {},
     async RunCommandSync(exe, args, cwd, timeoutMs) {
         return {code: 0, stdout: '[mock] ' + exe + ' ' + (args || []).join(' ') + (cwd ? ' (cwd ' + cwd + ')' : ''), stderr: ''};
+    },
+    async AIRunShellCommand(command, cwd, timeoutMs) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return {
+            shell: 'Git Bash',
+            exe: 'C:/Program Files/Git/bin/bash.exe',
+            code: 0,
+            stdout: '[mock] ' + command + (cwd ? '\n(cwd ' + cwd + ')' : ''),
+            stderr: '',
+            timedOut: false,
+            durationMs: 200,
+        };
     },
     async StartCommand(id, exe, args) {
         setTimeout(() => {
@@ -650,7 +788,7 @@ const mockBackend = {
         return {
             available: true,
             root: dir,
-            branch: 'mock/main',
+            branch: window.__mockBranch || 'mock/main',
             entries: [
                 {path: dir + '\\sample.json', state: 'modified'},
                 {path: dir + '\\sample.yaml', state: 'added'},
@@ -662,6 +800,57 @@ const mockBackend = {
                 {path: dir + '\\cache', state: 'ignored'},
             ],
         };
+    },
+    async GitBranchesFor(dir, includeRemote) {
+        window.__mockBranchCalls = (window.__mockBranchCalls || []).concat([{includeRemote: !!includeRemote}]);
+        if (!mockScenario.has('gitmock')) {
+            return {available: false, reason: 'mock 无 git', recent: [], local: [], remote: [], tags: []};
+        }
+        const current = window.__mockBranch || 'mock/main';
+        return {
+            available: true,
+            root: dir,
+            current,
+            recent: ['mock/feature', 'hotfix/1.0.1'],
+            local: [
+                {name: 'hotfix/1.0.1', current: current === 'hotfix/1.0.1', upstream: 'origin/hotfix/1.0.1', ahead: 0, behind: 3},
+                {name: 'mock/feature', current: current === 'mock/feature', upstream: 'origin/mock/feature', ahead: 2, behind: 1},
+                {name: 'mock/main', current: current === 'mock/main', upstream: 'origin/mock/main', ahead: 0, behind: 0},
+                {name: 'feature/api', current: current === 'feature/api', upstream: 'origin/feature/api', ahead: 1, behind: 0},
+                {name: 'feature/ui', current: current === 'feature/ui', upstream: 'origin/feature/ui', ahead: 0, behind: 0},
+            ],
+            remote: includeRemote ? [
+                {name: 'origin/mock/main', current: false},
+                {name: 'origin/mock/feature', current: false},
+                {name: 'origin/feature/api', current: false},
+                {name: 'origin/release/2.0', current: false},
+            ] : [],
+            tags: ['v1.0.0', 'v1.0.1', 'v1.1.0'],
+        };
+    },
+    async GitCheckoutBranch(dir, name, remote) {
+        const branch = remote ? name.replace(/^[^/]+\//, '') : name;
+        window.__mockBranch = branch;
+        return {success: true, output: '[mock] switched to ' + branch, branch};
+    },
+    async GitCreateBranch(dir, name) {
+        window.__mockBranch = name;
+        return {success: true, output: '[mock] created ' + name, branch: name};
+    },
+    async GitCheckoutRefFor(dir, ref) {
+        return {success: true, output: '[mock] checkout ' + ref, branch: ref};
+    },
+    async GitPullFor(dir) {
+        return {success: true, output: '[mock] Already up to date.'};
+    },
+    async GitPushFor(dir) {
+        return {success: true, output: '[mock] Everything up-to-date'};
+    },
+    async GitFetchFor(dir) {
+        return {success: true, output: '[mock] fetched'};
+    },
+    async GitCloneRepository(url, target) {
+        return {success: true, output: '[mock] cloned ' + url, path: target};
     },
     async GitRollbackFor(dir, paths, untracked) {
         return null;
@@ -687,6 +876,30 @@ const mockBackend = {
     async GetAppVersion() {
         return 'v1.0.0';
     },
+    async CheckForUpdates() {
+        if (mockScenario.has('updateerror')) throw new Error('模拟网络错误');
+        if (mockScenario.has('updatenorelease')) {
+            return {currentVersion: 'v1.0.0', hasUpdate: false, status: 'no-release', pageUrl: 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases'};
+        }
+        if (mockScenario.has('updatenone')) {
+            return {currentVersion: 'v1.0.0', latestVersion: 'v1.0.0', hasUpdate: false, status: 'ok', pageUrl: 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases'};
+        }
+        return {
+            currentVersion: 'v1.0.0',
+            latestVersion: 'v1.1.0',
+            hasUpdate: true,
+            status: 'ok',
+            title: 'CaDt-DataLens 1.1.0',
+            notes: '## 本次更新\n\n- 新增检查更新与帮助菜单\n- 优化文件属性对话框\n- 修复若干问题',
+            pageUrl: 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases',
+            downloadUrl: 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases',
+            downloadName: 'CaDt-DataLens-amd64-installer.exe',
+            publishedAt: '2026-11-20T10:00:00+08:00',
+        };
+    },
+    async OpenDevTools() {
+        window.__mockDevTools = true;
+    },
     async GetPlugins() {
         const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
         if (!st.present) return [];
@@ -711,6 +924,9 @@ const mockBackend = {
     },
     async GetPluginsDir() {
         return 'C:\\plugins';
+    },
+    async OpenPluginsDir() {
+        window.__mockOpenPluginsDir = (window.__mockOpenPluginsDir || 0) + 1;
     },
     async GetPluginsPathMode() {
         return (window.__mockPlugins || {}).mode || 'portable';
@@ -780,13 +996,403 @@ const mockBackend = {
             ].join('\n'),
         }];
     },
-    async OpenInNewWindows(paths) { window.__mockNewWindows = (window.__mockNewWindows || []).concat([paths]); },
+    async GetPluginMarket() {
+        if (window.__mockMarketError) throw new Error(window.__mockMarketError);
+        const items = [
+            {
+                id: 'bak-json',
+                name: 'JSON 备份查看',
+                version: '1.0.0',
+                author: 'CandySweet',
+                description: '把 .bak 文件按 JSON 解析；解析失败时自动退回文本视图，并附演示命令与主题',
+                repo: 'cadt-datalens-plugins/bak-json',
+                url: 'https://gitee.com/cadt-datalens-plugins/bak-json',
+                updatedAt: '2026-11-08T20:34:34+08:00',
+                stars: 2,
+                minAppVersion: '1.0.0',
+                manifestOk: true,
+                installed: true,
+                installedVersion: '0.9.0',
+            },
+            {
+                id: 'git-flow',
+                name: 'Git 工作流',
+                version: '1.0.0',
+                author: 'CandySweet',
+                description: '变更列表 / 历史 / 文件历史 / 差异 / 分支，只读查询',
+                repo: 'cadt-datalens-plugins/git-flow',
+                url: 'https://gitee.com/cadt-datalens-plugins/git-flow',
+                updatedAt: '2026-11-08T20:34:34+08:00',
+                stars: 0,
+                manifestOk: true,
+                installed: false,
+            },
+        ];
+        if (mockScenario.has('marketmany')) {
+            for (let i = 1; i <= 3; i += 1) {
+                items.push({...items[0], id: 'bak-json-' + i, name: 'JSON 备份查看 ' + i});
+            }
+        }
+        return items;
+    },
+    async ReadPluginAsset(pluginId, relPath) {
+        if (!relPath) throw new Error('资产路径为空');
+        window.__mockPluginAssets = (window.__mockPluginAssets || []).concat([pluginId + ':' + relPath]);
+        return mockImageDataUrl;
+    },
     async OpenNewWindow() { window.__mockNewWindow = (window.__mockNewWindow || 0) + 1; },
+    async UpdatePluginFromUrl(id, url) {
+        window.__mockUpdated = (window.__mockUpdated || []).concat([[id, url]]);
+        return {id, name: 'JSON 备份查看', version: '1.0.0'};
+    },
+    async OpenInNewWindows(paths) { window.__mockNewWindows = (window.__mockNewWindows || []).concat([paths]); },
     async OpenDirInNewWindow(dir) { window.__mockNewWindowDir = dir; window.__mockNewWindows = (window.__mockNewWindows || []).concat([[dir]]); },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
+    async LogFrontend(level, message) { (window.__mockLogs = window.__mockLogs || []).push(level + ': ' + message); },
+    async GetDeveloperMode() { return !!window.__mockDevMode; },
+    async SetDeveloperMode(on) { window.__mockDevMode = !!on; },
+    async GetLogPath() { return 'C:\\Users\\admin\\AppData\\Roaming\\CandySweet\\CaDt-DataLens\\logs\\2026-11-09_13-00-00.txt'; },
+    async OpenLogDir() { window.__mockOpenLogDir = (window.__mockOpenLogDir || 0) + 1; },
     async CopyText(text) { window.__mockCopied = text; window.__mockClipboard = text; },
+    async SaveDataURL(path) { window.__mockSaved = path; return path; },
+    async CopyFileTo(srcPath) { return srcPath; },
     async GetClipboardText() { return window.__mockClipboard || ''; },
     async ForceClose() { window.__mockForceClosed = (window.__mockForceClosed || 0) + 1; },
+    async AISendChat(sessionId, cfg, messages, tools) {
+        const run = {stopped: false, timers: []};
+        window.__mockAiRuns = window.__mockAiRuns || new Map();
+        window.__mockAiRuns.set(sessionId, run);
+        const emit = (name, payload) => {
+            if (typeof window.__mockAiEmit !== 'function') return;
+            try { window.__mockAiEmit(name, payload); } catch (e) {}
+        };
+        const last = (messages || []).filter((m) => m.role === 'user').pop();
+        const prompt = last ? String(last.content || '') : '';
+        window.__mockAiLastCfg = cfg;
+        window.__mockAiLastMessages = messages;
+        window.__mockAiLastTools = tools;
+        const systemMessage = (messages || []).find((message) => message.role === 'system');
+        window.__mockAiSystemLog = (window.__mockAiSystemLog || []).concat([systemMessage ? systemMessage.content : '']);
+        window.__mockAiToolsLog = (window.__mockAiToolsLog || []).concat([(tools || []).map((tool) => tool.name)]);
+        if (mockScenario.has('aierr')) {
+            run.timers.push(setTimeout(() => {
+                if (run.stopped) return;
+                emit('ai-error', {
+                    id: sessionId,
+                    message: '模拟错误：API Key 无效（地址栏加 ?aierr）',
+                });
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, 120));
+            return null;
+        }
+        const slow = mockScenario.has('aislow') ? 180 : 24;
+        const reasoningText = mockScenario.has('aithink') ? '先读取用户的问题，再给出简洁回答。' : '';
+        let content = '这是浏览器 mock 回复：已收到「' + prompt.slice(0, 60) + '」。\n\n';
+        content += '在地址栏加 `?aithink` 可预览思考链，`?aierr` 预览错误，`?aislow` 测试停止按钮。';
+        const thinkChunks = reasoningText ? reasoningText.match(/[^\n]{1,4}/g) || [] : [];
+        const contentChunks = content.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+        let delay = 30;
+        const schedule = (fn, ms) => {
+            const timer = setTimeout(() => {
+                if (run.stopped) return;
+                fn();
+            }, ms);
+            run.timers.push(timer);
+        };
+        if (mockScenario.has('aitool')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先查看一下目录。\n\n'}), 20);
+                const argChunks = ['{"pa', 'th": "."}'];
+                argChunks.forEach((chunk, i) => {
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: i === 0 ? 'call_mock_1' : '',
+                        name: i === 0 ? 'list_dir' : '',
+                        argsDelta: chunk,
+                    }), 70 + i * 50);
+                });
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 210);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const summary = String(lastTool.content || '').split('\n').slice(0, 8).join('\n');
+            const finalText = '工具返回结果：\n\n```\n' + summary + '\n```\n\n这是 mock 工具链路的最终回复。';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                const promptTokens = Math.ceil(prompt.length / 4);
+                const completionTokens = Math.ceil(finalText.length / 4);
+                emit('ai-done', {
+                    id: sessionId,
+                    finishReason: 'stop',
+                    usage: {
+                        promptTokens, completionTokens, totalTokens: promptTokens + completionTokens,
+                        cachedTokens: Math.ceil(promptTokens * 0.75),
+                    },
+                });
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('airun')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先执行一条命令确认环境。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_runcmd',
+                    name: 'run_command',
+                    argsDelta: JSON.stringify({command: 'git status --short'}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '命令输出：\n\n```\n' + String(lastTool.content || '').slice(0, 400) + '\n```\n\n（mock run_command 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aiask')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我需要你确认一下方案。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_ask',
+                    name: 'ask_user',
+                    argsDelta: JSON.stringify({
+                        questions: [
+                            {
+                                id: 'merge',
+                                header: '合并方式',
+                                question: '这次要采用哪种合并策略？',
+                                options: [
+                                    {label: '按文件合并', description: '逐文件对比后合并，最稳', recommended: true},
+                                    {label: '整目录覆盖', description: '用新目录整体替换旧目录'},
+                                ],
+                            },
+                            {
+                                id: 'checks',
+                                header: '验证',
+                                question: '除了主流程，还要跑哪些检查？',
+                                multiSelect: true,
+                                options: [
+                                    {label: '单元测试', recommended: true},
+                                    {label: '构建验证', recommended: true},
+                                    {label: '不做额外检查'},
+                                ],
+                            },
+                            {
+                                id: 'extra',
+                                header: '补充',
+                                question: '还有别的约束吗？',
+                                allow_custom: true,
+                                options: [],
+                            },
+                        ],
+                    }),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '已收到回答：' + String(lastTool.content || '').slice(0, 300) + '\n\n（mock ask_user 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aiwrite') || mockScenario.has('aiedit') || mockScenario.has('aitodo')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            const emitToolCall = (callId, name, args, doneDelay) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先执行工具操作。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId,
+                    name,
+                    argsDelta: args,
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), doneDelay || 180);
+            };
+            if (mockScenario.has('aiwrite')) {
+                if (!toolMessages.length) {
+                    emitToolCall('call_mock_write', 'write_file', JSON.stringify({
+                        path: 'new-file.md',
+                        content: '# AI 写入演示\n\n- 第一行\n- 第二行\n- 第三行\n',
+                    }));
+                    return null;
+                }
+            } else if (mockScenario.has('aiedit')) {
+                if (!toolMessages.length) {
+                    emitToolCall('call_mock_edit', 'edit_file', JSON.stringify({
+                        path: 'notes.md',
+                        oldString: '- 电缆：每格每日 4 件',
+                        newString: '- 电缆：每格每日 6 件（AI 修改）',
+                    }));
+                    return null;
+                }
+            } else if (mockScenario.has('aitodo')) {
+                if (!toolMessages.length) {
+                    emitToolCall('call_mock_todo1', 'todo_write', JSON.stringify({
+                        todos: [
+                            {content: '读取项目说明', status: 'completed'},
+                            {content: '修改配置', status: 'in_progress'},
+                            {content: '验证结果', status: 'pending'},
+                        ],
+                    }));
+                    return null;
+                }
+                if (toolMessages.length === 1) {
+                    emitToolCall('call_mock_todo2', 'todo_write', JSON.stringify({
+                        todos: [
+                            {content: '读取项目说明', status: 'completed'},
+                            {content: '修改配置', status: 'completed'},
+                            {content: '验证结果', status: 'completed'},
+                        ],
+                    }));
+                    return null;
+                }
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '工具结果：' + String((lastTool && lastTool.content) || '').slice(0, 300) + '\n\n（mock 写操作链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aiskill') || mockScenario.has('aimem')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                const isSkill = mockScenario.has('aiskill');
+                const toolName = isSkill ? 'skill_use' : 'memory_write';
+                const args = JSON.stringify(isSkill
+                    ? {name: 'demo-skill'}
+                    : {name: 'test-note.md', content: '# 测试记忆\n\n- 用户喜欢胶囊表格。'});
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先调用工具处理一下。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_2',
+                    name: toolName,
+                    argsDelta: args,
+                }), 80);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 200);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '工具结果：' + String(lastTool.content || '').slice(0, 300) + '\n\n（mock 工具链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (thinkChunks.length) {
+            thinkChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-think', {id: sessionId, delta: chunk}), delay + i * slow * 0.6);
+            });
+            delay += thinkChunks.length * slow * 0.6;
+        }
+        contentChunks.forEach((chunk, i) => {
+            schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), delay + i * slow);
+        });
+        delay += contentChunks.length * slow;
+        schedule(() => {
+            const promptTokens = Math.ceil(prompt.length / 4);
+            const completionTokens = Math.ceil(content.length / 4);
+            emit('ai-done', {
+                id: sessionId,
+                finishReason: 'stop',
+                usage: {
+                    promptTokens, completionTokens, totalTokens: promptTokens + completionTokens,
+                    cachedTokens: Math.ceil(promptTokens * 0.75),
+                },
+            });
+            (window.__mockAiRuns || new Map()).delete(sessionId);
+        }, delay + 40);
+        return null;
+    },
+    async AIStop(sessionId) {
+        const map = window.__mockAiRuns || new Map();
+        for (const [id, run] of map) {
+            if (id === sessionId || id.startsWith(sessionId + '#')) {
+                run.stopped = true;
+                run.timers.forEach((timer) => clearTimeout(timer));
+                map.delete(id);
+                if (typeof window.__mockAiEmit === 'function') {
+                    try { window.__mockAiEmit('ai-done', {id, finishReason: 'stopped'}); } catch (e) {}
+                }
+            }
+        }
+    },
+    async NotifyAttention(beep) { window.__mockNotify = (window.__mockNotify || []).concat([!!beep]); },
+    async NotifySystemToast(title, body, silent) {
+        window.__mockSystemToast = (window.__mockSystemToast || []).concat([{title, body, silent: !!silent}]);
+    },
+    async AITestConnection(cfg) { window.__mockAiTestCfg = cfg; return '连接成功（mock）'; },
+    async AIListModels(cfg) { window.__mockAiModelsCfg = cfg; return ['deepseek-chat', 'deepseek-reasoner', 'deepseek-flash']; },
+    async AIAppDir() { return 'mock://appdata/CandySweet/CaDt-DataLens'; },
+    async OpenAIFloatWindow(root) { window.__mockAIFloatRoot = root; return null; },
+    async OpenSettingsInMainWindow(pane) { window.__mockOpenSettingsInMain = pane; return null; },
+    async ConsumeStartupSettings() { const pane = window.__mockStartupSettings || ''; window.__mockStartupSettings = ''; return pane; },
+    async AIEnsureDir(path) {
+        window.__mockLastEnsureDir = path;
+        const key = String(path || '').replace(/\/+$/, '');
+        if (!key) return null;
+        const match = key.match(/^([a-z]+:\/\/)(.*)$/i);
+        const prefix = match ? match[1] : '';
+        const rest = match ? match[2] : key;
+        let cur = prefix;
+        let prev = '';
+        for (const part of rest.split('/')) {
+            if (!part) continue;
+            cur += (cur && !cur.endsWith('/') ? '/' : '') + part;
+            if (!mockTree[cur]) mockTree[cur] = [];
+            if (prev && mockTree[prev] && !mockTree[prev].some((entry) => entry.name === part && entry.isDir)) {
+                mockTree[prev].push({name: part, path: cur, isDir: true});
+            }
+            prev = cur;
+        }
+        return null;
+    },
     async CheckEncoding(content, enc) {
         if (enc === 'utf-8' || enc === 'gbk' || enc === 'gb18030') return true;
         if (enc === 'us-ascii') return !/[^\x00-\x7f]/.test(content);
@@ -828,10 +1434,204 @@ const mockRt = {
 window.__mockRt = mockRt;
 const rt = window.runtime || (mockScenario.has('winctl') ? mockRt : null);
 
+let developerMode = false;
+
+function formatLogArg(value) {
+    if (typeof value === 'string') return value;
+    if (value instanceof Error) return value.stack || value.message || String(value);
+    try {
+        const text = JSON.stringify(value);
+        return text === undefined ? String(value) : text;
+    } catch (e) {
+        return String(value);
+    }
+}
+
+// 独立调试控制台窗口探测（异步尽早开始；普通窗口为 false）
+const consoleWindowMode = (async () => {
+    try {
+        if (!(backend && backend.IsDebugConsoleWindow)) return false;
+        return !!(await backend.IsDebugConsoleWindow());
+    } catch (e) {
+        return false;
+    }
+})();
+let consoleWindowResolved = null; // true=独立窗口 false=普通窗口 null=未定
+
+// 悬浮调试控制台（F12）：先于 console 捕获补丁创建，保证所有日志都能进面板
+const debugConsole = createDebugConsole({
+    // 停靠到底部面板容器（与终端共用），显示/隐藏由底部面板控制
+    mount: document.getElementById('debug-view'),
+    // 面板关闭按钮：收起底部面板
+    onClose: () => {
+        try { toggleTerminalPanel(false); } catch (e) {}
+    },
+    // 主窗口把日志批量转给独立窗口（共享中继文件）；独立窗口自身不转发
+    relay: (entries) => {
+        if (consoleWindowResolved !== false) return;
+        try { backend.DebugConsoleAppend?.(entries)?.catch?.(() => {}); } catch (e) {}
+    },
+    onDetach: () => {
+        try {
+            if (!backend.OpenDebugConsoleWindow) {
+                flash('当前版本不支持独立窗口', true);
+                return;
+            }
+            Promise.resolve(backend.OpenDebugConsoleWindow())
+                .catch((e) => flash('打开调试控制台窗口失败：' + e, true));
+        } catch (e) {}
+    },
+    onExport: (name, text) => exportDebugConsoleLog(name, text),
+});
+
+// 导出调试控制台日志：弹出保存对话框并写文件；取消时静默
+async function exportDebugConsoleLog(name, text) {
+    try {
+        if (!backend.ExportDebugConsoleLog) {
+            flash('当前版本不支持导出日志', true);
+            return;
+        }
+        const path = await backend.ExportDebugConsoleLog(name, text);
+        if (!path) return;
+        flash('日志已导出：' + path);
+    } catch (e) {
+        flash('导出日志失败：' + e, true);
+    }
+}
+
+// 独立控制台窗口内的轻提示：状态栏被隐藏，借用窗口标题提示
+function notifyConsoleWindow(message) {
+    try {
+        const base = '调试控制台 · CaDt-DataLens';
+        document.title = message + ' · ' + base;
+        setTimeout(() => { document.title = base; }, 2500);
+    } catch (e) {}
+}
+consoleWindowMode.then((v) => { consoleWindowResolved = v; });
+window.__debugConsole = debugConsole;
+
+// 独立控制台窗口：隐藏主应用 UI，铺满渲染控制台并轮询中继日志
+function startConsoleWindowMode() {
+    window.__consoleWindowMode = true;
+    document.body.classList.add('console-only');
+    document.title = '调试控制台 · CaDt-DataLens';
+    const dc = createDebugConsole({
+        detached: true,
+        remote: (offset) => backend.DebugConsoleRead(offset),
+        onExport: async (name, text) => {
+            try {
+                if (!backend.ExportDebugConsoleLog) return;
+                const path = await backend.ExportDebugConsoleLog(name, text);
+                if (path) notifyConsoleWindow('日志已导出');
+            } catch (e) {
+                notifyConsoleWindow('导出失败');
+            }
+        },
+        onClose: () => {
+            try {
+                if (window.runtime && window.runtime.Quit) {
+                    window.runtime.Quit();
+                    return;
+                }
+                if (window.runtime && window.runtime.WindowClose) {
+                    window.runtime.WindowClose();
+                    return;
+                }
+                if (backend.ForceClose) backend.ForceClose();
+            } catch (e) {}
+        },
+    });
+    window.__debugConsole = dc;
+    dc.open();
+}
+
+function logFrontend(level, message) {
+    try {
+        if (!backend || !backend.LogFrontend) return;
+        const text = String(message == null ? '' : message);
+        if (!text) return;
+        const capped = text.length > 16000 ? text.slice(0, 16000) + '…' : text;
+        Promise.resolve(backend.LogFrontend(level, capped)).catch(() => {});
+    } catch (e) {}
+}
+
+for (const level of ['log', 'info', 'debug', 'warn', 'error']) {
+    const original = console[level].bind(console);
+    console[level] = (...args) => {
+        original(...args);
+        // 调试控制台不按开发者模式过滤：打开面板即回放缓冲（含历史）
+        debugConsole.push(level, args);
+        if ((level === 'log' || level === 'info' || level === 'debug') && !developerMode) return;
+        logFrontend(level, args.map(formatLogArg).join(' '));
+    };
+}
+
+window.addEventListener('error', (event) => {
+    const err = event.error;
+    const detail = (err && (err.stack || err.message)) || event.message || '未知错误';
+    debugConsole.push('error', ['未捕获异常：' + detail]);
+    logFrontend('error', '未捕获异常：' + detail);
+});
+window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    const detail = (reason && (reason.stack || reason.message)) || String(reason);
+    debugConsole.push('error', ['未处理的 Promise 拒绝：' + detail]);
+    logFrontend('error', '未处理的 Promise 拒绝：' + detail);
+});
+
+async function refreshDeveloperMode() {
+    if (!backend.GetDeveloperMode) return;
+    try {
+        developerMode = !!(await backend.GetDeveloperMode());
+        if (elsSettings.developerMode) elsSettings.developerMode.checked = developerMode;
+    } catch (e) {}
+    syncDevConsoleVisibility();
+}
+
+// 调试控制台入口跟随开发者模式：关闭时隐藏活动栏图标 / 视图菜单 / F12 / 设置按钮
+function syncDevConsoleVisibility() {
+    if (els.abDebug) els.abDebug.classList.toggle('hidden', !developerMode);
+    const btn = document.getElementById('opt-debug-console');
+    if (btn) btn.disabled = !developerMode;
+    // 关闭开发者模式时若正在看调试控制台，切回终端（没有终端会话则收起面板）
+    if (!developerMode && terminalUI.open && dockView === 'debug') {
+        if (terminalUI.sessions.size) {
+            dockView = 'terminal';
+            applyDockView();
+        } else {
+            toggleTerminalPanel(false);
+        }
+    }
+}
+
+async function refreshLogPath() {
+    if (!backend.GetLogPath) return;
+    try {
+        const path = await backend.GetLogPath();
+        if (elsSettings.logPath) {
+            elsSettings.logPath.textContent = path ? '日志文件：' + path : '日志文件：—';
+            elsSettings.logPath.title = path || '';
+        }
+    } catch (e) {}
+}
+
 const els = {
     filename: document.getElementById('filename'),
     filenameIcon: document.getElementById('filename-icon'),
     filenameText: document.getElementById('filename-text'),
+    wsCrumbs: document.getElementById('ws-crumbs'),
+    wsProject: document.getElementById('ws-project'),
+    wsProjectBadge: document.getElementById('ws-project-badge'),
+    wsProjectName: document.getElementById('ws-project-name'),
+    wsBranch: document.getElementById('ws-branch'),
+    wsBranchName: document.getElementById('ws-branch-name'),
+    projectPop: document.getElementById('project-pop'),
+    projectPopBody: document.getElementById('project-pop-body'),
+    gitBranchPop: document.getElementById('git-branch-pop'),
+    gbSearch: document.getElementById('gb-search'),
+    gbBody: document.getElementById('gb-body'),
+    gbFetch: document.getElementById('gb-fetch'),
+    gbPin: document.getElementById('gb-pin'),
     banner: document.getElementById('banner'),
     bannerText: document.getElementById('banner-text'),
     bannerClose: document.getElementById('banner-close'),
@@ -842,24 +1642,53 @@ const els = {
     stMode: document.getElementById('st-mode'),
     stSize: document.getElementById('st-size'),
     stZoom: document.getElementById('st-zoom'),
+    stMdWidth: document.getElementById('st-md-width'),
+    stAiWidth: document.getElementById('st-ai-width'),
+    stUpdate: document.getElementById('st-update'),
     stPos: document.getElementById('st-pos'),
     stEol: document.getElementById('st-eol'),
     stEnc: document.getElementById('st-enc'),
     stMessage: document.getElementById('st-message'),
     stDirty: document.getElementById('st-dirty'),
     breadcrumb: document.getElementById('breadcrumb'),
-    searchInput: document.getElementById('search-input'),
+    findBar: document.getElementById('find-bar'),
+    findInput: document.getElementById('find-input'),
+    findCase: document.getElementById('find-case'),
+    findWord: document.getElementById('find-word'),
+    findRegex: document.getElementById('find-regex'),
+    findCount: document.getElementById('find-count'),
+    findPrev: document.getElementById('find-prev'),
+    findNext: document.getElementById('find-next'),
+    findClose: document.getElementById('find-close'),
+    quickSwitchMask: document.getElementById('quick-switch-mask'),
+    quickSwitch: document.getElementById('quick-switch'),
+    quickSwitchList: document.getElementById('quick-switch-list'),
+    quickSwitchTitle: document.getElementById('quick-switch-title-text'),
+    quickSwitchBack: document.getElementById('quick-switch-back'),
+    gsMask: document.getElementById('gs-mask'),
+    gsPanel: document.getElementById('gs-panel'),
+    gsInput: document.getElementById('gs-input'),
+    gsList: document.getElementById('gs-list'),
+    gsCount: document.getElementById('gs-count'),
+    gsRoot: document.getElementById('gs-root'),
     editorArea: document.getElementById('editor-area'),
     sidebar: document.getElementById('sidebar'),
     sbBody: document.getElementById('sb-body'),
     sbTitle: document.getElementById('sb-title'),
     sbRefresh: document.getElementById('sb-refresh'),
+    paletteMask: document.getElementById('palette-mask'),
+    paletteInput: document.getElementById('palette-input'),
+    paletteList: document.getElementById('palette-list'),
+    sbFilterBtn: document.getElementById('sb-filter-btn'),
+    sbFilterRow: document.getElementById('sb-filter-row'),
+    sbFilter: document.getElementById('sb-filter'),
     sbModeList: document.getElementById('sb-mode-list'),
     sbModeTree: document.getElementById('sb-mode-tree'),
     structurePanel: document.getElementById('structure-panel'),
     structureBody: document.getElementById('structure-body'),
     structureRefresh: document.getElementById('structure-refresh'),
     structureCollapse: document.getElementById('structure-collapse'),
+    structureExport: document.getElementById('structure-export'),
     btnSidebar: document.getElementById('btn-sidebar'),
     lock: document.getElementById('btn-lock'),
     activityBar: document.getElementById('activity-bar'),
@@ -868,8 +1697,14 @@ const els = {
     abSearch: document.getElementById('ab-search'),
     abMore: document.getElementById('ab-more'),
     abTerminal: document.getElementById('ab-terminal'),
+    abDebug: document.getElementById('ab-debug'),
     abGit: document.getElementById('ab-git'),
+    abAi: document.getElementById('ab-ai'),
+    abChats: document.getElementById('ab-chats'),
+    tbAi: document.getElementById('tb-ai'),
+    aiPanel: document.getElementById('ai-panel'),
     termNew: document.getElementById('term-new'),
+    termShellMenu: document.getElementById('term-shell-menu'),
     termPanelClose: document.getElementById('term-panel-close'),
     terminalResize: document.getElementById('terminal-resize'),
     sidebarResize: document.getElementById('sidebar-resize'),
@@ -902,6 +1737,8 @@ let structureRefreshTimer = 0;
 let workspaceFolder = null;
 let fileClipboard = null;
 let ctxMenu = null;
+let palette = null;
+let aiPanel = null;
 let closedTabs = [];
 window.__lens = {
     get editor() { return editor; },
@@ -933,6 +1770,7 @@ const themes = [
     {id: 'night', name: 'Night', group: 'classic', bg: '#16181f', accent: '#7aa2f7'},
     {id: 'pixyll', name: 'Pixyll', group: 'classic', bg: '#fdfbf7', accent: '#c24266'},
     {id: 'whitey', name: 'Whitey', group: 'classic', bg: '#ffffff', accent: '#2b6cb0'},
+    {id: 'harness', name: 'Harness', group: 'harness', bg: '#ffffff', accent: '#4d6bfe'},
 ];
 const uiFonts = [
     {id: 'inter', name: 'Inter', family: '"Inter"'},
@@ -1008,6 +1846,12 @@ const defaultSettings = {
     editorFont: 13,
     codeWrap: false,
     mdLineNumbers: false,
+    mdScrollSync: true,
+    mdPreviewWidth: '0',
+    aiFullscreenWidth: 'auto',
+    autoCheckUpdate: true,
+    structureExportLineNums: false,
+    langEnv: {},
     treeExpandDefault: 'expand',
     showBanners: true,
     readOnlyMode: false,
@@ -1016,6 +1860,21 @@ const defaultSettings = {
     uiCjkFont: 'auto',
     editorFontFamily: 'jetbrains',
     editorCjkFont: 'auto',
+    splitRatio: 0.5,
+    aiPanelOpen: false,
+    aiPanelWidth: 380,
+    aiFloatMode: 'dock',
+    aiSendKey: 'enter',
+    aiChatFont: 13,
+    aiChatFontEn: 'follow',
+    aiChatFontCjk: 'follow',
+    aiChatCodeFont: 'follow',
+    aiShowThinking: true,
+    aiShowUsage: true,
+    aiAssistantCard: false,
+    aiMaxSessions: 50,
+    aiInjectContext: true,
+    aiInjectAgentsMd: true,
     formatSettings: defaultFormatSettings(),
 };
 let settings = JSON.parse(JSON.stringify(defaultSettings));
@@ -1035,7 +1894,7 @@ if (!cjkFonts.some((f) => f.id === settings.editorCjkFont)) settings.editorCjkFo
 settings.autoSave = !!settings.autoSave;
 if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
-if (!['files', 'git', 'structure'].includes(settings.sidebarView)) settings.sidebarView = 'files';
+if (!['files', 'git', 'structure', 'chats'].includes(settings.sidebarView)) settings.sidebarView = 'files';
 settings.showSidebar = !!settings.showSidebar;
 settings.treeGuides = !!settings.treeGuides;
 settings.treeCounts = !!settings.treeCounts;
@@ -1047,6 +1906,25 @@ settings.terminalHeight = Math.min(480, Math.max(120, Number(settings.terminalHe
 settings.sidebarWidth = Math.min(500, Math.max(160, Number(settings.sidebarWidth) || 264));
 settings.codeWrap = !!settings.codeWrap;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
+settings.mdScrollSync = settings.mdScrollSync !== false;
+if (!['0', '720', '860', '920', '1100', '1300'].includes(String(settings.mdPreviewWidth))) settings.mdPreviewWidth = '0';
+if (!['auto', '0', '720', '860', '920', '1100', '1300'].includes(String(settings.aiFullscreenWidth))) settings.aiFullscreenWidth = 'auto';
+if (settings.aiWidthAutoDefaultMigrated !== true) {
+    // 旧版默认是「跟随」；自动模式引入后，未显式选过固定宽度的用户迁到新默认
+    if (String(settings.aiFullscreenWidth) === '0') settings.aiFullscreenWidth = 'auto';
+    settings.aiWidthAutoDefaultMigrated = true;
+}
+settings.autoCheckUpdate = settings.autoCheckUpdate !== false;
+// 一次性迁移：曾以 920px 作为出厂默认被写入本地存储，改为新的默认值“自适应”
+if (settings.mdPreviewWidth === '920' && settings.mdWidthMigrated !== true) {
+    settings.mdPreviewWidth = '0';
+    settings.mdWidthMigrated = true;
+}
+settings.structureExportLineNums = !!settings.structureExportLineNums;
+if (!settings.langEnv || typeof settings.langEnv !== 'object') settings.langEnv = {};
+settings.splitRatio = Number(settings.splitRatio);
+if (!Number.isFinite(settings.splitRatio)) settings.splitRatio = 0.5;
+settings.splitRatio = Math.min(0.85, Math.max(0.15, settings.splitRatio));
 settings.treeExpandDefault = settings.treeExpandDefault === 'collapse' ? 'collapse' : 'expand';
 settings.showBanners = settings.showBanners !== false;
 settings.readOnlyMode = !!settings.readOnlyMode;
@@ -1056,6 +1934,20 @@ settings.shiftClickClose = settings.shiftClickClose !== false;
 settings.sidebarFont = Number(settings.sidebarFont);
 if (!Number.isFinite(settings.sidebarFont)) settings.sidebarFont = 12.5;
 settings.sidebarFont = Math.min(20, Math.max(10, settings.sidebarFont));
+settings.aiPanelOpen = !!settings.aiPanelOpen;
+settings.aiPanelWidth = Math.min(640, Math.max(280, Number(settings.aiPanelWidth) || 380));
+settings.aiFloatMode = ['dock', 'fullscreen'].includes(settings.aiFloatMode) ? settings.aiFloatMode : 'dock';
+settings.aiSendKey = settings.aiSendKey === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
+settings.aiChatFont = Math.min(32, Math.max(10, Number(settings.aiChatFont) || 13));
+for (const key of ['aiChatFontEn', 'aiChatFontCjk', 'aiChatCodeFont']) {
+    if (typeof settings[key] !== 'string' || !settings[key]) settings[key] = 'follow';
+}
+settings.aiShowThinking = settings.aiShowThinking !== false;
+settings.aiShowUsage = settings.aiShowUsage !== false;
+settings.aiAssistantCard = settings.aiAssistantCard === true;
+settings.aiMaxSessions = Math.min(500, Math.max(2, Number(settings.aiMaxSessions) || 50));
+settings.aiInjectContext = settings.aiInjectContext !== false;
+settings.aiInjectAgentsMd = settings.aiInjectAgentsMd !== false;
 if (!settings.csvTableMigrated) {
     settings.formatSettings.csv.view = 'table';
     settings.csvTableMigrated = true;
@@ -1063,7 +1955,7 @@ if (!settings.csvTableMigrated) {
 if (!['table', 'tree', 'text'].includes(settings.formatSettings.csv.view)) {
     settings.formatSettings.csv.view = 'table';
 }
-if (!['preview', 'code', 'text'].includes(settings.formatSettings.markdown.view)) {
+if (!['split', 'preview', 'code', 'text'].includes(settings.formatSettings.markdown.view)) {
     settings.formatSettings.markdown.view = 'preview';
 }
 
@@ -1086,6 +1978,11 @@ const elsSettings = {
     alwaysOnTop: document.getElementById('opt-always-on-top'),
     codeWrap: document.getElementById('opt-code-wrap'),
     mdLineNumbers: document.getElementById('opt-md-line-numbers'),
+    mdScrollSync: document.getElementById('opt-md-scroll-sync'),
+    settingsSearch: document.getElementById('settings-search'),
+    settingsSearchResults: document.getElementById('settings-search-results'),
+    mdPreviewWidth: document.getElementById('opt-md-preview-width'),
+    autoCheckUpdate: document.getElementById('opt-auto-update'),
     treeExpand: document.getElementById('opt-tree-expand'),
     showBanners: document.getElementById('opt-show-banners'),
     autoSave: document.getElementById('opt-auto-save'),
@@ -1097,12 +1994,18 @@ const elsSettings = {
     uiCjkFont: document.getElementById('opt-ui-cjk-font'),
     editorFontFamily: document.getElementById('opt-editor-font'),
     editorCjkFont: document.getElementById('opt-editor-cjk-font'),
+    aiChatFontEn: document.getElementById('ai-opt-chatfont-en'),
+    aiChatFontCjk: document.getElementById('ai-opt-chatfont-cjk'),
+    aiChatCodeFont: document.getElementById('ai-opt-chatfont-code'),
     fileAssoc: document.getElementById('opt-file-assoc'),
     contextMenu: document.getElementById('opt-context-menu'),
     agentSkill: document.getElementById('opt-agent-skill'),
     skillDirs: document.getElementById('opt-skill-dirs'),
     exePath: document.getElementById('opt-exe-path'),
     refreshIntegration: document.getElementById('opt-refresh-integration'),
+    developerMode: document.getElementById('opt-developer-mode'),
+    openLogs: document.getElementById('opt-open-logs'),
+    logPath: document.getElementById('opt-log-path'),
 };
 
 function fillFontSelect(select, list) {
@@ -1118,6 +2021,19 @@ fillFontSelect(elsSettings.uiFont, uiFonts);
 fillFontSelect(elsSettings.uiCjkFont, cjkFonts);
 fillFontSelect(elsSettings.editorFontFamily, editorFonts);
 fillFontSelect(elsSettings.editorCjkFont, cjkFonts);
+fillFontSelect(elsSettings.aiChatFontEn, [
+    {id: 'follow', name: '跟随界面英文字体'},
+    ...uiFonts.map((f) => ({id: 'ui:' + f.id, name: f.name})),
+    ...editorFonts.map((f) => ({id: 'mono:' + f.id, name: f.name + '（等宽）'})),
+]);
+fillFontSelect(elsSettings.aiChatFontCjk, [
+    {id: 'follow', name: '跟随界面中文字体'},
+    ...cjkFonts.map((f) => ({id: 'cjk:' + f.id, name: f.name})),
+]);
+fillFontSelect(elsSettings.aiChatCodeFont, [
+    {id: 'follow', name: '跟随编辑器字体'},
+    ...editorFonts.map((f) => ({id: 'mono:' + f.id, name: f.name})),
+]);
 
 const elsDialogs = {
     mask: document.getElementById('dialog-mask'),
@@ -1134,6 +2050,13 @@ const elsDialogs = {
     goto: document.getElementById('dlg-goto'),
     gotoInput: document.getElementById('dlg-goto-input'),
     gotoError: document.getElementById('dlg-goto-error'),
+    props: document.getElementById('dlg-props'),
+    propsGrid: document.getElementById('dlg-props-grid'),
+    update: document.getElementById('dlg-update'),
+    updateStatus: document.getElementById('dlg-update-status'),
+    updateNotes: document.getElementById('dlg-update-notes'),
+    updateDownload: document.getElementById('btn-update-download'),
+    updatePage: document.getElementById('btn-update-page'),
 };
 
 let syncedOpenMode = null;
@@ -1173,6 +2096,8 @@ function setTheme(id) {
     if (!themes.some((t) => t.id === id)) return;
     settings.theme = id;
     applySettings();
+    if (file && currentMode === 'preview' && doc && false) {}
+    if (file && currentMode === 'preview') renderMarkdownPreview(file);
     flash('主题：' + currentTheme().name);
 }
 
@@ -1326,6 +2251,12 @@ function applyReadOnlyMode() {
 }
 
 function applySettings() {
+    const mdWidth = String(settings.mdPreviewWidth || '0');
+    document.documentElement.style.setProperty('--md-preview-max', mdWidth === '0' ? 'none' : mdWidth + 'px');
+    const aiWidth = String(settings.aiFullscreenWidth || 'auto');
+    document.documentElement.style.setProperty('--ai-fullscreen-width',
+        aiWidth === 'auto' ? 'min(100%, 920px)' : (aiWidth === '0' ? '100%' : aiWidth + 'px'));
+    updateAiWidthWidget();
     document.documentElement.classList.toggle('keycol-natural', !settings.fixedKeys);
     document.documentElement.classList.toggle('tree-guides', !!settings.treeGuides);
     applyTheme();
@@ -1369,6 +2300,9 @@ function applySettings() {
     elsSettings.alwaysOnTop.checked = !!settings.alwaysOnTop;
     elsSettings.codeWrap.checked = !!settings.codeWrap;
     elsSettings.mdLineNumbers.checked = !!settings.mdLineNumbers;
+    elsSettings.mdScrollSync.checked = settings.mdScrollSync !== false;
+    elsSettings.mdPreviewWidth.value = String(settings.mdPreviewWidth);
+    elsSettings.autoCheckUpdate.checked = settings.autoCheckUpdate !== false;
     if (elsSettings.treeExpand) elsSettings.treeExpand.value = settings.treeExpandDefault;
     elsSettings.showBanners.checked = !!settings.showBanners;
     elsSettings.openMode.value = settings.openMode;
@@ -1385,6 +2319,9 @@ function applySettings() {
     const editorCjk = cjkFonts.find((f) => f.id === settings.editorCjkFont) || cjkFonts[0];
     document.documentElement.style.setProperty('--ui-font', uiFace.family + ', ' + uiCjk.family + ', sans-serif');
     document.documentElement.style.setProperty('--editor-font-family', editorFace.family + ', ' + editorCjk.family + ', monospace');
+    if (aiPanel && typeof aiPanel.applySettings === 'function') {
+        try { aiPanel.applySettings(); } catch (e) {}
+    }
     elsSettings.uiFont.value = uiFace.id;
     elsSettings.uiCjkFont.value = uiCjk.id;
     elsSettings.editorFontFamily.value = editorFace.id;
@@ -1398,6 +2335,9 @@ function applySettings() {
     applyCodeGuides();
     applyAlwaysOnTop();
     applyReadOnlyMode();
+    if (aiPanel && aiPanel.applySettings) {
+        try { aiPanel.applySettings(); } catch (e) {}
+    }
     try {
         localStorage.setItem(settingsKey, JSON.stringify(settings));
     } catch (e) {}
@@ -1405,30 +2345,56 @@ function applySettings() {
     else cancelAutoSave();
 }
 
-function openDialogEl(dlg) {
+function openDialogEl(dlg, options) {
+    const keepSettings = !!(options && options.keepSettings) &&
+        dlg !== elsDialogs.settings &&
+        !elsDialogs.settings.classList.contains('hidden');
     elsDialogs.mask.classList.remove('hidden');
-    elsDialogs.settings.classList.add('hidden');
-    elsDialogs.confirm.classList.add('hidden');
-    elsDialogs.name.classList.add('hidden');
-    elsDialogs.goto.classList.add('hidden');
+    if (!keepSettings) elsDialogs.settings.classList.add('hidden');
+    for (const other of [elsDialogs.confirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update]) {
+        if (other !== dlg) other.classList.add('hidden');
+    }
+    dlg.dataset.parentSettings = keepSettings ? '1' : '';
     dlg.style.left = '';
     dlg.style.top = '';
     dlg.style.transform = '';
     dlg.classList.remove('hidden');
 }
 
+function closeTopDialog() {
+    if (!elsDialogs.settings.classList.contains('hidden')) {
+        for (const dlg of [elsDialogs.confirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update]) {
+            if (dlg.classList.contains('hidden') || dlg.dataset.parentSettings !== '1') continue;
+            dlg.classList.add('hidden');
+            if (dlg === elsDialogs.confirm) confirmAction = null;
+            if (dlg === elsDialogs.name) {
+                nameSubmit = null;
+                nameBusy = false;
+            }
+            return;
+        }
+    }
+    closeDialogs();
+}
+
 function closeDialogs() {
+    if (aiPanel && typeof aiPanel.closeModelEditor === 'function') {
+        try { aiPanel.closeModelEditor(false); } catch (e) {}
+    }
     elsDialogs.mask.classList.add('hidden');
     elsDialogs.settings.classList.add('hidden');
     elsDialogs.confirm.classList.add('hidden');
     elsDialogs.name.classList.add('hidden');
     elsDialogs.goto.classList.add('hidden');
+    elsDialogs.props.classList.add('hidden');
+    elsDialogs.update.classList.add('hidden');
     confirmAction = null;
     nameSubmit = null;
     nameBusy = false;
 }
 
 function selectSettingsPane(pane) {
+    resetSettingsSearch();
     document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane));
     document.querySelectorAll('.settings-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== pane));
     const group = document.getElementById('snav-formats');
@@ -1440,16 +2406,153 @@ function selectSettingsPane(pane) {
             if (parent) parent.setAttribute('aria-expanded', 'true');
         }
     }
+    const langGroup = document.getElementById('snav-langs');
+    if (langGroup) {
+        const inLangs = String(pane).startsWith('lang-');
+        if (inLangs && !langGroup.classList.contains('expanded')) {
+            langGroup.classList.add('expanded');
+            const parent = langGroup.querySelector('.snav-parent');
+            if (parent) parent.setAttribute('aria-expanded', 'true');
+        }
+    }
+    const aiGroup = document.getElementById('snav-ai');
+    if (aiGroup) {
+        const inAI = pane === 'models' || pane === 'ai';
+        if (inAI && !aiGroup.classList.contains('expanded')) {
+            aiGroup.classList.add('expanded');
+            const parent = aiGroup.querySelector('.snav-parent');
+            if (parent) parent.setAttribute('aria-expanded', 'true');
+        }
+    }
     if (pane === 'formats') renderFmtTable();
     else if (String(pane).startsWith('fmt-')) renderFormatPane(pane.slice(4));
+    else if (String(pane).startsWith('lang-')) renderLangPane(pane.slice(5));
     else if (pane === 'plugins') renderPluginsPane();
+    if (pane === 'ai' || pane === 'models') {
+        if (!aiPanel) initAIPanel();
+        if (aiPanel && typeof aiPanel.refreshSettings === 'function') {
+            try { aiPanel.refreshSettings(); } catch (e) {}
+        }
+    }
 }
 
 function openSettings(pane = 'general') {
     openDialogEl(elsDialogs.settings);
+    resetSettingsSearch();
     selectSettingsPane(pane);
+    refreshDeveloperMode();
+    refreshLogPath();
+    if (pane === 'about') {
+        const status = document.getElementById('about-update-status');
+        if (status) {
+            status.textContent = '';
+            status.className = 'about-update-status';
+        }
+    }
     if (pane === 'integration') syncIntegrationStatus();
 }
+
+// ---- 设置搜索：左栏顶部搜索框，跨面板检索设置项并跳转 ----
+
+function buildSettingsSearchIndex() {
+    const entries = [];
+    const navLabels = {};
+    document.querySelectorAll('.snav-item[data-pane]').forEach((b) => {
+        navLabels[b.dataset.pane] = (b.textContent || '').trim();
+    });
+    for (const paneEl of document.querySelectorAll('.settings-pane')) {
+        const pane = paneEl.dataset.pane;
+        // 动态面板（数据格式 / 编程语言子页）打开前没有内容，跳过，用下面的静态条目兜底
+        if (paneEl.classList.contains('hidden') && (pane.startsWith('fmt-') || pane.startsWith('lang-'))) continue;
+        for (const row of paneEl.querySelectorAll('.popover-row, .fmt-pane-title, .fmt-pane-sub, .settings-section-title')) {
+            const text = (row.textContent || '').replace(/\s+/g, ' ').trim();
+            if (text) entries.push({pane, text, el: row});
+        }
+    }
+    for (const f of allFormatDefs()) {
+        entries.push({pane: 'fmt-' + f.id, text: f.name + '：编码 / 缩进 / 保存换行 / 默认视图', el: null});
+    }
+    for (const l of LANG_DEFS) {
+        entries.push({pane: 'lang-' + l.id, text: l.name + '：环境检测（路径 / 版本）', el: null});
+        for (const t of l.tools || []) {
+            entries.push({pane: 'lang-' + l.id, text: l.name + ' · ' + t.name, el: null});
+        }
+    }
+    return {entries, navLabels};
+}
+
+function renderSettingsSearch(query) {
+    const box = elsSettings.settingsSearchResults;
+    if (!box) return;
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) {
+        box.classList.add('hidden');
+        box.textContent = '';
+        return;
+    }
+    const {entries, navLabels} = buildSettingsSearchIndex();
+    const hits = [];
+    for (const e of entries) {
+        const hay = (navLabels[e.pane] || '') + ' ' + e.text;
+        if (hay.toLowerCase().includes(q)) hits.push(e);
+        if (hits.length >= 12) break;
+    }
+    box.textContent = '';
+    if (!hits.length) {
+        const empty = document.createElement('div');
+        empty.className = 'settings-search-empty';
+        empty.textContent = '没有匹配的设置';
+        box.appendChild(empty);
+    } else {
+        for (const hit of hits) {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'settings-search-item';
+            const nav = document.createElement('span');
+            nav.className = 'settings-search-nav';
+            nav.textContent = navLabels[hit.pane] || hit.pane;
+            const text = document.createElement('span');
+            text.className = 'settings-search-text';
+            text.textContent = hit.text.length > 64 ? hit.text.slice(0, 64) + '…' : hit.text;
+            row.append(nav, text);
+            row.addEventListener('click', () => {
+                box.classList.add('hidden');
+                selectSettingsPane(hit.pane);
+                if (hit.el && hit.el.isConnected) {
+                    hit.el.scrollIntoView({block: 'center'});
+                    hit.el.classList.add('settings-hit');
+                    setTimeout(() => hit.el.classList.remove('settings-hit'), 1600);
+                }
+            });
+            box.appendChild(row);
+        }
+    }
+    box.classList.remove('hidden');
+}
+
+function resetSettingsSearch() {
+    if (elsSettings.settingsSearch) elsSettings.settingsSearch.value = '';
+    if (elsSettings.settingsSearchResults) {
+        elsSettings.settingsSearchResults.classList.add('hidden');
+        elsSettings.settingsSearchResults.textContent = '';
+    }
+}
+
+if (elsSettings.settingsSearch) {
+    elsSettings.settingsSearch.addEventListener('input', () => renderSettingsSearch(elsSettings.settingsSearch.value));
+    elsSettings.settingsSearch.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            e.stopPropagation();
+            e.preventDefault();
+            resetSettingsSearch();
+            elsSettings.settingsSearch.blur();
+        } else if (e.key === 'Enter') {
+            const first = elsSettings.settingsSearchResults.querySelector('.settings-search-item');
+            if (first) first.click();
+        }
+    });
+}
+
 
 async function syncIntegrationStatus() {
     if (!elsSettings.fileAssoc) return;
@@ -1472,10 +2575,12 @@ async function syncIntegrationStatus() {
             elsSettings.agentSkill.checked = skill.targets.some((t) => t.registered);
             if (elsSettings.skillDirs) {
                 const home = skill.home || '';
-                elsSettings.skillDirs.textContent = skill.targets.map((t) => {
-                    const dir = home && t.dir.startsWith(home) ? '~' + t.dir.slice(home.length) : t.dir;
-                    return (t.registered ? '✓ ' : '○ ') + dir.replace(/\\/g, '/');
-                }).join('，');
+                elsSettings.skillDirs.innerHTML = skill.targets.map((t) => {
+                    const raw = home && t.dir.startsWith(home) ? '~' + t.dir.slice(home.length) : t.dir;
+                    const dir = raw.replace(/\\/g, '/');
+                    const mark = iconSvg(t.registered ? 'check' : 'circle', 11);
+                    return '<span class="skill-dir-state">' + mark + dir + '</span>';
+                }).join('');
             }
         } catch (e) {
             if (elsSettings.skillDirs) elsSettings.skillDirs.textContent = '读取技能状态失败';
@@ -1525,7 +2630,7 @@ function openNameDialog(options) {
     elsDialogs.nameOk.textContent = opts.okLabel || '确定';
     nameSubmit = opts.onSubmit || null;
     nameBusy = false;
-    openDialogEl(elsDialogs.name);
+    openDialogEl(elsDialogs.name, {keepSettings: true});
     setTimeout(() => {
         const input = elsDialogs.nameInput;
         input.focus();
@@ -1550,7 +2655,7 @@ async function submitNameDialog() {
         await nameSubmit(value);
         nameBusy = false;
         elsDialogs.nameOk.disabled = false;
-        closeDialogs();
+        closeTopDialog();
     } catch (e) {
         nameDialogError((e && e.message) || e);
         nameBusy = false;
@@ -1559,7 +2664,7 @@ async function submitNameDialog() {
 }
 
 elsDialogs.nameOk.addEventListener('click', submitNameDialog);
-document.getElementById('btn-name-cancel').addEventListener('click', closeDialogs);
+document.getElementById('btn-name-cancel').addEventListener('click', closeTopDialog);
 elsDialogs.nameInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
         e.preventDefault();
@@ -1567,7 +2672,7 @@ elsDialogs.nameInput.addEventListener('keydown', (e) => {
     } else if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        closeDialogs();
+        closeTopDialog();
     }
 });
 
@@ -1585,6 +2690,39 @@ function cursorPositionForDoc() {
         }
     }
     return null;
+}
+
+// countWords 字数统计：CJK 字符逐个计 + 拉丁单词计 1（IDEA 风格)
+function countWords(text) {
+    const s = String(text || '');
+    if (!s) return 0;
+    const cjk = (s.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+    const latin = (s.match(/[A-Za-z0-9]+(?:[''-][A-Za-z0-9]+)*/g) || []).length;
+    return cjk + latin;
+}
+
+let wordCountTimer = 0;
+
+function updateWordCount() {
+    if (!els.stCount) return;
+    const show = !!(file && file.editor && !file.binary && !file.large);
+    els.stCount.style.display = show ? '' : 'none';
+    if (!show) return;
+    const total = countWords(file.editor.getText());
+    let sel = 0;
+    const ace = file.editor.aceEditor;
+    if (ace && !ace.selection.isEmpty()) {
+        sel = countWords(ace.getSelectedText());
+    } else if (currentMode === 'preview') {
+        sel = countWords(String(window.getSelection ? window.getSelection().toString() : ''));
+    }
+    els.stCount.textContent = sel > 0 ? ('选中 ' + sel + ' · 全文 ' + total + ' 字') : ('全文 ' + total + ' 字');
+    els.stCount.title = '字数统计（CJK 字符数 + 英文单词数）';
+}
+
+function scheduleWordCount() {
+    clearTimeout(wordCountTimer);
+    wordCountTimer = setTimeout(updateWordCount, 150);
 }
 
 function updateCursorPosition() {
@@ -1674,7 +2812,7 @@ function submitGotoDialog() {
 }
 
 document.getElementById('btn-goto-ok').addEventListener('click', submitGotoDialog);
-document.getElementById('btn-goto-cancel').addEventListener('click', closeDialogs);
+document.getElementById('btn-goto-cancel').addEventListener('click', closeTopDialog);
 elsDialogs.gotoInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
         e.preventDefault();
@@ -1682,7 +2820,7 @@ elsDialogs.gotoInput.addEventListener('keydown', (e) => {
     } else if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        closeDialogs();
+        closeTopDialog();
     }
 });
 if (els.stPos) {
@@ -1710,16 +2848,17 @@ function openCloseConfirm(message, action, okLabel, title) {
     confirmAction = action || (() => {
         if (backend.ForceClose) backend.ForceClose();
     });
-    openDialogEl(elsDialogs.confirm);
+    openDialogEl(elsDialogs.confirm, {keepSettings: true});
 }
 
 document.getElementById('btn-discard').addEventListener('click', () => {
     const action = confirmAction;
     confirmAction = null;
-    closeDialogs();
+    closeTopDialog();
     if (action) action();
 });
-document.getElementById('btn-cancel-close').addEventListener('click', closeDialogs);
+document.getElementById('btn-cancel-close').addEventListener('click', closeTopDialog);
+document.getElementById('btn-props-ok').addEventListener('click', closeDialogs);
 
 let dialogDrag = null;
 function startDialogDrag(e) {
@@ -1741,10 +2880,11 @@ window.addEventListener('mouseup', () => {
     dialogDrag = null;
 });
 document.querySelectorAll('.dialog-head').forEach((head) => head.addEventListener('mousedown', startDialogDrag));
-document.querySelectorAll('.dialog-close').forEach((btn) => btn.addEventListener('click', closeDialogs));
+document.querySelectorAll('.dialog-close').forEach((btn) => btn.addEventListener('click', closeTopDialog));
 elsDialogs.mask.addEventListener('click', (e) => {
     if (e.target !== elsDialogs.mask) return;
-    if (!elsDialogs.confirm.classList.contains('hidden') || !elsDialogs.name.classList.contains('hidden')) closeDialogs();
+    if (!elsDialogs.confirm.classList.contains('hidden') || !elsDialogs.name.classList.contains('hidden') ||
+        !elsDialogs.props.classList.contains('hidden') || !elsDialogs.update.classList.contains('hidden')) closeTopDialog();
 });
 
 document.querySelector('.settings-nav').addEventListener('click', (e) => {
@@ -1760,7 +2900,22 @@ document.querySelector('.settings-nav').addEventListener('click', (e) => {
     selectSettingsPane(item.dataset.pane);
     if (item.dataset.pane === 'integration') syncIntegrationStatus();
 });
+// 常用编程语言：独立于数据格式，每个语言单独配置环境信息（为后续辅助运行代码预留）
+const LANG_DEFS = [
+    {id: 'python', name: 'Python', tools: [{id: 'python', name: '解释器'}, {id: 'pip', name: 'pip', optional: true}], pkgs: [{id: 'env', label: '当前环境'}]},
+    {id: 'node', name: 'Node.js', tools: [{id: 'node', name: 'Node'}, {id: 'npm', name: 'npm'}, {id: 'pnpm', name: 'pnpm', optional: true}, {id: 'yarn', name: 'yarn', optional: true}], pkgs: [{id: 'global', label: '全局（npm -g）'}, {id: 'project', label: '项目（node_modules）'}]},
+    {id: 'go', name: 'Go', tools: [{id: 'go', name: 'Go 工具链'}], pkgs: [{id: 'project', label: '项目依赖（go.mod）'}]},
+    {id: 'java', name: 'Java', tools: [{id: 'java', name: 'JDK'}, {id: 'maven', name: 'Maven', optional: true}, {id: 'gradle', name: 'Gradle', optional: true}]},
+    {id: 'c', name: 'C', tools: [{id: 'c', name: '编译器（gcc / clang）'}, {id: 'cmake', name: 'CMake', optional: true}]},
+    {id: 'cpp', name: 'C++', tools: [{id: 'cpp', name: '编译器（g++）'}, {id: 'cmake', name: 'CMake', optional: true}]},
+    {id: 'rust', name: 'Rust', tools: [{id: 'rust', name: 'rustc'}, {id: 'cargo', name: 'cargo'}]},
+    {id: 'php', name: 'PHP', tools: [{id: 'php', name: 'PHP'}, {id: 'composer', name: 'Composer', optional: true}]},
+    {id: 'ruby', name: 'Ruby', tools: [{id: 'ruby', name: 'Ruby'}, {id: 'gem', name: 'gem'}]},
+    {id: 'lua', name: 'Lua', tools: [{id: 'lua', name: 'Lua'}]},
+];
+
 setupFormatSettings();
+setupLanguageSettings();
 
 function refreshPluginUI() {
     // 清掉已失效的插件格式导航与面板（插件被禁用/删除后）
@@ -1777,6 +2932,7 @@ function refreshPluginUI() {
         }
     }
     setupFormatSettings();
+    setupLanguageSettings();
     if (elsDialogs.settings && !elsDialogs.settings.classList.contains('hidden')) {
         const active = document.querySelector('.snav-item.active');
         if (active && active.dataset.pane === 'plugins') renderPluginsPane();
@@ -1822,6 +2978,7 @@ initPluginRuntime({
         return {stop: () => backend.StopCommand(id).catch(() => {})};
     },
     openVirtualDoc: (name, content) => openVirtualDoc(name, content),
+    readPluginAsset: (pluginId, relPath) => backend.ReadPluginAsset(pluginId, relPath),
     addPluginTheme: (theme) => {
         if (themes.some((t) => t.id === theme.id)) {
             throw new Error(`主题 ${theme.id} 与内置主题冲突`);
@@ -1899,8 +3056,7 @@ function setupPluginsSettings() {
     });
     openDirBtn.addEventListener('click', async () => {
         try {
-            const dir = backend.GetPluginsDir ? await backend.GetPluginsDir() : '';
-            if (dir) await backend.ShowInFolder(dir);
+            await backend.OpenPluginsDir();
         } catch (e) {
             flash('打开插件目录失败：' + e, true);
         }
@@ -1915,6 +3071,19 @@ function setupPluginsSettings() {
         }
         renderPluginsPane();
     });
+    const marketRefresh = document.getElementById('plugin-market-refresh');
+    if (marketRefresh) {
+        marketRefresh.addEventListener('click', () => renderPluginMarket(true));
+    }
+    const marketSource = document.getElementById('plugin-market-source');
+    if (marketSource) {
+        marketSource.addEventListener('click', (e) => {
+            e.preventDefault();
+            const url = marketSource.dataset.url;
+            if (rt && rt.BrowserOpenURL) rt.BrowserOpenURL(url);
+            else window.open(url, '_blank', 'noopener');
+        });
+    }
 }
 
 let cachedAppVersion = '';
@@ -1931,6 +3100,18 @@ function versionAtLeast(current, required) {
     return c3 >= r3;
 }
 
+function compareVersion(a, b) {
+    const parse = (v) => String(v || '').replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
+    const ap = parse(a);
+    const bp = parse(b);
+    for (let i = 0; i < 3; i += 1) {
+        const av = ap[i] || 0;
+        const bv = bp[i] || 0;
+        if (av !== bv) return av > bv ? 1 : -1;
+    }
+    return 0;
+}
+
 async function renderPluginsPane() {
     const listEl = document.getElementById('plugin-list');
     if (!listEl) return;
@@ -1945,12 +3126,14 @@ async function renderPluginsPane() {
         if (document.getElementById('plugin-dir-line')) {
             document.getElementById('plugin-dir-line').textContent = '插件目录：' + dir;
         }
+        renderPluginMarket(false);
         listEl.textContent = '';
         if (!plugins || !plugins.length) {
             const empty = document.createElement('div');
             empty.className = 'plugin-empty';
             empty.textContent = '暂无插件。点「添加插件」选择包含 plugin.json 的文件夹，或导入 .zip 插件包；插件可注册新的文件格式、工具菜单命令和主题。';
             listEl.appendChild(empty);
+            fitPluginListBox(listEl);
             return;
         }
         for (const p of plugins) {
@@ -2068,9 +3251,207 @@ async function renderPluginsPane() {
             item.append(head, desc, meta);
             listEl.appendChild(item);
         }
+        fitPluginListBox(listEl);
     } catch (e) {
         flash('读取插件失败：' + e, true);
     }
+}
+
+let pluginMarketCache = null;
+const PLUGIN_MARKET_TTL = 5 * 60 * 1000;
+
+async function renderPluginMarket(force) {
+    const listEl = document.getElementById('plugin-market-list');
+    if (!listEl) return;
+    if (!backend.GetPluginMarket) {
+        listEl.textContent = '';
+        const unsupported = document.createElement('div');
+        unsupported.className = 'plugin-empty';
+        unsupported.textContent = '当前版本不支持插件市场。';
+        listEl.appendChild(unsupported);
+        fitPluginListBox(listEl);
+        return;
+    }
+    if (!force && pluginMarketCache && Date.now() - pluginMarketCache.at < PLUGIN_MARKET_TTL) {
+        renderPluginMarketList(listEl, pluginMarketCache.items);
+        return;
+    }
+    listEl.textContent = '';
+    const loading = document.createElement('div');
+    loading.className = 'plugin-empty';
+    loading.textContent = force ? '正在刷新插件市场…' : '正在读取插件市场…';
+    listEl.appendChild(loading);
+    fitPluginListBox(listEl);
+    try {
+        const items = (await backend.GetPluginMarket()) || [];
+        pluginMarketCache = {at: Date.now(), items};
+        renderPluginMarketList(listEl, items);
+    } catch (e) {
+        listEl.textContent = '';
+        const err = document.createElement('div');
+        err.className = 'plugin-empty plugin-market-error';
+        err.textContent = '插件市场加载失败：' + e + '（点「刷新」重试）';
+        listEl.appendChild(err);
+        fitPluginListBox(listEl);
+        logFrontend('error', '插件市场加载失败：' + e);
+    }
+}
+
+function renderPluginMarketList(listEl, items) {
+    listEl.textContent = '';
+    if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'plugin-empty';
+        empty.textContent = '插件市场暂无公开插件。';
+        listEl.appendChild(empty);
+        fitPluginListBox(listEl);
+        return;
+    }
+    for (const m of items) {
+        const item = document.createElement('div');
+        item.className = 'plugin-item';
+        const head = document.createElement('div');
+        head.className = 'plugin-head';
+        const name = document.createElement('span');
+        name.className = 'plugin-name';
+        name.textContent = m.name || m.repo;
+        const ver = document.createElement('span');
+        ver.className = 'plugin-version';
+        ver.textContent = m.version ? 'v' + m.version : '';
+        const author = document.createElement('span');
+        author.className = 'plugin-author';
+        author.textContent = m.author ? '作者：' + m.author : '';
+        head.append(name, ver, author);
+        const installedVersion = m.installedVersion || '';
+        const updateAvailable = m.installed && installedVersion && m.version && compareVersion(m.version, installedVersion) > 0;
+        if (updateAvailable) {
+            const update = document.createElement('button');
+            update.type = 'button';
+            update.className = 'dlg-btn primary plugin-market-action';
+            update.textContent = '更新';
+            update.title = '当前 v' + installedVersion + ' → v' + m.version;
+            update.addEventListener('click', async () => {
+                update.disabled = true;
+                update.textContent = '更新中…';
+                try {
+                    const pluginId = m.id || (m.repo || '').split('/').pop();
+                    const updated = await backend.UpdatePluginFromUrl(pluginId, m.url);
+                    if (!updated) throw new Error('更新失败');
+                    m.installed = true;
+                    m.installedVersion = m.version;
+                    await reloadPluginErrors('');
+                    renderPluginsPane();
+                    flash('已更新插件：' + (updated.name || m.name) + (m.version ? ' v' + m.version : ''));
+                } catch (e) {
+                    update.disabled = false;
+                    update.textContent = '更新';
+                    flash('更新失败：' + e, true);
+                }
+            });
+            head.appendChild(update);
+        } else if (m.installed) {
+            const tag = document.createElement('span');
+            tag.className = 'plugin-market-installed';
+            tag.textContent = '已安装' + (installedVersion ? ' v' + installedVersion : '');
+            head.appendChild(tag);
+        } else if (m.minAppVersion && !versionAtLeast(appVersionValue(), m.minAppVersion)) {
+            const warn = document.createElement('span');
+            warn.className = 'plugin-warn plugin-market-action';
+            warn.textContent = '需要应用 ≥ ' + m.minAppVersion;
+            head.appendChild(warn);
+        } else {
+            const install = document.createElement('button');
+            install.type = 'button';
+            install.className = 'dlg-btn plugin-market-action';
+            install.textContent = '安装';
+            install.addEventListener('click', async () => {
+                install.disabled = true;
+                install.textContent = '安装中…';
+                try {
+                    const installed = await backend.InstallPluginFromUrl(m.url);
+                    if (!installed) throw new Error('仓库地址为空');
+                    m.installed = true;
+                    await reloadPluginErrors('');
+                    renderPluginsPane();
+                    flash('已安装插件：' + (installed.name || m.name));
+                } catch (e) {
+                    install.disabled = false;
+                    install.textContent = '安装';
+                    flash('安装失败：' + e, true);
+                }
+            });
+            head.appendChild(install);
+        }
+        const desc = document.createElement('div');
+        desc.className = 'plugin-desc';
+        desc.textContent = m.description || '无描述';
+        const meta = document.createElement('div');
+        meta.className = 'plugin-meta';
+        const repo = document.createElement('span');
+        repo.textContent = m.repo;
+        meta.appendChild(repo);
+        const date = marketDate(m.updatedAt);
+        if (date) {
+            const updated = document.createElement('span');
+            updated.textContent = '更新于 ' + date;
+            meta.appendChild(updated);
+        }
+        if (m.stars > 0) {
+            const stars = document.createElement('span');
+            stars.className = 'market-stars';
+            stars.innerHTML = iconSvg('star', 11) + '<span>' + m.stars + '</span>';
+            meta.appendChild(stars);
+        }
+        if (!m.manifestOk) {
+            const warn = document.createElement('span');
+            warn.className = 'plugin-warn';
+            warn.textContent = '未读取到插件清单';
+            meta.appendChild(warn);
+        }
+        const link = document.createElement('a');
+        link.className = 'plugin-link';
+        link.textContent = '主页';
+        link.href = m.url;
+        link.dataset.url = m.url;
+        link.title = m.url;
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (rt && rt.BrowserOpenURL) rt.BrowserOpenURL(m.url);
+            else window.open(m.url, '_blank', 'noopener');
+        });
+        meta.appendChild(link);
+        item.append(head, desc, meta);
+        listEl.appendChild(item);
+    }
+    fitPluginListBox(listEl);
+}
+
+// 列表外层框最多显示三格，超出的内容在框内滚动。
+function fitPluginListBox(listEl, maxItems = 3) {
+    const box = listEl && listEl.parentElement;
+    if (!box || !box.classList.contains('plugin-list-box')) return;
+    const items = Array.from(listEl.children);
+    if (!items.length || !items[0].offsetHeight) {
+        box.style.maxHeight = '';
+        return;
+    }
+    const listStyle = getComputedStyle(listEl);
+    const gap = parseFloat(listStyle.rowGap || listStyle.gap) || 0;
+    let height = 0;
+    const visible = Math.min(items.length, maxItems);
+    for (let i = 0; i < visible; i += 1) {
+        height += items[i].offsetHeight;
+        if (i > 0) height += gap;
+    }
+    const boxStyle = getComputedStyle(box);
+    height += (parseFloat(boxStyle.paddingTop) || 0) + (parseFloat(boxStyle.paddingBottom) || 0);
+    height += (parseFloat(boxStyle.borderTopWidth) || 0) + (parseFloat(boxStyle.borderBottomWidth) || 0);
+    box.style.maxHeight = Math.ceil(height) + 'px';
+}
+
+function marketDate(iso) {
+    const match = /^(\d{4}-\d{2}-\d{2})/.exec(String(iso || ''));
+    return match ? match[1] : '';
 }
 
 setupPluginsSettings();
@@ -2081,13 +3462,31 @@ const INDENTS = [['2', '2 空格'], ['4', '4 空格'], ['tab', 'Tab']];
 const EOLS = [['follow', '跟随原文件'], ['lf', 'LF'], ['crlf', 'CRLF']];
 const VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
 const CSV_VIEWS = [['table', '表格视图'], ['tree', '树视图'], ['text', '文本视图']];
-const MARKDOWN_VIEWS = [['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
+const MARKDOWN_VIEWS = [['split', '分屏'], ['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
+const HTML_VIEWS = [['split', '分屏'], ['code', '代码视图'], ['text', '文本视图']];
 const IMAGE_VIEWS = [['image', '图片视图'], ['binary', '二进制视图'], ['text', '文本视图']];
 const BINARY_VIEWS = [['binary', '二进制视图'], ['text', '文本视图']];
-const SVG_VIEWS = [['render', '渲染视图'], ['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
+const SVG_VIEWS = [['split', '分屏'], ['render', '渲染视图'], ['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
 
 function isSvgDoc(doc) {
     return !!(doc && /\.svg$/i.test(doc.name || ''));
+}
+
+function isHtmlDoc(doc) {
+    return !!(doc && /\.(html?|xhtml)$/i.test(doc.name || ''));
+}
+
+// 分屏种类：markdown / svg / html；其他格式暂不支持
+function splitKindFor(doc) {
+    if (!doc || !doc.format) return '';
+    if (doc.format.preview) return 'markdown';
+    if (isSvgDoc(doc)) return 'svg';
+    if (isHtmlDoc(doc)) return 'html';
+    return '';
+}
+
+function canSplitDoc(doc) {
+    return !!doc && !doc.binary && !doc.large && !!splitKindFor(doc);
 }
 const CSV_TABLE_ROW_LIMIT = 5000;
 const CSV_ROW_NUM_WIDTH = 44;
@@ -2096,6 +3495,7 @@ const CSV_COL_MIN_WIDTH = 56;
 function viewOptionsFor(fmt, doc) {
     if (fmt && fmt.image) return IMAGE_VIEWS;
     if (fmt && fmt.id === 'bytes') return BINARY_VIEWS;
+    if (isHtmlDoc(doc)) return HTML_VIEWS;
     if (fmt && fmt.id === 'markdown') return MARKDOWN_VIEWS;
     if (isSvgDoc(doc)) return SVG_VIEWS;
     return fmt && (fmt.table || fmt.id === 'csv') ? CSV_VIEWS : VIEWS;
@@ -2109,6 +3509,7 @@ function viewDisabled(mode) {
     if (mode === 'text') return false;
     if (mode === 'preview') return !(file.format && file.format.preview) || !!file.large;
     if (mode === 'render') return !isSvgDoc(file);
+    if (mode === 'split') return !canSplitDoc(file);
     return false;
 }
 
@@ -2118,6 +3519,7 @@ function viewDisabledTitle(mode) {
 }
 
 function viewLabel(mode) {
+    if (mode === 'split') return '分屏';
     if (mode === 'image') return '图片视图';
     if (mode === 'binary') return '二进制视图';
     if (mode === 'preview') return '预览';
@@ -2134,8 +3536,21 @@ const editorLocale = {
         showMoreStatus: '已显示 ${visibleChilds} / ${totalChilds} 项',
         showMore: '显示更多',
         showAll: '显示全部',
+        'editor.tooltip.disable-editing': '只读模式下无法编辑',
     },
 };
+
+// 兜底：Ace 只读提示的内核文案是英文，观察器改写成中文（若语言包已生效则不会命中）。
+const readonlyTipObserver = new MutationObserver((muts) => {
+    for (const m of muts) {
+        for (const node of m.addedNodes) {
+            if (node.nodeType === 1 && node.classList.contains('ace_tooltip') && node.textContent === 'Editing is disabled') {
+                node.textContent = '只读模式下无法编辑';
+            }
+        }
+    }
+});
+readonlyTipObserver.observe(document.body, {childList: true, subtree: true});
 
 const markdownRenderer = new MarkdownIt({
     html: false,
@@ -2144,8 +3559,68 @@ const markdownRenderer = new MarkdownIt({
 });
 markdownRenderer.use(markdownItKatex, {throwOnError: false, errorColor: '#f75464'});
 
+// renderMermaidPlaceholder mermaid 图表占位：渲染后异步替换为 SVG
+function renderMermaidPlaceholder(text) {
+    return '<div class="md-mermaid" data-src="' + markdownRenderer.utils.escapeHtml(text) + '"></div>';
+}
+
+let mermaidScriptLoading = false;
+
+function ensureMermaidScript() {
+    if (window.mermaid || mermaidScriptLoading) return;
+    mermaidScriptLoading = true;
+    const script = document.createElement('script');
+    script.src = '/vendor/mermaid/mermaid.min.js';
+    script.onload = () => {
+        mermaidScriptLoading = false;
+        try {
+            window.mermaid.initialize({startOnLoad: false, securityLevel: 'strict'});
+        } catch (e) {}
+        if (file && currentMode === 'preview') renderMarkdownPreview(file);
+    };
+    script.onerror = () => {
+        mermaidScriptLoading = false;
+        for (const el of document.querySelectorAll('.md-mermaid')) {
+            el.textContent = 'mermaid 库加载失败';
+        }
+    };
+    document.head.appendChild(script);
+}
+
+function mermaidThemeForCurrent() {
+    const id = currentTheme().id;
+    return /dark|darcula/.test(id) ? 'dark' : 'neutral';
+}
+
+async function renderMermaidBlocks(root) {
+    const blocks = (root || document).querySelectorAll('.md-mermaid:not([data-rendered])');
+    if (!blocks.length) return;
+    if (!window.mermaid) {
+        ensureMermaidScript();
+        if (!window.mermaid) return;
+    }
+    try {
+        window.mermaid.initialize({startOnLoad: false, securityLevel: 'strict', theme: mermaidThemeForCurrent()});
+    } catch (e) {}
+    for (const block of blocks) {
+        const msrc = block.dataset.src || '';
+        if (!msrc.trim()) continue;
+        block.dataset.rendered = '1';
+        try {
+            const {svg} = await window.mermaid.render('mmd-' + Math.random().toString(36).slice(2), msrc);
+            block.innerHTML = svg;
+        } catch (e) {
+            block.classList.add('md-mermaid-error');
+            block.textContent = 'mermaid 图表渲染失败：' + (e && e.message || e);
+        }
+    }
+}
+
 function renderMarkdownCodeBlock(text, info) {
     const code = String(text || '').replace(/\n$/, '');
+    if (String(info || '').trim().toLowerCase() === 'mermaid') {
+        return renderMermaidPlaceholder(code);
+    }
     const language = String(info || '').trim().split(/\s+/)[0];
     let highlighted = '';
     if (language && hljs.getLanguage(language)) {
@@ -2233,11 +3708,9 @@ function makeSelect(options, value, onChange) {
 }
 
 const footPopover = document.getElementById('enc-popover');
-const FOOT_WIDGETS = {encoding: els.stEnc, view: els.stMode, eol: els.stEol, zoom: els.stZoom};
+const FOOT_WIDGETS = {encoding: els.stEnc, view: els.stMode, eol: els.stEol, zoom: els.stZoom, mdWidth: els.stMdWidth, aiWidth: els.stAiWidth};
 let footPopoverKind = null;
-const CHECK_ICON = String.fromCharCode(0xE73E);
-const WARN_ICON = String.fromCharCode(0xE7BA);
-
+// 编码/换行/缩进弹出面板的行图标用 icons.js 渲染（不再使用 MDL2 字符）
 function closeFootPopover() {
     footPopover.classList.add('hidden');
     Object.values(FOOT_WIDGETS).forEach((el) => el && el.classList.remove('active'));
@@ -2273,7 +3746,7 @@ function popItem(label, opts = {}) {
     row.className = 'enc-item' + (opts.current ? ' current' : '');
     const ic = document.createElement('span');
     ic.className = 'enc-ic' + (opts.current ? ' cur' : (opts.iconClass ? ' ' + opts.iconClass : ''));
-    ic.textContent = opts.icon || (opts.current ? CHECK_ICON : '');
+    if (opts.current) ic.innerHTML = iconSvg('check', 12);
     const text = document.createElement('span');
     text.textContent = label;
     row.append(ic, text);
@@ -2330,7 +3803,7 @@ async function renderEncodingMenu() {
     for (const {enc, ic} of rows) {
         try {
             const ok = await backend.CheckEncoding(file.content || '', enc);
-            ic.textContent = ok ? CHECK_ICON : WARN_ICON;
+            ic.innerHTML = iconSvg(ok ? 'check' : 'warn', 12);
             ic.className = 'enc-ic ' + (ok ? 'ok' : 'warn');
             ic.title = ok ? '可无损表示当前内容' : '包含无法表示的字符，转换后可能丢失';
         } catch (e) {}
@@ -2339,16 +3812,17 @@ async function renderEncodingMenu() {
 
 function renderViewMenu() {
     footPopover.appendChild(popTitle('视图'));
+    const splitActive = !!(file && file.splitActive);
     for (const [mode, label] of viewOptionsFor(file && file.format, file)) {
         const disabled = viewDisabled(mode);
         footPopover.appendChild(popItem(label, {
-            current: currentMode === mode,
+            current: mode === 'split' ? splitActive : (!splitActive && currentMode === mode),
             disabled,
             disabledTitle: viewDisabledTitle(mode),
             onClick: () => { switchMode(mode); closeFootPopover(); },
         }));
     }
-    footPopover.appendChild(popFoot('当前', viewLabel(currentMode)));
+    footPopover.appendChild(popFoot('当前', splitActive ? viewLabel('split') : viewLabel(currentMode)));
 }
 
 function renderImageZoomMenu() {
@@ -2396,6 +3870,73 @@ function renderTableZoomMenu() {
     footPopover.appendChild(popFoot('当前', Math.round((doc.tableZoom || 1) * 100) + '%'));
 }
 
+function mdPreviewWidthLabel(value) {
+    return String(value) === '0' ? '自适应' : value + 'px';
+}
+
+function aiFullscreenWidthLabel(value) {
+    const current = String(value || 'auto');
+    if (current === 'auto') return '自动';
+    return current === '0' ? '跟随' : current + 'px';
+}
+
+function updateAiWidthWidget() {
+    if (!els.stAiWidth) return;
+    const show = !!settings.aiPanelOpen;
+    els.stAiWidth.style.display = show ? '' : 'none';
+    if (!show) {
+        els.stAiWidth.textContent = '';
+        return;
+    }
+    const value = String(settings.aiFullscreenWidth || 'auto');
+    els.stAiWidth.textContent = 'AI 宽度 · ' + aiFullscreenWidthLabel(value);
+    els.stAiWidth.title = value === 'auto'
+        ? 'AI 内容宽度（停靠 / 全屏通用）：自动（< 920px 跟随，≥ 920px 最大 920px）'
+        : 'AI 内容宽度（停靠 / 全屏通用）：' + (value === '0' ? '跟随' : value + 'px');
+}
+
+function renderAiWidthMenu() {
+    footPopover.appendChild(popTitle('AI 内容宽度（停靠 / 全屏）'));
+    const options = [['auto', '自动（默认）'], ['720', '720px'], ['860', '860px'], ['920', '920px'], ['1100', '1100px'], ['1300', '1300px'], ['0', '跟随']];
+    for (const [value, label] of options) {
+        footPopover.appendChild(popItem(label, {
+            current: String(settings.aiFullscreenWidth) === value,
+            onClick: () => {
+                settings.aiFullscreenWidth = value;
+                applySettings();
+                closeFootPopover();
+            },
+        }));
+    }
+    footPopover.appendChild(popSep());
+    footPopover.appendChild(popFoot('当前', aiFullscreenWidthLabel(settings.aiFullscreenWidth)));
+    footPopover.appendChild(popFoot('自动规则', '<920px 跟随 / ≥920px 最大 920px'));
+}
+
+function renderMdWidthMenu() {
+    footPopover.appendChild(popTitle('Markdown 预览宽度'));
+    const options = [['720', '720px'], ['860', '860px'], ['920', '920px'], ['1100', '1100px'], ['1300', '1300px'], ['0', '跟随窗口宽度']];
+    for (const [value, label] of options) {
+        footPopover.appendChild(popItem(label, {
+            current: String(settings.mdPreviewWidth) === value,
+            onClick: () => {
+                settings.mdPreviewWidth = value;
+                applySettings();
+                updateStatus();
+                closeFootPopover();
+            },
+        }));
+    }
+    footPopover.appendChild(popSep());
+    footPopover.appendChild(popItem('更多设置…', {
+        onClick: () => {
+            closeFootPopover();
+            openSettings('general');
+        },
+    }));
+    footPopover.appendChild(popFoot('当前', mdPreviewWidthLabel(settings.mdPreviewWidth)));
+}
+
 function chooseEol(value) {
     if (!file) return;
     const fs = getFormatSettings(file.format.id);
@@ -2427,7 +3968,7 @@ function renderEolMenu() {
 }
 
 function openFootPopover(kind) {
-    if (!file) return;
+    if (!file && kind !== 'aiWidth') return;
     const anchor = FOOT_WIDGETS[kind];
     if (!anchor) return;
     footPopover.textContent = '';
@@ -2438,11 +3979,25 @@ function openFootPopover(kind) {
         if (currentMode === 'table' && file.format && file.format.table) renderTableZoomMenu();
         else renderImageZoomMenu();
     }
+    else if (kind === 'mdWidth') renderMdWidthMenu();
+    else if (kind === 'aiWidth') renderAiWidthMenu();
     else renderEolMenu();
     const r = anchor.getBoundingClientRect();
     const pr = footPopover.getBoundingClientRect();
-    footPopover.style.left = Math.max(8, Math.round(r.right - pr.width)) + 'px';
-    footPopover.style.top = Math.round(r.top - pr.height - 6) + 'px';
+    // 向上弹出，空间不足时限制高度内部滚动，避免被窗口顶部截断
+    const available = r.top - 14;
+    if (pr.height > available && available > 120) {
+        footPopover.style.maxHeight = available + 'px';
+        footPopover.style.overflowY = 'auto';
+        const pr2 = footPopover.getBoundingClientRect();
+        footPopover.style.left = Math.max(8, Math.round(r.right - pr2.width)) + 'px';
+        footPopover.style.top = Math.round(r.top - pr2.height - 6) + 'px';
+    } else {
+        footPopover.style.maxHeight = '';
+        footPopover.style.overflowY = '';
+        footPopover.style.left = Math.max(8, Math.round(r.right - pr.width)) + 'px';
+        footPopover.style.top = Math.round(r.top - pr.height - 6) + 'px';
+    }
     Object.values(FOOT_WIDGETS).forEach((el) => el && el.classList.remove('active'));
     anchor.classList.add('active');
     footPopoverKind = kind;
@@ -2489,6 +4044,466 @@ function setupFormatSettings() {
     }
 }
 
+function setupLanguageSettings() {
+    const children = document.getElementById('snav-lang-children');
+    const content = document.querySelector('.settings-content');
+    if (!children || !content) return;
+    for (const lang of LANG_DEFS) {
+        if (children.querySelector(`[data-pane="lang-${lang.id}"]`)) continue;
+        const nav = document.createElement('button');
+        nav.type = 'button';
+        nav.className = 'snav-item snav-child snav-lang';
+        nav.dataset.pane = 'lang-' + lang.id;
+        nav.textContent = lang.name;
+        children.appendChild(nav);
+        if (!content.querySelector(`.settings-pane[data-pane="lang-${lang.id}"]`)) {
+            const pane = document.createElement('div');
+            pane.className = 'settings-pane hidden';
+            pane.dataset.pane = 'lang-' + lang.id;
+            content.appendChild(pane);
+        }
+    }
+}
+
+// 每个语言的环境状态按工具拆分存放在 settings.langEnv[id].tools[toolId]
+function langEnvFor(id) {
+    if (!settings.langEnv || typeof settings.langEnv !== 'object') settings.langEnv = {};
+    const entry = settings.langEnv[id];
+    if (!entry || typeof entry !== 'object') {
+        settings.langEnv[id] = {tools: {}};
+    } else if (Array.isArray(entry.envs) && !entry.tools) {
+        // 旧结构迁移：语言级缓存挪到该语言的主工具下
+        const lang = LANG_DEFS.find((l) => l.id === id);
+        const primary = lang && lang.tools && lang.tools[0] ? lang.tools[0].id : id;
+        const migrated = {
+            envs: entry.envs,
+            selectedPath: entry.selectedPath || '',
+            pathOverride: entry.pathOverride || '',
+            scannedAt: entry.scannedAt || 0,
+        };
+        settings.langEnv[id] = {tools: {}};
+        settings.langEnv[id].tools[primary] = migrated;
+    }
+    if (!settings.langEnv[id].tools || typeof settings.langEnv[id].tools !== 'object') settings.langEnv[id].tools = {};
+    return settings.langEnv[id];
+}
+
+function toolEnvFor(id, toolId) {
+    const e = langEnvFor(id);
+    if (!e.tools[toolId] || typeof e.tools[toolId] !== 'object') e.tools[toolId] = {};
+    return e.tools[toolId];
+}
+
+// effectiveToolEnv 当前生效的环境：手动指定 > 手动选择 > 默认第一个
+function effectiveToolEnv(id, toolId) {
+    const env = toolEnvFor(id, toolId);
+    const list = Array.isArray(env.envs) ? env.envs : [];
+    if (env.pathOverride) {
+        const hit = list.find((x) => x.path && String(x.path).toLowerCase() === env.pathOverride.toLowerCase());
+        if (hit) return hit;
+        return {ok: false, path: env.pathOverride, error: env.error || '指定的路径不可用'};
+    }
+    const hit = env.selectedPath ? list.find((x) => x.path && String(x.path).toLowerCase() === env.selectedPath.toLowerCase()) : null;
+    return hit || list[0] || {ok: false, error: env.error || '未找到可用环境'};
+}
+
+function renderLangPane(id) {
+    const lang = LANG_DEFS.find((l) => l.id === id);
+    const pane = document.querySelector(`.settings-pane[data-pane="lang-${id}"]`);
+    if (!lang || !pane) return;
+    pane.textContent = '';
+    const title = document.createElement('div');
+    title.className = 'fmt-pane-title';
+    title.textContent = lang.name;
+    const sub = document.createElement('div');
+    sub.className = 'fmt-pane-sub';
+    sub.textContent = '环境信息（解释器 / 编译器与配套工具链的路径和版本），缓存到本地，为后续的辅助运行代码功能预留';
+    pane.append(title, sub);
+
+    for (const tool of lang.tools) {
+        const env = toolEnvFor(id, tool.id);
+        const list = Array.isArray(env.envs) ? env.envs : [];
+        const eff = effectiveToolEnv(id, tool.id);
+
+        const sec = document.createElement('div');
+        sec.className = 'env-tool';
+
+        const head = document.createElement('div');
+        head.className = 'env-tool-head';
+        const dot = document.createElement('span');
+        dot.className = 'env-dot' + (env.scanning ? ' busy' : (env.scannedAt ? (eff && eff.ok ? ' ok' : (tool.optional ? '' : ' fail')) : ''));
+        const headText = document.createElement('span');
+        headText.textContent = tool.name + (tool.optional ? '（可选）' : '');
+        head.append(dot, headText);
+        sec.appendChild(head);
+
+        // 多环境选择框：扫描出多个时默认选第一个，可手动切换
+        if (list.length) {
+            const sel = document.createElement('select');
+            sel.className = 'env-select';
+            for (const e of list) {
+                const opt = document.createElement('option');
+                opt.value = e.path || '';
+                opt.textContent = (e.version ? e.version + ' ｜ ' : '') + (e.path || '');
+                sel.appendChild(opt);
+            }
+            if (eff && eff.path && list.some((e) => e.path === eff.path)) sel.value = eff.path;
+            if (env.pathOverride) {
+                sel.disabled = true;
+                sel.title = '手动指定路径时忽略此选择';
+            }
+            sel.addEventListener('change', () => {
+                env.selectedPath = sel.value;
+                applySettings();
+                if (id === 'python') resetLangPkgs(id);
+                renderLangPane(id);
+            });
+            sec.appendChild(sel);
+        }
+
+        const body = document.createElement('div');
+        body.className = 'env-status';
+        if (env.scanning) {
+            const line = document.createElement('div');
+            line.className = 'env-meta';
+            line.textContent = '正在扫描…';
+            body.appendChild(line);
+        } else if (!env.scannedAt) {
+            const line = document.createElement('div');
+            line.className = 'env-meta';
+            line.textContent = '未检测';
+            body.appendChild(line);
+        } else if (eff && eff.ok) {
+            const vRow = document.createElement('div');
+            vRow.className = 'env-status-row';
+            const vk = document.createElement('span');
+            vk.className = 'env-status-key';
+            vk.textContent = '版本';
+            const vv = document.createElement('span');
+            vv.className = 'env-status-val';
+            vv.textContent = eff.version || '';
+            vRow.append(vk, vv);
+            body.appendChild(vRow);
+            const pRow = document.createElement('div');
+            pRow.className = 'env-status-row';
+            const pk = document.createElement('span');
+            pk.className = 'env-status-key';
+            pk.textContent = '路径';
+            const pv = document.createElement('span');
+            pv.className = 'env-status-val mono';
+            pv.textContent = eff.path || '';
+            pv.title = eff.path || '';
+            pRow.append(pk, pv);
+            body.appendChild(pRow);
+        } else {
+            const line = document.createElement('div');
+            line.className = 'env-error';
+            line.textContent = (eff && eff.error) || env.error || '未找到可用环境';
+            body.appendChild(line);
+        }
+        if (env.scannedAt && !env.scanning) {
+            const meta = document.createElement('div');
+            meta.className = 'env-meta';
+            const source = env.pathOverride ? '手动指定' : (env.selectedPath ? '手动选择' : '默认');
+            meta.textContent = '上次扫描 ' + propsTimeText(env.scannedAt) + ' · ' + source;
+            body.appendChild(meta);
+        }
+        sec.appendChild(body);
+
+        // 手动指定：输入框 + 「…」按钮，可手输也可打开文件对话框选择
+        const overrideRow = document.createElement('div');
+        overrideRow.className = 'env-override-row';
+        const overrideInput = document.createElement('input');
+        overrideInput.type = 'text';
+        overrideInput.className = 'env-override';
+        overrideInput.placeholder = '手动指定可执行文件路径';
+        overrideInput.value = env.pathOverride || '';
+        overrideInput.addEventListener('change', () => {
+            env.pathOverride = overrideInput.value.trim();
+            applySettings();
+            if (id === 'python') resetLangPkgs(id);
+            renderLangPane(id);
+        });
+        const browseBtn = document.createElement('button');
+        browseBtn.type = 'button';
+        browseBtn.className = 'env-browse';
+        browseBtn.title = '浏览…';
+        browseBtn.textContent = '…';
+        browseBtn.disabled = !!env.scanning;
+        browseBtn.addEventListener('click', async () => {
+            if (!backend.ShowOpenFileDialog) {
+                flash('当前版本不支持选择文件', true);
+                return;
+            }
+            try {
+                const picked = await backend.ShowOpenFileDialog('选择 ' + tool.name + ' 可执行文件', 'exe');
+                if (!picked) return;
+                overrideInput.value = picked;
+                env.pathOverride = picked;
+                applySettings();
+                if (tool.id === 'python') resetLangPkgs(id);
+                await scanLanguageTool(id, tool.id);
+            } catch (e) {
+                flash('选择文件失败：' + ((e && e.message) || e), true);
+            }
+        });
+        overrideRow.append(overrideInput, browseBtn);
+        sec.appendChild(overrideRow);
+
+        pane.appendChild(sec);
+    }
+
+    const anyScanning = lang.tools.some((t) => toolEnvFor(id, t.id).scanning);
+    const btnRow = document.createElement('div');
+    btnRow.className = 'popover-row';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tb-btn';
+    const scanned = lang.tools.every((t) => toolEnvFor(id, t.id).scannedAt);
+    btn.textContent = scanned ? '重新扫描' : '扫描环境';
+    btn.disabled = anyScanning;
+    btn.addEventListener('click', () => scanLanguageAll(id));
+    btnRow.appendChild(btn);
+    pane.appendChild(btnRow);
+
+    const hint = document.createElement('div');
+    hint.className = 'fmt-hint';
+    hint.textContent = '首次打开会自动扫描一次并缓存；扫描出多个环境时默认选第一个，可用下拉切换，或在各工具的「手动指定」里填路径。';
+    pane.appendChild(hint);
+
+    // 已安装的包：python（pip 全局 / .venv）与 node（npm 全局 / 项目 node_modules）
+    if (lang.pkgs && lang.pkgs.length) {
+        const pkgSec = document.createElement('div');
+        pkgSec.className = 'env-tool';
+        const pkgHead = document.createElement('div');
+        pkgHead.className = 'env-tool-head';
+        pkgHead.textContent = '已安装的包';
+        pkgSec.appendChild(pkgHead);
+        for (const scope of lang.pkgs) {
+            pkgSec.appendChild(renderPkgScope(id, scope));
+        }
+        pane.appendChild(pkgSec);
+    }
+
+    // 自动扫描：还没扫过的工具按顺序补一次（结果缓存，不重复扫）
+    const pending = lang.tools.filter((t) => {
+        const e = toolEnvFor(id, t.id);
+        return !e.scanning && !e.scannedAt;
+    });
+    const container = langEnvFor(id);
+    if (pending.length && !anyScanning && !container._autoScanning) {
+        container._autoScanning = true;
+        (async () => {
+            try {
+                for (const t of pending) {
+                    await scanLanguageTool(id, t.id);
+                }
+            } finally {
+                container._autoScanning = false;
+            }
+        })();
+    }
+
+    // 包列表：还没有缓存结果的作用域按顺序补一次
+    if (lang.pkgs && lang.pkgs.length) {
+        const pendingPkgs = lang.pkgs.filter((s) => {
+            const st = pkgStateFor(id, s.id);
+            return !st.scanning && !st.scannedAt;
+        });
+        if (pendingPkgs.length && !container._pkgAutoScanning) {
+            container._pkgAutoScanning = true;
+            (async () => {
+                try {
+                    for (const s of pendingPkgs) {
+                        await scanLanguagePkgs(id, s.id);
+                    }
+                } finally {
+                    container._pkgAutoScanning = false;
+                }
+            })();
+        }
+    }
+}
+
+async function scanLanguageTool(id, toolId) {
+    const env = toolEnvFor(id, toolId);
+    if (env.scanning) return;
+    env.scanning = true;
+    renderLangPane(id);
+    let res = null;
+    try {
+        res = backend.DetectToolchain ? await backend.DetectToolchain(toolId, env.pathOverride || '') : null;
+    } catch (e) {
+        res = {envs: []};
+    }
+    env.scanning = false;
+    env.scannedAt = Date.now();
+    const list = res && Array.isArray(res.envs) ? res.envs : [];
+    env.envs = list;
+    const prev = env.selectedPath;
+    env.selectedPath = prev && list.some((x) => x.path && String(x.path).toLowerCase() === prev.toLowerCase()) ? prev : '';
+    env.error = list.length ? '' : ((res && res.error) || '未找到可用环境');
+    applySettings();
+    renderLangPane(id);
+}
+
+async function scanLanguageAll(id) {
+    const lang = LANG_DEFS.find((l) => l.id === id);
+    if (!lang) return;
+    for (const tool of lang.tools) {
+        await scanLanguageTool(id, tool.id);
+    }
+}
+
+// ---- 已安装的包列表：python（pip）与 node（npm）----
+
+function pkgStateFor(id, scope) {
+    const container = langEnvFor(id);
+    if (!container.pkgs || typeof container.pkgs !== 'object') container.pkgs = {};
+    if (!container.pkgs[scope] || typeof container.pkgs[scope] !== 'object') container.pkgs[scope] = {};
+    return container.pkgs[scope];
+}
+
+function resetLangPkgs(id) {
+    const container = langEnvFor(id);
+    if (!container.pkgs || typeof container.pkgs !== 'object') return;
+    for (const key of Object.keys(container.pkgs)) {
+        container.pkgs[key].scannedAt = 0;
+    }
+}
+
+function renderPkgScope(id, scope) {
+    const lang = LANG_DEFS.find((l) => l.id === id);
+    // scope 兼容传对象或 id 字符串
+    const scopeDef = typeof scope === 'object'
+        ? scope
+        : ((lang.pkgs || []).find((s) => s.id === scope) || {id: scope, label: scope});
+    const scopeId = scopeDef.id;
+    const st = pkgStateFor(id, scopeId);
+    const wrap = document.createElement('div');
+    wrap.className = 'pkg-scope';
+
+    const head = document.createElement('div');
+    head.className = 'pkg-scope-head';
+    const name = document.createElement('span');
+    name.className = 'env-tool-head';
+    name.style.marginBottom = '0';
+    const dot = document.createElement('span');
+    dot.className = 'env-dot' + (st.scanning ? ' busy' : (st.scannedAt ? (st.error ? ' fail' : ' ok') : ''));
+    const nameText = document.createElement('span');
+    nameText.textContent = scopeDef.label;
+    name.append(dot, nameText);
+    const count = document.createElement('span');
+    count.className = 'pkg-count';
+    count.textContent = st.scanning || st.error
+        ? ''
+        : (st.exists ? ((Array.isArray(st.list) ? st.list.length : 0) + ' 个包') : '未找到');
+    name.appendChild(count);
+    head.appendChild(name);
+
+    const filter = document.createElement('input');
+    filter.type = 'text';
+    filter.className = 'pkg-filter';
+    filter.placeholder = '过滤包名…';
+    filter.value = st.filterText || '';
+    filter.addEventListener('input', () => {
+        st.filterText = filter.value;
+        renderPkgRows();
+    });
+
+    const refresh = document.createElement('button');
+    refresh.type = 'button';
+    refresh.className = 'tb-btn';
+    refresh.textContent = '刷新';
+    refresh.disabled = !!st.scanning;
+    refresh.addEventListener('click', () => scanLanguagePkgs(id, scopeId));
+    head.append(filter, refresh);
+    wrap.appendChild(head);
+
+    const listBox = document.createElement('div');
+    listBox.className = 'pkg-list';
+    const renderPkgRows = () => {
+        listBox.textContent = '';
+        if (st.scanning) {
+            const line = document.createElement('div');
+            line.className = 'pkg-empty';
+            line.textContent = '正在扫描…';
+            listBox.appendChild(line);
+            return;
+        }
+        if (st.error) {
+            const line = document.createElement('div');
+            line.className = 'env-error';
+            line.textContent = st.error;
+            listBox.appendChild(line);
+            return;
+        }
+        if (!st.exists) {
+            const line = document.createElement('div');
+            line.className = 'pkg-empty';
+            line.textContent = scopeId === 'env'
+                ? '未检测到可用的 Python 解释器'
+                : (id === 'go' ? '当前工作区没有 go.mod' : '当前目录没有 package.json');
+            listBox.appendChild(line);
+            return;
+        }
+        const q = (st.filterText || '').trim().toLowerCase();
+        const list = (Array.isArray(st.list) ? st.list : []).filter((p) => !q || String(p.name).toLowerCase().includes(q));
+        if (!list.length) {
+            const line = document.createElement('div');
+            line.className = 'pkg-empty';
+            line.textContent = q ? '没有匹配的包' : '没有已安装的包';
+            listBox.appendChild(line);
+            return;
+        }
+        for (const p of list) {
+            const row = document.createElement('div');
+            row.className = 'pkg-row';
+            const n = document.createElement('span');
+            n.className = 'pkg-name';
+            n.textContent = p.name;
+            const v = document.createElement('span');
+            v.className = 'pkg-ver';
+            v.textContent = p.version || '';
+            row.append(n, v);
+            listBox.appendChild(row);
+        }
+    };
+    renderPkgRows();
+    wrap.appendChild(listBox);
+    return wrap;
+}
+
+async function scanLanguagePkgs(id, scope) {
+    const scopeId = typeof scope === 'object' ? scope.id : scope;
+    const st = pkgStateFor(id, scopeId);
+    if (st.scanning) return;
+    st.scanning = true;
+    renderLangPane(id);
+    const kind = id === 'python' ? 'pip' : (id === 'node' ? 'npm' : (id === 'go' ? 'go' : ''));
+    // python：包列表跟随所选解释器；npm/project：用当前工作区目录
+    let target = '';
+    if (id === 'python') {
+        const eff = effectiveToolEnv(id, 'python');
+        target = (eff && eff.path) || '';
+    } else if (scopeId === 'project') {
+        target = termCwd() || '';
+    }
+    let res = null;
+    try {
+        res = backend.ListLangPackages ? await backend.ListLangPackages(kind, scopeId, target) : null;
+    } catch (e) {
+        res = {packages: [], exists: true, error: String((e && e.message) || e)};
+    }
+    st.scanning = false;
+    st.scannedAt = Date.now();
+    st.list = res && Array.isArray(res.packages) ? res.packages : [];
+    st.exists = !!(res && res.exists !== false);
+    st.error = (res && res.error) || '';
+    applySettings();
+    renderLangPane(id);
+}
+
 function renderFormatPane(id) {
     const f = allFormatDefs().find((item) => item.id === id);
     const pane = document.querySelector(`.settings-pane[data-pane="fmt-${id}"]`);
@@ -2498,11 +4513,10 @@ function renderFormatPane(id) {
     const title = document.createElement('div');
     title.className = 'fmt-pane-title';
     title.textContent = f.name + ' 文件';
+    // 扩展名列表太长很难看（纯文本有几十个），收进标题悬停提示
     const extensions = formats[id] && formats[id].extensions ? formats[id].extensions : [];
-    const sub = document.createElement('div');
-    sub.className = 'fmt-pane-sub';
-    sub.textContent = extensions.length ? '扩展名：' + extensions.join('、') : '';
-    pane.append(title, sub);
+    if (extensions.length) title.title = '扩展名：' + extensions.join('、');
+    pane.append(title);
     const update = (key) => (value) => {
         settings.formatSettings[id][key] = value;
         applySettings();
@@ -2580,10 +4594,11 @@ function flash(msg, isError) {
     els.stMessage.classList.toggle('error', !!isError);
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => { els.stMessage.textContent = ''; }, 5000);
+    logFrontend(isError ? 'error' : 'info', msg);
 }
 
 function updateWindowTitle() {
-    const title = file ? file.name + ' - CaDt-DataLens' : 'CaDt-DataLens';
+    const title = window.__aiFloatWindow ? 'AI 助手 · CaDt-DataLens' : (file ? file.name + ' - CaDt-DataLens' : 'CaDt-DataLens');
     document.title = title;
     if (rt && rt.WindowSetTitle) {
         try {
@@ -2722,6 +4737,7 @@ function renderEditorLayout() {
     const root = splitRoot || (focusedGroupId || (editorGroups[0] && editorGroups[0].id));
     if (!root || !editorGroups.length) return;
     buildSplitNode(els.editor, root);
+    scheduleSessionSave();
     for (const g of editorGroups) {
         const host = els.editor.querySelector('.egroup[data-gid="' + g.id + '"] .ehost');
         if (!host) continue;
@@ -2848,6 +4864,7 @@ const VIEW_ICONS = {
     image: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
     binary: '<svg viewBox="0 0 14 14" aria-hidden="true"><text x="2" y="10.6" font-size="9" font-family="JetBrains Mono, Consolas, monospace" font-weight="700" fill="currentColor">01</text></svg>',
     render: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 11c2.8 0 3.4-7 6.2-7 1.7 0 2 1.6 3.8 1.6" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><circle cx="2" cy="11" r="1.1" fill="currentColor"/><circle cx="12" cy="5.6" r="1.1" fill="currentColor"/></svg>',
+    split: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 2.6v9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
 };
 const MORE_ICON = '<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="2.9" r="1.25" fill="currentColor"/><circle cx="7" cy="7" r="1.25" fill="currentColor"/><circle cx="7" cy="11.1" r="1.25" fill="currentColor"/></svg>';
 
@@ -2869,17 +4886,23 @@ function buildGroupTools(gid) {
     if (!doc) return null;
     const tools = document.createElement('div');
     tools.className = 'tb-tools';
+    const activeMode = doc.splitActive ? 'split' : doc.mode;
     for (const [mode, label] of viewOptionsFor(doc.format, doc)) {
         // 不可用的视图不显示（IDEA 只列可用视图），不摆灰态占位
         if (viewDisabledFor(doc, mode)) continue;
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'tb-view' + (doc.mode === mode ? ' active' : '');
+        btn.className = 'tb-view' + (activeMode === mode ? ' active' : '');
+        btn.dataset.mode = mode;
         btn.title = label;
         btn.innerHTML = VIEW_ICONS[mode] || '';
         btn.addEventListener('click', async () => {
             if (file !== doc) await activateDoc(doc);
-            if (currentMode !== mode) switchMode(mode);
+            if (mode === 'split') {
+                if (!doc.splitActive) switchMode('split');
+            } else if (doc.splitActive || currentMode !== mode) {
+                switchMode(mode);
+            }
             renderTabs();
         });
         tools.appendChild(btn);
@@ -2895,6 +4918,19 @@ function buildGroupTools(gid) {
     });
     tools.appendChild(more);
     return tools;
+}
+
+// 视图切换不一定重建标签条（底部状态栏、设置默认视图、快捷菜单等入口只调 switchMode），
+// 这里按各分栏组当前文档同步视图按钮的选中态。
+function syncTabViewTools() {
+    for (const wrap of document.querySelectorAll('.egroup[data-gid]')) {
+        const g = groupById(wrap.dataset.gid);
+        const doc = g ? (docs.find((d) => d.id === g.activeId) || groupDocs(g)[0]) : null;
+        const activeMode = doc ? (doc.splitActive ? 'split' : doc.mode) : '';
+        for (const btn of wrap.querySelectorAll('.tb-view[data-mode]')) {
+            btn.classList.toggle('active', btn.dataset.mode === activeMode);
+        }
+    }
 }
 
 function showTabbarToolsMenu(x, y) {
@@ -2932,7 +4968,7 @@ function buildGroupTab(g, doc, strip) {
     close.type = 'button';
     close.className = 'tab-close';
     close.title = '关闭';
-    close.textContent = '\uE8BB';
+    close.innerHTML = iconSvg('close', 12);
     close.addEventListener('click', (e) => {
         e.stopPropagation();
         requestCloseDoc(doc);
@@ -3145,7 +5181,7 @@ function renderBreadcrumb(path) {
         if (i > 0) {
             const sep = document.createElement('span');
             sep.className = 'crumb-sep';
-            sep.textContent = '▸';
+            sep.innerHTML = iconSvg('chevron-right', 10);
             els.breadcrumb.appendChild(sep);
         }
         const s = document.createElement('span');
@@ -3247,15 +5283,20 @@ function toggleFocusedNode(action) {
 }
 
 function updateStatus() {
+    if (aiPanel && aiPanel.refreshContext) {
+        try { aiPanel.refreshContext(); } catch (e) {}
+    }
     if (!file) return;
+    scheduleSessionSave();
+    syncTabViewTools();
     const fmt = file.format;
-    const view = viewLabel(currentMode);
+    const view = file.splitActive ? viewLabel('split') : viewLabel(currentMode);
     els.stMode.textContent = fmt.name + ' · ' + view + (file.large || file.binary || settings.readOnlyMode ? ' · 只读' : '');
     els.stSize.textContent = fmtSize(file.size);
     els.stSize.title = file.image && file.imageWidth ? file.imageWidth + ' × ' + file.imageHeight : '';
     const tableZoom = currentMode === 'table' && file.format && file.format.table;
-    const renderZoom = currentMode === 'render' && file && file.svgRenderScale
-        ? Math.round(file.svgRenderScale * 100) + '%' : '';
+    const svgScale = file.svgRenderScale && (currentMode === 'render' || (file.splitActive && file.splitKind === 'svg'));
+    const renderZoom = svgScale ? Math.round(file.svgRenderScale * 100) + '%' : '';
     const zoom = file.image && currentMode === 'image' && file.imageScale
         ? Math.round(file.imageScale * 100) + '%'
         : renderZoom || (tableZoom ? Math.round((file.tableZoom || 1) * 100) + '%' : '');
@@ -3263,6 +5304,10 @@ function updateStatus() {
     els.stZoom.title = zoom
         ? (tableZoom ? '表格缩放比例（点击选择，Ctrl+滚轮调整）' : '图片缩放比例（点击选择，Ctrl+滚轮调整，双击图片恢复适配）')
         : '';
+    const showMdWidth = !!(file.format && file.format.preview && currentMode === 'preview' && !file.large);
+    els.stMdWidth.style.display = showMdWidth ? '' : 'none';
+    els.stMdWidth.textContent = showMdWidth ? '宽度 · ' + mdPreviewWidthLabel(settings.mdPreviewWidth) : '';
+    updateWordCount();
     if (file.binary) {
         els.stEol.textContent = '';
         els.stEnc.textContent = '';
@@ -3520,7 +5565,7 @@ function applyAceMode(force) {
         editor.aceEditor.setDisplayIndentGuides(!!settings.codeGuides);
         editor.aceEditor.setHighlightIndentGuides(!!settings.codeGuides);
         hookCodeFoldPreviews(editor.aceEditor);
-        hookFoldChevronHover(editor.aceEditor);
+        hookMultiCursor(editor.aceEditor);
         hookPythonTokenClasses(editor.aceEditor);
         hookCursorTracking(editor.aceEditor);
         updateCodeFoldPreviews(editor.aceEditor);
@@ -3636,27 +5681,13 @@ function clipCodeFoldText(text, maxWidth) {
     return out + (raw.startsWith('"') ? '"' : '');
 }
 
-function extendCodeFoldRange(session, fold) {
-    const range = fold && fold.range;
-    if (!range || !range.start || !range.end) return;
-    const startLine = session.getLine(range.start.row) || '';
-    if (range.start.column > 0) {
-        const before = startLine[range.start.column - 1];
-        if (before === '{' || before === '[') range.start.column -= 1;
-    }
-    const endLine = session.getLine(range.end.row) || '';
-    const after = endLine[range.end.column];
-    if (after === '}' || after === ']') range.end.column += 1;
-}
-
 function codeFoldPreviewFor(ace, fold) {
-    const session = ace.session;
-    const startLine = (session.getLine(fold.range.start.row) || '').trimEnd();
-    const inner = (session.getTextRange(fold.range) || '').trimStart();
-    // JetBrains 风格：花括号块 {...}、方括号块 [...]、缩进块 ...
-    if (/\{$/.test(startLine) || inner.startsWith('{')) return '{...}';
-    if (/\[$/.test(startLine) || inner.startsWith('[')) return '[...]';
-    return '...';
+    // JetBrains 风格：折叠后把块内容压成一行内联显示，括号保留在外面
+    const inner = (ace.session.getTextRange(fold.range) || '').trim();
+    if (!inner) return '';
+    const flat = inner.replace(/\s+/g, ' ');
+    const clipped = clipCodeFoldText(flat, 120);
+    return clipped === flat ? flat : clipped + ' …';
 }
 
 function updateCodeFoldPreviews(ace) {
@@ -3665,7 +5696,6 @@ function updateCodeFoldPreviews(ace) {
     if (!folds.length) return;
     let changed = false;
     for (const fold of folds) {
-        extendCodeFoldRange(ace.session, fold);
         let preview = '';
         try {
             preview = codeFoldPreviewFor(ace, fold);
@@ -3689,7 +5719,6 @@ function updateCodeFoldPreviews(ace) {
 function hookCodeFoldPreviews(ace) {
     if (!ace || ace._foldPreviewHooked) return;
     ace._foldPreviewHooked = true;
-    hookFoldChevronHover(ace);
     const schedule = () => {
         clearTimeout(ace._foldPreviewTimer);
         ace._foldPreviewTimer = setTimeout(() => {
@@ -3701,16 +5730,224 @@ function hookCodeFoldPreviews(ace) {
     ace.session.on('change', schedule);
 }
 
-// hookFoldChevronHover：鼠标进入行号区时显示全部展开态折叠箭头（∨），离开隐藏；折叠态（>）常显由 CSS 保证
-function hookFoldChevronHover(ace) {
-    if (!ace || !ace.renderer || ace._chevHover) return;
-    ace._chevHover = true;
-    const layer = ace.renderer.$gutterLayer;
-    if (!layer || !layer.element) { window.__chevErr = 'no layer'; return; }
-    window.__chevErr = null;
-    layer.element.dataset.chevHooked = '1';
-    layer.element.addEventListener('mouseenter', () => layer.element.classList.add('chev-show'));
-    layer.element.addEventListener('mouseleave', () => layer.element.classList.remove('chev-show'));
+// ---- 行书签：F11 切换光标行书签，F2/Shift+F2 循环跳转，gutter 紫色标记 ----
+
+function bookmarkRowsForDoc(doc) {
+    if (!doc || !doc.editor || !doc.editor.aceEditor) return [];
+    try {
+        return [...(doc.bookmarks || [])].sort((a, b) => a - b);
+    } catch (e) {
+        return [];
+    }
+}
+
+function renderBookmarks(doc) {
+    const ace = doc && doc.editor && doc.editor.aceEditor;
+    if (!ace) return;
+    if (doc.bmApplied) {
+        for (const [row, cls] of doc.bmApplied) {
+            try { ace.session.removeGutterDecoration(row, cls); } catch (e) {}
+        }
+    }
+    const list = [];
+    const rows = bookmarkRowsForDoc(doc);
+    let lineCount = 0;
+    try { lineCount = ace.session.getLength(); } catch (e) { lineCount = 0; }
+    for (const row of rows) {
+        if (!(row >= 0) || row >= lineCount) continue;
+        try {
+            ace.session.addGutterDecoration(row, 'bm-gutter');
+            list.push([row, 'bm-gutter']);
+        } catch (e) {}
+    }
+    doc.bmApplied = list;
+}
+
+function toggleBookmark() {
+    const ace = file && file.editor && file.editor.aceEditor;
+    if (!ace) {
+        flash('书签仅在代码/文本视图可用', true);
+        return;
+    }
+    if (!file.bookmarks) file.bookmarks = new Set();
+    const row = ace.getCursorPosition().row;
+    if (file.bookmarks.has(row)) {
+        file.bookmarks.delete(row);
+        flash('已移除书签：' + (row + 1) + ' 行');
+    } else {
+        file.bookmarks.add(row);
+        flash('已添加书签：' + (row + 1) + ' 行');
+    }
+    renderBookmarks(file);
+}
+
+function jumpBookmark(delta) {
+    const ace = file && file.editor && file.editor.aceEditor;
+    if (!ace) {
+        flash('书签仅在代码/文本视图可用', true);
+        return;
+    }
+    const rows = bookmarkRowsForDoc(file);
+    if (!rows.length) {
+        flash('当前文件还没有书签（F11 在光标行添加）', true);
+        return;
+    }
+    const cur = ace.getCursorPosition().row;
+    let target = null;
+    if (delta > 0) target = rows.find((r) => r > cur);
+    else {
+        for (let i = rows.length - 1; i >= 0; i--) {
+            if (rows[i] < cur) { target = rows[i]; break; }
+        }
+        if (target == null) target = rows[rows.length - 1];
+    }
+    if (target == null) target = rows[0];
+    jumpToPosition(target + 1, 1);
+}
+
+// ---- Git 行级标记：代码视图行号左侧色条（JetBrains 风格） ----
+// 绿=新增、蓝=修改、灰点=此处上方有删除的行。数据来自 git diff HEAD（未保存内容不参与）。
+
+const GIT_GUTTER_ADD = 'git-gutter-add';
+const GIT_GUTTER_MOD = 'git-gutter-mod';
+const GIT_GUTTER_DEL = 'git-gutter-del';
+
+function renderGitGutter(doc) {
+    const ace = doc && doc.editor && doc.editor.aceEditor;
+    if (!ace) return;
+    if (doc.gitGutterApplied) {
+        for (const [row, cls] of doc.gitGutterApplied) {
+            try { ace.session.removeGutterDecoration(row, cls); } catch (e) {}
+        }
+    }
+    const list = [];
+    const marks = doc.gitGutterData;
+    if (marks) {
+        let lineCount = 0;
+        try { lineCount = ace.session.getLength(); } catch (e) { lineCount = 0; }
+        const put = (row, cls) => {
+            if (!(row >= 0) || row >= lineCount) return;
+            try {
+                ace.session.addGutterDecoration(row, cls);
+                list.push([row, cls]);
+            } catch (e) {}
+        };
+        for (const row of marks.added) put(row, GIT_GUTTER_ADD);
+        for (const row of marks.modified) put(row, GIT_GUTTER_MOD);
+        for (const row of marks.delBefore) put(row, GIT_GUTTER_DEL);
+    }
+    doc.gitGutterApplied = list;
+}
+
+function clearGitGutterData(doc) {
+    doc.gitGutterData = null;
+    renderGitGutter(doc);
+}
+
+// scheduleGitGutter 按需取 git diff 并刷新标记；900ms 防抖，状态机见 refreshGitStatus。
+function scheduleGitGutter(doc, delay) {
+    if (!doc || !doc.path || doc.large || !gitStateCache.available || !gitStateCache.dir) return;
+    const key = doc.path.replace(/\\/g, '/');
+    const st = gitStateCache.map.get(key);
+    if (!st || st === 'untracked') {
+        // 无变更或未跟踪：清掉旧标记即可，不用对比
+        if (doc.gitGutterData) clearGitGutterData(doc);
+        return;
+    }
+    clearTimeout(doc.gitGutterTimer);
+    doc.gitGutterTimer = setTimeout(async () => {
+        doc.gitGutterTimer = 0;
+        if (!docs.includes(doc) || !doc.path || doc.large || !doc.editor) return;
+        if (!gitStateCache.available || !gitStateCache.dir) return;
+        if (!backend.GitLineMarksFor) return;
+        let text = '';
+        try { text = doc.editor.getText(); } catch (e) { return; }
+        try {
+            // 直接对比 HEAD 与编辑器当前内容：未保存的输入也实时参与
+            doc.gitGutterData = await backend.GitLineMarksFor(gitStateCache.dir, doc.path, text);
+        } catch (e) {
+            doc.gitGutterData = null;
+        }
+        renderGitGutter(doc);
+    }, delay || 900);
+}
+
+// 多光标：Alt+单击添加光标；中键拖动建立列光标/矩形选区；普通单击回到单光标
+function hookMultiCursor(ace) {
+    if (!ace || ace._multiCursorHooked || !ace.container) return;
+    ace._multiCursorHooked = true;
+    try { ace.setOption('enableMultiselect', true); } catch (e) {}
+
+    const pointAt = (e) => {
+        try { return ace.renderer.screenToTextCoordinates(e.clientX, e.clientY); } catch (err) { return null; }
+    };
+    const rangeFor = (start, end) => {
+        const range = ace.selection.getRange().clone();
+        range.start = {row: start.row, column: start.column};
+        range.end = {row: end.row, column: end.column};
+        range.cursor = range.end;
+        return range;
+    };
+    const refresh = () => {
+        ace.renderer.updateCursor();
+        ace.renderer.updateBackMarkers();
+    };
+    const applyRanges = (ranges) => {
+        if (!ranges || !ranges.length) return;
+        ace.selection.toSingleRange(ranges[0]);
+        for (let i = 1; i < ranges.length; i++) ace.selection.addRange(ranges[i], true);
+        refresh();
+    };
+
+    let drag = null;
+    const onDragMove = (e) => {
+        if (!drag) return;
+        e.preventDefault();
+        const end = pointAt(e);
+        if (!end) return;
+        const from = ace.session.documentToScreenPosition(drag.start);
+        const to = ace.session.documentToScreenPosition(end);
+        let ranges = [];
+        try { ranges = ace.selection.rectangularRangeBlock(from, to) || []; } catch (err) {}
+        applyRanges(ranges);
+        ace.renderer.scrollCursorIntoView(end, 0.15);
+    };
+    const onDragEnd = (e) => {
+        if (!drag) return;
+        drag = null;
+        e.preventDefault();
+        e.stopPropagation();
+        window.removeEventListener('mousemove', onDragMove, true);
+        window.removeEventListener('mouseup', onDragEnd, true);
+    };
+
+    ace.container.addEventListener('mousedown', (e) => {
+        if (e.target.closest && e.target.closest('.ace_gutter')) return;
+        const altAdd = e.button === 0 && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey;
+        const middle = e.button === 1;
+        if (!altAdd && !middle) return;
+        const pos = pointAt(e);
+        if (!pos) return;
+        e.preventDefault();
+        e.stopPropagation();
+        ace.focus();
+        if (altAdd) {
+            ace.selection.addRange(rangeFor(pos, pos));
+            refresh();
+            return;
+        }
+        ace.selection.toSingleRange(rangeFor(pos, pos));
+        drag = {start: pos};
+        refresh();
+        window.addEventListener('mousemove', onDragMove, true);
+        window.addEventListener('mouseup', onDragEnd, true);
+    }, true);
+    ace.container.addEventListener('auxclick', (e) => {
+        if (e.button === 1) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
 }
 
 function hookCursorTracking(ace) {
@@ -3869,6 +6106,7 @@ function snapshotActiveDoc() {
     file.text = editor.getText();
     file.mode = currentMode;
     file.dirty = dirty;
+    if (file.splitActive && file.htmlFrame) file.htmlFrame.srcdoc = '';
 }
 
 function markDocDirty(doc) {
@@ -3885,6 +6123,8 @@ function markDocDirty(doc) {
         updateBackendDirty();
     }
     if (typeof scheduleStructureRefresh === 'function') scheduleStructureRefresh(doc);
+    if (doc.splitActive) scheduleSplitPreview(doc);
+    scheduleGitGutter(doc);
 }
 
 function createDocEditor(doc) {
@@ -3894,11 +6134,12 @@ function createDocEditor(doc) {
     const showJsonErrors = fmt.id === 'json' && /\.json$/i.test(doc.name || '');
     const tableRequested = !!fmt.table && doc.mode === 'table';
     const previewRequested = !!fmt.preview && doc.mode === 'preview';
+    const splitRequested = doc.mode === 'split' && !!splitKindFor(doc);
     const imageRequested = !!fmt.image && doc.mode === 'image';
     const binaryMode = !!fmt.image || fmt.id === 'bytes';
     let startMode = doc.mode === 'text' ? 'text' : (!doc.treeAvailable ? 'code' : (doc.mode === 'code' ? 'code' : 'tree'));
     if (tableRequested) startMode = 'text';
-    if (previewRequested) startMode = 'code';
+    if (previewRequested || splitRequested) startMode = 'code';
     let initialText = null;
     let initialValue = null;
     if (startMode === 'code' || startMode === 'text') {
@@ -3954,6 +6195,7 @@ function createDocEditor(doc) {
         },
         onModeChange(mode) {
             if (!doc.editor) return;
+            if (doc.splitActive && mode !== 'code') exitSplitView(doc);
             doc.mode = mode;
             if (file === doc) {
                 currentMode = mode;
@@ -3966,6 +6208,7 @@ function createDocEditor(doc) {
                 doc.text = doc.editor.getText();
                 if (!doc.dirty) doc.bases[mode] = doc.text;
                 applyReadOnlyToDoc(doc);
+                scheduleGitGutter(doc, 300);
             }, 0);
         },
         onError(err) {
@@ -3974,7 +6217,12 @@ function createDocEditor(doc) {
     });
     doc.editor = ed;
     doc.pane = pane;
-    if (ed.aceEditor) { hookCodeFoldPreviews(ed.aceEditor); hookFoldChevronHover(ed.aceEditor); }
+    if (ed.aceEditor) {
+        hookCodeFoldPreviews(ed.aceEditor);
+        hookMultiCursor(ed.aceEditor);
+        ed.aceEditor.on('changeSelection', scheduleWordCount);
+        ed.aceEditor.on('input', scheduleWordCount);
+    }
     if (settings.treeExpandDefault === 'collapse' && startMode === 'tree' && doc.treeAvailable && !doc.large) {
         setTimeout(() => {
             try { if (doc.editor) doc.editor.collapseAll(); } catch (e) {}
@@ -3995,7 +6243,7 @@ function createDocEditor(doc) {
             ed.aceEditor.setHighlightIndentGuides(!!settings.codeGuides);
         } catch (e) {}
     }
-    doc.mode = previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : binaryMode ? 'binary' : startMode;
+    doc.mode = splitRequested ? 'split' : previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : binaryMode ? 'binary' : startMode;
     doc.text = ed.getText();
     if (fmt.table) createCsvTableView(doc);
     if (fmt.preview) createMarkdownPreview(doc);
@@ -4007,6 +6255,7 @@ function createDocEditor(doc) {
     applyReadOnlyToDoc(doc);
     doc.content = null;
     doc.loading = false;
+    scheduleGitGutter(doc, 200);
 }
 
 function createCsvTableView(doc) {
@@ -4389,12 +6638,14 @@ function renderMarkdownPreview(doc) {
     if (!doc || !doc.editor || !doc.previewBody) return;
     const scrollTop = doc.previewScroll ? doc.previewScroll.scrollTop : 0;
     try {
-        doc.previewBody.innerHTML = renderMarkdownHtml(doc.editor.getText());
+        doc.previewBody.innerHTML = renderMarkdownBlocksHtml(doc.editor.getText());
         resolveMarkdownImages(doc);
     } catch (e) {
         doc.previewBody.textContent = 'Markdown 渲染失败：' + e.message;
     }
     if (doc.previewScroll) doc.previewScroll.scrollTop = scrollTop;
+    mdSyncScrollFromAce(doc);
+    renderMermaidBlocks(doc.previewBody);
 }
 
 function showMarkdownPreview(doc) {
@@ -4458,6 +6709,364 @@ function leaveMarkdownPreview(doc, mode) {
     if (doc === file && mode === 'code') applyAceMode(true);
     updateStatus();
     updateSearchState();
+}
+
+// ---- 单标签页分屏：左源码 / 右预览 ----
+
+function splitRatioFor(doc) {
+    const r = Number(doc && doc.splitRatio != null ? doc.splitRatio : settings.splitRatio);
+    return Number.isFinite(r) ? Math.min(0.85, Math.max(0.15, r)) : 0.5;
+}
+
+function ensureSplitDivider(doc) {
+    if (doc.splitDivider || !doc.pane) return;
+    const bar = document.createElement('div');
+    bar.className = 'vp-split-divider';
+    bar.title = '拖动调整左右宽度';
+    doc.pane.appendChild(bar);
+    bar.addEventListener('mousedown', (e) => {
+        if (e.button !== 0 || !doc.pane) return;
+        const rect = doc.pane.getBoundingClientRect();
+        if (rect.width < 40) return;
+        const startX = e.clientX;
+        const startRatio = splitRatioFor(doc);
+        setDragCursor('ew');
+        document.body.style.userSelect = 'none';
+        const move = (ev) => {
+            const ratio = Math.min(0.85, Math.max(0.15, startRatio + (ev.clientX - startX) / rect.width));
+            doc.splitRatio = ratio;
+            doc.pane.style.setProperty('--split-ratio', String(ratio));
+            if (!doc._splitResizePending) {
+                doc._splitResizePending = true;
+                requestAnimationFrame(() => {
+                    doc._splitResizePending = false;
+                    if (doc.editor && doc.editor.aceEditor) {
+                        try { doc.editor.aceEditor.resize(); } catch (err) {}
+                    }
+                });
+            }
+        };
+        const up = () => {
+            window.removeEventListener('mousemove', move);
+            window.removeEventListener('mouseup', up);
+            setDragCursor(null);
+            document.body.style.userSelect = '';
+            settings.splitRatio = doc.splitRatio;
+            try { localStorage.setItem(settingsKey, JSON.stringify(settings)); } catch (err) {}
+        };
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', up);
+        e.preventDefault();
+    });
+    doc.splitDivider = bar;
+}
+
+// ---- Markdown 分屏滚动同步：左源码滚动 → 右预览按比例跟随（单向，不回环） ----
+
+function mdSyncScrollFromAce(doc) {
+    if (!doc || !doc.splitActive || doc.splitKind !== 'markdown') return;
+    if (settings.mdScrollSync === false) return;
+    const scroll = doc.previewScroll;
+    const ace = doc.editor && doc.editor.aceEditor;
+    if (!scroll || !ace) return;
+    let ratio = 0;
+    try {
+        // 比例统一用屏幕坐标系（像素同源）：文档行经 documentToScreenRow 转换，
+        // 否则开启自动换行时与反向（预览→源码按像素驱动）的坐标系不一致
+        const firstDoc = ace.getFirstVisibleRow();
+        const first = ace.session.documentToScreenRow(firstDoc, 0);
+        const last = ace.session.documentToScreenRow(ace.getLastVisibleRow(), 0);
+        const visRows = Math.max(1, last - first + 1);
+        const denom = ace.session.getScreenLength() - visRows;
+        ratio = denom > 0 ? Math.min(1, Math.max(0, first / denom)) : 0;
+    } catch (e) {
+        return;
+    }
+    const max = scroll.scrollHeight - scroll.clientHeight;
+    if (max <= 0) return;
+    doc._previewEcho = Math.round(ratio * max);
+    scroll.scrollTop = doc._previewEcho;
+}
+
+// 反方向：预览滚动 → 源码跟随。该内核 session.setScrollTop 收像素
+// （scrollToLine 内部就是 getPixelPosition(row).top 直接喂给 setScrollTop）。
+function mdSyncScrollFromPreview(doc) {
+    if (!doc || !doc.splitActive || doc.splitKind !== 'markdown') return;
+    if (settings.mdScrollSync === false) return;
+    const scroll = doc.previewScroll;
+    const ace = doc.editor && doc.editor.aceEditor;
+    if (!scroll || !ace) return;
+    const denom = scroll.scrollHeight - scroll.clientHeight;
+    if (denom <= 0) return;
+    const ratio = Math.min(1, Math.max(0, scroll.scrollTop / denom));
+    try {
+        const lineHeight = ace.renderer.lineHeight || 16;
+        const scroller = ace.renderer.scroller || ace.container;
+        const maxPx = Math.max(0, ace.session.getScreenLength() * lineHeight - scroller.clientHeight);
+        if (maxPx <= 0) return;
+        doc._aceEcho = Math.round(ratio * maxPx);
+        ace.session.setScrollTop(doc._aceEcho);
+    } catch (e) {}
+}
+
+// hookPreviewScrollSync 监听预览滚动做反向同步；自激事件（左源码写入引起）值与
+// _previewEcho 相同，直接忽略，防止两侧互相追逐。
+function hookPreviewScrollSync(doc) {
+    const scroll = doc && doc.previewScroll;
+    if (!scroll || doc._splitPreviewHooked === scroll) return;
+    doc._splitPreviewHooked = scroll;
+    const onScroll = () => {
+        if (!doc.splitActive || doc.splitKind !== 'markdown') return;
+        if (settings.mdScrollSync === false) return;
+        if (Math.round(scroll.scrollTop) === doc._previewEcho) return;
+        mdSyncScrollFromPreview(doc);
+    };
+    scroll.addEventListener('scroll', onScroll);
+    doc._splitPreviewDetach = () => {
+        scroll.removeEventListener('scroll', onScroll);
+        doc._splitPreviewHooked = null;
+        doc._splitPreviewDetach = null;
+    };
+}
+
+// hookSplitScrollSync 挂 Ace 滚动监听；setMode 可能更换 session，用 changeSession 重新挂。
+// changeScrollTop 触发时渲染层还没更新到新位置，延一帧再读，否则比例会慢一拍。
+function hookSplitScrollSync(doc) {
+    const ace = doc && doc.editor && doc.editor.aceEditor;
+    if (!ace || doc._splitSyncAce === ace) return;
+    unhookSplitScrollSync(doc);
+    // changeScrollTop 回调参数就是滚动值（像素）：预览反向驱动写入的值与 _aceEcho 相同，忽略
+    const onScroll = (top) => {
+        if (top != null && Math.round(top) === doc._aceEcho) return;
+        if (doc._splitSyncRaf) cancelAnimationFrame(doc._splitSyncRaf);
+        doc._splitSyncRaf = requestAnimationFrame(() => {
+            doc._splitSyncRaf = 0;
+            mdSyncScrollFromAce(doc);
+        });
+    };
+    const attach = (sess) => {
+        if (!sess || sess === doc._splitSyncSession) return;
+        detachSession();
+        doc._splitSyncSession = sess;
+        sess.on('changeScrollTop', onScroll);
+    };
+    const detachSession = () => {
+        if (doc._splitSyncSession) {
+            try { doc._splitSyncSession.off('changeScrollTop', onScroll); } catch (e) {}
+            doc._splitSyncSession = null;
+        }
+    };
+    const onSession = (e) => attach(e && e.session ? e.session : ace.session);
+    doc._splitSyncAce = ace;
+    doc._splitSyncDetach = () => {
+        detachSession();
+        try { ace.off('changeSession', onSession); } catch (e) {}
+    };
+    attach(ace.session);
+    ace.on('changeSession', onSession);
+}
+
+function unhookSplitScrollSync(doc) {
+    if (doc && doc._splitSyncDetach) {
+        try { doc._splitSyncDetach(); } catch (e) {}
+    }
+    if (doc) {
+        if (doc._splitSyncRaf) {
+            cancelAnimationFrame(doc._splitSyncRaf);
+            doc._splitSyncRaf = 0;
+        }
+        doc._splitSyncAce = null;
+        doc._splitSyncDetach = null;
+        doc._splitSyncSession = null;
+    }
+}
+
+function createHtmlPreviewView(doc) {
+    if (doc.htmlPreviewEl || !doc.pane) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'html-preview-view';
+    const frame = document.createElement('iframe');
+    frame.className = 'html-preview-frame';
+    frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups');
+    frame.setAttribute('referrerpolicy', 'no-referrer');
+    frame.title = doc.name || 'HTML 预览';
+    wrap.appendChild(frame);
+    doc.pane.appendChild(wrap);
+    doc.htmlPreviewEl = wrap;
+    doc.htmlFrame = frame;
+}
+
+function relativeDirUrl(root, filePath) {
+    const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const r = norm(root);
+    const d = norm(parentFolderOf(filePath));
+    if (!r || !d) return '';
+    if (d.toLowerCase() === r.toLowerCase()) return '';
+    if (!d.toLowerCase().startsWith(r.toLowerCase() + '/')) return '';
+    return d.slice(r.length + 1).split('/').filter(Boolean).map(encodeURIComponent).join('/') + '/';
+}
+
+async function ensureHtmlPreviewRoot(doc) {
+    if (doc.htmlPreviewRoot || !doc.path || !backend.RegisterPreviewRoot) return;
+    let root = '';
+    if (workspaceFolder && pathWithinValue(workspaceFolder, doc.path)) root = workspaceFolder;
+    else root = parentFolderOf(doc.path);
+    if (!root) return;
+    try {
+        const token = await backend.RegisterPreviewRoot(root);
+        if (token) doc.htmlPreviewRoot = {root, token};
+    } catch (e) {}
+}
+
+function injectHtmlBase(text, baseTag) {
+    const src = String(text || '');
+    if (!baseTag) return src;
+    const doctype = /^\s*<!doctype[^>]*>/i.exec(src);
+    if (doctype) return src.slice(0, doctype[0].length) + baseTag + src.slice(doctype[0].length);
+    return baseTag + src;
+}
+
+function renderHtmlPreview(doc) {
+    if (!doc || !doc.htmlFrame || !doc.editor) return;
+    const apply = () => {
+        if (!doc.htmlFrame || !doc.editor) return;
+        let base = '<base target="_blank">';
+        if (doc.htmlPreviewRoot) {
+            const sub = relativeDirUrl(doc.htmlPreviewRoot.root, doc.path);
+            base = '<base href="/__local/' + doc.htmlPreviewRoot.token + '/' + sub + '" target="_blank">';
+        }
+        doc.htmlFrame.srcdoc = injectHtmlBase(doc.editor.getText(), base);
+    };
+    if (doc.htmlPreviewRoot || doc.htmlRootTried || !doc.path) {
+        apply();
+        return;
+    }
+    doc.htmlRootTried = true;
+    ensureHtmlPreviewRoot(doc).then(apply).catch(() => apply());
+}
+
+function renderSplitSvg(doc) {
+    if (!doc || !doc.svgRenderImg || !doc.editor) return;
+    let text = '';
+    try { text = doc.editor.getText(); } catch (e) { return; }
+    if (!text || !text.trim()) return;
+    doc.svgRenderImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(text);
+}
+
+function renderSplitPreview(doc) {
+    if (!doc || !doc.splitActive) return;
+    if (doc.splitKind === 'markdown') renderMarkdownPreview(doc);
+    else if (doc.splitKind === 'svg') renderSplitSvg(doc);
+    else if (doc.splitKind === 'html') renderHtmlPreview(doc);
+}
+
+function scheduleSplitPreview(doc) {
+    if (!doc || !doc.splitActive) return;
+    clearTimeout(doc.splitTimer);
+    doc.splitTimer = setTimeout(() => {
+        doc.splitTimer = 0;
+        renderSplitPreview(doc);
+    }, doc.splitKind === 'html' ? 350 : 160);
+}
+
+function enterSplitView(doc) {
+    if (!doc || !doc.editor) return;
+    const kind = splitKindFor(doc);
+    if (!kind) {
+        flash('当前文件不支持分屏预览', true);
+        return;
+    }
+    if (doc.large || doc.binary) {
+        flash('大文件不支持分屏预览', true);
+        return;
+    }
+    if (doc.splitActive) {
+        if (doc.pane) doc.pane.style.setProperty('--split-ratio', String(splitRatioFor(doc)));
+        renderSplitPreview(doc);
+        if (kind === 'markdown') {
+            hookSplitScrollSync(doc);
+            hookPreviewScrollSync(doc);
+            mdSyncScrollFromAce(doc);
+        }
+        setTimeout(() => {
+            if (doc.editor && doc.editor.aceEditor) {
+                try { doc.editor.aceEditor.resize(); } catch (e) {}
+            }
+        }, 0);
+        return;
+    }
+    const loading = doc.loading;
+    doc.loading = true;
+    try {
+        let src = null;
+        if (kind === 'svg' && doc.mode === 'tree') {
+            try { src = doc.format.stringify(doc.editor.get()); } catch (e) {}
+        }
+        if (src == null) src = doc.editor.getText();
+        doc.editor.setMode('code');
+        if (kind === 'svg') doc.editor.setText(src);
+        doc.text = doc.editor.getText();
+        if (!doc.dirty) doc.bases.code = doc.text;
+        doc.mode = 'code';
+        currentMode = 'code';
+        if (doc.pane) {
+            doc.pane.classList.remove('preview-active', 'svg-render-active');
+            doc.pane.classList.add('split-active');
+            doc.pane.classList.toggle('split-markdown', kind === 'markdown');
+            doc.pane.classList.toggle('split-svg', kind === 'svg');
+            doc.pane.classList.toggle('split-html', kind === 'html');
+            doc.pane.style.setProperty('--split-ratio', String(splitRatioFor(doc)));
+        }
+        if (kind === 'markdown') createMarkdownPreview(doc);
+        else if (kind === 'svg') createSvgRenderView(doc);
+        else if (kind === 'html') createHtmlPreviewView(doc);
+        ensureSplitDivider(doc);
+        doc.splitKind = kind;
+        doc.splitActive = true;
+        renderSplitPreview(doc);
+        if (kind === 'markdown') {
+            hookSplitScrollSync(doc);
+            hookPreviewScrollSync(doc);
+        }
+        applyAceMode(true);
+        showBanner(doc, doc.parseError);
+        updateStatus();
+        updateSearchState();
+    } catch (e) {
+        flash('打开分屏失败：' + e.message, true);
+    } finally {
+        doc.loading = loading;
+    }
+    setTimeout(() => {
+        if (doc.splitActive && doc.editor && doc.editor.aceEditor) {
+            try { doc.editor.aceEditor.resize(); } catch (e) {}
+        }
+    }, 0);
+}
+
+function exitSplitView(doc) {
+    if (!doc || !doc.splitActive) return;
+    doc.splitActive = false;
+    doc.splitKind = '';
+    clearTimeout(doc.splitTimer);
+    doc.splitTimer = 0;
+    unhookSplitScrollSync(doc);
+    if (doc._splitPreviewDetach) {
+        try { doc._splitPreviewDetach(); } catch (e) {}
+    }
+    if (doc.htmlFrame) doc.htmlFrame.srcdoc = '';
+    if (doc.splitDivider) {
+        doc.splitDivider.remove();
+        doc.splitDivider = null;
+    }
+    if (doc.pane) {
+        doc.pane.classList.remove('split-active', 'split-markdown', 'split-svg', 'split-html');
+        doc.pane.style.removeProperty('--split-ratio');
+    }
+    if (doc.editor && doc.editor.aceEditor) {
+        try { doc.editor.aceEditor.resize(); } catch (e) {}
+    }
+    syncTabViewTools();
 }
 
 function createImageView(doc) {
@@ -4924,7 +7533,7 @@ function createDoc(data) {
     const ext = String(data.name || '').split('.').pop().toLowerCase();
     const plainTextView = format.id === 'text' && plainTextExtensions.has(ext) && !data.large;
     const preferredMode = plainTextView ? 'text' : format.preview
-        ? (['preview', 'code', 'text'].includes(fs.view) ? fs.view : 'preview')
+        ? (['split', 'preview', 'code', 'text'].includes(fs.view) ? fs.view : 'preview')
         : format.table
             ? (['table', 'tree', 'text'].includes(fs.view) ? fs.view : 'table')
             : (fs.view === 'code' || fs.view === 'text' ? fs.view : 'tree');
@@ -4973,12 +7582,11 @@ function updateDocChrome() {
     showBanner(file, file.parseError);
     els.welcome.classList.add('hidden');
     els.editor.classList.remove('hidden');
-    els.searchInput.value = '';
-    if (editor && editor.searchBox) editor.searchBox.clear();
     updateWindowTitle();
     updateStatus();
     updateSearchState();
     renderTabs();
+    if (aiPanel) aiPanel.refreshDockFill();
 }
 
 function showWelcome() {
@@ -5009,7 +7617,6 @@ function showWelcome() {
     els.stEol.style.display = '';
     els.stEnc.style.display = '';
     els.banner.classList.add('hidden');
-    els.searchInput.value = '';
     closeFootPopover();
     closeDialogs();
     updateSearchState();
@@ -5018,6 +7625,7 @@ function showWelcome() {
     updateWindowTitle();
     syncExplorerActive();
     if (structurePanel) structurePanel.setDoc(null);
+    if (aiPanel) aiPanel.refreshDockFill();
 }
 
 let activateToken = 0;
@@ -5060,6 +7668,7 @@ async function activateDoc(doc) {
     updateDocChrome();
     setDirty(doc.dirty);
     applyAceMode();
+    if (doc.splitActive || doc.mode === 'split') enterSplitView(doc);
     humanizeCounts();
     if (editor && editor.aceEditor) {
         setTimeout(() => {
@@ -5068,6 +7677,27 @@ async function activateDoc(doc) {
     }
     syncExplorerActive();
     if (structurePanel) structurePanel.setDoc(doc);
+    if (doc.staleOnDisk && !doc.dirty) {
+        doc.staleOnDisk = false;
+        reloadActive({quiet: true});
+    }
+}
+
+async function handleAIWorkspaceFileChanged(path) {
+    if (explorer && explorer.refresh) explorer.refresh();
+    const doc = findDocByPath(path);
+    if (!doc) return;
+    if (doc.dirty) {
+        flash('AI 已修改 ' + doc.name + '，但编辑器中有未保存修改，未自动重载', true);
+        return;
+    }
+    if (doc === file) {
+        const ok = await reloadActive({quiet: true});
+        if (ok) flash('AI 已修改并重载 ' + doc.name);
+    } else {
+        doc.staleOnDisk = true;
+        flash('AI 已修改 ' + doc.name + '，切换到该标签时自动重载');
+    }
 }
 
 function requestCloseDoc(doc) {
@@ -5109,8 +7739,10 @@ function closeDocNow(doc, remember = true) {
         focusedGroupId = null;
         editor = null;
         showWelcome();
+        saveSessionNow();
         return;
     }
+    scheduleSessionSave();
     if (wasActive) {
         editor = null;
         file = null;
@@ -5157,6 +7789,287 @@ function reopenClosedTab() {
     openPath(entry.path);
 }
 
+// renderMarkdownBlocksHtml 按顶层块渲染 Markdown，并用 data-md-start/end
+// 标注每块对应的源码行区间（0 基，含头不含尾），供预览选区反向取 md 源码。
+function renderMarkdownBlocksHtml(text) {
+    let html = '';
+    try {
+        const env = {};
+        const tokens = markdownRenderer.parse(text || '', env);
+        let i = 0;
+        while (i < tokens.length) {
+            const start = i;
+            let level = 0;
+            do {
+                const t = tokens[i];
+                if (t.nesting === 1) level++;
+                else if (t.nesting === -1) level--;
+                i++;
+            } while (i < tokens.length && level > 0);
+            const group = tokens.slice(start, i);
+            const seg = DOMPurify.sanitize(markdownRenderer.renderer.render(group, markdownRenderer.options, env), {
+                USE_PROFILES: {html: true, mathMl: true, svg: true},
+                ADD_ATTR: ['target', 'rel'],
+            });
+            const map = group[0] && group[0].map;
+            if (map && map.length === 2) {
+                html += '<div class="md-block" style="display:contents" data-md-start="' + map[0] + '" data-md-end="' + map[1] + '">' + seg + '</div>';
+            } else {
+                html += seg;
+            }
+        }
+    } catch (e) {
+        return renderMarkdownHtml(text);
+    }
+    return html;
+}
+
+// rangeIntersectsNode 判断选区 range 是否与节点内容相交。
+function rangeIntersectsNode(range, node) {
+    try {
+        const nr = document.createRange();
+        nr.selectNodeContents(node);
+        return range.compareBoundaryPoints(Range.END_TO_START, nr) < 0 &&
+            range.compareBoundaryPoints(Range.START_TO_END, nr) > 0;
+    } catch (e) {
+        return false;
+    }
+}
+
+// copySelectedMarkdown 把预览选区还原成对应的 markdown 源码行并复制。
+// 精度是块级：选中段落的任何部分都会取回该块（及跨到的最后一个块）的完整源码行。
+function copySelectedMarkdown(doc) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return false;
+    const range = sel.getRangeAt(0);
+    const blocks = doc.previewBody ? Array.from(doc.previewBody.querySelectorAll('.md-block[data-md-start]')) : [];
+    const hit = blocks.filter((b) => rangeIntersectsNode(range, b));
+    if (!hit.length) return false;
+    const start = Number(hit[0].dataset.mdStart);
+    const end = Number(hit[hit.length - 1].dataset.mdEnd);
+    if (!(start >= 0) || !(end > start)) return false;
+    const lines = doc.editor.getText().split('\n');
+    const text = lines.slice(start, end).join('\n');
+    return copyText(text, 'markdown 源码');
+}
+
+// getSelectionHtml 取当前选区的 HTML 片段（支持多选区）。
+function getSelectionHtml(sel) {
+    if (!sel || !sel.rangeCount) return '';
+    const container = document.createElement('div');
+    for (let i = 0; i < sel.rangeCount; i++) {
+        container.appendChild(sel.getRangeAt(i).cloneContents());
+    }
+    return container.innerHTML;
+}
+
+// copySelectionRich 富文本复制：同时写入 text/html 与 text/plain，
+// 粘到 Word/微信等会保留渲染样式。Clipboard API 不可用时回退临时选区 + execCommand。
+async function copySelectionRich() {
+    const sel = window.getSelection();
+    const plain = sel ? sel.toString() : '';
+    if (!plain) return false;
+    const html = getSelectionHtml(sel);
+    try {
+        if (navigator.clipboard && window.ClipboardItem) {
+            await navigator.clipboard.write([new ClipboardItem({
+                'text/html': new Blob([html], {type: 'text/html'}),
+                'text/plain': new Blob([plain], {type: 'text/plain'}),
+            })]);
+            return true;
+        }
+    } catch (e) {}
+    try {
+        const holder = document.createElement('div');
+        holder.contentEditable = 'true';
+        holder.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+        holder.innerHTML = html || '';
+        document.body.appendChild(holder);
+        const range = document.createRange();
+        range.selectNodeContents(holder);
+        const tmpSel = window.getSelection();
+        tmpSel.removeAllRanges();
+        tmpSel.addRange(range);
+        const ok = document.execCommand('copy');
+        tmpSel.removeAllRanges();
+        holder.remove();
+        if (ok) return true;
+    } catch (e) {}
+    return await copyText(plain, '所选文本');
+}
+
+// copyImageBlobToClipboard 把图片 Blob 写入剪贴板（image/png）。
+async function copyImageBlobToClipboard(blob) {
+    if (!navigator.clipboard || !window.ClipboardItem) return false;
+    try {
+        await navigator.clipboard.write([new ClipboardItem({'image/png': blob})]);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// svgToPngBlob 把 SVG 文本转成 2x 尺寸的 PNG Blob。
+function svgToPngBlob(svgText) {
+    return new Promise((resolve, reject) => {
+        const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const scale = 2;
+                const w = Math.max(1, img.naturalWidth || 800);
+                const h = Math.max(1, img.naturalHeight || 600);
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.round(w * scale);
+                canvas.height = Math.round(h * scale);
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob((blob) => {
+                    if (blob) resolve(blob);
+                    else reject(new Error('canvas 转换失败'));
+                }, 'image/png');
+            } catch (e) {
+                reject(e);
+            }
+        };
+        img.onerror = () => reject(new Error('SVG 加载失败'));
+        img.src = url;
+    });
+}
+
+function fileStem(name) {
+    const base = baseNameOf(name || '图表');
+    const dot = base.lastIndexOf('.');
+    return dot > 0 ? base.slice(0, dot) : base;
+}
+
+// showSvgMenu SVG 渲染视图的右键菜单（完整渲染 + 分屏右栏）。
+function showSvgMenu(doc, x, y) {
+    if (!ctxMenu || !doc) return;
+    const items = [
+        {label: '导出为 PNG…（2x）', icon: 'E74E', action: async () => {
+            try {
+                const svgText = doc.editor.getText();
+                const blob = await svgToPngBlob(svgText);
+                const dataUrl = await new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = () => resolve('');
+                    reader.readAsDataURL(blob);
+                });
+                if (!dataUrl) throw new Error('PNG 数据生成失败');
+                let dest = '';
+                try {
+                    dest = await backend.SaveFileDialog(fileStem(doc.path || doc.name) + '.png');
+                } catch (e) {
+                    return;
+                }
+                if (!dest) return;
+                await backend.SaveDataURL(dest, dataUrl);
+                flash('已导出 PNG：' + baseNameOf(dest));
+            } catch (e) {
+                flash('导出失败：' + (e && e.message || e), true);
+            }
+        }},
+        {label: '复制图片', icon: 'E8C8', action: async () => {
+            try {
+                const blob = await svgToPngBlob(doc.editor.getText());
+                const ok = await copyImageBlobToClipboard(blob);
+                flash(ok ? '已复制图片' : '剪贴板不支持图片', !ok);
+            } catch (e) {
+                flash('复制失败：' + (e && e.message || e), true);
+            }
+        }},
+        {sep: true},
+        {label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => copyText(doc.path, '路径')},
+        {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)},
+    ];
+    ctxMenu.open(items, x, y);
+}
+
+// showImageMenu 图片视图的右键菜单。
+function showImageMenu(doc, x, y) {
+    if (!ctxMenu || !doc) return;
+    const items = [
+        {label: '另存为…', icon: 'E74E', disabled: !doc.path, action: async () => {
+            let dest = '';
+            try {
+                dest = await backend.SaveFileDialog(baseNameOf(doc.path));
+            } catch (e) {
+                return;
+            }
+            if (!dest) return;
+            try {
+                await backend.CopyFileTo(doc.path, dest);
+                flash('已另存为：' + baseNameOf(dest));
+            } catch (e) {
+                flash('另存为失败：' + (e && e.message || e), true);
+            }
+        }},
+        {label: '复制图片', icon: 'E8C8', action: async () => {
+            try {
+                const url = doc.imageUrl || await backend.ReadImageAsDataURL(doc.path);
+                const blob = await (await fetch(url)).blob();
+                const ok = await copyImageBlobToClipboard(blob);
+                flash(ok ? '已复制图片' : '剪贴板不支持图片', !ok);
+            } catch (e) {
+                flash('复制失败：' + (e && e.message || e), true);
+            }
+        }},
+        {sep: true},
+        {label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => copyText(doc.path, '路径')},
+        {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)},
+    ];
+    ctxMenu.open(items, x, y);
+}
+
+// showMdPreviewMenu Markdown 预览区的右键菜单：常用操作 + 预览宽度调整。
+function showMdPreviewMenu(doc, x, y) {
+    if (!ctxMenu || !doc) return;
+    const selText = String(window.getSelection ? window.getSelection().toString() : '');
+    const widthOptions = [['720', '720px'], ['860', '860px'], ['920', '920px'], ['1100', '1100px'], ['1300', '1300px'], ['0', '跟随窗口宽度']];
+    const items = [
+        {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !selText, submenu: [
+            {label: '纯文本', action: () => copyText(selText, '所选文本')},
+            {label: '富文本', action: async () => {
+                const ok = await copySelectionRich();
+                if (!ok) flash('复制失败', true);
+            }},
+            {label: 'markdown文本', action: async () => {
+                const ok = await copySelectedMarkdown(doc);
+                if (!ok) flash('无法定位所选内容对应的源码', true);
+            }},
+        ]},
+        {label: '全选', shortcut: 'Ctrl+A', action: () => {
+            const sel = window.getSelection();
+            if (sel && doc.previewBody) sel.selectAllChildren(doc.previewBody);
+        }},
+        {sep: true},
+        {label: '切换到代码视图', action: () => switchMode('code')},
+        {label: '分屏预览（左源码右预览）', disabled: doc.splitActive || !canSplitDoc(doc), action: () => switchMode('split')},
+    ];
+    if (!doc.splitActive) {
+        items.push({sep: true});
+        items.push({
+            label: '预览宽度',
+            submenu: widthOptions.map(([value, label]) => ({
+                label,
+                checked: String(settings.mdPreviewWidth) === value,
+                action: () => {
+                    settings.mdPreviewWidth = value;
+                    applySettings();
+                    updateStatus();
+                },
+            })),
+        });
+        items.push({label: '刷新预览', icon: 'E72C', action: () => renderMarkdownPreview(doc)});
+    }
+    items.push({sep: true});
+    items.push({label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => copyText(doc.path, '路径')});
+    items.push({label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)});
+    ctxMenu.open(items, x, y);
+}
+
 function showTabMenu(doc, x, y) {
     if (!ctxMenu || !doc) return;
     const g0 = groupOfDoc(doc.id);
@@ -5176,6 +8089,7 @@ function showTabMenu(doc, x, y) {
         {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => copyText(doc.path, '路径')},
         {label: '复制文件名', icon: 'E8C8', action: () => copyText(doc.name, '文件名')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: () => showPathInFolder(doc.path)},
+        {label: '在 AI 中询问此文件', iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>', disabled: !hasPath, action: () => askAIAboutPath(doc.path)},
         {sep: true},
         {label: '在新窗口中打开', shortcut: 'Shift+F4', icon: 'E8A7', disabled: !hasPath, action: () => openInNewWindows([doc.path])},
         {label: '重新打开关闭的标签页', shortcut: 'Ctrl+Shift+T', icon: 'E7A7', disabled: !closedTabs.length, action: reopenClosedTab},
@@ -5340,6 +8254,7 @@ async function runPasteItems(clip, destDir, names) {
         }
     }
     if (rootChanged && explorer) explorer.setRoot(workspaceFolder);
+    if (rootChanged) renderWorkspaceCrumbs();
     if (explorer && results.length) {
         await explorer.refreshDir(destDir);
         explorer.selectPaths(results.map((result) => ({
@@ -5355,6 +8270,63 @@ async function runPasteItems(clip, destDir, names) {
         firstError: errors.length ? errors[0].error : '',
         results,
     };
+}
+
+async function moveEntriesByDrag(items, destDir) {
+    if (settings.readOnlyMode) {
+        flash('只读模式下不能移动文件', true);
+        return;
+    }
+    if (!backend.MoveEntry) {
+        flash('当前版本不支持移动文件', true);
+        return;
+    }
+    const all = clipboardItems(items);
+    // 选中的父目录和子项同时拖动时只移动父目录
+    const unique = all.filter((item) =>
+        !all.some((other) => other.isDir && !samePathValue(other.path, item.path) && pathWithinValue(other.path, item.path)));
+    const movable = unique.filter((item) =>
+        !samePathValue(item.path, destDir) &&
+        !(item.isDir && pathWithinValue(item.path, destDir)) &&
+        !samePathValue(parentFolderOf(item.path), destDir));
+    if (!movable.length) {
+        flash('文件已在该目录中', true);
+        return;
+    }
+    const results = [];
+    const errors = [];
+    for (const item of movable) {
+        try {
+            const newPath = await backend.MoveEntry(item.path, destDir, item.name);
+            results.push({...item, newPath});
+        } catch (e) {
+            errors.push({item, error: (e && e.message) || String(e)});
+        }
+    }
+    let activeChanged = false;
+    let rootChanged = false;
+    for (const result of results) {
+        const flags = applyMovedPath(result.path, result.newPath);
+        activeChanged = activeChanged || flags.activeChanged;
+        rootChanged = rootChanged || flags.rootChanged;
+        if (explorer) explorer.removePath(result.path);
+    }
+    if (rootChanged && explorer) explorer.setRoot(workspaceFolder);
+    if (explorer && results.length) {
+        await explorer.refreshDir(destDir);
+        explorer.selectPaths(results.map((result) => ({
+            path: result.newPath,
+            name: baseNameOf(result.newPath),
+            isDir: result.isDir,
+        })));
+        if (activeChanged && file) explorer.setActive(file.path);
+    }
+    if (errors.length) {
+        const ok = results.length ? '已移动 ' + results.length + ' 项，' : '';
+        flash(ok + errors.length + ' 项失败：' + errors[0].error, true);
+    } else {
+        flash(results.length === 1 ? '已移动：' + baseNameOf(results[0].newPath) : '已移动 ' + results.length + ' 项');
+    }
 }
 
 async function pasteFileClipboard(targetInfo) {
@@ -5499,7 +8471,13 @@ function applyRenamedPath(oldPath, newPath) {
         doc.name = baseNameOf(next);
         if (doc === file) activeChanged = true;
     }
-    if (workspaceFolder) workspaceFolder = remapPathValue(workspaceFolder, oldPath, newPath);
+    if (workspaceFolder) {
+        const next = remapPathValue(workspaceFolder, oldPath, newPath);
+        if (next !== workspaceFolder) {
+            workspaceFolder = next;
+            renderWorkspaceCrumbs();
+        }
+    }
     for (const entry of closedTabs) {
         if (entry.path) entry.path = remapPathValue(entry.path, oldPath, newPath);
     }
@@ -5649,6 +8627,11 @@ function showExplorerMenu(info, x, y, node) {
     } else {
         items.push({label: '打开', icon: 'E8E5', action: () => openPath(info.path)});
         items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => openInNewWindows([info.path])});
+        items.push({
+            label: '在 AI 中询问此文件',
+            iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>',
+            action: () => askAIAboutPath(info.path),
+        });
         if (gitStateCache.map.get(info.path.replace(/\\/g, '/'))) {
             items.push({label: 'Git：查看差异', icon: 'E8D3', action: () => showGitDiff(info.path)});
         }
@@ -5690,7 +8673,6 @@ function showExplorerMenu(info, x, y, node) {
     }
     items.push({
         label: '重命名…',
-        shortcut: 'F2',
         icon: 'E8AC',
         disabled: !!settings.readOnlyMode || targets.length !== 1,
         action: () => openRenameEntryDialog(info),
@@ -5707,6 +8689,8 @@ function showExplorerMenu(info, x, y, node) {
     items.push({label: '在文件管理器中显示', icon: 'E8B7', action: () => showPathInFolder(info.path)});
     items.push({sep: true});
     items.push({label: '刷新', icon: 'E72C', action: () => explorer && explorer.refresh()});
+    items.push({sep: true});
+    items.push({label: '属性…', icon: 'E946', action: () => showFileProperties(info.path)});
     ctxMenu.open(items, x, y);
 }
 
@@ -5784,10 +8768,7 @@ function ctxSelectAll() {
 }
 
 function ctxFind() {
-    if (currentMode === 'code' && editor && editor.aceEditor) {
-        editor.aceEditor.focus();
-        editor.aceEditor.execCommand('find');
-    }
+    openFindBar();
 }
 
 function ctxFold(command) {
@@ -5812,7 +8793,7 @@ function showEditorMenu(x, y) {
         {label: '粘贴', shortcut: 'Ctrl+V', icon: 'E77F', disabled: !editable || readonly, action: ctxPaste},
         {label: '全选', shortcut: 'Ctrl+A', icon: 'E8B3', disabled: !editable, action: ctxSelectAll},
         {sep: true},
-        {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', disabled: !code, action: ctxFind},
+        {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', disabled: !editable, action: ctxFind},
         {label: '格式化', shortcut: 'Ctrl+Alt+L', disabled: !file || readonly || !!file.format.rawOnly, action: formatDocument},
         {label: '重新加载', icon: 'E72C', disabled: !hasPath, action: requestReload},
         {sep: true},
@@ -5848,6 +8829,7 @@ function showBlankMenu(x, y) {
 
 function initContextMenus() {
     ctxMenu = createContextMenu();
+    palette = createPalette({mask: els.paletteMask, input: els.paletteInput, list: els.paletteList, getActions: paletteActions});
     if (!els.mainPane) return;
     els.mainPane.addEventListener('contextmenu', (e) => {
         if (e.target.closest && e.target.closest('.ctx-menu')) return;
@@ -5855,6 +8837,27 @@ function initContextMenus() {
             e.preventDefault();
             e.stopPropagation();
             showBlankMenu(e.clientX, e.clientY);
+            return;
+        }
+        // Markdown 预览区（完整预览或分屏右栏）：专用右键菜单
+        const paneEl = e.target.closest && e.target.closest('.jsoneditor-pane');
+        const pd = paneEl ? docs.find((d) => d.pane === paneEl) : null;
+        if (pd && pd.previewBody && e.target.closest && e.target.closest('.md-preview-view')) {
+            e.preventDefault();
+            e.stopPropagation();
+            showMdPreviewMenu(pd, e.clientX, e.clientY);
+            return;
+        }
+        if (pd && pd.svgRenderEl && e.target.closest && e.target.closest('.svg-render-view')) {
+            e.preventDefault();
+            e.stopPropagation();
+            showSvgMenu(pd, e.clientX, e.clientY);
+            return;
+        }
+        if (pd && pd.imageEl && e.target.closest && e.target.closest('.image-preview-view')) {
+            e.preventDefault();
+            e.stopPropagation();
+            showImageMenu(pd, e.clientX, e.clientY);
             return;
         }
         if (currentMode === 'tree' || currentMode === 'table' || currentMode === 'preview' ||
@@ -5894,6 +8897,7 @@ async function openPathsHere(paths) {
             const doc = createDoc(data);
             docs.push(doc);
             addDocToFocusedGroup(doc);
+            rememberRecentOpen(doc.path, doc.name, false);
             target = doc;
             lastNew = doc;
         } catch (e) {
@@ -6043,6 +9047,880 @@ function baseNameOf(path) {
     return i >= 0 ? s.slice(i + 1) : s;
 }
 
+// 项目徽标：取目录名前两个词的首字母（CaDt-DataLens → CD）
+function projectBadgeText(name) {
+    const words = String(name || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .split(/[^A-Za-z0-9\u4e00-\u9fa5]+/)
+        .filter(Boolean);
+    if (!words.length) return '?';
+    if (words.length === 1) return words[0].slice(0, 1).toUpperCase();
+    return (words[0][0] + words[1][0]).toUpperCase();
+}
+
+// 标题栏：有工作区时显示「项目 + 当前分支」替代文件名；分支仅 git 仓库内显示
+function renderWorkspaceCrumbs() {
+    const hasWorkspace = !!workspaceFolder;
+    if (els.filename) els.filename.classList.toggle('hidden', hasWorkspace);
+    if (!els.wsCrumbs) return;
+    els.wsCrumbs.classList.toggle('hidden', !hasWorkspace);
+    if (!hasWorkspace) return;
+    const name = baseNameOf(workspaceFolder) || workspaceFolder;
+    els.wsProjectName.textContent = name;
+    els.wsProject.title = workspaceFolder;
+    els.wsProjectBadge.textContent = projectBadgeText(name);
+    const branch = (gitStateCache.available && gitStateCache.branch) || '';
+    els.wsBranch.classList.toggle('hidden', !branch);
+    els.wsBranchName.textContent = branch;
+    els.wsBranch.title = branch ? '当前 Git 分支：' + branch + '（点击查看更多）' : '';
+}
+
+// ===== 标题栏弹层：项目选择（IDEA 简洁版） =====
+
+const POP_ICONS = {
+    folder: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M1.8 4.5c0-.8.6-1.4 1.4-1.4h3l1.5 1.7h5c.8 0 1.4.6 1.4 1.4v5.3c0 .8-.6 1.4-1.4 1.4H3.2c-.8 0-1.4-.6-1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
+    branch: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="4.6" cy="3.7" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="4.6" cy="12.3" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="11.4" cy="5.4" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4.6 5.4v5.2M11.4 7.1c0 2.1-2.2 2.9-4.3 3.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+    reveal: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 5.3V3.9c0-.7.6-1.3 1.3-1.3h3l1.4 1.5h4.9c.8 0 1.4.6 1.4 1.4v.7" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.4 6.4h11.2l-1.2 5.1c-.1.6-.6 1-1.2 1H4.7c-.6 0-1.1-.4-1.2-1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
+    update: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M12.8 8a4.8 4.8 0 1 1-1.4-3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12.8 2.6v3.2H9.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    commit: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3.4 8.3l2.8 2.8 6-6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    push: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 12.4V3.6M4.4 7.2L8 3.6l3.6 3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    plus: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+    tag: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2.6 3.2h5.1l5 5-4.5 4.5-5-5z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="5.3" cy="5.9" r="1" fill="currentColor"/></svg>',
+    check: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 8.2l1.7 1.7 3.3-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    chevron: '<svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4.4 6.2 8 9.8l3.6-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+
+function isToolbarPopOpen(pop) {
+    return !!pop && !pop.classList.contains('hidden');
+}
+
+function positionToolbarPopover(pop, anchor) {
+    if (!pop || !anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const margin = 8;
+    const width = pop.offsetWidth;
+    const height = pop.offsetHeight;
+    let left = Math.min(rect.left, window.innerWidth - width - margin);
+    left = Math.max(margin, left);
+    let top = rect.bottom + 6;
+    if (top + height > window.innerHeight - margin) top = window.innerHeight - height - margin;
+    top = Math.max(margin, top);
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+}
+
+function closeProjectPopover() {
+    if (!els.projectPop) return;
+    els.projectPop.classList.add('hidden');
+}
+
+function projectBadgeColor(name) {
+    const palette = ['#4f8cff', '#3fb950', '#a371f7', '#d18616', '#1fa5a0', '#d4577d'];
+    let hash = 0;
+    for (const ch of String(name || '')) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+    return palette[hash % palette.length];
+}
+
+function appendProjectAction(body, icon, label, action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pp-item';
+    const ic = document.createElement('span');
+    ic.className = 'pp-icon';
+    ic.innerHTML = icon;
+    const text = document.createElement('span');
+    text.className = 'pp-name';
+    text.textContent = label;
+    btn.append(ic, text);
+    btn.addEventListener('click', action);
+    body.appendChild(btn);
+}
+
+function appendProjectLabel(body, text) {
+    const label = document.createElement('div');
+    label.className = 'pp-label';
+    label.textContent = text;
+    body.appendChild(label);
+}
+
+function appendProjectSep(body) {
+    const sep = document.createElement('div');
+    sep.className = 'pp-sep';
+    body.appendChild(sep);
+}
+
+function appendProjectMain(parent, name, path) {
+    const main = document.createElement('div');
+    main.className = 'pp-main';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'pp-name';
+    nameEl.textContent = name || baseNameOf(path) || path;
+    const pathEl = document.createElement('div');
+    pathEl.className = 'pp-path';
+    pathEl.textContent = path;
+    pathEl.title = path;
+    main.append(nameEl, pathEl);
+    parent.appendChild(main);
+}
+
+async function revealWorkspaceFolder() {
+    if (!workspaceFolder) return;
+    try {
+        await backend.ShowInFolder(workspaceFolder);
+    } catch (e) {
+        flash('打开文件夹位置失败：' + e, true);
+    }
+}
+
+function renderProjectPopover() {
+    const body = els.projectPopBody;
+    if (!body) return;
+    body.textContent = '';
+    appendProjectAction(body, POP_ICONS.folder, '打开…', () => {
+        closeProjectPopover();
+        openFolderDialog();
+    });
+    appendProjectAction(body, POP_ICONS.branch, '克隆仓库…', () => {
+        closeProjectPopover();
+        cloneRepositoryFlow();
+    });
+    if (workspaceFolder) {
+        appendProjectSep(body);
+        appendProjectLabel(body, '打开项目');
+        const row = document.createElement('div');
+        row.className = 'pp-project';
+        const badge = document.createElement('span');
+        badge.className = 'pp-badge current';
+        badge.textContent = projectBadgeText(baseNameOf(workspaceFolder) || workspaceFolder);
+        row.appendChild(badge);
+        appendProjectMain(row, baseNameOf(workspaceFolder) || workspaceFolder, workspaceFolder);
+        body.appendChild(row);
+        const reveal = document.createElement('button');
+        reveal.type = 'button';
+        reveal.className = 'pp-subaction';
+        reveal.innerHTML = POP_ICONS.reveal + '<span>在文件资源管理器中显示</span>';
+        reveal.addEventListener('click', () => {
+            closeProjectPopover();
+            revealWorkspaceFolder();
+        });
+        body.appendChild(reveal);
+    }
+    const norm = (s) => String(s || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const currentKey = workspaceFolder ? norm(workspaceFolder) : '';
+    const recent = readRecentOpen()
+        .filter((entry) => entry && entry.isDir && entry.path && norm(entry.path) !== currentKey)
+        .slice(0, 8);
+    if (recent.length) {
+        appendProjectSep(body);
+        appendProjectLabel(body, '最近的项目');
+        for (const entry of recent) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'pp-item pp-recent';
+            const badge = document.createElement('span');
+            badge.className = 'pp-badge';
+            badge.style.background = projectBadgeColor(entry.name || entry.path);
+            badge.textContent = projectBadgeText(entry.name || baseNameOf(entry.path));
+            btn.appendChild(badge);
+            appendProjectMain(btn, entry.name || baseNameOf(entry.path), entry.path);
+            btn.addEventListener('click', () => {
+                closeProjectPopover();
+                openFolderSmart(entry.path);
+            });
+            body.appendChild(btn);
+        }
+    }
+}
+
+function showProjectMenu(anchor) {
+    if (!els.projectPop) return;
+    if (isToolbarPopOpen(els.projectPop)) {
+        closeProjectPopover();
+        return;
+    }
+    closeGitBranchPopover();
+    renderProjectPopover();
+    els.projectPop.classList.remove('hidden');
+    positionToolbarPopover(els.projectPop, anchor);
+}
+
+function joinFsPath(parent, name) {
+    const sep = String(parent || '').includes('\\') ? '\\' : '/';
+    return String(parent || '').replace(/[\\/]+$/, '') + sep + name;
+}
+
+function cloneRepoName(url) {
+    let s = String(url || '').trim().replace(/[\\/]+$/, '');
+    s = s.replace(/\.git$/i, '');
+    const cut = Math.max(s.lastIndexOf('/'), s.lastIndexOf(':'));
+    return s.slice(cut + 1).replace(/[^A-Za-z0-9._-]+/g, '-');
+}
+
+function cloneRepositoryFlow() {
+    if (!backend.GitCloneRepository) {
+        flash('当前版本不支持克隆仓库', true);
+        return;
+    }
+    openNameDialog({
+        title: '克隆仓库',
+        label: '仓库 URL',
+        placeholder: 'https://github.com/owner/repo.git 或 git@host:owner/repo.git',
+        okLabel: '选择目录并克隆',
+        onSubmit: async (value) => {
+            const url = String(value || '').trim();
+            if (!url) throw new Error('请输入仓库 URL');
+            const repoName = cloneRepoName(url);
+            if (!repoName) throw new Error('无法从 URL 解析仓库名');
+            const parent = await backend.OpenFolderDialog(workspaceFolder || '');
+            if (!parent) return;
+            const target = joinFsPath(parent, repoName);
+            elsDialogs.nameOk.textContent = '克隆中…';
+            try {
+                const res = await backend.GitCloneRepository(url, target);
+                if (!res || !res.success) throw new Error((res && res.output) || '克隆失败');
+                await openFolderSmart(target);
+                flash('已克隆仓库：' + repoName);
+            } finally {
+                elsDialogs.nameOk.textContent = '选择目录并克隆';
+            }
+        },
+    });
+}
+
+// ===== 标题栏弹层：Git 分支（IDEA 式） =====
+
+const gitBranchPopState = {
+    open: false,
+    loading: false,
+    data: null,
+    error: '',
+    query: '',
+    active: -1,
+    pinned: false,
+    collapsed: new Set(),
+    anchor: null,
+    dir: '',
+};
+// 本地分支每次打开都刷新；远程分支列表缓存，只在 fetch 按钮或 push/pull 后重读
+const gitBranchCache = {dir: '', remote: [], hasRemote: false, result: null};
+let gitBranchRows = [];
+
+function invalidateGitBranchRemoteCache() {
+    gitBranchCache.hasRemote = false;
+    gitBranchCache.remote = [];
+    if (gitBranchCache.result) gitBranchCache.result.remote = [];
+}
+
+function closeGitBranchPopover() {
+    if (!els.gitBranchPop) return;
+    els.gitBranchPop.classList.add('hidden');
+    gitBranchPopState.open = false;
+    gitBranchPopState.loading = false;
+    gitBranchPopState.data = null;
+    gitBranchPopState.error = '';
+    gitBranchPopState.query = '';
+    gitBranchPopState.active = -1;
+    gitBranchPopState.anchor = null;
+    gitBranchPopState.dir = '';
+    gitBranchRows = [];
+}
+
+function gitBranchPopButton(className) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = className;
+    btn.tabIndex = -1;
+    return btn;
+}
+
+function gitBranchPopDir() {
+    return gitBranchPopState.dir || gitRootDir();
+}
+
+function gitBranchPopMatchesQuery(text) {
+    const q = gitBranchPopState.query.trim().toLowerCase();
+    return !q || String(text || '').toLowerCase().includes(q);
+}
+
+function addGitBranchRow(btn, run) {
+    btn.addEventListener('click', () => run());
+    btn.classList.toggle('active', gitBranchRows.length === gitBranchPopState.active);
+    els.gbBody.appendChild(btn);
+    gitBranchRows.push({el: btn, run});
+}
+
+function addGitBranchAction(icon, label, shortcut, run) {
+    const btn = gitBranchPopButton('gb-row gb-action');
+    const ic = document.createElement('span');
+    ic.className = 'gb-row-icon';
+    ic.innerHTML = icon;
+    const text = document.createElement('span');
+    text.className = 'gb-row-label';
+    text.textContent = label;
+    btn.append(ic, text);
+    if (shortcut) {
+        const key = document.createElement('span');
+        key.className = 'gb-row-key';
+        key.textContent = shortcut;
+        btn.appendChild(key);
+    }
+    addGitBranchRow(btn, run);
+}
+
+function addGitBranchGroup(key, label, count, indent, collapsible = true) {
+    const collapsed = collapsible && gitBranchPopState.collapsed.has(key);
+    const btn = gitBranchPopButton('gb-group' + (collapsed ? ' collapsed' : '') + (collapsible ? '' : ' gb-static'));
+    btn.style.paddingLeft = 12 + indent * 14 + 'px';
+    if (collapsible) {
+        const chev = document.createElement('span');
+        chev.className = 'gb-chev';
+        chev.innerHTML = POP_ICONS.chevron;
+        btn.appendChild(chev);
+    }
+    const name = document.createElement('span');
+    name.className = 'gb-group-name';
+    name.textContent = label;
+    btn.appendChild(name);
+    if (count != null) {
+        const countEl = document.createElement('span');
+        countEl.className = 'gb-group-count';
+        countEl.textContent = String(count);
+        btn.appendChild(countEl);
+    }
+    if (collapsible) {
+        btn.addEventListener('click', () => {
+            if (gitBranchPopState.collapsed.has(key)) gitBranchPopState.collapsed.delete(key);
+            else gitBranchPopState.collapsed.add(key);
+            renderGitBranchPopover();
+        });
+    }
+    els.gbBody.appendChild(btn);
+}
+
+function addGitBranchRowItem(branch, remote, indent) {
+    const btn = gitBranchPopButton('gb-row gb-branch' + (branch.current ? ' current' : ''));
+    btn.style.paddingLeft = 12 + indent * 14 + 'px';
+    const ic = document.createElement('span');
+    ic.className = 'gb-row-icon';
+    ic.innerHTML = branch.current ? POP_ICONS.check : POP_ICONS.branch;
+    const label = document.createElement('span');
+    label.className = 'gb-row-label';
+    label.textContent = branch.name;
+    btn.append(ic, label);
+    const meta = document.createElement('span');
+    meta.className = 'gb-row-meta';
+    if (!remote) {
+        if (branch.gone) {
+            const gone = document.createElement('span');
+            gone.className = 'gb-gone';
+            gone.textContent = '上游已删除';
+            meta.appendChild(gone);
+        } else if (branch.upstream) {
+            const up = document.createElement('span');
+            up.textContent = branch.upstream;
+            meta.appendChild(up);
+        }
+        if (branch.ahead > 0) {
+            const ahead = document.createElement('span');
+            ahead.className = 'gb-ahead';
+            ahead.textContent = '↑' + branch.ahead;
+            ahead.title = '领先上游 ' + branch.ahead + ' 个提交';
+            meta.appendChild(ahead);
+        }
+        if (branch.behind > 0) {
+            const behind = document.createElement('span');
+            behind.className = 'gb-behind';
+            behind.textContent = '↓' + branch.behind;
+            behind.title = '落后上游 ' + branch.behind + ' 个提交';
+            meta.appendChild(behind);
+        }
+    }
+    if (meta.childNodes.length) btn.appendChild(meta);
+    btn.title = remote ? '签出远程分支 ' + branch.name + '（自动创建本地跟踪分支）' : '签出 ' + branch.name;
+    addGitBranchRow(btn, () => gitPopCheckout(branch, remote));
+}
+
+function addGitBranchTag(name) {
+    const btn = gitBranchPopButton('gb-row gb-tag');
+    const ic = document.createElement('span');
+    ic.className = 'gb-row-icon';
+    ic.innerHTML = POP_ICONS.tag;
+    const label = document.createElement('span');
+    label.className = 'gb-row-label';
+    label.textContent = name;
+    btn.append(ic, label);
+    btn.title = '签出标记 ' + name;
+    addGitBranchRow(btn, () => gitPopCheckoutRefValue(name));
+}
+
+function addGitBranchSep() {
+    const sep = document.createElement('div');
+    sep.className = 'gb-sep';
+    els.gbBody.appendChild(sep);
+}
+
+function addGitBranchState(text, isError) {
+    const state = document.createElement('div');
+    state.className = 'gb-state' + (isError ? ' error' : '');
+    state.textContent = text;
+    els.gbBody.appendChild(state);
+}
+
+function gitBranchCountTree(node) {
+    let count = node.branches.length;
+    for (const child of node.children.values()) count += gitBranchCountTree(child);
+    return count;
+}
+
+function gitBranchBuildTree(branches) {
+    const root = {children: new Map(), branches: []};
+    for (const branch of branches) {
+        const parts = String(branch.name || '').split('/');
+        let node = root;
+        for (let i = 0; i < parts.length - 1; i++) {
+            const key = parts[i];
+            if (!node.children.has(key)) node.children.set(key, {children: new Map(), branches: []});
+            node = node.children.get(key);
+        }
+        node.branches.push(branch);
+    }
+    return root;
+}
+
+function gitBranchRenderTree(node, depth, prefix) {
+    const groups = Array.from(node.children.entries()).sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'));
+    for (const [name, child] of groups) {
+        const full = prefix ? prefix + '/' + name : name;
+        const key = 'localp:' + full;
+        addGitBranchGroup(key, name, gitBranchCountTree(child), depth, true);
+        if (!gitBranchPopState.collapsed.has(key)) gitBranchRenderTree(child, depth + 1, full);
+    }
+    const branches = node.branches.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    for (const branch of branches) addGitBranchRowItem(branch, false, depth);
+}
+
+function renderGitBranchPopover() {
+    if (!els.gbBody || !gitBranchPopState.open) return;
+    const body = els.gbBody;
+    body.textContent = '';
+    gitBranchRows = [];
+    gitBranchPopState.active = -1;
+    const state = gitBranchPopState;
+    if (state.loading && !state.data) {
+        addGitBranchState('正在读取分支…');
+        positionToolbarPopover(els.gitBranchPop, state.anchor);
+        return;
+    }
+    if (state.error) {
+        addGitBranchState(state.error, true);
+        positionToolbarPopover(els.gitBranchPop, state.anchor);
+        return;
+    }
+    const data = state.data;
+    if (!data) {
+        addGitBranchState('正在读取分支…');
+        return;
+    }
+    if (!data.available) {
+        addGitBranchState(data.reason || '当前目录不在 Git 仓库内');
+        positionToolbarPopover(els.gitBranchPop, state.anchor);
+        return;
+    }
+    const q = state.query.trim().toLowerCase();
+    const matches = (text) => !q || String(text || '').toLowerCase().includes(q);
+    const allActions = [
+        {icon: POP_ICONS.update, label: '更新项目…', shortcut: 'Ctrl+T', run: gitPopUpdateProject},
+        {icon: POP_ICONS.commit, label: '提交…', shortcut: 'Ctrl+K', run: gitPopOpenCommit},
+        {icon: POP_ICONS.push, label: '推送…', shortcut: 'Ctrl+Shift+K', run: gitPopPush},
+        {sep: true},
+        {icon: POP_ICONS.plus, label: '新建分支…', shortcut: 'Ctrl+Alt+N', run: gitPopNewBranch},
+        {icon: POP_ICONS.tag, label: '签出标记或修订…', run: gitPopCheckoutRef},
+    ];
+    const actions = q ? allActions.filter((action) => !action.sep && matches(action.label)) : allActions;
+    for (const action of actions) {
+        if (action.sep) addGitBranchSep();
+        else addGitBranchAction(action.icon, action.label, action.shortcut, action.run);
+    }
+    const localAll = data.local || [];
+    const local = localAll.filter((b) => matches(b.name));
+    const remote = (data.remote || []).filter((b) => matches(b.name));
+    const tags = (data.tags || []).filter((t) => matches(t));
+    const recentNames = new Set(data.recent || []);
+    const recent = localAll.filter((b) => recentNames.has(b.name) && !b.current && matches(b.name));
+    let groupsRendered = 0;
+    if (recent.length) {
+        if (q) addGitBranchGroup('recent', '最近', recent.length, 0, false);
+        else addGitBranchGroup('recent', '最近', recent.length, 0, true);
+        if (q || !state.collapsed.has('recent')) {
+            for (const branch of recent) addGitBranchRowItem(branch, false, 0);
+        }
+        groupsRendered++;
+    }
+    if (local.length) {
+        if (q) {
+            addGitBranchGroup('local', '本地', local.length, 0, false);
+            for (const branch of local) addGitBranchRowItem(branch, false, 0);
+        } else {
+            addGitBranchGroup('local', '本地', local.length, 0, true);
+            if (!state.collapsed.has('local')) gitBranchRenderTree(gitBranchBuildTree(local), 0, '');
+        }
+        groupsRendered++;
+    }
+    if (remote.length) {
+        addGitBranchGroup('remote', '远程', remote.length, 0, !q);
+        if (q || !state.collapsed.has('remote')) {
+            for (const branch of remote) addGitBranchRowItem(branch, true, 0);
+        }
+        groupsRendered++;
+    }
+    if (tags.length) {
+        addGitBranchGroup('tags', '标签', tags.length, 0, !q);
+        if (q || !state.collapsed.has('tags')) {
+            for (const tag of tags) addGitBranchTag(tag);
+        }
+        groupsRendered++;
+    }
+    if (!groupsRendered) {
+        addGitBranchState(q ? '没有匹配的分支或操作' : '仓库里还没有可用的分支');
+    }
+    positionToolbarPopover(els.gitBranchPop, state.anchor);
+}
+
+async function loadGitBranches(includeRemote) {
+    if (!backend.GitBranchesFor) return;
+    const dir = gitBranchPopDir();
+    if (!dir) return;
+    gitBranchPopState.loading = true;
+    if (!gitBranchPopState.data) renderGitBranchPopover();
+    try {
+        const data = await backend.GitBranchesFor(dir, !!includeRemote);
+        if (data && data.available) {
+            if (includeRemote) {
+                gitBranchCache.remote = data.remote || [];
+                gitBranchCache.hasRemote = true;
+            } else {
+                data.remote = gitBranchCache.remote || [];
+            }
+            gitBranchCache.dir = dir;
+            gitBranchCache.result = data;
+        } else {
+            gitBranchCache.dir = '';
+            gitBranchCache.remote = [];
+            gitBranchCache.hasRemote = false;
+            gitBranchCache.result = null;
+        }
+        gitBranchPopState.data = data;
+        gitBranchPopState.error = '';
+    } catch (e) {
+        const message = '读取分支失败：' + ((e && e.message) || e);
+        if (gitBranchPopState.data) flash(message, true);
+        else gitBranchPopState.error = message;
+    }
+    gitBranchPopState.loading = false;
+    if (gitBranchPopState.open) renderGitBranchPopover();
+}
+
+function showBranchMenu(anchor) {
+    if (!els.gitBranchPop) return;
+    if (isToolbarPopOpen(els.gitBranchPop)) {
+        closeGitBranchPopover();
+        return;
+    }
+    closeProjectPopover();
+    const dir = gitRootDir();
+    if (!dir) {
+        flash('请先打开文件或目录', true);
+        return;
+    }
+    if (!backend.GitBranchesFor) {
+        flash('当前版本不支持 Git 分支管理', true);
+        return;
+    }
+    const cached = gitBranchCache.result && samePathValue(gitBranchCache.dir, dir) && gitBranchCache.result.available
+        ? gitBranchCache.result
+        : null;
+    gitBranchPopState.open = true;
+    gitBranchPopState.loading = true;
+    gitBranchPopState.data = cached;
+    gitBranchPopState.error = '';
+    gitBranchPopState.query = '';
+    gitBranchPopState.active = -1;
+    gitBranchPopState.dir = dir;
+    gitBranchPopState.anchor = anchor;
+    gitBranchRows = [];
+    els.gbSearch.value = '';
+    els.gbBody.textContent = '';
+    els.gitBranchPop.classList.remove('hidden');
+    if (cached) {
+        renderGitBranchPopover();
+    } else {
+        addGitBranchState('正在读取分支…');
+        positionToolbarPopover(els.gitBranchPop, anchor);
+    }
+    els.gbSearch.focus();
+    loadGitBranches(!cached || !gitBranchCache.hasRemote);
+}
+
+function gitBranchMoveActive(delta) {
+    if (!gitBranchRows.length) return;
+    let next = gitBranchPopState.active + delta;
+    if (gitBranchPopState.active < 0) next = delta > 0 ? 0 : gitBranchRows.length - 1;
+    next = Math.max(0, Math.min(gitBranchRows.length - 1, next));
+    gitBranchPopState.active = next;
+    gitBranchRows.forEach((row, i) => row.el.classList.toggle('active', i === next));
+    gitBranchRows[next].el.scrollIntoView({block: 'nearest'});
+}
+
+function gitBranchRunActive() {
+    const row = gitBranchRows[gitBranchPopState.active];
+    if (row) row.run();
+}
+
+function openGitOutput(name, output) {
+    openVirtualDoc(name, output || '（命令没有输出）');
+}
+
+async function gitPopCheckout(branch, remote) {
+    const dir = gitBranchPopDir();
+    const name = branch.name;
+    closeGitBranchPopover();
+    if (branch.current) return;
+    flash('正在切换到 ' + name + '…');
+    try {
+        const res = await backend.GitCheckoutBranch(dir, name, !!remote);
+        if (!res || !res.success) {
+            flash('切换分支失败', true);
+            if (res && res.output) openGitOutput('切换分支失败.txt', res.output);
+            return;
+        }
+        flash('已切换到分支：' + (res.branch || name));
+        await refreshGitStatus();
+        await reloadAllFromDisk();
+    } catch (e) {
+        flash('切换分支失败：' + e, true);
+    }
+}
+
+async function gitPopUpdateProject() {
+    const dir = gitBranchPopDir();
+    closeGitBranchPopover();
+    if (!backend.GitPullFor) return;
+    flash('正在更新项目…');
+    try {
+        const res = await backend.GitPullFor(dir);
+        if (!res || !res.success) {
+            flash('更新项目失败', true);
+            if (res && res.output) openGitOutput('更新项目失败.txt', res.output);
+            return;
+        }
+        flash('项目已更新');
+        invalidateGitBranchRemoteCache();
+        await refreshGitStatus();
+        await reloadAllFromDisk();
+    } catch (e) {
+        flash('更新项目失败：' + e, true);
+    }
+}
+
+function gitPopOpenCommit() {
+    closeGitBranchPopover();
+    settings.showSidebar = true;
+    switchSidebarView('git');
+    setTimeout(() => {
+        if (els.gitMessage) els.gitMessage.focus();
+    }, 80);
+}
+
+async function gitPopPush() {
+    const dir = gitBranchPopDir();
+    closeGitBranchPopover();
+    if (!backend.GitPushFor) return;
+    flash('正在推送…');
+    try {
+        const res = await backend.GitPushFor(dir);
+        if (!res || !res.success) {
+            flash('推送失败', true);
+            if (res && res.output) openGitOutput('推送失败.txt', res.output);
+            return;
+        }
+        flash('已推送当前分支');
+        invalidateGitBranchRemoteCache();
+        await refreshGitStatus();
+    } catch (e) {
+        flash('推送失败：' + e, true);
+    }
+}
+
+function gitPopNewBranch() {
+    const dir = gitBranchPopDir();
+    closeGitBranchPopover();
+    if (!backend.GitCreateBranch) {
+        flash('当前版本不支持新建分支', true);
+        return;
+    }
+    openNameDialog({
+        title: '新建分支',
+        label: '分支名称',
+        placeholder: 'feature/my-branch',
+        okLabel: '创建并检出',
+        onSubmit: async (value) => {
+            const name = String(value || '').trim();
+            if (!name) throw new Error('请输入分支名');
+            const res = await backend.GitCreateBranch(dir, name);
+            if (!res || !res.success) throw new Error((res && res.output) || '创建分支失败');
+            flash('已创建并切换到分支：' + name);
+            await refreshGitStatus();
+        },
+    });
+}
+
+function gitPopCheckoutRefValue(ref) {
+    const dir = gitBranchPopDir();
+    closeGitBranchPopover();
+    if (!backend.GitCheckoutRefFor) {
+        flash('当前版本不支持签出标记或修订', true);
+        return;
+    }
+    flash('正在签出 ' + ref + '…');
+    backend.GitCheckoutRefFor(dir, ref).then(async (res) => {
+        if (!res || !res.success) {
+            flash('签出失败', true);
+            if (res && res.output) openGitOutput('签出失败.txt', res.output);
+            return;
+        }
+        flash('已签出：' + ref);
+        await refreshGitStatus();
+        await reloadAllFromDisk();
+    }).catch((e) => flash('签出失败：' + e, true));
+}
+
+function gitPopCheckoutRef() {
+    const dir = gitBranchPopDir();
+    closeGitBranchPopover();
+    if (!backend.GitCheckoutRefFor) {
+        flash('当前版本不支持签出标记或修订', true);
+        return;
+    }
+    openNameDialog({
+        title: '签出标记或修订',
+        label: '分支、标记或提交 SHA',
+        placeholder: 'v1.0.0 / 1a2b3c4 / feature/x',
+        okLabel: '签出',
+        onSubmit: async (value) => {
+            const ref = String(value || '').trim();
+            if (!ref) throw new Error('请输入分支、标记或提交 SHA');
+            const res = await backend.GitCheckoutRefFor(dir, ref);
+            if (!res || !res.success) throw new Error((res && res.output) || '签出失败');
+            flash('已签出：' + ref);
+            await refreshGitStatus();
+            await reloadAllFromDisk();
+        },
+    });
+}
+
+async function gitPopFetch() {
+    if (!gitBranchPopState.open || gitBranchPopState.loading || !backend.GitFetchFor) return;
+    if (els.gbFetch) {
+        els.gbFetch.disabled = true;
+        els.gbFetch.classList.add('active');
+    }
+    try {
+        const res = await backend.GitFetchFor(gitBranchPopDir());
+        if (!res || !res.success) {
+            closeGitBranchPopover();
+            flash('获取远程分支失败', true);
+            if (res && res.output) openGitOutput('获取远程分支失败.txt', res.output);
+            return;
+        }
+        flash('已获取远程分支');
+        await loadGitBranches(true);
+    } catch (e) {
+        flash('获取远程分支失败：' + e, true);
+    } finally {
+        if (els.gbFetch) {
+            els.gbFetch.disabled = false;
+            els.gbFetch.classList.remove('active');
+        }
+    }
+}
+
+function gitPopTogglePin() {
+    gitBranchPopState.pinned = !gitBranchPopState.pinned;
+    if (els.gbPin) {
+        els.gbPin.classList.toggle('active', gitBranchPopState.pinned);
+        els.gbPin.setAttribute('aria-pressed', String(gitBranchPopState.pinned));
+        els.gbPin.title = gitBranchPopState.pinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
+    }
+}
+
+if (els.gbSearch) {
+    els.gbSearch.addEventListener('input', () => {
+        gitBranchPopState.query = els.gbSearch.value;
+        renderGitBranchPopover();
+    });
+    els.gbSearch.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            gitBranchMoveActive(1);
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            gitBranchMoveActive(-1);
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            gitBranchRunActive();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            closeGitBranchPopover();
+        }
+    });
+}
+if (els.gbFetch) els.gbFetch.addEventListener('click', gitPopFetch);
+if (els.gbPin) els.gbPin.addEventListener('click', gitPopTogglePin);
+
+document.addEventListener('pointerdown', (e) => {
+    const target = e.target;
+    if (isToolbarPopOpen(els.projectPop) && !els.projectPop.contains(target) && !els.wsProject.contains(target)) {
+        closeProjectPopover();
+    }
+    if (isToolbarPopOpen(els.gitBranchPop) && !els.gitBranchPop.contains(target) && !els.wsBranch.contains(target) && !gitBranchPopState.pinned) {
+        closeGitBranchPopover();
+    }
+}, true);
+
+document.addEventListener('keydown', (e) => {
+    if (isToolbarPopOpen(els.projectPop) && e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeProjectPopover();
+        return;
+    }
+    if (!gitBranchPopState.open) return;
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeGitBranchPopover();
+        return;
+    }
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (els.gbSearch) {
+            els.gbSearch.focus();
+            els.gbSearch.select();
+        }
+    }
+}, true);
+
+window.addEventListener('blur', () => {
+    closeProjectPopover();
+    closeGitBranchPopover();
+});
+window.addEventListener('resize', () => {
+    closeProjectPopover();
+    closeGitBranchPopover();
+});
+
 function defaultFolderDir() {
     if (workspaceFolder) return workspaceFolder;
     if (file && file.path) {
@@ -6065,6 +9943,9 @@ async function openFolderDialog() {
 function openFolderWorkspace(dir) {
     if (!dir) return;
     workspaceFolder = dir;
+    toggleSidebarFilter(false);
+    scheduleSessionSave();
+    rememberRecentOpen(dir, baseNameOf(dir) || dir, true);
     settings.sidebarMode = 'tree';
     settings.showSidebar = true;
     applySettings();
@@ -6073,6 +9954,8 @@ function openFolderWorkspace(dir) {
         explorer.setRoot(dir);
     }
     applySidebarUI();
+    renderWorkspaceCrumbs();
+    refreshGitStatus();
     flash('已打开文件夹：' + (baseNameOf(dir) || dir));
 }
 
@@ -6102,6 +9985,10 @@ function closeFolder() {
     if (!workspaceFolder) return;
     workspaceFolder = null;
     if (explorer) explorer.setRoot(null);
+    gitStateCache.available = false;
+    gitStateCache.branch = '';
+    renderWorkspaceCrumbs();
+    scheduleSessionSave();
     flash('已关闭文件夹');
 }
 
@@ -6114,7 +10001,8 @@ function applySidebarUI() {
         els.btnSidebar.setAttribute('aria-pressed', String(!!settings.showSidebar));
     }
     if (els.abFiles) {
-        const filesActive = !!settings.showSidebar && settings.sidebarView === 'files' && settings.sidebarMode === 'tree';
+        // 文件 icon 在文件侧边栏可见时保持选中，列表/树模式都算
+        const filesActive = !!settings.showSidebar && settings.sidebarView === 'files';
         els.abFiles.classList.toggle('active', filesActive);
         els.abFiles.setAttribute('aria-pressed', String(filesActive));
     }
@@ -6127,6 +10015,11 @@ function applySidebarUI() {
         const structureActive = !!settings.showSidebar && settings.sidebarView === 'structure';
         els.abStructure.classList.toggle('active', structureActive);
         els.abStructure.setAttribute('aria-pressed', String(structureActive));
+    }
+    if (els.abChats) {
+        const chatsActive = !!settings.showSidebar && settings.sidebarView === 'chats';
+        els.abChats.classList.toggle('active', chatsActive);
+        els.abChats.setAttribute('aria-pressed', String(chatsActive));
     }
     const filesVisible = !!settings.showSidebar && currentSidebarView() === 'files';
     if (explorer) explorer.setVisible(filesVisible);
@@ -6164,14 +10057,14 @@ function initActivityBar() {
     if (els.abFiles) els.abFiles.addEventListener('click', () => toggleSidebarView('files'));
     if (els.abStructure) els.abStructure.addEventListener('click', () => toggleSidebarView('structure'));
     if (els.abSearch) els.abSearch.addEventListener('click', () => {
-        if (els.searchInput.disabled) {
-            flash('当前视图不支持节点搜索', true);
-            return;
-        }
-        focusSearch();
+        // 有可搜索视图开内容查找，否则退到全局搜索，保证图标总是有响应
+        if (findTarget()) openFindBar();
+        else openGlobalSearch();
     });
-    if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleTerminalPanel());
+    if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleDockView('terminal'));
+    if (els.abDebug) els.abDebug.addEventListener('click', () => toggleDockView('debug'));
     if (els.abGit) els.abGit.addEventListener('click', () => toggleSidebarView('git'));
+    if (els.abChats) els.abChats.addEventListener('click', () => toggleSidebarView('chats'));
     if (els.abMore) els.abMore.addEventListener('click', () => {
         if (!ctxMenu) return;
         const rect = els.abMore.getBoundingClientRect();
@@ -6183,12 +10076,134 @@ function initActivityBar() {
     updateLockButton();
 }
 
+function toggleAIPanel(force) {
+    if (!aiPanel) initAIPanel();
+    if (aiPanel) aiPanel.toggle(force);
+}
+
+function askAIAboutPath(path) {
+    if (!path) return;
+    if (!aiPanel) initAIPanel();
+    if (!aiPanel) return;
+    aiPanel.open(true);
+    if (aiPanel.attachPath) aiPanel.attachPath(path, {focus: true});
+}
+
+function setAIPanelMode(mode) {
+    if (!aiPanel) initAIPanel();
+    if (aiPanel) aiPanel.setMode(mode);
+}
+
+function initAIPanel() {
+    if (aiPanel) return;
+    const panelEl = els.aiPanel || document.getElementById('ai-panel');
+    if (!panelEl) return;
+    aiPanel = createAIPanel({
+        panel: panelEl,
+        dockParent: document.getElementById('top-row'),
+        overlayParent: document.getElementById('main-pane'),
+        backend,
+        settings,
+        fonts: {latin: uiFonts, cjk: cjkFonts, mono: editorFonts},
+        saveSettings: applySettings,
+        flash,
+        copyText,
+        renderMarkdown: renderMarkdownHtml,
+        confirm: openCloseConfirm,
+        nameDialog: openNameDialog,
+        openSettings: (pane) => {
+            if (window.__aiFloatWindow && backend.OpenSettingsInMainWindow) {
+                Promise.resolve(backend.OpenSettingsInMainWindow(pane || 'models'))
+                    .then(() => flash('已在主窗口打开设置'))
+                    .catch((e) => flash('打开主窗口设置失败：' + ((e && e.message) || e), true));
+                return;
+            }
+            openSettings(pane);
+        },
+        setDragCursor,
+        activityButton: els.abAi,
+        toolbarButton: els.tbAi,
+        isMock: !hasWails,
+        floatWindow: !!window.__aiFloatWindow || (!hasWails && mockScenario.has('aifloat')),
+        mockEmpty: mockScenario.has('aiempty'),
+        getWorkspaceContext: () => ({
+            workspaceFolder: workspaceFolder || '',
+            activeFile: file ? {path: file.path || '', name: file.name || ''} : null,
+            openFiles: docs.map((doc) => doc.path || doc.name).filter(Boolean),
+        }),
+        getScopeRoot: () => workspaceFolder || (file && file.path ? parentDirOf(file.path) : ''),
+        getSelection: () => {
+            const text = selectedText();
+            if (!file || !text) return null;
+            return {path: file.path || file.name || '', name: file.name || '选中内容', text};
+        },
+        pickFiles: () => backend.OpenFilesDialog(),
+        showContextMenu: (items, x, y) => {
+            if (ctxMenu) ctxMenu.open(items, x, y);
+        },
+        openPath: (path) => {
+            if (window.__aiFloatWindow && backend.OpenInNewWindows) {
+                Promise.resolve(backend.OpenInNewWindows([path])).catch((e) => flash('打开失败：' + ((e && e.message) || e), true));
+                return;
+            }
+            openPath(path);
+        },
+        isFileDirty: (path) => {
+            const doc = findDocByPath(path);
+            return !!(doc && doc.dirty);
+        },
+        onFileChanged: (path) => handleAIWorkspaceFileChanged(path),
+        collapseSidebar: () => {
+            if (!settings.showSidebar) return;
+            settings.showSidebar = false;
+            applySettings();
+        },
+        onLayout: () => {
+            updateAiWidthWidget();
+            if (editor && editor.resize) {
+                try { editor.resize(); } catch (e) {}
+            }
+            if (terminalUI.open) {
+                try { fitActiveTerm(); } catch (e) {}
+            }
+        },
+    });
+    window.__lens.aiPanel = aiPanel;
+    window.__mockAiEmit = (name, payload) => {
+        if (aiPanel) aiPanel.handleEvent(name, payload);
+    };
+    if (rt) {
+        for (const eventName of ['ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error']) {
+            rt.EventsOn(eventName, (payload) => {
+                if (aiPanel) aiPanel.handleEvent(eventName, payload);
+            });
+        }
+    }
+}
+
+// toggleSidebarFilter 侧边栏文件名过滤框的开关与清理
+function toggleSidebarFilter(force) {
+    if (!els.sbFilterRow || !els.sbFilter) return;
+    const show = typeof force === 'boolean' ? force : els.sbFilterRow.classList.contains('hidden');
+    els.sbFilterRow.classList.toggle('hidden', !show);
+    if (els.sbFilterBtn) els.sbFilterBtn.classList.toggle('active', show);
+    if (els.sbFilterBtn) els.sbFilterBtn.setAttribute('aria-pressed', String(show));
+    if (show) {
+        els.sbFilter.focus();
+        els.sbFilter.select();
+    } else if (explorer && explorer.setFilter) {
+        els.sbFilter.value = '';
+        explorer.setFilter('');
+    }
+}
+
 function initExplorer() {
     if (!els.sbBody) return;
     explorer = createExplorer({
         body: els.sbBody,
         titleEl: els.sbTitle,
         refreshBtn: els.sbRefresh,
+        filterBtn: els.sbFilterBtn,
         listBtn: els.sbModeList,
         treeBtn: els.sbModeTree,
         readDir: (path, limit) => backend.ReadDir(path, limit),
@@ -6197,6 +10212,10 @@ function initExplorer() {
         openFileDialog: () => openDialog(),
         isSupported: isSupportedFile,
         onContextMenu: (info, x, y, node) => showExplorerMenu(info, x, y, node),
+        onMove: (items, destDir) => moveEntriesByDrag(items, destDir),
+        onExternalDrop: (destDir) => setPendingExternalDrop(destDir),
+        onToggleFilter: toggleSidebarFilter,
+        canDrag: () => !settings.readOnlyMode,
         onModeChange: (mode) => {
             settings.sidebarMode = mode;
             applySettings();
@@ -6204,6 +10223,21 @@ function initExplorer() {
     });
     explorer.setMode(settings.sidebarMode, false);
     explorer.setAutoRefresh(settings.treeRefreshInterval);
+    if (els.sbFilter) {
+        let filterDebounce = 0;
+        els.sbFilter.addEventListener('input', () => {
+            clearTimeout(filterDebounce);
+            filterDebounce = setTimeout(() => {
+                if (explorer && explorer.setFilter) explorer.setFilter(els.sbFilter.value);
+            }, 150);
+        });
+        els.sbFilter.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                toggleSidebarFilter(false);
+            }
+        });
+    }
     applySidebarUI();
     if (els.btnSidebar) els.btnSidebar.addEventListener('click', () => toggleSidebar());
     if (els.lock) els.lock.addEventListener('click', () => {
@@ -6239,20 +10273,101 @@ function initStructurePanel() {
         },
         onJump: (node) => jumpToStructureNode(node),
     });
+    if (els.structureExport) {
+        els.structureExport.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14M5.5 8.5h11.5M8 12.5h9M10.5 16.5h6.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+        els.structureExport.addEventListener('click', () => showStructureExportMenu());
+    }
     structurePanel.setDoc(file);
     applySidebarUI();
 }
 
+// 结构面板的结构化复制 / 导出：文本格式与「结构化目录」一致
+function structureTreeText(format) {
+    try {
+        return structurePanel && typeof structurePanel.structureText === 'function'
+            ? String(structurePanel.structureText(format, settings.structureExportLineNums) || '') : '';
+    } catch (e) {
+        return '';
+    }
+}
+
+function showStructureExportMenu() {
+    if (!ctxMenu) return;
+    const has = !!structureTreeText();
+    const copyItems = [
+        {label: '树形结构', action: () => copyStructureTree('tree')},
+        {label: '缩进列表', action: () => copyStructureTree('indent')},
+        {label: 'Markdown 列表', action: () => copyStructureTree('markdown')},
+        {label: 'Mermaid 大纲', action: () => copyStructureTree('mermaid')},
+    ];
+    const exportItems = [
+        {label: '树形结构', action: () => exportStructureTree('tree')},
+        {label: '缩进列表', action: () => exportStructureTree('indent')},
+        {label: 'Markdown 列表', action: () => exportStructureTree('markdown')},
+        {label: 'Mermaid 大纲', action: () => exportStructureTree('mermaid')},
+    ];
+    const r = els.structureExport.getBoundingClientRect();
+    ctxMenu.open([
+        {label: '复制为', icon: 'E8C8', disabled: !has, submenu: copyItems},
+        {label: '导出为…', icon: 'E74E', disabled: !has, submenu: exportItems},
+        {sep: true},
+        {label: '附带行号', checked: settings.structureExportLineNums, action: toggleStructureExportLineNums},
+    ], r.left, r.bottom + 4);
+}
+
+function toggleStructureExportLineNums() {
+    settings.structureExportLineNums = !settings.structureExportLineNums;
+    try { localStorage.setItem(settingsKey, JSON.stringify(settings)); } catch (e) {}
+    showStructureExportMenu();
+}
+
+async function copyStructureTree(format) {
+    const text = structureTreeText(format);
+    if (!text) {
+        flash('当前文件没有可复制的结构', true);
+        return;
+    }
+    await copyText(text, '结构');
+}
+
+async function exportStructureTree(format) {
+    if (!backend.ExportStructureText) {
+        flash('当前版本不支持导出结构', true);
+        return;
+    }
+    const text = structureTreeText(format);
+    if (!text) {
+        flash('当前文件没有可导出的结构', true);
+        return;
+    }
+    try {
+        const ext = format === 'mermaid' ? '.mmd' : '.txt';
+        const defaultName = (file && file.name ? file.name : '结构') + '-结构' + ext;
+        const path = await backend.ExportStructureText(defaultName, text);
+        if (!path) {
+            flash('已取消导出');
+            return;
+        }
+        flash('已导出结构：' + (baseNameOf(path) || path));
+    } catch (e) {
+        flash('导出结构失败：' + e, true);
+    }
+}
+
 let untitledSeq = 0;
 
-function newDocument() {
-    const seq = ++untitledSeq;
-    const name = seq === 1 ? '未命名.json' : '未命名 ' + seq + '.json';
+function newDocumentWith(baseName, content) {
+    untitledSeq += 1;
+    const dot = baseName.lastIndexOf('.');
+    const stem = dot > 0 ? baseName.slice(0, dot) : baseName;
+    const ext = dot > 0 ? baseName.slice(dot) : '';
+    const name = untitledSeq === 1 ? stem + ext : stem + ' ' + untitledSeq + ext;
+    const text = content != null ? content : '';
     const doc = createDoc({
         path: null,
         name,
-        content: '{}',
-        size: 2,
+        content: text,
+        size: new TextEncoder().encode(text).length,
         eol: 'lf',
         hasBom: false,
         large: false,
@@ -6262,6 +10377,10 @@ function newDocument() {
     doc.dirty = true;
     docs.push(doc);
     activateDoc(doc);
+}
+
+function newDocument() {
+    newDocumentWith('未命名.json', '{}');
 }
 
 async function openNewWindow() {
@@ -6334,13 +10453,23 @@ async function requestReload() {
     }
 }
 
-async function reloadActive() {
+async function reloadActive(opts = {}) {
     const doc = file;
-    if (!doc || !doc.path) return;
+    if (!doc || !doc.path) return false;
     try {
         const data = await backend.OpenFile(doc.path, getFormatSettings(doc.format.id).encoding);
         const fresh = createDoc(data);
         const keepMode = doc.mode;
+        const wasSplit = !!doc.splitActive;
+        clearTimeout(doc.splitTimer);
+        doc.splitTimer = 0;
+        doc.splitActive = false;
+        doc.splitKind = '';
+        doc.splitDivider = null;
+        doc.htmlPreviewEl = null;
+        doc.htmlFrame = null;
+        doc.htmlPreviewRoot = null;
+        doc.htmlRootTried = false;
         if (doc.editor) doc.editor.destroy();
         if (doc.pane) doc.pane.remove();
         doc.editor = null;
@@ -6394,10 +10523,13 @@ async function reloadActive() {
         updateDocChrome();
         setDirty(false);
         applyAceMode();
+        if (wasSplit && canSplitDoc(doc)) enterSplitView(doc);
         humanizeCounts();
-        flash('已重新加载 ' + doc.name);
+        if (!opts.quiet) flash('已重新加载 ' + doc.name);
+        return true;
     } catch (e) {
-        flash('重新加载失败：' + e, true);
+        if (!opts.quiet) flash('重新加载失败：' + e, true);
+        return false;
     }
 }
 
@@ -6555,12 +10687,51 @@ elsSettings.mdLineNumbers.addEventListener('change', () => {
     applySettings();
     if (currentMode === 'preview' && file) renderMarkdownPreview(file);
 });
+elsSettings.mdScrollSync.addEventListener('change', () => {
+    settings.mdScrollSync = elsSettings.mdScrollSync.checked;
+    applySettings();
+    // 关闭后如果预览已经滚偏，立即按当前设置拉回/不再跟随
+    if (settings.mdScrollSync && file) mdSyncScrollFromAce(file);
+});
+elsSettings.mdPreviewWidth.addEventListener('change', () => {
+    settings.mdPreviewWidth = elsSettings.mdPreviewWidth.value;
+    applySettings();
+    updateStatus();
+});
+elsSettings.autoCheckUpdate.addEventListener('change', () => {
+    settings.autoCheckUpdate = elsSettings.autoCheckUpdate.checked;
+    applySettings();
+});
 elsSettings.showBanners.addEventListener('change', () => {
     settings.showBanners = elsSettings.showBanners.checked;
     applySettings();
     if (file) showBanner(file, file.parseError);
     else hideBanner();
 });
+if (elsSettings.developerMode) {
+    elsSettings.developerMode.addEventListener('change', async () => {
+        developerMode = elsSettings.developerMode.checked;
+        syncDevConsoleVisibility();
+        try {
+            if (backend.SetDeveloperMode) await backend.SetDeveloperMode(developerMode);
+            logFrontend('info', '开发者模式已' + (developerMode ? '开启' : '关闭'));
+        } catch (e) {
+            flash('保存开发者模式失败：' + e, true);
+        }
+    });
+}
+if (elsSettings.openLogs) {
+    elsSettings.openLogs.addEventListener('click', async () => {
+        if (!backend.OpenLogDir) return flash('当前版本不支持打开日志目录', true);
+        try {
+            await backend.OpenLogDir();
+        } catch (e) {
+            flash('打开日志目录失败：' + e, true);
+        }
+    });
+}
+const debugConsoleBtn = document.getElementById('opt-debug-console');
+if (debugConsoleBtn) debugConsoleBtn.addEventListener('click', () => toggleDockView('debug'));
 elsSettings.openMode.addEventListener('change', () => {
     settings.openMode = elsSettings.openMode.value;
     applySettings();
@@ -6637,7 +10808,7 @@ if (rt) {
     const maxBtn = document.getElementById('wc-max');
     const syncMaxIcon = async () => {
         const maximised = await rt.WindowIsMaximised();
-        maxBtn.innerHTML = maximised ? '&#xE923;' : '&#xE922;';
+        maxBtn.innerHTML = iconSvg(maximised ? 'restore' : 'maximize', 12);
         maxBtn.title = maximised ? '还原' : '最大化';
     };
     document.getElementById('wc-min').addEventListener('click', () => rt.WindowMinimise());
@@ -6657,8 +10828,33 @@ if (rt) {
     winControls.style.display = 'none';
 }
 
+// IDEA 新 UI 式主菜单：平时隐藏，点三横把工具栏左侧换成横排菜单条；Alt+字母直接唤出对应菜单
+const tbMenu = document.getElementById('tb-menu');
 const menuBar = document.getElementById('menubar');
+const toolbarEl = document.getElementById('toolbar');
+const menuKeyMap = {KeyF: 'file', KeyE: 'edit', KeyO: 'format', KeyV: 'view', KeyU: 'tools', KeyT: 'theme', KeyH: 'help'};
 let openMenuEl = null;
+
+function showMenuBar() {
+    toolbarEl.classList.add('menu-active');
+    menuBar.classList.remove('hidden');
+}
+
+function hideMenuBar() {
+    closeAllMenus();
+    toolbarEl.classList.remove('menu-active');
+    menuBar.classList.add('hidden');
+}
+
+function openMenuByKind(kind) {
+    const menuEl = menuBar.querySelector('.menu[data-menu="' + kind + '"]');
+    if (menuEl) openMenu(menuEl);
+}
+
+tbMenu.addEventListener('click', (e) => {
+    e.stopPropagation();
+    showMenuBar();
+});
 
 function clickEditorButton(sel) {
     if (!editor) return;
@@ -6746,8 +10942,14 @@ function formatDocument() {
 }
 
 function switchMode(mode) {
-    if (!editor || currentMode === mode) return;
+    if (!editor) return;
     const doc = file;
+    if (mode === 'split') {
+        if (doc) enterSplitView(doc);
+        return;
+    }
+    if (doc && doc.splitActive) exitSplitView(doc);
+    if (currentMode === mode) return;
     if (mode === 'image') {
         if (doc && doc.image) enterImageView(doc);
         return;
@@ -6810,7 +11012,7 @@ function switchMode(mode) {
         try {
             editor.setMode(mode);
             editor.setText(doc.rawText);
-            if (editor.aceEditor) { hookCodeFoldPreviews(editor.aceEditor); hookFoldChevronHover(editor.aceEditor); updateCodeFoldPreviews(editor.aceEditor); }
+            if (editor.aceEditor) { hookCodeFoldPreviews(editor.aceEditor); hookMultiCursor(editor.aceEditor); updateCodeFoldPreviews(editor.aceEditor); }
         } catch (e) {
             console.warn('switch mode failed', e);
         } finally {
@@ -6877,15 +11079,1717 @@ function switchMode(mode) {
     } catch (e) {}
 }
 
-function focusSearch() {
-    els.searchInput.focus();
-    els.searchInput.select();
+const findState = {
+    open: false,
+    caseSensitive: false,
+    wholeWord: false,
+    regex: false,
+    ranges: [],
+    index: -1,
+    target: null,
+    markerIds: [],
+    aceSession: null,
+    aceChangeHandler: null,
+    host: null,
+    textLayer: null,
+    textInner: null,
+    textMarkerEls: [],
+    textScrollTarget: null,
+    textScrollHandler: null,
+    textResizeObserver: null,
+    timer: 0,
+};
+const findMarkerLimit = 2000;
+
+function findTarget() {
+    if (!file || !file.editor) return null;
+    if (currentMode === 'code') {
+        const ace = file.editor.aceEditor;
+        return ace ? {type: 'ace', ace} : null;
+    }
+    if (currentMode === 'text') {
+        const textarea = file.pane && file.pane.querySelector('textarea.jsoneditor-text');
+        return textarea ? {type: 'text', textarea} : null;
+    }
+    return null;
 }
+
+function ensureFindBarHost() {
+    const group = file ? groupOfDoc(file.id) : null;
+    const host = group ? els.editor.querySelector('.egroup[data-gid="' + group.id + '"] .ehost') : null;
+    const target = host || els.editor;
+    if (!target) return;
+    const hostChanged = findState.host !== target;
+    if (findState.host && findState.host !== target) findState.host.classList.remove('find-open');
+    target.classList.add('find-open');
+    findState.host = target;
+    if (els.findBar.parentElement !== target) target.appendChild(els.findBar);
+    if (hostChanged) resizeFindEditor();
+}
+
+function resizeFindEditor() {
+    requestAnimationFrame(() => {
+        if (!file || !file.editor) return;
+        try {
+            if (file.editor.resize) file.editor.resize();
+            if (file.editor.aceEditor) file.editor.aceEditor.resize();
+        } catch (e) {}
+    });
+}
+
+function clearFindMarkers() {
+    const target = findState.target;
+    if (target && target.type === 'ace') {
+        const session = target.ace.session;
+        for (const id of findState.markerIds) {
+            try { session.removeMarker(id); } catch (e) {}
+        }
+    }
+    findState.markerIds = [];
+}
+
+function detachFindAceChange() {
+    if (findState.aceSession && findState.aceChangeHandler) {
+        try { findState.aceSession.off('change', findState.aceChangeHandler); } catch (e) {}
+    }
+    findState.aceSession = null;
+    findState.aceChangeHandler = null;
+}
+
+function clearTextFindLayer() {
+    if (findState.textScrollTarget && findState.textScrollHandler) {
+        findState.textScrollTarget.removeEventListener('scroll', findState.textScrollHandler);
+    }
+    if (findState.textResizeObserver) {
+        findState.textResizeObserver.disconnect();
+        findState.textResizeObserver = null;
+    }
+    findState.textScrollTarget = null;
+    findState.textScrollHandler = null;
+    if (findState.textLayer) {
+        findState.textLayer.remove();
+        findState.textLayer = null;
+    }
+    findState.textInner = null;
+    findState.textMarkerEls = [];
+}
+
+function syncFindTextLayerScroll() {
+    const textarea = findState.textScrollTarget;
+    if (!findState.textInner || !textarea) return;
+    findState.textInner.style.transform = 'translate(' + (-textarea.scrollLeft) + 'px,' + (-textarea.scrollTop) + 'px)';
+}
+
+function positionFindTextLayer() {
+    const layer = findState.textLayer;
+    const textarea = findState.textScrollTarget;
+    const host = findState.host;
+    if (!layer || !textarea || !host) return;
+    const hostRect = host.getBoundingClientRect();
+    const rect = textarea.getBoundingClientRect();
+    layer.style.left = (rect.left - hostRect.left) + 'px';
+    layer.style.top = (rect.top - hostRect.top) + 'px';
+    layer.style.width = textarea.clientWidth + 'px';
+    layer.style.height = textarea.clientHeight + 'px';
+    if (findState.textInner) findState.textInner.style.width = textarea.clientWidth + 'px';
+}
+
+function buildTextFindLayer(target) {
+    clearTextFindLayer();
+    const textarea = target.textarea;
+    const host = findState.host;
+    const ranges = findState.ranges;
+    if (!textarea || !host || !ranges.length || textarea.value.length > 1500000) return;
+    const layer = document.createElement('div');
+    layer.className = 'find-text-layer';
+    layer.setAttribute('aria-hidden', 'true');
+    const inner = document.createElement('div');
+    inner.className = 'find-text-layer-inner';
+    const style = getComputedStyle(textarea);
+    const copied = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing',
+        'wordSpacing', 'textAlign', 'textIndent', 'textTransform', 'whiteSpace', 'wordBreak',
+        'overflowWrap', 'tabSize', 'direction'];
+    for (const prop of copied) inner.style[prop] = style[prop];
+    inner.style.padding = style.padding;
+    inner.style.minHeight = textarea.clientHeight + 'px';
+    const text = textarea.value;
+    const fragment = document.createDocumentFragment();
+    const marks = [];
+    let pos = 0;
+    const limit = Math.min(ranges.length, findMarkerLimit);
+    for (let i = 0; i < limit; i++) {
+        const range = ranges[i];
+        if (range.start < pos) continue;
+        fragment.appendChild(document.createTextNode(text.slice(pos, range.start)));
+        const mark = document.createElement('mark');
+        mark.textContent = text.slice(range.start, range.end);
+        if (i === findState.index) mark.classList.add('current');
+        fragment.appendChild(mark);
+        marks.push(mark);
+        pos = range.end;
+    }
+    fragment.appendChild(document.createTextNode(text.slice(pos)));
+    inner.appendChild(fragment);
+    layer.appendChild(inner);
+    host.appendChild(layer);
+    findState.textLayer = layer;
+    findState.textInner = inner;
+    findState.textMarkerEls = marks;
+    findState.textScrollTarget = textarea;
+    findState.textScrollHandler = () => syncFindTextLayerScroll();
+    textarea.addEventListener('scroll', findState.textScrollHandler, {passive: true});
+    if (window.ResizeObserver) {
+        findState.textResizeObserver = new ResizeObserver(() => positionFindTextLayer());
+        findState.textResizeObserver.observe(textarea);
+    }
+    positionFindTextLayer();
+    syncFindTextLayerScroll();
+}
+
+function aceFindRanges(ace) {
+    const search = ace.$search;
+    if (!search) return [];
+    search.set({
+        needle: els.findInput.value,
+        caseSensitive: findState.caseSensitive,
+        wholeWord: findState.wholeWord,
+        regExp: findState.regex,
+        wrap: false,
+        skipCurrent: false,
+    });
+    return search.findAll(ace.session) || [];
+}
+
+function escapeRegExp(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function textFindRanges(text) {
+    const query = els.findInput.value;
+    if (!query) return [];
+    let pattern;
+    if (findState.regex) {
+        pattern = findState.wholeWord ? '\\b(?:' + query + ')\\b' : query;
+    } else {
+        const escaped = escapeRegExp(query);
+        pattern = findState.wholeWord ? '\\b' + escaped + '\\b' : escaped;
+    }
+    const re = new RegExp(pattern, findState.caseSensitive ? 'g' : 'gi');
+    const ranges = [];
+    let match;
+    while ((match = re.exec(text)) !== null) {
+        if (!match[0].length) {
+            re.lastIndex += 1;
+            continue;
+        }
+        ranges.push({start: match.index, end: match.index + match[0].length});
+        if (ranges.length >= 20000) break;
+    }
+    return ranges;
+}
+
+function updateFindNav() {
+    const has = findState.ranges.length > 0;
+    els.findPrev.disabled = !has;
+    els.findNext.disabled = !has;
+}
+
+function updateFindCount() {
+    if (!els.findCount.classList.contains('error')) {
+        els.findCount.textContent = findState.ranges.length + ' 个结果';
+    }
+    updateFindNav();
+}
+
+function selectFindMatch(index, opts = {}) {
+    const target = findState.target;
+    const total = findState.ranges.length;
+    if (!target || !total) {
+        updateFindCount();
+        return;
+    }
+    findState.index = ((index % total) + total) % total;
+    const range = findState.ranges[findState.index];
+    if (target.type === 'ace') {
+        target.ace.selection.setSelectionRange(range, false);
+        if (opts.scroll !== false) target.ace.scrollToLine(range.start.row, true, true);
+    } else {
+        const textarea = target.textarea;
+        textarea.setSelectionRange(range.start, range.end);
+        if (opts.scroll !== false) {
+            const before = textarea.value.slice(0, range.start);
+            const line = before.split('\n').length;
+            const style = getComputedStyle(textarea);
+            const lineHeight = parseFloat(style.lineHeight) || (parseFloat(style.fontSize) || 13) * 1.5;
+            const top = (line - 1) * lineHeight - textarea.clientHeight / 2 + lineHeight / 2;
+            textarea.scrollTop = Math.max(0, Math.min(top, textarea.scrollHeight - textarea.clientHeight));
+        }
+        for (let i = 0; i < findState.textMarkerEls.length; i++) {
+            findState.textMarkerEls[i].classList.toggle('current', i === findState.index);
+        }
+        syncFindTextLayerScroll();
+    }
+    updateFindCount();
+}
+
+function runFind(opts = {}) {
+    if (!findState.open) return;
+    const target = findTarget();
+    if (!target) {
+        closeFindBar({keepFocus: true});
+        return;
+    }
+    ensureFindBarHost();
+    clearFindMarkers();
+    clearTextFindLayer();
+    const previousIndex = findState.index;
+    findState.target = target;
+    if (target.type === 'ace') {
+        const session = target.ace.session;
+        if (findState.aceSession !== session) {
+            detachFindAceChange();
+            const handler = () => {
+                if (findState.open && findState.target === target) scheduleFind();
+            };
+            session.on('change', handler);
+            findState.aceSession = session;
+            findState.aceChangeHandler = handler;
+        }
+    } else {
+        detachFindAceChange();
+    }
+    findState.ranges = [];
+    findState.index = -1;
+    els.findCount.classList.remove('error');
+    if (!els.findInput.value) {
+        updateFindCount();
+        return;
+    }
+    if (findState.regex) {
+        try {
+            new RegExp(els.findInput.value);
+        } catch (e) {
+            els.findCount.textContent = '正则表达式无效';
+            els.findCount.classList.add('error');
+            updateFindNav();
+            return;
+        }
+    }
+    try {
+        findState.ranges = target.type === 'ace' ? aceFindRanges(target.ace) : textFindRanges(target.textarea.value);
+    } catch (e) {
+        els.findCount.textContent = '正则表达式无效';
+        els.findCount.classList.add('error');
+        updateFindNav();
+        return;
+    }
+    if (target.type === 'ace' && findState.ranges.length) {
+        const session = target.ace.session;
+        const limit = Math.min(findState.ranges.length, findMarkerLimit);
+        for (let i = 0; i < limit; i++) {
+            findState.markerIds.push(session.addMarker(findState.ranges[i], 'cadt-find-match', 'text', false));
+        }
+    }
+    if (target.type === 'text' && findState.ranges.length) buildTextFindLayer(target);
+    if (!findState.ranges.length) {
+        updateFindCount();
+        return;
+    }
+    const keep = opts.keepIndex && previousIndex >= 0 && previousIndex < findState.ranges.length ? previousIndex : 0;
+    selectFindMatch(keep, {scroll: true});
+}
+
+function stepFind(delta) {
+    if (!findState.open || !findState.ranges.length) return;
+    selectFindMatch(findState.index + delta, {scroll: true});
+}
+
+function scheduleFind() {
+    clearTimeout(findState.timer);
+    findState.timer = setTimeout(() => {
+        findState.timer = 0;
+        runFind({keepIndex: false});
+    }, 80);
+}
+
+function selectedFindText() {
+    const target = findTarget();
+    if (!target) return '';
+    if (target.type === 'ace') return target.ace.getSelectedText() || '';
+    const textarea = target.textarea;
+    return textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
+}
+
+function focusFindEditor() {
+    if (currentMode === 'code' && file && file.editor && file.editor.aceEditor) {
+        file.editor.aceEditor.focus();
+    } else if (currentMode === 'text' && file && file.pane) {
+        const textarea = file.pane.querySelector('textarea.jsoneditor-text');
+        if (textarea) textarea.focus();
+    }
+}
+
+function openFindBar() {
+    if (!findTarget()) {
+        flash('内容搜索请在代码视图或文本视图中使用');
+        return;
+    }
+    if (findState.open) {
+        els.findInput.focus();
+        els.findInput.select();
+        return;
+    }
+    ensureFindBarHost();
+    findState.open = true;
+    els.findBar.classList.remove('hidden');
+    els.abSearch.classList.add('active');
+    const selected = selectedFindText();
+    if (selected && selected.length <= 200 && !/[\r\n]/.test(selected)) {
+        els.findInput.value = selected;
+    }
+    els.findInput.focus();
+    els.findInput.select();
+    runFind({keepIndex: false});
+}
+
+function closeFindBar(opts = {}) {
+    if (!findState.open) return;
+    findState.open = false;
+    clearFindMarkers();
+    clearTextFindLayer();
+    detachFindAceChange();
+    findState.target = null;
+    findState.ranges = [];
+    findState.index = -1;
+    if (findState.host) {
+        findState.host.classList.remove('find-open');
+        findState.host = null;
+    }
+    els.findBar.classList.add('hidden');
+    if (els.abSearch) els.abSearch.classList.remove('active');
+    resizeFindEditor();
+    if (!opts.keepFocus) focusFindEditor();
+}
+
+function bindFindBar() {
+    els.findBar.addEventListener('keydown', (e) => {
+        if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.altKey && !e.ctrlKey && !e.metaKey &&
+            !e.shiftKey && findState.ranges.length) {
+            e.preventDefault();
+            e.stopPropagation();
+            stepFind(e.key === 'ArrowUp' ? -1 : 1);
+        }
+    });
+    els.findInput.addEventListener('input', scheduleFind);
+    els.findInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            e.stopPropagation();
+            stepFind(e.shiftKey ? -1 : 1);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            closeFindBar();
+        }
+    });
+    els.findPrev.addEventListener('click', () => stepFind(-1));
+    els.findNext.addEventListener('click', () => stepFind(1));
+    els.findClose.addEventListener('click', () => closeFindBar());
+    const options = [
+        [els.findCase, 'caseSensitive'],
+        [els.findWord, 'wholeWord'],
+        [els.findRegex, 'regex'],
+    ];
+    for (const [button, key] of options) {
+        button.addEventListener('click', () => {
+            findState[key] = !findState[key];
+            button.classList.toggle('active', findState[key]);
+            button.setAttribute('aria-pressed', String(findState[key]));
+            els.findInput.focus();
+            runFind({keepIndex: true});
+        });
+    }
+    els.findPrev.disabled = true;
+    els.findNext.disabled = true;
+}
+
+bindFindBar();
+
+const globalSearch = {
+    open: false,
+    seq: 0,
+    timer: 0,
+    hits: [],
+    index: -1,
+    root: '',
+    previousFocus: null,
+};
+
+function globalSearchRoot() {
+    if (workspaceFolder) return workspaceFolder;
+    if (file && file.path) {
+        const s = String(file.path).replace(/\\/g, '/');
+        const i = s.lastIndexOf('/');
+        if (i > 0) return s.slice(0, i);
+    }
+    return '';
+}
+
+function openGlobalSearch() {
+    if (globalSearch.open) {
+        els.gsInput.focus();
+        els.gsInput.select();
+        return;
+    }
+    const root = globalSearchRoot();
+    if (!root) {
+        flash('请先打开文件夹或文件');
+        return;
+    }
+    globalSearch.open = true;
+    globalSearch.root = root;
+    globalSearch.previousFocus = document.activeElement;
+    globalSearch.hits = [];
+    globalSearch.index = -1;
+    els.gsRoot.textContent = root;
+    els.gsInput.value = '';
+    els.gsCount.textContent = '';
+    showGlobalSearchEmpty('输入内容，在打开的工作区中搜索文本');
+    els.gsMask.classList.remove('hidden');
+    els.gsInput.focus();
+}
+
+function closeGlobalSearch() {
+    if (!globalSearch.open) return;
+    globalSearch.open = false;
+    clearTimeout(globalSearch.timer);
+    globalSearch.seq++;
+    els.gsMask.classList.add('hidden');
+    const prev = globalSearch.previousFocus;
+    globalSearch.previousFocus = null;
+    if (prev && prev.isConnected && typeof prev.focus === 'function') {
+        try { prev.focus(); } catch (e) {}
+    } else {
+        focusFindEditor();
+    }
+}
+
+function showGlobalSearchEmpty(text) {
+    els.gsList.textContent = '';
+    const empty = document.createElement('div');
+    empty.className = 'gs-empty';
+    empty.textContent = text;
+    els.gsList.appendChild(empty);
+}
+
+function scheduleGlobalSearch() {
+    clearTimeout(globalSearch.timer);
+    globalSearch.timer = setTimeout(runGlobalSearch, 180);
+}
+
+async function runGlobalSearch() {
+    if (!globalSearch.open) return;
+    const query = els.gsInput.value;
+    const seq = ++globalSearch.seq;
+    globalSearch.hits = [];
+    globalSearch.index = -1;
+    if (!query.trim()) {
+        els.gsCount.textContent = '';
+        showGlobalSearchEmpty('输入内容，在打开的工作区中搜索文本');
+        return;
+    }
+    els.gsCount.textContent = '搜索中…';
+    try {
+        const res = await backend.SearchWorkspace(globalSearch.root, query, false, 400);
+        if (!globalSearch.open || seq !== globalSearch.seq) return;
+        renderGlobalSearchResults(res || {hits: []});
+    } catch (e) {
+        if (seq !== globalSearch.seq) return;
+        els.gsCount.textContent = '搜索失败';
+        showGlobalSearchEmpty('搜索失败：' + e);
+    }
+}
+
+function globalSearchRow(hit, index) {
+    const row = document.createElement('div');
+    row.className = 'gs-row';
+    row.dataset.i = String(index);
+    row.setAttribute('role', 'option');
+    const icon = document.createElement('span');
+    icon.className = 'gs-file-icon';
+    try {
+        const spec = fileIconSpec(hit.name);
+        icon.innerHTML = spec.svg;
+        icon.classList.add(spec.className);
+    } catch (e) {}
+    const main = document.createElement('div');
+    main.className = 'gs-main';
+    const line1 = document.createElement('div');
+    line1.className = 'gs-line1';
+    const name = document.createElement('span');
+    name.className = 'gs-name';
+    name.textContent = hit.name || '';
+    const dir = document.createElement('span');
+    dir.className = 'gs-dir';
+    dir.textContent = hit.dir || '';
+    line1.append(name, dir);
+    const line2 = document.createElement('div');
+    line2.className = 'gs-line2';
+    const ln = document.createElement('span');
+    ln.className = 'gs-ln';
+    ln.textContent = String(hit.line || '');
+    const preview = document.createElement('span');
+    preview.className = 'gs-preview';
+    const text = String(hit.preview == null ? '' : hit.preview);
+    const start = Math.max(0, Math.min(Number(hit.matchStart) || 0, text.length));
+    const end = Math.max(start, Math.min(Number(hit.matchEnd) || 0, text.length));
+    if (start > 0) preview.appendChild(document.createTextNode(text.slice(0, start)));
+    if (end > start) {
+        const mark = document.createElement('mark');
+        mark.textContent = text.slice(start, end);
+        preview.appendChild(mark);
+    }
+    if (end < text.length) preview.appendChild(document.createTextNode(text.slice(end)));
+    line2.append(ln, preview);
+    main.append(line1, line2);
+    row.append(icon, main);
+    row.addEventListener('click', () => {
+        globalSearch.index = index;
+        updateGlobalSearchSelection();
+        openGlobalSearchHit(hit);
+    });
+    return row;
+}
+
+function renderGlobalSearchResults(res) {
+    const hits = Array.isArray(res.hits) ? res.hits : [];
+    globalSearch.hits = hits;
+    globalSearch.index = hits.length ? 0 : -1;
+    els.gsList.textContent = '';
+    if (!hits.length) {
+        els.gsCount.textContent = '0 个结果';
+        showGlobalSearchEmpty('未找到匹配内容');
+        return;
+    }
+    const fragment = document.createDocumentFragment();
+    hits.forEach((hit, i) => fragment.appendChild(globalSearchRow(hit, i)));
+    els.gsList.appendChild(fragment);
+    els.gsCount.textContent = hits.length + ' 个结果' + (res.truncated ? '（仅显示前 ' + hits.length + ' 个）' : '');
+    updateGlobalSearchSelection();
+}
+
+function updateGlobalSearchSelection() {
+    const rows = els.gsList.querySelectorAll('.gs-row');
+    for (let i = 0; i < rows.length; i++) {
+        const selected = i === globalSearch.index;
+        rows[i].classList.toggle('selected', selected);
+        rows[i].setAttribute('aria-selected', selected ? 'true' : 'false');
+        if (selected) rows[i].scrollIntoView({block: 'nearest'});
+    }
+}
+
+function moveGlobalSearchSelection(delta) {
+    const total = globalSearch.hits.length;
+    if (!total) return;
+    globalSearch.index = ((globalSearch.index + delta) % total + total) % total;
+    updateGlobalSearchSelection();
+}
+
+async function selectMatchInDoc(doc, line, column = 1, length = 1) {
+    if (!doc || doc.binary || !doc.editor) return;
+    if (doc !== file) await activateDoc(doc);
+    const mode = doc.format && doc.format.table ? 'text' : 'code';
+    if (currentMode !== mode) switchMode(mode);
+    if (mode === 'code') {
+        const ready = await waitUntil(() => doc.editor && doc.editor.aceEditor);
+        if (!ready) return;
+        const ace = doc.editor.aceEditor;
+        const lineNo = Math.max(1, Math.min(Number(line) || 1, ace.session.getLength()));
+        const col = Math.max(0, (Number(column) || 1) - 1);
+        const len = Math.max(1, Number(length) || 1);
+        ace.gotoLine(lineNo, col, false);
+        ace.selection.setSelectionRange({
+            start: {row: lineNo - 1, column: col},
+            end: {row: lineNo - 1, column: col + len},
+        }, false);
+        ace.scrollToLine(lineNo, true, true, () => {});
+        ace.focus();
+        return;
+    }
+    const ready = await waitUntil(() => doc.pane && doc.pane.querySelector('textarea.jsoneditor-text'));
+    if (!ready) return;
+    const textarea = doc.pane.querySelector('textarea.jsoneditor-text');
+    const lines = textarea.value.split('\n');
+    const index = Math.max(0, Math.min((Number(line) || 1) - 1, lines.length - 1));
+    let start = 0;
+    for (let i = 0; i < index; i++) start += lines[i].length + 1;
+    const lineStart = start;
+    start += Math.max(0, (Number(column) || 1) - 1);
+    const end = Math.min(start + Math.max(1, Number(length) || 1), lineStart + lines[index].length);
+    textarea.focus();
+    textarea.setSelectionRange(start, Math.max(start, end));
+    const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
+    textarea.scrollTop = Math.max(0, index * lineHeight - textarea.clientHeight / 2);
+}
+
+async function openGlobalSearchHit(hit) {
+    if (!hit || !hit.path) return;
+    closeGlobalSearch();
+    try {
+        await openPaths([hit.path]);
+        const doc = findDocByPath(hit.path);
+        if (doc) await selectMatchInDoc(doc, hit.line, hit.column, hit.length);
+    } catch (e) {
+        flash('打开失败：' + e, true);
+    }
+}
+
+function handleGlobalSearchKey(e) {
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeGlobalSearch();
+        return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        e.stopPropagation();
+        moveGlobalSearchSelection(e.key === 'ArrowDown' ? 1 : -1);
+        return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (globalSearch.hits.length) openGlobalSearchHit(globalSearch.hits[globalSearch.index]);
+    }
+}
+
+function bindGlobalSearch() {
+    els.gsInput.addEventListener('input', scheduleGlobalSearch);
+    els.gsInput.addEventListener('keydown', handleGlobalSearchKey);
+    els.gsMask.addEventListener('mousedown', (e) => {
+        if (e.target === els.gsMask) closeGlobalSearch();
+    });
+}
+bindGlobalSearch();
+
+const quickSwitch = {
+    open: false,
+    level: 'main',
+    rows: [],
+    index: 0,
+    mainIndex: 0,
+    previousFocus: null,
+};
+
+function quickSwitchTitleFor(level) {
+    return ({
+        main: '切换',
+        theme: '主题',
+        view: '视图模式',
+        font: '编辑器字体',
+        size: '字号',
+        indent: '缩进',
+        layout: '布局',
+        openmode: '打开方式',
+    })[level] || '切换';
+}
+
+function currentIndentLabel() {
+    if (!file || !file.format) return '';
+    const value = getFormatSettings(file.format.id).indent;
+    const found = INDENTS.find(([id]) => id === value);
+    return found ? found[1] : value;
+}
+
+function quickSwitchMainItems() {
+    const font = editorFonts.find((f) => f.id === settings.editorFontFamily);
+    return [
+        {label: '主题', value: currentTheme().name, enter: 'theme'},
+        {label: '视图模式', value: file ? viewLabel(currentMode) : '未打开文件', enter: 'view', disabled: !file},
+        {label: '编辑器字体', value: font ? font.name : settings.editorFontFamily, enter: 'font'},
+        {label: '字号', value: settings.editorFont + ' px', enter: 'size'},
+        {label: '缩进', value: currentIndentLabel(), enter: 'indent', disabled: !file || !file.format},
+        {label: '布局', enter: 'layout'},
+        {label: '打开方式', value: settings.openMode === 'window' ? '多窗口' : '单窗口标签页', enter: 'openmode'},
+    ];
+}
+
+function quickSwitchSubItems(level) {
+    if (level === 'theme') {
+        const items = [];
+        let prevGroup = '';
+        for (const theme of themes) {
+            if (prevGroup && theme.group !== prevGroup) items.push({sep: true});
+            items.push({label: theme.name, checked: settings.theme === theme.id, action: () => setTheme(theme.id)});
+            prevGroup = theme.group;
+        }
+        return items;
+    }
+    if (level === 'view') {
+        if (!file) return [{label: '（未打开文件）', disabled: true}];
+        const splitActive = !!file.splitActive;
+        return viewOptionsFor(file.format, file).map(([mode, label]) => ({
+            label,
+            checked: mode === 'split' ? splitActive : (!splitActive && currentMode === mode),
+            disabled: viewDisabled(mode),
+            action: () => switchMode(mode),
+        }));
+    }
+    if (level === 'font') {
+        return editorFonts.map((font) => ({
+            label: font.name,
+            checked: settings.editorFontFamily === font.id,
+            action: () => {
+                settings.editorFontFamily = font.id;
+                applySettings();
+            },
+        }));
+    }
+    if (level === 'size') {
+        return [11, 12, 13, 14, 15, 16, 18, 20].map((size) => ({
+            label: size + ' px',
+            checked: Number(settings.editorFont) === size,
+            action: () => {
+                settings.editorFont = size;
+                applySettings();
+            },
+        }));
+    }
+    if (level === 'indent') {
+        const formatId = file && file.format ? file.format.id : '';
+        if (!formatId) return [{label: '（未打开文件）', disabled: true}];
+        const current = getFormatSettings(formatId).indent;
+        return INDENTS.map(([id, label]) => ({
+            label,
+            checked: current === id,
+            action: () => {
+                settings.formatSettings[formatId] = {...getFormatSettings(formatId), indent: id};
+                applySettings();
+                if (currentMode === 'code' && file && file.format && file.format.id === formatId &&
+                    file.editor && file.editor.aceEditor) applyAceMode(true);
+            },
+        }));
+    }
+    if (level === 'layout') {
+        return [
+            {label: '文件侧边栏', checked: !!settings.showSidebar, action: () => toggleSidebar()},
+            {label: '文件列表', checked: !!settings.showSidebar && settings.sidebarMode === 'list', action: () => setSidebarMode('list')},
+            {label: '文件树', checked: !!settings.showSidebar && settings.sidebarMode === 'tree', action: () => setSidebarMode('tree')},
+            {label: '结构视图', checked: !!settings.showSidebar && currentSidebarView() === 'structure', action: () => toggleSidebarView('structure')},
+            {label: 'Git 面板', checked: !!settings.showSidebar && currentSidebarView() === 'git', action: () => toggleSidebarView('git')},
+            {label: '终端面板', checked: !!terminalUI.open, action: () => toggleTerminalPanel()},
+            {label: '自动换行', checked: !!settings.codeWrap, action: () => toggleCodeWrap()},
+            {label: '窗口置顶', checked: !!settings.alwaysOnTop, action: () => toggleAlwaysOnTop()},
+        ];
+    }
+    if (level === 'openmode') {
+        return [
+            {
+                label: '单窗口标签页',
+                checked: settings.openMode === 'tab',
+                action: () => { settings.openMode = 'tab'; applySettings(); },
+            },
+            {
+                label: '多窗口',
+                checked: settings.openMode === 'window',
+                action: () => { settings.openMode = 'window'; applySettings(); },
+            },
+        ];
+    }
+    return [];
+}
+
+function updateQuickSwitchSelection() {
+    let selected = null;
+    for (let i = 0; i < quickSwitch.rows.length; i++) {
+        const row = quickSwitch.rows[i].el;
+        const on = i === quickSwitch.index;
+        row.classList.toggle('selected', on);
+        if (on) selected = row;
+    }
+    if (selected && selected.scrollIntoView) {
+        try { selected.scrollIntoView({block: 'nearest'}); } catch (e) {}
+    }
+}
+
+function renderQuickSwitch() {
+    els.quickSwitchTitle.textContent = quickSwitchTitleFor(quickSwitch.level);
+    els.quickSwitchBack.classList.toggle('hidden', quickSwitch.level === 'main');
+    els.quickSwitchList.textContent = '';
+    quickSwitch.rows = [];
+    const items = quickSwitch.level === 'main' ? quickSwitchMainItems() : quickSwitchSubItems(quickSwitch.level);
+    let number = 0;
+    for (const item of items) {
+        if (item.sep) {
+            const sep = document.createElement('div');
+            sep.className = 'quick-switch-sep';
+            els.quickSwitchList.appendChild(sep);
+            continue;
+        }
+        const idx = number++;
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'quick-switch-item' + (item.disabled ? ' disabled' : '') + (idx === quickSwitch.index ? ' selected' : '');
+        const indexEl = document.createElement('span');
+        indexEl.className = 'quick-switch-index';
+        indexEl.textContent = idx < 9 ? String(idx + 1) : (idx === 9 ? '0' : '');
+        const labelEl = document.createElement('span');
+        labelEl.className = 'quick-switch-label';
+        labelEl.textContent = item.label;
+        el.append(indexEl, labelEl);
+        if (item.value) {
+            const valueEl = document.createElement('span');
+            valueEl.className = 'quick-switch-value';
+            valueEl.textContent = item.value;
+            el.appendChild(valueEl);
+        }
+        if (item.checked) {
+            const checkEl = document.createElement('span');
+            checkEl.className = 'quick-switch-check';
+            checkEl.innerHTML = iconSvg('check', 12);
+            el.appendChild(checkEl);
+        }
+        el.addEventListener('mouseenter', () => {
+            if (item.disabled || quickSwitch.index === idx) return;
+            quickSwitch.index = idx;
+            updateQuickSwitchSelection();
+        });
+        el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            activateQuickSwitch(idx);
+        });
+        els.quickSwitchList.appendChild(el);
+        quickSwitch.rows.push({item, el});
+    }
+    if (quickSwitch.index >= quickSwitch.rows.length) quickSwitch.index = Math.max(0, quickSwitch.rows.length - 1);
+    updateQuickSwitchSelection();
+}
+
+function moveQuickSwitch(delta) {
+    const total = quickSwitch.rows.length;
+    if (!total) return;
+    let next = quickSwitch.index;
+    for (let step = 0; step < total; step++) {
+        next = (next + delta + total) % total;
+        if (!quickSwitch.rows[next].item.disabled) break;
+    }
+    quickSwitch.index = next;
+    updateQuickSwitchSelection();
+}
+
+function activateQuickSwitch(index) {
+    const row = quickSwitch.rows[index];
+    if (!row || row.item.disabled) return;
+    if (row.item.enter) {
+        enterQuickSwitchLevel(row.item.enter);
+        return;
+    }
+    if (row.item.action) {
+        closeQuickSwitch();
+        row.item.action();
+    }
+}
+
+function enterQuickSwitchLevel(level) {
+    if (level === 'main') {
+        quickSwitch.level = 'main';
+        quickSwitch.index = quickSwitch.mainIndex;
+    } else {
+        if ((level === 'view' && !file) || (level === 'indent' && (!file || !file.format))) return;
+        quickSwitch.mainIndex = quickSwitch.index;
+        quickSwitch.level = level;
+        const items = quickSwitchSubItems(level);
+        let checked = 0;
+        let number = 0;
+        for (const item of items) {
+            if (item.sep) continue;
+            if (item.checked && !item.disabled) {
+                checked = number;
+                break;
+            }
+            number++;
+        }
+        quickSwitch.index = checked;
+    }
+    renderQuickSwitch();
+    els.quickSwitch.focus();
+}
+
+function openQuickSwitch() {
+    if (quickSwitch.open || isDialogOpen()) return;
+    closeAllMenus();
+    quickSwitch.open = true;
+    quickSwitch.level = 'main';
+    quickSwitch.index = 0;
+    quickSwitch.mainIndex = 0;
+    const active = document.activeElement;
+    quickSwitch.previousFocus = active &&
+        !(active.closest && (active.closest('#tb-menu') || active.closest('#menubar') || active.closest('.ctx-menu'))) ? active : null;
+    els.quickSwitchMask.classList.remove('hidden');
+    renderQuickSwitch();
+    els.quickSwitch.focus();
+}
+
+function closeQuickSwitch() {
+    if (!quickSwitch.open) return;
+    quickSwitch.open = false;
+    els.quickSwitchMask.classList.add('hidden');
+    const previous = quickSwitch.previousFocus;
+    quickSwitch.previousFocus = null;
+    if (previous && previous.isConnected && typeof previous.focus === 'function' &&
+        previous !== document.body && previous !== document.documentElement) {
+        try {
+            previous.focus();
+            return;
+        } catch (e) {}
+    }
+    focusFindEditor();
+}
+
+function toggleQuickSwitch() {
+    if (quickSwitch.open) closeQuickSwitch();
+    else openQuickSwitch();
+}
+
+function handleQuickSwitchKey(e) {
+    if (!quickSwitch.open) return false;
+    if (e.key === 'Escape') {
+        if (quickSwitch.level === 'main') closeQuickSwitch();
+        else enterQuickSwitchLevel('main');
+        return true;
+    }
+    if (e.key === 'ArrowDown') {
+        moveQuickSwitch(1);
+        return true;
+    }
+    if (e.key === 'ArrowUp') {
+        moveQuickSwitch(-1);
+        return true;
+    }
+    if (e.key === 'Enter') {
+        activateQuickSwitch(quickSwitch.index);
+        return true;
+    }
+    if ((e.key === 'ArrowLeft' || e.key === 'Backspace') && quickSwitch.level !== 'main') {
+        enterQuickSwitchLevel('main');
+        return true;
+    }
+    if (!e.ctrlKey && !e.altKey && !e.metaKey && /^[0-9]$/.test(e.key)) {
+        const index = e.key === '0' ? 9 : Number(e.key) - 1;
+        if (index < quickSwitch.rows.length) {
+            activateQuickSwitch(index);
+            return true;
+        }
+    }
+    return false;
+}
+
+els.quickSwitchMask.addEventListener('click', (e) => {
+    if (e.target === els.quickSwitchMask) closeQuickSwitch();
+});
+els.quickSwitch.addEventListener('click', (e) => e.stopPropagation());
+els.quickSwitchBack.addEventListener('click', (e) => {
+    e.stopPropagation();
+    enterQuickSwitchLevel('main');
+});
 
 function exitApp() {
     if (rt && rt.Quit) rt.Quit();
     else if (rt && rt.WindowClose) rt.WindowClose();
     else window.close();
+}
+
+function parentDirOf(path) {
+    const s = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const i = s.lastIndexOf('/');
+    return i > 0 ? s.slice(0, i) : '';
+}
+
+const recentOpenKey = 'datalens-recent';
+const recentOpenLimit = 12;
+
+function readRecentOpen() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(recentOpenKey) || '[]');
+        return Array.isArray(raw) ? raw.filter((it) => it && it.path) : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function rememberRecentOpen(path, name, isDir) {
+    if (!path) return;
+    const key = String(path).replace(/\\/g, '/').toLowerCase();
+    const list = readRecentOpen().filter((it) => String(it.path || '').replace(/\\/g, '/').toLowerCase() !== key);
+    list.unshift({path, name: name || baseNameOf(path), isDir: !!isDir});
+    try {
+        localStorage.setItem(recentOpenKey, JSON.stringify(list.slice(0, recentOpenLimit)));
+    } catch (e) {}
+}
+
+function clearRecentOpen() {
+    try {
+        localStorage.removeItem(recentOpenKey);
+    } catch (e) {}
+    flash('已清除最近打开记录');
+}
+
+function recentOpenMenuItems() {
+    const list = readRecentOpen();
+    if (!list.length) return [{label: '（无最近记录）', disabled: true}];
+    const items = list.map((entry) => {
+        const spec = entry.isDir ? null : fileIconSpec(entry.name || entry.path);
+        return {
+            label: entry.name || baseNameOf(entry.path),
+            icon: entry.isDir ? 'E8B7' : undefined,
+            iconHtml: spec ? spec.svg : undefined,
+            iconClass: spec ? spec.className : undefined,
+            action: () => (entry.isDir ? openFolderSmart(entry.path) : openPath(entry.path)),
+        };
+    });
+    items.push({sep: true}, {label: '清除最近记录', action: clearRecentOpen});
+    return items;
+}
+
+// ---- 外部文件拖到文件树目录行：复制进该目录 ----
+// Wails 的 file-drop 事件比 drop 事件晚（要等 Go 原生解析路径），用 pending 标记衔接。
+let pendingExternalDrop = null;
+
+function setPendingExternalDrop(destDir) {
+    pendingExternalDrop = {destDir, at: Date.now()};
+}
+
+async function copyExternalIntoDir(paths, destDir) {
+    if (!backend.CopyEntry) {
+        flash('当前版本不支持复制到目录', true);
+        return;
+    }
+    let ok = 0;
+    let failed = 0;
+    for (const p of paths || []) {
+        const name = baseNameOf(p);
+        if (!name) { failed++; continue; }
+        let newName = name;
+        try {
+            newName = (await backend.SuggestCopyName(destDir, name, false)) || name;
+        } catch (e) {}
+        try {
+            await backend.CopyEntry(p, destDir, newName);
+            ok++;
+        } catch (e) {
+            failed++;
+        }
+    }
+    if (explorer && explorer.refresh) explorer.refresh();
+    if (ok) flash('已复制 ' + ok + ' 项到 ' + (baseNameOf(destDir) || destDir));
+    if (failed) flash(failed + ' 项复制失败', true);
+}
+
+// ---- 会话恢复：标签页/分组/分屏布局持久化，重启后还原 ----
+const sessionKey = 'cadt.session.v1';
+let sessionTimer = 0;
+
+function serializeSplitSession(node, gidToIdx) {
+    if (typeof node === 'string') {
+        return gidToIdx.has(node) ? gidToIdx.get(node) : null;
+    }
+    const a = serializeSplitSession(node.a, gidToIdx);
+    const b = serializeSplitSession(node.b, gidToIdx);
+    if (a == null) return b;
+    if (b == null) return a;
+    return {dir: node.dir, ratio: node.ratio, a, b};
+}
+
+function serializeSession() {
+    if (!docs.length) return null;
+    const groups = [];
+    const gidToIdx = new Map();
+    for (const g of editorGroups) {
+        const entries = groupDocs(g).filter((d) => d.path);
+        if (!entries.length) continue;
+        gidToIdx.set(g.id, groups.length);
+        groups.push({
+            paths: entries.map((d) => d.path),
+            active: (docs.find((d) => d.id === g.activeId && d.path) || entries[0]).path,
+        });
+    }
+    if (!groups.length) return null;
+    const modes = {};
+    for (const d of docs) {
+        if (d.path && d.mode) modes[d.path] = d.mode;
+    }
+    return {
+        workspace: workspaceFolder || '',
+        groups,
+        current: file && file.path ? file.path : '',
+        split: splitRoot ? serializeSplitSession(splitRoot, gidToIdx) : null,
+        modes,
+    };
+}
+
+function scheduleSessionSave() {
+    clearTimeout(sessionTimer);
+    sessionTimer = setTimeout(saveSessionNow, 500);
+}
+
+function saveSessionNow() {
+    sessionTimer = 0;
+    try {
+        const sess = serializeSession();
+        if (sess) localStorage.setItem(sessionKey, JSON.stringify(sess));
+        else localStorage.removeItem(sessionKey);
+    } catch (e) {}
+}
+
+function readSession() {
+    try {
+        const sess = JSON.parse(localStorage.getItem(sessionKey) || 'null');
+        if (sess && Array.isArray(sess.groups) && sess.groups.length) return sess;
+    } catch (e) {}
+    return null;
+}
+
+function deserializeSplitSession(node, idxToGid) {
+    if (typeof node === 'number') {
+        return idxToGid.has(node) ? idxToGid.get(node) : null;
+    }
+    if (!node || typeof node !== 'object') return null;
+    const a = deserializeSplitSession(node.a, idxToGid);
+    const b = deserializeSplitSession(node.b, idxToGid);
+    if (a == null || b == null) return null;
+    return {dir: node.dir === 'h' ? 'h' : 'v', ratio: Math.min(0.8, Math.max(0.2, Number(node.ratio) || 0.5)), a, b};
+}
+
+async function restoreSession(sess) {
+    try {
+        if (sess.workspace && !workspaceFolder) openFolderWorkspace(sess.workspace);
+        const idxToGid = new Map();
+        for (const gspec of sess.groups) {
+            const g = createGroup();
+            focusedGroupId = g.id;
+            idxToGid.set(idxToGid.size, g.id);
+            await openPathsHere(gspec.paths || []);
+            const activeDoc = findDocByPath(gspec.active);
+            if (activeDoc && groupOfDoc(activeDoc.id) === g && g.activeId !== activeDoc.id) {
+                await activateDoc(activeDoc);
+            }
+        }
+        if (sess.split && typeof sess.split === 'object') {
+            splitRoot = deserializeSplitSession(sess.split, idxToGid);
+        }
+        const current = sess.current ? findDocByPath(sess.current) : null;
+        if (current) {
+            await activateDoc(current);
+            const mode = sess.modes && sess.modes[current.path];
+            if (mode && mode !== currentMode) switchMode(mode);
+        } else if (editorGroups.length) {
+            const first = groupDocs(editorGroups[0])[0];
+            if (first) await activateDoc(first);
+        }
+        renderEditorLayout();
+        flash('已恢复上次会话');
+    } catch (e) {
+        logFrontend('warn', '会话恢复失败：' + (e && e.message || e));
+    }
+}
+
+function newDocumentMenuItems() {
+    const items = [];
+    for (const type of NEW_FILE_TYPES) {
+        if (type.sep) {
+            items.push({sep: true});
+            continue;
+        }
+        const spec = fileIconSpec(type.name);
+        const dot = type.name.lastIndexOf('.');
+        const ext = dot >= 0 ? type.name.slice(dot) : '';
+        items.push({
+            label: type.label,
+            shortcut: ext,
+            iconHtml: spec.svg,
+            iconClass: spec.className,
+            action: () => newDocumentWith('未命名' + ext, ext.toLowerCase() === '.json' ? '{}' : ''),
+        });
+    }
+    items.push({sep: true});
+    items.push({
+        label: '文件…',
+        icon: 'E7C3',
+        disabled: !workspaceFolder,
+        action: () => openCreateEntryDialog(workspaceFolder, false, '', '新建文件'),
+    });
+    items.push({
+        label: '目录…',
+        icon: 'E8B7',
+        disabled: !workspaceFolder,
+        action: () => openCreateEntryDialog(workspaceFolder, true, '新建文件夹', '新建文件夹'),
+    });
+    return items;
+}
+
+function propsTimeText(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    try {
+        return new Date(n).toLocaleString('zh-CN', {hour12: false});
+    } catch (e) {
+        return '';
+    }
+}
+
+async function showFileProperties(targetPath) {
+    if (targetPath) {
+        await showPathProperties(targetPath);
+        return;
+    }
+    const doc = file;
+    if (!doc || !doc.path) return;
+    let info = null;
+    if (backend.GetPathInfo) {
+        try {
+            info = await backend.GetPathInfo(doc.path);
+        } catch (e) {}
+    }
+    const rows = [];
+    rows.push(['名称', doc.name || baseNameOf(doc.path), false]);
+    rows.push(['路径', doc.path, true]);
+    const kind = doc.binary ? (doc.image ? '图片（二进制）' : '二进制') : (doc.format ? doc.format.name : '文本');
+    rows.push(['类型', kind, false]);
+    const size = info && Number.isFinite(info.size) ? info.size : doc.size;
+    if (Number.isFinite(size)) {
+        rows.push(['大小', fmtSize(size) + '（' + Number(size).toLocaleString('zh-CN') + ' 字节）', false]);
+    }
+    const modified = info ? propsTimeText(info.modified) : '';
+    if (modified) rows.push(['修改时间', modified, false]);
+    if (info) rows.push(['只读', info.readOnly ? '是' : '否', false]);
+    if (!doc.binary) {
+        rows.push(['编码', String(doc.enc || 'utf-8').toUpperCase(), false]);
+        rows.push(['换行符', doc.eol === 'crlf' ? 'CRLF' : 'LF', false]);
+        rows.push(['BOM', doc.hasBom ? '有' : '无', false]);
+        if (!doc.large) {
+            const text = structureTextForDoc(doc) || '';
+            rows.push(['行数', text ? String(text.split('\n').length) : '0', false]);
+        }
+    }
+    elsDialogs.propsGrid.textContent = '';
+    for (const [key, value, mono] of rows) {
+        const k = document.createElement('div');
+        k.className = 'props-key';
+        k.textContent = key;
+        const v = document.createElement('div');
+        v.className = 'props-val' + (mono ? ' mono' : '');
+        v.textContent = value;
+        elsDialogs.propsGrid.append(k, v);
+    }
+    setPropsDialogTitle('文件属性');
+    openDialogEl(elsDialogs.props);
+}
+
+// showPathProperties 文件树右键的属性：目标可以是未打开的文件或文件夹，仅展示路径元信息。
+async function showPathProperties(path) {
+    if (!path) return;
+    let info = null;
+    if (backend.GetPathInfo) {
+        try {
+            info = await backend.GetPathInfo(path);
+        } catch (e) {}
+    }
+    const name = (info && info.name) || baseNameOf(path);
+    const rows = [];
+    rows.push(['名称', name, false]);
+    rows.push(['路径', path, true]);
+    const isDirEntry = !!(info && info.isDir);
+    if (isDirEntry) {
+        rows.push(['类型', '文件夹', false]);
+    } else {
+        let kind = '文件';
+        try {
+            const fmt = detectFormat(name);
+            if (fmt && fmt.name) kind = '文件（' + fmt.name + '）';
+        } catch (e) {}
+        rows.push(['类型', kind, false]);
+        if (info && Number.isFinite(info.size)) {
+            rows.push(['大小', fmtSize(info.size) + '（' + Number(info.size).toLocaleString('zh-CN') + ' 字节）', false]);
+        }
+    }
+    const modified = info ? propsTimeText(info.modified) : '';
+    if (modified) rows.push(['修改时间', modified, false]);
+    if (info) rows.push(['只读', info.readOnly ? '是' : '否', false]);
+    elsDialogs.propsGrid.textContent = '';
+    for (const [key, value, mono] of rows) {
+        const k = document.createElement('div');
+        k.className = 'props-key';
+        k.textContent = key;
+        const v = document.createElement('div');
+        v.className = 'props-val' + (mono ? ' mono' : '');
+        v.textContent = value;
+        elsDialogs.propsGrid.append(k, v);
+    }
+    setPropsDialogTitle(isDirEntry ? '文件夹属性' : '文件属性');
+    openDialogEl(elsDialogs.props);
+}
+
+function setPropsDialogTitle(text) {
+    const title = elsDialogs.props && elsDialogs.props.querySelector('.dialog-title');
+    if (title) title.textContent = text;
+}
+
+async function reloadAllFromDisk() {
+    const targets = docs.filter((d) => d.path).slice();
+    if (!targets.length) return;
+    const run = async () => {
+        const original = file;
+        let ok = 0;
+        let failed = 0;
+        for (const doc of targets) {
+            if (!docs.includes(doc)) continue;
+            await activateDoc(doc);
+            if (await reloadActive({quiet: true})) ok++;
+            else failed++;
+        }
+        if (original && docs.includes(original) && file !== original) await activateDoc(original);
+        flash('已从磁盘重新加载 ' + ok + ' 个文件' + (failed ? '，' + failed + ' 个失败' : ''), failed > 0);
+    };
+    if (targets.some((d) => d.dirty)) {
+        openCloseConfirm('全部重新加载将丢弃所有未保存的修改。', run, '全部重新加载');
+    } else {
+        await run();
+    }
+}
+
+const appFeedbackUrl = 'https://gitee.com/candysweet-cdt/CaDt-DataLens/issues';
+const appReleasesUrl = 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases';
+
+function openExternalUrl(url) {
+    if (!url) return;
+    if (rt && rt.BrowserOpenURL) rt.BrowserOpenURL(url);
+    else window.open(url, '_blank', 'noopener');
+}
+
+function openBundledDoc(key, name, text) {
+    const existing = docs.find((d) => d.bundledDoc === key);
+    if (existing) {
+        activateDoc(existing);
+        return existing;
+    }
+    const doc = openVirtualDoc(name, text);
+    doc.bundledDoc = key;
+    return doc;
+}
+
+function showChangelog() {
+    openBundledDoc('changelog', '更新日志.md', changelogText);
+}
+
+function showTerms() {
+    openBundledDoc('terms', '用户协议.md', termsText);
+}
+
+function showPrivacy() {
+    openBundledDoc('privacy', '隐私协议.md', privacyText);
+}
+
+async function openDevTools() {
+    if (!backend.OpenDevTools) {
+        flash('当前版本不支持打开开发者工具', true);
+        return;
+    }
+    try {
+        await backend.OpenDevTools();
+    } catch (e) {
+        flash('打开开发者工具失败：' + e, true);
+        logFrontend('error', '打开开发者工具失败：' + e);
+    }
+}
+
+let updateChecking = false;
+
+function openUpdateDialog() {
+    elsDialogs.updateStatus.className = 'update-status';
+    elsDialogs.updateStatus.textContent = '正在检查更新…';
+    elsDialogs.updateNotes.classList.add('hidden');
+    elsDialogs.updateNotes.textContent = '';
+    elsDialogs.updateDownload.classList.add('hidden');
+    elsDialogs.updateDownload.onclick = null;
+    elsDialogs.updatePage.classList.add('hidden');
+    elsDialogs.updatePage.onclick = null;
+    openDialogEl(elsDialogs.update);
+}
+
+function renderUpdateResult(info) {
+    const status = elsDialogs.updateStatus;
+    const pageUrl = info.pageUrl || appReleasesUrl;
+    status.className = 'update-status';
+    if (info.status === 'no-release') {
+        status.textContent = 'Gitee 仓库尚未发布正式版本。当前版本 ' + info.currentVersion + '。';
+        status.classList.add('muted');
+        elsDialogs.updatePage.classList.remove('hidden');
+        elsDialogs.updatePage.onclick = () => openExternalUrl(pageUrl);
+        return;
+    }
+    if (!info.hasUpdate) {
+        status.textContent = '当前已是最新版本 ' + info.currentVersion + '。';
+        status.classList.add('muted');
+        return;
+    }
+    const date = info.publishedAt ? '，发布于 ' + String(info.publishedAt).slice(0, 10) : '';
+    status.textContent = '发现新版本 ' + info.latestVersion + '（当前 ' + info.currentVersion + '）' + date + '。';
+    if (info.notes) {
+        elsDialogs.updateNotes.innerHTML = renderMarkdownHtml(info.notes);
+        elsDialogs.updateNotes.classList.remove('hidden');
+        elsDialogs.updateNotes.querySelectorAll('a').forEach((a) => {
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                openExternalUrl(a.getAttribute('href'));
+            });
+        });
+    }
+    if (info.downloadUrl) {
+        elsDialogs.updateDownload.classList.remove('hidden');
+        elsDialogs.updateDownload.onclick = () => openExternalUrl(info.downloadUrl);
+    }
+    if (pageUrl) {
+        elsDialogs.updatePage.classList.remove('hidden');
+        elsDialogs.updatePage.onclick = () => openExternalUrl(pageUrl);
+    }
+}
+
+// ---- 启动时自动检查更新（可在设置关闭），结果展示在右下角状态栏 ----
+const SPINNER_HTML = '<svg class="spin-icon" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="20 9" stroke-linecap="round"/></svg>';
+let updateStatusTimer = 0;
+
+function setUpdateStatus(html, opts = {}) {
+    if (!els.stUpdate) return;
+    clearTimeout(updateStatusTimer);
+    els.stUpdate.innerHTML = html;
+    els.stUpdate.style.display = html ? '' : 'none';
+    els.stUpdate.onclick = opts.onClick || null;
+    els.stUpdate.classList.toggle('muted', !!opts.muted);
+    if (opts.autoHide) {
+        updateStatusTimer = setTimeout(() => {
+            els.stUpdate.style.display = 'none';
+        }, opts.autoHide);
+    }
+}
+
+function openUpdateDialogWith(info) {
+    openUpdateDialog();
+    renderUpdateResult(info);
+}
+
+async function autoCheckUpdateOnStart() {
+    if (!backend.CheckForUpdates || settings.autoCheckUpdate === false) return;
+    if (updateChecking) return;
+    updateChecking = true;
+    setUpdateStatus(SPINNER_HTML + ' 检查更新…');
+    try {
+        const info = await backend.CheckForUpdates();
+        if (!info) throw new Error('未返回更新信息');
+        if (info.status === 'no-release') {
+            setUpdateStatus('仓库尚未发布版本', {muted: true, autoHide: 4000});
+        } else if (!info.hasUpdate) {
+            setUpdateStatus('已是最新版本 ' + info.currentVersion, {muted: true, autoHide: 4000});
+        } else {
+            setUpdateStatus('发现新版本 ' + info.latestVersion, {onClick: () => openUpdateDialogWith(info)});
+            flash('发现新版本 ' + info.latestVersion + '，点击右下角查看');
+        }
+    } catch (e) {
+        setUpdateStatus('检查更新失败', {muted: true, autoHide: 4000});
+        logFrontend('error', '自动检查更新失败：' + e);
+    } finally {
+        updateChecking = false;
+    }
+}
+
+async function checkForUpdates() {
+    if (updateChecking) return;
+    updateChecking = true;
+    openUpdateDialog();
+    try {
+        if (!backend.CheckForUpdates) throw new Error('当前版本不支持检查更新');
+        const info = await backend.CheckForUpdates();
+        if (!info) throw new Error('未返回更新信息');
+        renderUpdateResult(info);
+    } catch (e) {
+        elsDialogs.updateStatus.className = 'update-status error';
+        elsDialogs.updateStatus.textContent = '检查更新失败：' + e;
+        elsDialogs.updatePage.classList.remove('hidden');
+        elsDialogs.updatePage.onclick = () => openExternalUrl(appReleasesUrl);
+        logFrontend('error', '检查更新失败：' + e);
+    } finally {
+        updateChecking = false;
+    }
+}
+
+async function checkForUpdatesInline() {
+    const btn = document.getElementById('about-check-update');
+    const status = document.getElementById('about-update-status');
+    if (!btn || !status) return;
+    btn.disabled = true;
+    status.className = 'about-update-status';
+    status.textContent = '正在检查…';
+    try {
+        if (!backend.CheckForUpdates) throw new Error('当前版本不支持检查更新');
+        const info = await backend.CheckForUpdates();
+        if (!info) throw new Error('未返回更新信息');
+        status.className = 'about-update-status';
+        status.textContent = '';
+        if (info.status === 'no-release') {
+            status.textContent = '仓库尚未发布版本，当前 ' + info.currentVersion;
+            status.classList.add('muted');
+        } else if (!info.hasUpdate) {
+            status.textContent = '已是最新版本 ' + info.currentVersion;
+            status.classList.add('muted');
+        } else {
+            status.textContent = '发现新版本 ' + info.latestVersion;
+            const link = document.createElement('a');
+            link.className = 'about-update-link';
+            link.textContent = info.downloadUrl ? '下载安装包' : '打开发布页';
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                openExternalUrl(info.downloadUrl || info.pageUrl || appReleasesUrl);
+            });
+            status.appendChild(link);
+        }
+    } catch (e) {
+        status.className = 'about-update-status error';
+        status.textContent = '检查失败：' + e;
+        logFrontend('error', '检查更新失败：' + e);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+document.getElementById('btn-update-close').addEventListener('click', closeDialogs);
+document.getElementById('about-check-update').addEventListener('click', checkForUpdatesInline);
+
+// ---- 格式互转 + JSON 修复 ----
+
+const CONVERT_TARGET_LABELS = {json: 'JSON', yaml: 'YAML', toml: 'TOML', jsonl: 'JSONL', csv: 'CSV', xml: 'XML'};
+const CONVERT_EXT = {json: '.json', yaml: '.yaml', toml: '.toml', jsonl: '.jsonl', csv: '.csv', xml: '.xml'};
+
+function convertTargetsFor(sourceId) {
+    const table = {
+        json: ['yaml', 'toml', 'jsonl', 'csv', 'xml'],
+        yaml: ['json', 'toml', 'jsonl', 'csv'],
+        toml: ['json', 'yaml', 'csv'],
+        jsonl: ['json', 'yaml', 'csv'],
+        csv: ['json', 'yaml'],
+        xml: ['json', 'yaml'],
+    };
+    return (table[sourceId] || []).filter((tid) => formats[tid] && formats[tid].stringify);
+}
+
+async function convertCurrentTo(targetId) {
+    if (!file || !file.editor || !file.format) return;
+    const target = formats[targetId];
+    if (!target || !target.stringify) return;
+    const text = file.editor.getText();
+    let value;
+    try {
+        value = file.format.parse(text);
+    } catch (e) {
+        flash('当前内容解析失败：' + e.message, true);
+        return;
+    }
+    if (targetId === 'jsonl' && !Array.isArray(value)) value = [value];
+    let out;
+    try {
+        out = target.stringify(value);
+    } catch (e) {
+        flash('转换失败：' + e.message, true);
+        return;
+    }
+    const base = baseNameOf(file.path || file.name || '未命名');
+    const stem = base.replace(/\.[^.]+$/, '') || '转换结果';
+    let destPath = '';
+    try {
+        destPath = await backend.SaveFileDialog(stem + (CONVERT_EXT[targetId] || '.txt'));
+    } catch (e) {
+        return;
+    }
+    if (!destPath) return;
+    try {
+        await backend.SaveFile(destPath, out, '', false, 'utf-8');
+    } catch (e) {
+        flash('保存失败：' + e.message, true);
+        return;
+    }
+    await openPath(destPath);
+    flash('已转换为 ' + (CONVERT_TARGET_LABELS[targetId] || targetId) + '：' + baseNameOf(destPath));
+}
+
+function convertMenuItems() {
+    const id = file && file.format ? file.format.id : '';
+    const targets = convertTargetsFor(id);
+    if (!targets.length) return [{label: '当前格式不支持转换', disabled: true}];
+    return targets.map((tid) => ({
+        label: (CONVERT_TARGET_LABELS[tid] || tid) + '（另存为新文件）',
+        action: () => convertCurrentTo(tid),
+    }));
+}
+
+function repairJsonAction() {
+    if (!file || !file.editor) return;
+    const text = file.editor.getText();
+    let invalid = null;
+    try {
+        JSON.parse(text);
+    } catch (e) {
+        invalid = e;
+    }
+    if (!invalid) {
+        flash('JSON 本身有效，无需修复');
+        return;
+    }
+    const result = repairJson(text);
+    if (!result.ok) {
+        flash('无法自动修复（' + (invalid.message || '解析失败') + '），请手动处理', true);
+        return;
+    }
+    file.editor.setText(result.text);
+    file.text = result.text;
+    flash('已修复 ' + (result.fixes.length ? '：' + result.fixes.join('、') : ''));
+}
+
+// ---- 命令面板动作注册表 ----
+function flattenPaletteItems(prefix, item, out) {
+    if (!item || item.sep || item.disabled) return;
+    if (item.submenu && item.submenu.length) {
+        for (const sub of item.submenu) flattenPaletteItems(prefix, sub, out);
+        return;
+    }
+    if (typeof item.action !== 'function') return;
+    out.push({label: prefix + '： ' + item.label, shortcut: item.shortcut || '', action: item.action});
+}
+
+function paletteActions() {
+    const actions = [];
+    const kinds = [['file', '文件'], ['edit', '编辑'], ['format', '格式'], ['view', '视图'], ['tools', '工具'], ['theme', '主题'], ['help', '帮助']];
+    for (const [kind, prefix] of kinds) {
+        let items = [];
+        try { items = menuItems(kind) || []; } catch (e) { items = []; }
+        for (const item of items) flattenPaletteItems(prefix, item, actions);
+    }
+    // 菜单外的高频动作
+    actions.push({label: 'AI： 打开 / 关闭助手面板', shortcut: 'Alt+9', action: () => toggleAIPanel()});
+    if (aiPanel && typeof aiPanel.paletteActions === 'function') {
+        try {
+            actions.push(...aiPanel.paletteActions());
+        } catch (e) {}
+    }
+    actions.push({label: '书签： 切换当前行书签', shortcut: 'F11', action: toggleBookmark});
+    actions.push({label: '书签： 跳到下一个书签', shortcut: 'F2', action: () => jumpBookmark(1)});
+    actions.push({label: '书签： 跳到上一个书签', shortcut: 'Shift+F2', action: () => jumpBookmark(-1)});
+    for (const [value, label] of [['720', '720px'], ['860', '860px'], ['920', '920px'], ['1100', '1100px'], ['1300', '1300px'], ['0', '自适应']]) {
+        actions.push({label: '设置： Markdown 预览宽度 ' + label, action: () => {
+            settings.mdPreviewWidth = value;
+            applySettings();
+            updateStatus();
+        }});
+    }
+    return actions;
 }
 
 function menuItems(kind) {
@@ -6894,13 +12798,17 @@ function menuItems(kind) {
     const hasPath = !!(file && file.path);
     const hasDirty = docs.some((d) => d.dirty);
     switch (kind) {
-        case 'file':
+        case 'file': {
+            const otherDocs = docs.filter((d) => d !== file);
+            const reloadable = docs.some((d) => d.path);
+            const exportDir = workspaceFolder || (hasPath ? parentDirOf(file.path) : '');
             return [
-                {label: '新建', shortcut: 'Ctrl+N', icon: 'E710', action: newDocument},
+                {label: '新建', shortcut: 'Ctrl+N', icon: 'E710', submenu: newDocumentMenuItems()},
                 {label: '新建窗口', shortcut: 'Ctrl+Shift+N', icon: 'E8A7', action: openNewWindow},
                 {sep: true},
                 {label: '打开…', shortcut: 'Ctrl+O', icon: 'E8E5', action: openDialog},
                 {label: '打开文件夹…', icon: 'E8B7', action: openFolderDialog},
+                {label: '最近打开', icon: 'E81C', submenu: recentOpenMenuItems()},
                 {label: '关闭文件夹', icon: 'E8BB', disabled: !workspaceFolder, action: closeFolder},
                 {sep: true},
                 {label: '保存', shortcut: 'Ctrl+S', icon: 'E74E', disabled: !canSave, action: () => save()},
@@ -6908,52 +12816,100 @@ function menuItems(kind) {
                 {label: '保存全部', disabled: !hasDirty, action: saveAll},
                 {sep: true},
                 {label: '重新加载', icon: 'E72C', disabled: !hasPath, action: requestReload},
+                {label: '从磁盘全部重新加载', icon: 'E895', disabled: !reloadable, action: reloadAllFromDisk},
+                {sep: true},
                 {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: showInFolder},
-                {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => copyText(file.path, '路径')},
-                {label: '复制文件名', icon: 'E8C8', disabled: !hasPath, action: () => copyText(file.name, '文件名')},
+                {
+                    label: '复制路径',
+                    icon: 'E8C8',
+                    disabled: !hasPath,
+                    submenu: [
+                        {label: '复制完整路径', icon: 'E8C8', action: () => copyText(file.path, '路径')},
+                        {label: '复制所在目录', icon: 'E8C8', action: () => copyText(parentDirOf(file.path), '目录路径')},
+                        {label: '复制文件名', icon: 'E8C8', action: () => copyText(file.name, '文件名')},
+                    ],
+                },
+                {sep: true},
+                {label: '文件属性…', icon: 'E946', disabled: !hasPath, action: showFileProperties},
+                {
+                    label: '导出',
+                    icon: 'E896',
+                    submenu: [
+                        {label: '复制结构化目录', disabled: !exportDir, action: () => copyStructuredDir(exportDir)},
+                        {label: '导出结构化目录…', disabled: !exportDir, action: () => exportStructuredDir(exportDir)},
+                    ],
+                },
                 {sep: true},
                 {label: '关闭标签', shortcut: 'Ctrl+W', icon: 'E8BB', disabled: !file, action: () => requestCloseDoc(file)},
+                {label: '关闭其他标签', disabled: !otherDocs.length, action: () => closeDocsWithConfirm(otherDocs)},
+                {label: '关闭所有标签', disabled: !docs.length, action: () => closeDocsWithConfirm(docs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
+                {label: '重新打开关闭的标签页', shortcut: 'Ctrl+Shift+T', icon: 'E7A7', disabled: !closedTabs.length, action: reopenClosedTab},
+                {sep: true},
                 {label: '设置…', shortcut: 'Ctrl+,', icon: 'E713', action: () => openSettings('general')},
                 {sep: true},
                 {label: '退出', icon: 'E8BB', action: exitApp},
             ];
+        }
         case 'edit':
             return [
                 {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', action: doUndo},
                 {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', action: doRedo},
                 {sep: true},
-                {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', action: focusSearch},
+                {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', disabled: !findTarget(), action: openFindBar},
+                {label: '全局搜索…', shortcut: '连按 3 次 Shift', icon: 'E721', action: openGlobalSearch},
             ];
         case 'format':
             return [
                 {label: '格式化', shortcut: 'Ctrl+Alt+L', action: formatDocument},
                 {label: '压缩', action: () => clickEditorButton('.jsoneditor-compact')},
                 {sep: true},
+                {label: '修复 JSON', disabled: !file || !file.format || file.format.id !== 'json' || !!file.binary, action: repairJsonAction},
+                {label: '转换为…', disabled: !file || !file.format || !!file.binary || !!file.large, submenu: convertMenuItems()},
+                {sep: true},
                 {label: '排序', disabled: !tree, action: () => clickEditorButton('.jsoneditor-sort')},
                 {label: '变换…', disabled: !tree, action: () => clickEditorButton('.jsoneditor-transform')},
             ];
         case 'view': {
             const structured = !!file && !!file.treeAvailable;
-            const items = viewOptionsFor(file && file.format, file).map(([mode, label]) => ({
+            const items = [{label: '快速切换…', shortcut: 'Ctrl+`', icon: 'E8B3', action: openQuickSwitch}, {sep: true}];
+            const splitActive = !!(file && file.splitActive);
+            items.push(...viewOptionsFor(file && file.format, file).map(([mode, label]) => ({
                 label,
-                checked: currentMode === mode,
+                checked: mode === 'split' ? splitActive : (!splitActive && currentMode === mode),
                 disabled: viewDisabled(mode),
                 action: () => switchMode(mode),
-            }));
+            })));
             items.push(
                 {sep: true},
-                {label: '终端面板', shortcut: 'Alt+F12', checked: terminalUI.open, action: () => toggleTerminalPanel()},
+                {label: '终端面板', shortcut: 'Alt+F12', checked: terminalUI.open && dockView === 'terminal', action: () => toggleDockView('terminal')},
+                ...(developerMode ? [{label: '调试控制台', shortcut: 'F12', checked: terminalUI.open && dockView === 'debug', action: () => toggleDockView('debug')}] : []),
                 {label: '文件侧边栏', shortcut: 'Alt+1', checked: !!settings.showSidebar, action: () => toggleSidebar()},
                 {label: '文件列表', checked: settings.sidebarMode === 'list', action: () => setSidebarMode('list')},
                 {label: '文件树', checked: settings.sidebarMode === 'tree', action: () => setSidebarMode('tree')},
                 {label: '结构视图', shortcut: 'Alt+7', checked: !!settings.showSidebar && currentSidebarView() === 'structure', action: () => toggleSidebarView('structure')},
+                {label: 'AI 会话', shortcut: 'Alt+8', checked: !!settings.showSidebar && currentSidebarView() === 'chats', action: () => toggleSidebarView('chats')},
                 {sep: true},
                 {label: '自动换行', checked: !!settings.codeWrap, action: toggleCodeWrap},
                 {label: '展开全部', shortcut: 'Ctrl+Shift+=', disabled: !tree, action: () => editor && editor.expandAll()},
                 {label: '收起全部', shortcut: 'Ctrl+Shift+-', disabled: !tree, action: () => editor && editor.collapseAll()},
                 {sep: true},
-                {label: '全屏', shortcut: 'F11', checked: !!rtFullscreen, action: toggleFullscreen},
+                {label: '全屏', checked: !!rtFullscreen, action: toggleFullscreen},
                 {label: '窗口置顶', checked: !!settings.alwaysOnTop, action: toggleAlwaysOnTop},
+                {sep: true},
+                {
+                    label: 'AI 助手面板',
+                    shortcut: 'Alt+9',
+                    checked: aiPanel ? aiPanel.isOpen() : !!settings.aiPanelOpen,
+                    action: () => toggleAIPanel(),
+                },
+                {
+                    label: 'AI 面板显示方式',
+                    submenu: [
+                        {label: '停靠（无文件时占满，打开后分屏）', checked: settings.aiFloatMode === 'dock', action: () => setAIPanelMode('dock')},
+                        {label: '全屏（仅覆盖文件内容区）', checked: settings.aiFloatMode === 'fullscreen', action: () => setAIPanelMode('fullscreen')},
+                        {label: '悬浮（独立窗口）', action: () => setAIPanelMode('float')},
+                    ],
+                },
             );
             return items;
         }
@@ -6980,11 +12936,22 @@ function menuItems(kind) {
             }
             return cmds.map((cmd) => ({label: cmd.label, action: () => cmd.run()}));
         }
-        case 'help':
-            return [
+        case 'help': {
+            const items = [
+                {label: '检查更新…', icon: 'E895', action: checkForUpdates},
+                {label: '更新日志', icon: 'E8A5', action: showChangelog},
+                {label: '反馈', icon: 'E939', action: () => openExternalUrl(appFeedbackUrl)},
+                {sep: true},
+                {label: '用户协议', icon: 'E8A5', action: showTerms},
+                {label: '隐私协议', icon: 'E72E', action: showPrivacy},
+                {sep: true},
+                {label: '命令面板', shortcut: 'Ctrl+Shift+P', icon: 'E721', action: () => palette && palette.toggle()},
                 {label: '快捷键', action: () => openSettings('shortcuts')},
-                {label: '关于 CaDt-DataLens', action: () => openSettings('about')},
             ];
+            if (developerMode) items.push({label: '开发者工具', icon: 'E756', action: openDevTools});
+            items.push({label: '关于 CaDt-DataLens', action: () => openSettings('about')});
+            return items;
+        }
         default:
             return [];
     }
@@ -7004,17 +12971,8 @@ function renderDropdown(menuEl) {
         row.type = 'button';
         row.className = 'menu-item' + (it.disabled ? ' disabled' : '');
         const icon = document.createElement('span');
-        icon.className = 'mi-icon' + (it.checked ? ' checked' : '');
-        if (it.checked) {
-            icon.textContent = '\uE73E';
-        } else if (it.swatch) {
-            const dot = document.createElement('span');
-            dot.className = 'mi-swatch';
-            dot.style.background = 'linear-gradient(135deg, ' + it.swatch + ' 55%, ' + it.swatchAccent + ' 55%)';
-            icon.appendChild(dot);
-        } else if (it.icon) {
-            icon.textContent = String.fromCharCode(parseInt(it.icon, 16));
-        }
+        icon.className = 'mi-icon' + (it.iconClass ? ' ' + it.iconClass : '');
+        renderMenuIcon(icon, it);
         const label = document.createElement('span');
         label.className = 'mi-label';
         label.textContent = it.label;
@@ -7022,13 +12980,46 @@ function renderDropdown(menuEl) {
         key.className = 'mi-key';
         key.textContent = it.shortcut || '';
         row.append(icon, label, key);
-        row.addEventListener('click', (e) => {
-            e.stopPropagation();
-            closeAllMenus();
-            if (!it.disabled) it.action();
-        });
+        if (it.submenu) {
+            const arrow = document.createElement('span');
+            arrow.className = 'ctx-arrow';
+            arrow.innerHTML = iconSvg('chevron-right', 10);
+            row.appendChild(arrow);
+            row.addEventListener('mouseenter', () => {
+                if (!it.disabled) openDropdownSubmenu(row, it.submenu);
+            });
+            row.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (!it.disabled) openDropdownSubmenu(row, it.submenu);
+            });
+        } else {
+            row.addEventListener('mouseenter', () => {
+                if (ctxMenu) ctxMenu.close();
+            });
+            row.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (it.disabled) return;
+                hideMenuBar();
+                it.action();
+            });
+        }
         dd.appendChild(row);
     }
+}
+
+// 子菜单动作执行后也要把菜单条收回三横（IDEA 同款）
+function wrapMenuActions(items) {
+    return items.map((it) => {
+        if (it.submenu) return {...it, submenu: wrapMenuActions(it.submenu)};
+        if (it.action) return {...it, action: (...args) => { hideMenuBar(); it.action(...args); }};
+        return it;
+    });
+}
+
+function openDropdownSubmenu(anchor, items) {
+    if (!ctxMenu || !items || !items.length) return;
+    const rect = anchor.getBoundingClientRect();
+    ctxMenu.open(wrapMenuActions(items), rect.right + 2, rect.top - 4);
 }
 
 function closeAllMenus() {
@@ -7036,64 +13027,66 @@ function closeAllMenus() {
         m.classList.remove('open');
         m.querySelector('.dropdown').classList.add('hidden');
     });
+    if (ctxMenu) ctxMenu.close();
     openMenuEl = null;
 }
 
 function openMenu(menuEl) {
     closeAllMenus();
     renderDropdown(menuEl);
-    menuEl.querySelector('.dropdown').classList.remove('hidden');
+    const dd = menuEl.querySelector('.dropdown');
+    dd.classList.remove('hidden');
+    dd.style.maxHeight = '';
+    dd.style.overflowY = '';
+    // 窗口高度不够时限制在视口内并内部滚动（IDEA 同款），不再被底边截断
+    const rect = dd.getBoundingClientRect();
+    const available = window.innerHeight - rect.top - 8;
+    if (rect.height > available && available > 120) {
+        dd.style.maxHeight = available + 'px';
+        dd.style.overflowY = 'auto';
+    }
     menuEl.classList.add('open');
     openMenuEl = menuEl;
 }
 
+// 菜单条在静止鼠标下唤出时会补发 mouseenter，坐标与上次真实移动相同则不算悬停切换
+let lastMouseX = -1, lastMouseY = -1;
+document.addEventListener('mousemove', (e) => { lastMouseX = e.clientX; lastMouseY = e.clientY; }, true);
 document.querySelectorAll('#menubar .menu').forEach((menuEl) => {
     menuEl.querySelector('.menu-label').addEventListener('click', (e) => {
         e.stopPropagation();
-        closeAllMenus();
+        if (openMenuEl === menuEl) {
+            closeAllMenus();
+            return;
+        }
         openMenu(menuEl);
     });
-    menuEl.querySelector('.menu-label').addEventListener('mouseenter', () => {
+    menuEl.querySelector('.menu-label').addEventListener('mouseenter', (e) => {
+        if (e.clientX === lastMouseX && e.clientY === lastMouseY) return;
         if (openMenuEl && openMenuEl !== menuEl) openMenu(menuEl);
     });
 });
-window.addEventListener('blur', () => closeAllMenus());
+window.addEventListener('blur', () => hideMenuBar());
 document.addEventListener('click', (e) => {
+    if (menuBar.classList.contains('hidden')) return;
     const t = e.target;
-    if (t && t.closest && t.closest('#menubar')) return;
-    closeAllMenus();
+    if (t && t.closest && (t.closest('#menubar') || t.closest('.ctx-menu'))) return;
+    hideMenuBar();
 }, true);
 
-els.searchInput.addEventListener('input', () => {
-    if (!editor || !editor.searchBox) return;
-    editor.searchBox.dom.search.value = els.searchInput.value;
-    editor.searchBox.forceSearch();
-});
-els.searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        if (editor && editor.searchBox) {
-            if (e.shiftKey) editor.searchBox.previous();
-            else editor.searchBox.next();
-        }
-    } else if (e.key === 'Escape') {
-        els.searchInput.blur();
-    }
-});
-
 function updateSearchState() {
-    const tree = currentMode === 'tree' && !!file && !(file.format && file.format.rawOnly);
-    els.searchInput.disabled = !tree;
-    els.searchInput.placeholder = tree ? '搜索节点…'
-        : (currentMode === 'image' || currentMode === 'binary' ? '只读视图' : '代码模式按 Ctrl+F 查找');
     if (els.abSearch) {
-        els.abSearch.disabled = !tree;
-        els.abSearch.title = tree ? '搜索节点 (Ctrl+F)' : '当前视图不支持节点搜索';
+        els.abSearch.disabled = false;
+        els.abSearch.title = '内容搜索 (Ctrl+F)';
+        els.abSearch.setAttribute('aria-label', '内容搜索');
     }
-    if (!tree) {
-        els.searchInput.value = '';
-        if (editor && editor.searchBox) editor.searchBox.clear();
+    if (!findState.open) return;
+    if (!findTarget()) {
+        closeFindBar({keepFocus: true});
+        return;
     }
+    ensureFindBarHost();
+    runFind({keepIndex: true});
 }
 
 function isDialogOpen() {
@@ -7107,6 +13100,15 @@ function isTypingTarget() {
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
     if (el.isContentEditable) return true;
     return !!(el.closest && el.closest('.ace_editor'));
+}
+
+// 编辑器（Ace 隐藏输入框）不算纯文本输入，允许编辑器内使用 Git 快捷键
+function isPlainTextEntryTarget() {
+    const el = document.activeElement;
+    if (!el) return false;
+    if (el.closest && el.closest('.ace_editor')) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || !!el.isContentEditable;
 }
 
 function treeShortcutSelection() {
@@ -7132,8 +13134,81 @@ document.addEventListener('cut', (e) => {
     else setFileClipboard(selected, true);
 }, true);
 
+let gsShiftCount = 0;
+let gsShiftAt = 0;
+
 window.addEventListener('keydown', (e) => {
+    if (globalSearch.open) return;
+    if (e.key === 'Shift' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.repeat) {
+        const now = Date.now();
+        if (now - gsShiftAt > 600) gsShiftCount = 0;
+        gsShiftCount++;
+        gsShiftAt = now;
+        if (gsShiftCount >= 3) {
+            gsShiftCount = 0;
+            if (!quickSwitch.open) {
+                e.preventDefault();
+                openGlobalSearch();
+            }
+        }
+        return;
+    }
+    if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.code === 'Backquote' || e.key === '`')) {
+        if (isDialogOpen()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleQuickSwitch();
+        return;
+    }
+    if (quickSwitch.open) {
+        if (handleQuickSwitchKey(e)) e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
+    if (palette && palette.isOpen()) {
+        // 输入框内的键由 palette 自行处理，全局键屏蔽
+        return;
+    }
+    if (e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && menuKeyMap[e.code]) {
+        e.preventDefault();
+        e.stopPropagation();
+        showMenuBar();
+        openMenuByKind(menuKeyMap[e.code]);
+        return;
+    }
+    if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        e.stopPropagation();
+        palette.toggle();
+        return;
+    }
     const key = e.key.toLowerCase();
+    if (!isDialogOpen() && gitStateCache.available && !isPlainTextEntryTarget()) {
+        if (e.ctrlKey && !e.altKey && !e.shiftKey && key === 'k') {
+            e.preventDefault();
+            e.stopPropagation();
+            gitPopOpenCommit();
+            return;
+        }
+        if (e.ctrlKey && !e.altKey && !e.shiftKey && key === 't') {
+            e.preventDefault();
+            e.stopPropagation();
+            gitPopUpdateProject();
+            return;
+        }
+        if (e.ctrlKey && e.shiftKey && !e.altKey && key === 'k') {
+            e.preventDefault();
+            e.stopPropagation();
+            gitPopPush();
+            return;
+        }
+        if (e.ctrlKey && e.altKey && !e.shiftKey && key === 'n') {
+            e.preventDefault();
+            e.stopPropagation();
+            gitPopNewBranch();
+            return;
+        }
+    }
     if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit1' || e.key === '1')) {
         e.preventDefault();
         e.stopPropagation();
@@ -7142,17 +13217,26 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         toggleSidebarView('structure');
+    } else if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit8' || e.key === '8')) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSidebarView('chats');
+    } else if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit9' || e.key === '9')) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleAIPanel();
     } else if (e.shiftKey && e.key === 'F4') {
         e.preventDefault();
         e.stopPropagation();
         if (file && file.path) openInNewWindows([file.path]);
-    } else if ((e.key === 'F2' || (e.shiftKey && e.key === 'F6')) && !e.ctrlKey && !e.altKey) {
-        const selected = explorer && explorer.getSelection();
-        if (selected && selected.length === 1 && !settings.readOnlyMode && !isDialogOpen() && !isTypingTarget()) {
-            e.preventDefault();
-            e.stopPropagation();
-            openRenameEntryDialog(selected[0]);
-        }
+    } else if (e.key === 'F2' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        jumpBookmark(1);
+    } else if (e.shiftKey && e.key === 'F2' && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        jumpBookmark(-1);
     } else if (e.key === 'Delete' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         const selected = treeShortcutSelection();
         if (selected && selected.length) {
@@ -7213,13 +13297,20 @@ window.addEventListener('keydown', (e) => {
         e.stopPropagation();
         openSettings('general');
     } else if (e.key === 'F11' && !e.ctrlKey && !e.altKey) {
+        // F11：切换行书签（全屏不再绑定快捷键）
         e.preventDefault();
         e.stopPropagation();
-        toggleFullscreen();
+        toggleBookmark();
     } else if (e.altKey && e.key === 'F12') {
         e.preventDefault();
         e.stopPropagation();
-        toggleTerminalPanel();
+        toggleDockView('terminal');
+    } else if (!e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'F12') {
+        // F12：底部面板切换到调试控制台（仅开发者模式）
+        if (!developerMode) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleDockView('debug');
     } else if (e.ctrlKey && key === 'o') {
         e.preventDefault();
         e.stopPropagation();
@@ -7232,12 +13323,20 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         doRedo();
-    } else if (e.ctrlKey && e.key.toLowerCase() === 'f') {
-        if (currentMode === 'tree' && file && !(file.format && file.format.rawOnly)) {
-            e.preventDefault();
-            e.stopPropagation();
-            focusSearch();
+    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+        if (isDialogOpen()) return;
+        const active = document.activeElement;
+        const inFind = active === els.findInput;
+        const inEditor = !!active && ((active.closest && active.closest('.ace_editor')) ||
+            (active.matches && active.matches('textarea.jsoneditor-text')));
+        if (!inFind && !inEditor && isTypingTarget()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (inFind) {
+            els.findInput.select();
+            return;
         }
+        openFindBar();
     } else if (e.ctrlKey && (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd' ||
         e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract')) {
         const vplus = e.key === '+' || e.key === '=' || e.code === 'NumpadAdd';
@@ -7270,8 +13369,14 @@ window.addEventListener('keydown', (e) => {
             toggleFocusedNode(plus ? 'expand' : 'collapse');
         }
     } else if (e.key === 'Escape') {
-        closeDialogs();
-        closeAllMenus();
+        if (!isDialogOpen() && findState.open) {
+            e.preventDefault();
+            e.stopPropagation();
+            closeFindBar();
+            return;
+        }
+        closeTopDialog();
+        hideMenuBar();
         closeFootPopover();
     }
 }, {capture: true});
@@ -7285,8 +13390,26 @@ for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
 }
 
 if (rt) {
+    rt.EventsOn('app-open-settings', (pane) => {
+        openSettings(String(pane || 'models'));
+    });
     rt.EventsOn('open-targets', (targets) => openTargets(targets));
     rt.EventsOn('open-files', (paths) => openPaths(paths));
+    // Wails 文件拖放：注册窗口级 dragover/drop 监听（不注册就收不到任何外部拖放），
+    // useDropTarget=false 让整个窗口都接受；回调拿到的路径已由 Go 侧解析好
+    if (rt.OnFileDrop) {
+        rt.OnFileDrop((_x, _y, paths) => {
+            if (!Array.isArray(paths) || !paths.length) return;
+            // 文件树目录行的外部拖放：先复制进目录，而不是打开
+            const pending = pendingExternalDrop;
+            if (pending && Date.now() - pending.at < 5000) {
+                pendingExternalDrop = null;
+                copyExternalIntoDir(paths, pending.destDir);
+                return;
+            }
+            openPaths(paths);
+        }, false);
+    }
     rt.EventsOn('confirm-close', () => {
         flushCsvCellEditor();
         openCloseConfirm();
@@ -7346,9 +13469,18 @@ window.addEventListener('keydown', (e) => {
 }, true);
 
 initContextMenus();
+els.wsProject.addEventListener('click', (e) => {
+    e.stopPropagation();
+    showProjectMenu(els.wsProject);
+});
+els.wsBranch.addEventListener('click', (e) => {
+    e.stopPropagation();
+    showBranchMenu(els.wsBranch);
+});
 initExplorer();
 initStructurePanel();
 initActivityBar();
+initAIPanel();
 
 // ===== Win11/系统调整光标（后端读注册表当前主题 + 内置候选，失败回落 CSS 关键字） =====
 // 注意：Windows 的 .cur 是多尺寸帧容器（aero_* 含 32/48/64/96/128 五帧），每帧在 ICONDIRENTRY
@@ -7525,6 +13657,7 @@ if (backend.GetSystemCursors) {
 }
 // ===== 内置终端 =====
 const terminalUI = {open: false, sessions: new Map(), order: [], activeId: null};
+const TERM_SHELL_LABELS = {pwsh: 'PowerShell 7', powershell: 'Windows PowerShell', cmd: 'Command Prompt', gitbash: 'Git Bash'};
 const cmdOutHandlers = new Map();
 const cmdExitHandlers = new Map();
 let cmdSeq = 0;
@@ -7617,7 +13750,7 @@ function renderGitPanel() {
         chev.type = 'button';
         chev.className = 'git-chev';
         chev.title = '展开/收起';
-        chev.textContent = gitGroupCollapsed[key] ? '\uE76C' : '\uE70D';
+        chev.innerHTML = iconSvg(gitGroupCollapsed[key] ? 'chevron-right' : 'chevron-down', 10);
         const gcb = document.createElement('input');
         gcb.type = 'checkbox';
         gcb.className = 'git-group-cb';
@@ -7640,7 +13773,7 @@ function renderGitPanel() {
         chev.addEventListener('click', () => {
             gitGroupCollapsed[key] = !gitGroupCollapsed[key];
             rowsWrap.classList.toggle('collapsed', gitGroupCollapsed[key]);
-            chev.textContent = gitGroupCollapsed[key] ? '\uE76C' : '\uE70D';
+            chev.innerHTML = iconSvg(gitGroupCollapsed[key] ? 'chevron-right' : 'chevron-down', 10);
         });
         block.append(head, rowsWrap);
         for (const row of rows) {
@@ -7670,12 +13803,12 @@ function renderGitPanel() {
 }
 
 function currentSidebarView() {
-    if (settings.sidebarView === 'git' || settings.sidebarView === 'structure') return settings.sidebarView;
+    if (settings.sidebarView === 'git' || settings.sidebarView === 'structure' || settings.sidebarView === 'chats') return settings.sidebarView;
     return 'files';
 }
 
 function switchSidebarView(view) {
-    if (!['files', 'git', 'structure'].includes(view)) view = 'files';
+    if (!['files', 'git', 'structure', 'chats'].includes(view)) view = 'files';
     settings.sidebarView = view;
     if (structurePanel && view === 'structure') structurePanel.setDoc(file);
     applySettings();
@@ -7712,23 +13845,64 @@ function termTheme() {
 function toggleTerminalPanel(force) {
     const panel = document.getElementById('terminal-panel');
     if (!panel) return;
-    const show = force === undefined ? panel.classList.contains('hidden') : force;
+    const show = force === undefined ? !terminalUI.open : force;
     if (show) {
         panel.classList.remove('hidden');
         terminalUI.open = true;
-        if (!terminalUI.sessions.size) createTermSession();
-        else fitActiveTerm();
+        if (dockView === 'terminal' && !terminalUI.sessions.size) createTermSession();
+        applyDockView();
     } else {
         panel.classList.add('hidden');
         terminalUI.open = false;
-    }
-    if (els.abTerminal) {
-        els.abTerminal.classList.toggle('active', terminalUI.open);
-        els.abTerminal.setAttribute('aria-pressed', String(terminalUI.open));
+        applyDockView();
     }
 }
 
-async function createTermSession() {
+let dockView = 'terminal'; // 底部面板当前内容：'terminal' | 'debug'
+
+// 应用底部面板视图：终端与调试控制台共用同一个容器
+function applyDockView() {
+    const panel = document.getElementById('terminal-panel');
+    if (!panel) return;
+    const termOpen = terminalUI.open && dockView === 'terminal';
+    const debugOpen = terminalUI.open && dockView === 'debug';
+    const head = panel.querySelector('.term-head');
+    if (head) head.classList.toggle('hidden', terminalUI.open && dockView === 'debug');
+    const termBody = document.getElementById('term-body');
+    if (termBody) termBody.classList.toggle('hidden', terminalUI.open && dockView === 'debug');
+    const debugView = document.getElementById('debug-view');
+    if (debugView) debugView.classList.toggle('hidden', !debugOpen);
+    if (els.abTerminal) {
+        els.abTerminal.classList.toggle('active', termOpen);
+        els.abTerminal.setAttribute('aria-pressed', String(termOpen));
+    }
+    if (els.abDebug) {
+        els.abDebug.classList.toggle('active', debugOpen);
+        els.abDebug.setAttribute('aria-pressed', String(debugOpen));
+    }
+    if (termOpen) fitActiveTerm();
+}
+
+// 左下活动栏 / 菜单 / F12 的统一入口：同一视图再点一次收起，不同视图则切换
+function toggleDockView(view) {
+    const target = view === 'debug' ? 'debug' : 'terminal';
+    const panel = document.getElementById('terminal-panel');
+    if (!panel) return;
+    if (!terminalUI.open) {
+        dockView = target;
+        toggleTerminalPanel(true);
+        return;
+    }
+    if (dockView !== target) {
+        dockView = target;
+        if (target === 'terminal' && !terminalUI.sessions.size) createTermSession();
+        applyDockView();
+        return;
+    }
+    toggleTerminalPanel(false);
+}
+
+async function createTermSession(shell = '') {
     if (!backend.TermCreate) {
         flash('当前版本不支持内置终端', true);
         return;
@@ -7739,13 +13913,14 @@ async function createTermSession() {
     body.appendChild(host);
     let created;
     try {
-        created = await backend.TermCreate(termDefaultCols(), termDefaultRows(), 'powershell', termCwd());
+        created = await backend.TermCreate(termDefaultCols(), termDefaultRows(), shell, termCwd());
     } catch (e) {
         flash('创建终端失败：' + e, true);
         host.remove();
         return;
     }
     const id = created.id;
+    const usedShell = created.shell || shell || 'powershell';
     const term = new window.Terminal({
         fontFamily: '"JetBrains Mono", Consolas, monospace',
         fontSize: 12,
@@ -7762,31 +13937,48 @@ async function createTermSession() {
     term.onData((data) => {
         backend.TermWrite(id, data).catch(() => {});
     });
+    // 页签命名仿 JetBrains：默认 shell 叫「本地」，重复时加 (2)/(3)；显式选择的 shell 用名字
+    const baseName = shell ? (TERM_SHELL_LABELS[usedShell] || usedShell) : '本地';
+    let dup = 0;
+    for (const s of terminalUI.sessions.values()) {
+        if (s.baseName === baseName) dup++;
+    }
     const tab = document.createElement('button');
     tab.type = 'button';
     tab.className = 'term-tab';
     const label = document.createElement('span');
     label.className = 'term-tab-label';
-    label.textContent = '终端 ' + (terminalUI.order.length + 1);
+    label.textContent = dup ? baseName + ' (' + (dup + 1) + ')' : baseName;
+    label.title = TERM_SHELL_LABELS[usedShell] || usedShell;
     const tabClose = document.createElement('span');
     tabClose.className = 'term-tab-close';
-    tabClose.textContent = '✕';
+    tabClose.innerHTML = iconSvg('close', 11);
     tabClose.title = '关闭终端';
     tab.append(label, tabClose);
     tab.addEventListener('click', (e) => {
-        if (e.shiftKey && !e.target.classList.contains('term-tab-close')) {
+        const closeHit = e.target.closest('.term-tab-close');
+        if (closeHit) {
             e.preventDefault();
+            e.stopPropagation();
             closeTermSession(id);
             return;
         }
-        if (e.target.classList.contains('term-tab-close')) {
+        if (e.shiftKey) {
+            e.preventDefault();
             closeTermSession(id);
             return;
         }
         activateTermSession(id);
     });
+    tab.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        activateTermSession(id);
+        showTermTabMenu(id, e.clientX, e.clientY);
+    });
     document.getElementById('term-tabs').appendChild(tab);
-    terminalUI.sessions.set(id, {id, term, fit, host, tab});
+    terminalUI.sessions.set(id, {id, term, fit, host, tab, shell: usedShell, baseName,
+        defaultLabel: label.textContent, defaultTitle: label.title, customName: ''});
     terminalUI.order.push(id);
     activateTermSession(id);
     setTimeout(() => {
@@ -7940,7 +14132,83 @@ async function runGitCommit(push) {
 }
 
 if (els.termNew) els.termNew.addEventListener('click', () => createTermSession());
+if (els.termShellMenu) els.termShellMenu.addEventListener('click', () => showTermShellMenu());
+
+// 新建终端的 shell 菜单（JetBrains 风格）：列出本机可用 shell，选中即新建页签
+async function showTermShellMenu() {
+    if (!ctxMenu) return;
+    let shells = [];
+    try {
+        shells = backend.TermShells ? await backend.TermShells() : [];
+    } catch (e) {}
+    if (!shells.length) {
+        flash('没有可用的 Shell', true);
+        return;
+    }
+    const r = els.termShellMenu.getBoundingClientRect();
+    ctxMenu.open(shells.map((s) => ({
+        label: s.name,
+        action: () => createTermSession(s.id),
+    })), r.left, r.bottom + 4);
+}
 if (els.termPanelClose) els.termPanelClose.addEventListener('click', () => toggleTerminalPanel(false));
+
+// 终端标签页右键菜单（JetBrains 风格）：新建/重命名/清屏/关闭
+async function showTermTabMenu(id, x, y) {
+    if (!ctxMenu) return;
+    const s = terminalUI.sessions.get(id);
+    if (!s) return;
+    const others = [...terminalUI.sessions.values()].filter((v) => v.id !== id);
+    let shells = [];
+    try {
+        shells = backend.TermShells ? await backend.TermShells() : [];
+    } catch (e) {}
+    const items = [
+        {label: '新建终端（默认 Shell）', icon: 'E710', action: () => createTermSession()},
+    ];
+    if (shells.length) {
+        items.push({
+            label: '用其他 Shell 新建终端',
+            icon: 'E756',
+            submenu: shells.map((sh) => ({label: sh.name, action: () => createTermSession(sh.id)})),
+        });
+    }
+    items.push(
+        {label: '重命名标签页', icon: 'E8AC', action: () => renameTermSession(s)},
+        {label: '清屏', icon: 'eraser', action: () => { try { s.term.clear(); s.term.focus(); } catch (e) {} }},
+        {sep: true},
+        {label: '关闭', shortcut: 'Shift+点击', icon: 'E8BB', action: () => closeTermSession(id)},
+        {label: '关闭其他标签页', disabled: !others.length, action: () => { for (const o of others) closeTermSession(o.id); }},
+        {label: '关闭所有标签页', action: () => { for (const o of [...terminalUI.sessions.values()]) closeTermSession(o.id); }},
+    );
+    ctxMenu.open(items, x, y);
+}
+
+// 重命名终端标签页：清空并确定则恢复默认名
+function renameTermSession(s) {
+    if (!s) return;
+    openNameDialog({
+        title: '重命名终端标签页',
+        label: '名称',
+        value: s.customName || s.defaultLabel,
+        okLabel: '确定',
+        onSubmit: async (value) => {
+            const name = String(value || '').trim();
+            const label = s.tab.querySelector('.term-tab-label');
+            if (!label) return;
+            if (name) {
+                s.customName = name;
+                label.textContent = name;
+                label.title = name;
+            } else {
+                s.customName = '';
+                label.textContent = s.defaultLabel;
+                label.title = s.defaultTitle;
+            }
+        },
+    });
+}
+
 if (els.terminalPanel && settings.terminalHeight) {
     els.terminalPanel.style.height = settings.terminalHeight + 'px';
 }
@@ -8033,7 +14301,10 @@ async function refreshGitStatus() {
     if (!root) {
         gitStateCache.dir = '';
         gitStateCache.map.clear();
+        gitStateCache.available = false;
+        gitStateCache.branch = '';
         applyGitBadges();
+        renderWorkspaceCrumbs();
         return;
     }
     if (root !== gitStateCache.dir) {
@@ -8066,6 +14337,9 @@ async function refreshGitStatus() {
     } catch (e) {}
     applyGitBadges();
     applyGitDot();
+    renderWorkspaceCrumbs();
+    // git 状态变化（提交/回滚/外部改动被定时器捕捉）后刷新已打开文件的行级标记
+    for (const d of docs) scheduleGitGutter(d, 400);
     if (currentSidebarView() === 'git' && settings.showSidebar && els.gitChanges) {
         renderGitPanel();
     }
@@ -8090,31 +14364,6 @@ function restartGitTimer() {
     if (gitTimer) clearInterval(gitTimer);
     const sec = Math.max(1, settings.treeRefreshInterval || 3);
     gitTimer = setInterval(refreshGitStatus, sec * 1000);
-}
-
-function openGitChangesDoc() {
-    if (!backend.GitStatusFor) {
-        flash('当前版本不支持 git 集成', true);
-        return;
-    }
-    const marks = {new: '新增', modified: '修改', deleted: '删除', renamed: '重命名', conflict: '冲突'};
-    const lines = [];
-    for (const [path, state] of gitStateCache.map) {
-        lines.push('[' + (marks[state] || state) + '] ' + path);
-    }
-    if (!lines.length) {
-        refreshGitStatus().then(() => {
-            const still = [];
-            for (const [path, state] of gitStateCache.map) {
-                still.push('[' + (marks[state] || state) + '] ' + path);
-            }
-            const head = gitStateCache.branch ? '分支：' + gitStateCache.branch + '\n\n' : '';
-            openVirtualDoc('Git 变更列表' + (gitStateCache.dir ? ' — ' + gitStateCache.dir : '') + '.gitstatus', head + (still.length ? still.join('\n') : '（工作区干净，没有变更）'));
-        });
-        return;
-    }
-    const head = gitStateCache.branch ? '分支：' + gitStateCache.branch + '\n\n' : '';
-    openVirtualDoc('Git 变更列表' + (gitStateCache.dir ? ' — ' + gitStateCache.dir : '') + '.gitstatus', head + lines.join('\n'));
 }
 
 function applyGitDot() {
@@ -8198,6 +14447,25 @@ try {
 initCodeFoldHover();
 
 (async () => {
+    // 独立调试控制台窗口：只渲染控制台面板，跳过正常的应用启动流程
+    if (await consoleWindowMode) {
+        startConsoleWindowMode();
+        return;
+    }
+    let floatWindow = false;
+    try {
+        floatWindow = !!(backend.IsAIFloatWindow && await backend.IsAIFloatWindow());
+    } catch (e) {
+        floatWindow = false;
+    }
+    if (!floatWindow && !hasWails && mockScenario.has('aifloat')) floatWindow = true;
+    if (floatWindow) {
+        window.__aiFloatWindow = true;
+        document.body.classList.add('ai-float-window');
+        document.title = 'AI 助手 · CaDt-DataLens';
+    }
+    refreshDeveloperMode();
+    refreshLogPath();
     if (backend.GetOpenMode) {
         try {
             const mode = await backend.GetOpenMode();
@@ -8218,6 +14486,7 @@ initCodeFoldHover();
             flash('插件加载失败：' + e, true);
         }
     }
+    logFrontend('info', '前端启动完成：' + navigator.userAgent);
     let targets = [];
     if (backend.GetStartupTargets) {
         try {
@@ -8229,5 +14498,22 @@ initCodeFoldHover();
     } else {
         const files = await backend.GetStartupFiles();
         if (files && files.length) await openPaths(files);
+        else {
+            const sess = readSession();
+            if (sess) await restoreSession(sess);
+        }
     }
+    if (floatWindow) {
+        document.title = 'AI 助手 · CaDt-DataLens';
+        if (!aiPanel) initAIPanel();
+        if (aiPanel) aiPanel.open(true);
+    } else {
+        setTimeout(() => autoCheckUpdateOnStart(), 2000);
+    }
+    try {
+        if (backend.ConsumeStartupSettings) {
+            const pane = await backend.ConsumeStartupSettings();
+            if (pane) openSettings(String(pane));
+        }
+    } catch (e) {}
 })();

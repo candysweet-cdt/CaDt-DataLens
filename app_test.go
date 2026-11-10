@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -688,4 +689,49 @@ func TestOpenDirInNewWindowValidation(t *testing.T) {
 		t.Fatal("不存在的目录应报错")
 	}
 	// 有效目录会真的拉起进程，这里只验证参数校验路径，不触发启动。
+}
+
+// wails.json 的 info.productVersion 决定安装包版本，必须与 appVersion 同步（NSIS 不接受 v 前缀）。
+func TestWailsInfoVersionMatchesAppVersion(t *testing.T) {
+	raw, err := os.ReadFile("wails.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Info struct {
+			ProductVersion string `json:"productVersion"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.TrimPrefix(appVersion, "v")
+	if cfg.Info.ProductVersion != want {
+		t.Fatalf("wails.json info.productVersion=%q，app.go appVersion=%q，安装包版本需与之一致", cfg.Info.ProductVersion, appVersion)
+	}
+}
+
+func TestParseOpenSettingsArg(t *testing.T) {
+	cases := map[string]string{
+		"":                                "",
+		"--new-window":                    "",
+		"--open-settings=models":          "models",
+		"--new-window --open-settings=ai": "ai",
+		"--open-settings":                 "",
+	}
+	for args, want := range cases {
+		if got := parseOpenSettingsArg(strings.Fields(args)); got != want {
+			t.Fatalf("parseOpenSettingsArg(%q) = %q, want %q", args, got, want)
+		}
+	}
+}
+
+func TestConsumeStartupSettings(t *testing.T) {
+	app := &App{startupSettingsPane: "models"}
+	if got := app.ConsumeStartupSettings(); got != "models" {
+		t.Fatalf("first = %q", got)
+	}
+	if got := app.ConsumeStartupSettings(); got != "" {
+		t.Fatalf("second = %q", got)
+	}
 }

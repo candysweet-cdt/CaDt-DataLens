@@ -1749,6 +1749,58 @@ export function createStructurePanel(options) {
         updateRowStates();
     }
 
+    // structureText 把当前结构树渲染成文本。format：
+    //   tree     —— 与「结构化目录」一致（├──/└──，首行文件名）
+    //   indent   —— 两空格逐层缩进
+    //   markdown —— Markdown 嵌套列表
+    //   mermaid  —— Mermaid mindmap 语法
+    // lineNums 为 true 时每个节点附 :L行号（根节点是文件本身，不带）。
+    // 忽略折叠状态，导出全量。
+    function structureText(format, lineNums) {
+        if (!result || !result.root) return '';
+        const fmt = format || 'tree';
+        const rootLabel = String(result.root.label || (doc && doc.name) || '结构');
+        const suffix = (node) => (node.detail ? ' ' + node.detail : '') + (lineNums && node.line ? ' :L' + node.line : '');
+        const lines = [];
+        const walk = (children, prefix, depth) => {
+            for (let i = 0; i < children.length; i++) {
+                const node = children[i] || {};
+                const last = i === children.length - 1;
+                const label = String(node.label || '') + suffix(node);
+                if (fmt === 'tree') {
+                    lines.push(prefix + (last ? '└── ' : '├── ') + label);
+                } else if (fmt === 'indent') {
+                    lines.push('  '.repeat(depth + 1) + label);
+                } else if (fmt === 'markdown') {
+                    lines.push('  '.repeat(depth + 1) + '- ' + label);
+                } else {
+                    lines.push('  '.repeat(depth + 2) + mermaidSafe(label));
+                }
+                if (nodeHasChildren(node)) {
+                    walk(node.children, fmt === 'tree' ? prefix + (last ? '    ' : '│   ') : prefix, depth + 1);
+                }
+            }
+        };
+        const kids = result.root.children || [];
+        if (fmt === 'mermaid') {
+            lines.push('mindmap');
+            lines.push('  root((' + mermaidSafe(rootLabel) + '))');
+            walk(kids, '', 0);
+        } else {
+            lines.push(fmt === 'markdown' ? '- ' + rootLabel : rootLabel);
+            walk(kids, '', 0);
+        }
+        return lines.join('\n');
+    }
+
+    // mermaidSafe 把会触发 mindmap 形状语法的半角括号换成全角，避免节点文本破坏渲染
+    function mermaidSafe(text) {
+        return String(text)
+            .replace(/\(/g, '（').replace(/\)/g, '）')
+            .replace(/\[/g, '【').replace(/\]/g, '】')
+            .replace(/\{/g, '｛').replace(/\}/g, '｝');
+    }
+
     return {
         setDoc,
         setVisible,
@@ -1757,6 +1809,7 @@ export function createStructurePanel(options) {
         setSelected,
         getResult: () => result,
         getDocId: () => (doc ? doc.id : null),
+        structureText,
     };
 }
 

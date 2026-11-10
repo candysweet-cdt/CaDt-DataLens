@@ -9,6 +9,7 @@ const host = {
     openPath: () => {},
     addPluginTheme: () => {},
     onPluginsChanged: () => {},
+    readPluginAsset: () => Promise.reject(new Error('当前版本不支持读取插件资产')),
 };
 
 let commands = [];
@@ -121,6 +122,10 @@ function apiFor(plugin) {
         // 以只读虚拟文档打开文本（用于展示命令输出等）
         openVirtualDoc(name, content) {
             return host.openVirtualDoc(name, content);
+        },
+        // 读取插件目录内的图片资产：path 相对插件目录，返回 data URL
+        readAsset(path) {
+            return Promise.resolve(host.readPluginAsset(plugin.id, String(path || '')));
         },
         flash(message) {
             host.flash(String(message ?? ''));

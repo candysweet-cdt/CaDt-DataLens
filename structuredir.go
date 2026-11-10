@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // 与参考脚本保持一致：结构化目录时跳过这两类目录
@@ -176,14 +174,7 @@ func (a *App) ExportStructureDir(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "导出结构化目录",
-		DefaultFilename: rootName + "-目录结构.txt",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "文本文件 (*.txt)", Pattern: "*.txt"},
-			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
-		},
-	})
+	path, err := a.ShowSaveFileDialog("导出结构化目录", rootName+"-目录结构.txt", "txt")
 	if err != nil {
 		return "", err
 	}
@@ -195,6 +186,30 @@ func (a *App) ExportStructureDir(dir string) (string, error) {
 		return "", err
 	}
 	if err := a.SaveFile(path, text, "lf", false, "utf-8"); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// ExportStructureText 先弹出系统保存对话框选择导出路径，再写入调用方给定的文本；
+// 用户取消时返回空路径且不写文件。结构面板的结构树导出复用此通道。
+func (a *App) ExportStructureText(defaultName string, content string) (string, error) {
+	name := strings.TrimSpace(defaultName)
+	if name == "" {
+		name = "结构.txt"
+	}
+	filter := "txt"
+	if strings.HasSuffix(strings.ToLower(name), ".mmd") {
+		filter = "mmd"
+	}
+	path, err := a.ShowSaveFileDialog("导出结构", name, filter)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", nil
+	}
+	if err := a.SaveFile(path, content, "lf", false, "utf-8"); err != nil {
 		return "", err
 	}
 	return path, nil

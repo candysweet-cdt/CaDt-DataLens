@@ -68,71 +68,169 @@
 <div id="app">
     <header id="toolbar">
         <img id="app-logo" src="/icon.png" alt="CaDt-DataLens">
+        <button type="button" id="tb-menu" title="主菜单" aria-label="主菜单">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg>
+        </button>
+        <nav id="menubar" class="hidden" aria-label="主菜单">
+            <div class="menu" data-menu="file">
+                <button type="button" class="menu-label">文件(F)</button>
+                <div class="dropdown hidden"></div>
+            </div>
+            <div class="menu" data-menu="edit">
+                <button type="button" class="menu-label">编辑(E)</button>
+                <div class="dropdown hidden"></div>
+            </div>
+            <div class="menu" data-menu="format">
+                <button type="button" class="menu-label">格式(O)</button>
+                <div class="dropdown hidden"></div>
+            </div>
+            <div class="menu" data-menu="view">
+                <button type="button" class="menu-label">视图(V)</button>
+                <div class="dropdown hidden"></div>
+            </div>
+            <div class="menu" data-menu="tools">
+                <button type="button" class="menu-label">工具(U)</button>
+                <div class="dropdown hidden"></div>
+            </div>
+            <div class="menu" data-menu="theme">
+                <button type="button" class="menu-label">主题(T)</button>
+                <div class="dropdown hidden"></div>
+            </div>
+            <div class="menu" data-menu="help">
+                <button type="button" class="menu-label">帮助(H)</button>
+                <div class="dropdown hidden"></div>
+            </div>
+        </nav>
         <div id="filename" class="filename"><span id="filename-icon" class="title-icon"></span><span id="filename-text" class="filename-text">未打开文件</span></div>
+        <div id="ws-crumbs" class="ws-crumbs hidden">
+            <button type="button" id="ws-project" class="ws-project" title="工作区">
+                <span id="ws-project-badge" class="ws-project-badge">C</span>
+                <span id="ws-project-name" class="ws-project-name"></span>
+                <svg class="ws-chev" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4.4 6.2 8 9.8l3.6-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" id="ws-branch" class="ws-branch hidden" title="当前 Git 分支">
+                <svg class="ws-branch-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="4.6" cy="3.7" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="4.6" cy="12.3" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="11.4" cy="5.4" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4.6 5.4v5.2M11.4 7.1c0 2.1-2.2 2.9-4.3 3.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                <span id="ws-branch-name" class="ws-branch-name"></span>
+                <svg class="ws-chev" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4.4 6.2 8 9.8l3.6-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+        </div>
         <div class="spacer"></div>
+        <button type="button" id="tb-ai" class="tb-ai-btn" title="AI 助手 (Alt+9)" aria-label="AI 助手" aria-pressed="false">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6zM5.1 12.9l.5 1.4 1.4.5-1.4.5-.5 1.4-.5-1.4-1.4-.5 1.4-.5z" fill="currentColor"/></svg>
+        </button>
         <div id="win-controls">
-            <button id="wc-min" class="wc-btn" title="最小化">&#xE921;</button>
-            <button id="wc-max" class="wc-btn" title="最大化 / 还原">&#xE922;</button>
-            <button id="wc-close" class="wc-btn wc-close" title="关闭">&#xE8BB;</button>
+            <button id="wc-min" class="wc-btn" title="最小化"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M2.5 8.5h11"/></svg></button>
+            <button id="wc-max" class="wc-btn" title="最大化 / 还原"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2.9" y="2.9" width="10.2" height="10.2" rx="0.8"/></svg></button>
+            <button id="wc-close" class="wc-btn wc-close" title="关闭"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"/></svg></button>
         </div>
     </header>
-    <nav id="menubar">
-        <div class="menu" data-menu="file">
-            <button class="menu-label">文件(F)</button>
-            <div class="dropdown hidden"></div>
+    <div id="project-pop" class="tb-pop project-pop hidden" role="dialog" aria-label="项目">
+        <div id="project-pop-body"></div>
+    </div>
+    <div id="git-branch-pop" class="tb-pop git-branch-pop hidden" role="dialog" aria-label="Git 分支">
+        <div class="gb-search-row">
+            <div class="gb-search-wrap">
+                <span class="gb-search-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="3.9"/><path d="M9.7 9.7l3.4 3.4"/></svg></span>
+                <input id="gb-search" class="gb-search" type="text" placeholder="搜索分支和操作" autocomplete="off" spellcheck="false" aria-label="搜索分支和操作">
+            </div>
+            <button type="button" id="gb-fetch" class="gb-tool" title="刷新远程分支（git fetch）" aria-label="刷新远程分支">
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12.8 8a4.8 4.8 0 1 1-1.4-3.4"/><path d="M12.8 2.6v3.2H9.6"/></svg>
+            </button>
+            <button type="button" id="gb-pin" class="gb-tool" title="固定窗口（点击外部不关闭）" aria-label="固定窗口" aria-pressed="false">
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.8l3.7 3.7-1.5.5-2 2 .2 2.3-1 1-4.7-4.7 1-1 2.3.2 2-2z"/><path d="M6.7 9.3l-3.9 3.9"/></svg>
+            </button>
         </div>
-        <div class="menu" data-menu="edit">
-            <button class="menu-label">编辑(E)</button>
-            <div class="dropdown hidden"></div>
+        <div id="gb-body" class="gb-body" role="listbox" aria-label="分支和操作"></div>
+    </div>
+    <div id="find-bar" class="find-bar hidden" role="search" aria-label="查找">
+        <span class="find-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="3.9"/><path d="M9.7 9.7l3.4 3.4"/></svg></span>
+        <input id="find-input" class="find-input" type="text" placeholder="查找" aria-label="查找" title="↑ / ↓ 切换匹配项，Enter 下一个，Shift+Enter 上一个" spellcheck="false" autocomplete="off">
+        <div class="find-opts">
+            <button type="button" id="find-case" class="find-opt" title="区分大小写" aria-pressed="false">Cc</button>
+            <button type="button" id="find-word" class="find-opt" title="全字匹配" aria-pressed="false">W</button>
+            <button type="button" id="find-regex" class="find-opt" title="正则表达式" aria-pressed="false">.*</button>
         </div>
-        <div class="menu" data-menu="format">
-            <button class="menu-label">格式(O)</button>
-            <div class="dropdown hidden"></div>
+        <span id="find-count" class="find-count">0 个结果</span>
+        <button type="button" id="find-prev" class="find-nav" title="上一个 (Shift+Enter)" aria-label="上一个"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 10L8 5.6l4.4 4.4"/></svg></button>
+        <button type="button" id="find-next" class="find-nav" title="下一个 (Enter)" aria-label="下一个"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 6L8 10.4l4.4-4.4"/></svg></button>
+        <button type="button" id="find-close" class="find-nav" title="关闭 (Esc)" aria-label="关闭"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+    </div>
+    <div id="quick-switch-mask" class="quick-switch-mask hidden">
+        <div id="quick-switch" class="quick-switch" tabindex="-1" role="dialog" aria-label="切换">
+            <div class="quick-switch-title">
+                <button type="button" id="quick-switch-back" class="quick-switch-back hidden" title="返回 (Esc)"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8H3.4"/><path d="M7.4 3.6L3.4 8l4 4.4"/></svg></button>
+                <span id="quick-switch-title-text">切换</span>
+            </div>
+            <div id="quick-switch-list" class="quick-switch-list"></div>
         </div>
-        <div class="menu" data-menu="view">
-            <button class="menu-label">视图(V)</button>
-            <div class="dropdown hidden"></div>
+    </div>
+    <div id="palette-mask" class="quick-switch-mask hidden">
+        <div id="palette-panel" class="quick-switch palette-panel" role="dialog" aria-label="命令面板">
+            <div class="gs-search">
+                <span class="gs-search-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="3.9"/><path d="M9.7 9.7l3.4 3.4"/></svg></span>
+                <input id="palette-input" type="text" placeholder="输入命令名搜索…" autocomplete="off" spellcheck="false" aria-label="搜索命令">
+            </div>
+            <div id="palette-list" class="quick-switch-list palette-list"></div>
         </div>
-        <div class="menu" data-menu="tools">
-            <button class="menu-label">工具(U)</button>
-            <div class="dropdown hidden"></div>
+    </div>
+    <div id="gs-mask" class="gs-mask hidden">
+        <div id="gs-panel" class="gs-panel" role="dialog" aria-label="全局搜索">
+            <div class="gs-search">
+                <span class="gs-search-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="3.9"/><path d="M9.7 9.7l3.4 3.4"/></svg></span>
+                <input id="gs-input" type="text" placeholder="在打开的工作区中搜索文本…" autocomplete="off" spellcheck="false" aria-label="全局搜索">
+                <span id="gs-count" class="gs-count"></span>
+            </div>
+            <div id="gs-list" class="gs-list" role="listbox" aria-label="搜索结果"></div>
+            <div class="gs-foot">
+                <span id="gs-root" class="gs-root"></span>
+                <span class="gs-hint">&#x2191;&#x2193; 选择 &middot; Enter 打开 &middot; Esc 关闭</span>
+            </div>
         </div>
-        <div class="menu" data-menu="theme">
-            <button class="menu-label">主题(T)</button>
-            <div class="dropdown hidden"></div>
-        </div>
-        <div class="menu" data-menu="help">
-            <button class="menu-label">帮助(H)</button>
-            <div class="dropdown hidden"></div>
-        </div>
-        <div class="spacer"></div>
-        <div id="menubar-search">
-            <span class="mdl2">&#xE721;</span>
-            <input id="search-input" type="text" placeholder="搜索节点…" spellcheck="false">
-        </div>
-    </nav>
+    </div>
     <div id="dialog-mask" class="hidden">
         <div id="dlg-settings" class="dialog dialog-settings hidden" role="dialog" aria-label="设置">
             <div class="dialog-head">
                 <span class="dialog-title">设置</span>
-                <button type="button" class="dialog-close" data-close="1" title="关闭">&#xE8BB;</button>
+                <button type="button" class="dialog-close" data-close="1" title="关闭"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
             </div>
             <div class="settings-layout">
                 <div class="settings-nav">
-                    <button type="button" class="snav-item active" data-pane="general">通用设置</button>
-                    <button type="button" class="snav-item" data-pane="editor-tabs">编辑器标签页</button>
-                    <div id="snav-formats" class="snav-group expanded">
-                        <button type="button" class="snav-item snav-parent" aria-expanded="true">
-                            <span class="snav-chev" aria-hidden="true"></span>
-                            <span>文件格式</span>
-                        </button>
-                        <div class="snav-children">
-                            <button type="button" class="snav-item snav-child" data-pane="formats">通用文件格式</button>
-                        </div>
+                <div class="settings-search-wrap">
+                    <input id="settings-search" class="settings-search" type="text" placeholder="搜索设置…" spellcheck="false" autocomplete="off">
+                    <div id="settings-search-results" class="settings-search-results hidden"></div>
+                </div>
+                <button type="button" class="snav-item active" data-pane="general">通用设置</button>
+                <button type="button" class="snav-item" data-pane="editor-tabs">编辑器标签页</button>
+                <div id="snav-ai" class="snav-group expanded">
+                    <button type="button" class="snav-item snav-parent" aria-expanded="true">
+                        <span class="snav-chev" aria-hidden="true"></span>
+                        <span>AI</span>
+                    </button>
+                    <div class="snav-children">
+                        <button type="button" class="snav-item snav-child" data-pane="models">模型</button>
+                        <button type="button" class="snav-item snav-child" data-pane="ai">AI 助手</button>
                     </div>
+                </div>
+                <div id="snav-formats" class="snav-group expanded">
+                    <button type="button" class="snav-item snav-parent" aria-expanded="true">
+                        <span class="snav-chev" aria-hidden="true"></span>
+                        <span>数据格式</span>
+                    </button>
+                    <div class="snav-children">
+                        <button type="button" class="snav-item snav-child" data-pane="formats">通用数据格式</button>
+                    </div>
+                </div>
+                <div id="snav-langs" class="snav-group expanded">
+                    <button type="button" class="snav-item snav-parent" aria-expanded="true">
+                        <span class="snav-chev" aria-hidden="true"></span>
+                        <span>编程语言</span>
+                    </button>
+                    <div class="snav-children" id="snav-lang-children"></div>
+                </div>
                     <button type="button" class="snav-item" data-pane="shortcuts">快捷键</button>
                     <button type="button" class="snav-item" data-pane="integration">系统集成</button>
                     <button type="button" class="snav-item" data-pane="plugins">插件</button>
+                    <button type="button" class="snav-item" data-pane="developer">开发者</button>
                     <button type="button" class="snav-item" data-pane="about">关于我们</button>
                 </div>
                 <div class="settings-content">
@@ -163,7 +261,7 @@
                                 显示顶部提示条
                             </label>
                         </div>
-                        <div class="fmt-hint hint-indent">关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧 × 只关闭当前提示。</div>
+                        <div class="fmt-hint hint-indent">关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧的关闭按钮只关闭当前提示。</div>
                         <div class="popover-row">
                             <span class="popover-label">文件图标主题</span>
                             <select id="opt-icon-theme" class="opt-select">
@@ -261,11 +359,37 @@
                         <div class="fmt-hint hint-indent">开启后窗口始终保持在其他窗口之上。</div>
                         <div class="popover-row">
                             <label class="popover-label">
+                                <input type="checkbox" id="opt-auto-update">
+                                启动时自动检查更新
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">默认开启；每次启动在后台检查一次，结果在右下角状态栏短暂显示，发现新版本会一直保留并可点击查看。</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
                                 <input type="checkbox" id="opt-md-line-numbers">
                                 Markdown 代码块显示行号
                             </label>
                         </div>
                         <div class="fmt-hint hint-indent">默认关闭；仅影响 Markdown 预览中的代码块。</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-md-scroll-sync">
+                                Markdown 分屏滚动同步
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">默认开启；分屏预览时左侧源码与右侧预览滚动互相同步跟随。</div>
+                        <div class="popover-row">
+                            <span class="popover-label">Markdown 预览宽度</span>
+                            <select id="opt-md-preview-width" class="opt-select">
+                                <option value="720">720px</option>
+                                <option value="860">860px</option>
+                                <option value="920">920px</option>
+                                <option value="1100">1100px</option>
+                                <option value="1300">1300px</option>
+                                <option value="0">跟随窗口宽度（默认）</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent">仅影响完整预览视图的阅读列宽；分屏预览的右栏始终占满可用宽度。</div>
                         <div class="font-preview" aria-hidden="true">
                             <span class="fp-ui">界面：糖果超甜@CandySweet · CaDt-DataLens 2026</span>
                             <span class="fp-editor">编辑器：{"name": "糖果超甜", "count": 42, "ok": true}</span>
@@ -298,37 +422,270 @@
                         </div>
                         <div class="fmt-hint hint-indent">默认关闭；开启后双击标签页即尝试关闭（有未保存修改时先确认）。</div>
                     </div>
+                    <div class="settings-pane hidden" data-pane="models">
+                        <div class="fmt-pane-title">模型</div>
+                        <div class="fmt-pane-sub">已配置模型与 API 凭据；API Key 只保存在本机 localStorage，不写入日志或应用数据目录。</div>
+                        <div class="settings-section-title">已配置模型</div>
+                        <div class="ai-model-toolbar">
+                            <button type="button" id="ai-model-create" class="dlg-btn primary">新建模型</button>
+                            <span class="ai-model-toolbar-label">预设</span>
+                            <select id="ai-opt-preset" class="opt-select"></select>
+                            <button type="button" id="ai-opt-preset-add" class="dlg-btn">添加预设</button>
+                        </div>
+                        <div id="ai-model-list" class="ai-model-list"></div>
+                        <div class="fmt-hint hint-indent">点击卡片「编辑」打开配置；新建和编辑使用独立弹层，保存后生效。</div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="ai">
+                        <div class="fmt-pane-title">AI 助手</div>
+                        <div class="fmt-pane-sub">记忆、提示词、写审批与聊天行为</div>
+                        <div class="settings-section-title">上下文与记忆</div>
+                        <div class="popover-row">
+                            <span class="popover-label">记忆模式</span>
+                            <select id="ai-opt-memory-mode" class="opt-select">
+                                <option value="workspace">跟随工作区（.cadt/memory）</option>
+                                <option value="app">应用数据目录（ai-memory）</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent" id="ai-opt-memory-path">记忆目录：—</div>
+                        <div class="popover-row">
+                            <span class="popover-label">压缩提示阈值</span>
+                            <input id="ai-opt-threshold" class="ai-settings-input" type="number" min="0.5" max="0.95" step="0.05">
+                            <span class="popover-value">占比</span>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">管理</span>
+                            <div class="ai-settings-key">
+                                <button type="button" id="ai-opt-open-memory" class="dlg-btn">记忆管理…</button>
+                                <button type="button" id="ai-opt-open-skills" class="dlg-btn">技能管理…</button>
+                            </div>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-context">
+                                注入工作区上下文
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-agents">
+                                注入 AGENTS.md
+                            </label>
+                        </div>
+                        <div class="settings-section-title">写操作审批</div>
+                        <div class="fmt-hint hint-indent">「总是允许此文件」的授权清单；移除后恢复逐次审批。</div>
+                        <div class="popover-row">
+                            <span class="popover-label">已授权</span>
+                            <div id="ai-opt-approved" class="ai-approved-list"></div>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label"></span>
+                            <button type="button" id="ai-opt-approved-clear" class="dlg-btn">清除全部授权</button>
+                        </div>
+                        <div class="settings-section-title">聊天行为</div>
+                        <div class="popover-row">
+                            <span class="popover-label">发送快捷键</span>
+                            <select id="ai-opt-sendkey" class="opt-select">
+                                <option value="enter">Enter 发送 / Shift+Enter 换行</option>
+                                <option value="ctrl-enter">Ctrl+Enter 发送 / Enter 换行</option>
+                            </select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">聊天字号</span>
+                            <input type="range" id="ai-opt-chatfont" min="10" max="32" step="1" value="13">
+                            <input type="number" id="ai-opt-chatfont-val" class="ai-settings-input ai-font-size-num" min="10" max="32" step="1" value="13">
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">英文字体</span>
+                            <select id="ai-opt-chatfont-en" class="opt-select"></select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">中文字体</span>
+                            <select id="ai-opt-chatfont-cjk" class="opt-select"></select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">代码字体</span>
+                            <select id="ai-opt-chatfont-code" class="opt-select"></select>
+                        </div>
+                        <div class="fmt-hint hint-indent">Ctrl + 滚轮可快速调整 AI 字号；字体仅作用于 AI 对话与代码块。</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-show-thinking">
+                                显示思考过程
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-show-usage">
+                                显示 Token 用量
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-assistant-card">
+                                AI 回复显示卡片边框
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">会话保留上限</span>
+                            <input id="ai-opt-maxsessions" class="ai-settings-input" type="number" min="2" max="500" step="1">
+                        </div>
+                        <div class="settings-section-title">对话日志</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-log-enabled">
+                                每轮自动保存对话日志（Markdown）
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">日志目录</span>
+                            <div class="ai-settings-key">
+                                <span id="ai-opt-log-path" class="fmt-hint"></span>
+                                <button type="button" id="ai-opt-open-logs" class="dlg-btn">打开目录</button>
+                            </div>
+                        </div>
+                        <div class="fmt-hint hint-indent">不含 API Key；粘贴的图片保存在 ai-logs/images/ 子目录并在日志中引用。</div>
+                        <div class="settings-section-title">通知</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-notify-inapp">
+                                应用内通知（右下角 Toast）
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-notify-system">
+                                Windows 系统通知（Toast）
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-notify-finish">
+                                任务完成时通知
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-notify-error">
+                                任务失败时通知
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-notify-ask">
+                                AI 提问时通知
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-notify-sound">
+                                窗口失焦时任务栏闪烁并播放提示音
+                            </label>
+                        </div>
+                        <div class="settings-section-title">AskQuestion</div>
+                        <div class="popover-row">
+                            <span class="popover-label">超时时长</span>
+                            <select id="ai-opt-ask-timeout" class="opt-select">
+                                <option value="0">不超时（一直等待）</option>
+                                <option value="30">30 秒</option>
+                                <option value="60">1 分钟</option>
+                                <option value="300">5 分钟</option>
+                                <option value="600">10 分钟</option>
+                                <option value="1800">30 分钟</option>
+                            </select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">超时未回答</span>
+                            <select id="ai-opt-ask-action" class="opt-select">
+                                <option value="recommended">按 AI 推荐项继续</option>
+                                <option value="wait">继续阻塞等待</option>
+                                <option value="abort">直接停止本轮</option>
+                                <option value="ai_decide">交给 AI 决定并继续</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent">仅对 ask_user 提问生效；选择“不超时”或“继续阻塞等待”时不会自动继续。</div>
+                        <div class="settings-section-title">提示词模板</div>
+                        <div class="popover-row">
+                            <span class="popover-label">模板</span>
+                            <div class="ai-settings-key">
+                                <select id="ai-opt-prompt" class="opt-select"></select>
+                                <button type="button" id="ai-opt-prompt-default" class="dlg-btn">设为默认</button>
+                            </div>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label"></span>
+                            <textarea id="ai-opt-prompt-text" class="ai-settings-input ai-settings-textarea" rows="5" spellcheck="false"></textarea>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label"></span>
+                            <div class="ai-settings-key">
+                                <button type="button" id="ai-opt-prompt-save" class="dlg-btn">保存模板</button>
+                                <button type="button" id="ai-opt-prompt-new" class="dlg-btn">另存为新模板</button>
+                                <button type="button" id="ai-opt-prompt-del" class="dlg-btn">删除模板</button>
+                            </div>
+                        </div>
+                        <div class="fmt-hint hint-indent">模板作为全局默认提示词；会话内可在面板「提示词」里临时覆盖。内置模板不可删除。</div>
+                        <div class="settings-section-title">配置迁移</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-export-keys">
+                                导出时包含 API Key
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label"></span>
+                            <div class="ai-settings-key">
+                                <button type="button" id="ai-opt-export" class="dlg-btn">导出配置…</button>
+                                <button type="button" id="ai-opt-import" class="dlg-btn">导入配置…</button>
+                                <button type="button" id="ai-opt-clear-sessions" class="dlg-btn">清空全部会话</button>
+                            </div>
+                        </div>
+                        <div class="fmt-hint hint-indent">导入按 id 合并配置与模板；默认不含 API Key。</div>
+                    </div>
                     <div class="settings-pane hidden" data-pane="formats">
-                        <div class="fmt-pane-title">通用文件格式</div>
+                        <div class="fmt-pane-title">通用数据格式</div>
                         <div class="fmt-pane-sub">所有格式的编码、缩进、保存换行与默认视图总览</div>
                         <div class="fmt-table" id="fmt-table"></div>
                         <div class="fmt-hint">编码「自动」= UTF-8 有效时用 UTF-8，否则回退 GBK；编码/缩进/换行对之后打开或保存的文件生效，默认视图对当前同类文件立即生效。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="shortcuts">
                         <div class="popover-shortcuts">
+                            <div class="settings-section-title">文件</div>
                             <div><span>新建 / 新建窗口</span><span class="kbd">Ctrl+N / Ctrl+Shift+N</span></div>
                             <div><span>打开</span><span class="kbd">Ctrl+O</span></div>
                             <div><span>保存 / 另存为</span><span class="kbd">Ctrl+S / Ctrl+Shift+S</span></div>
                             <div><span>关闭标签</span><span class="kbd">Ctrl+W</span></div>
+                            <div><span>重新打开关闭的标签页</span><span class="kbd">Ctrl+Shift+T</span></div>
                             <div><span>设置</span><span class="kbd">Ctrl+,</span></div>
+                            <div class="settings-section-title">编辑</div>
                             <div><span>撤销 / 重做</span><span class="kbd">Ctrl+Z / Ctrl+Y</span></div>
                             <div><span>格式化</span><span class="kbd">Ctrl+Alt+L</span></div>
+                            <div><span>搜索</span><span class="kbd">Ctrl+F</span></div>
+                            <div><span>全局搜索</span><span class="kbd">连按 3 次 Shift</span></div>
+                            <div><span>代码/文本视图转到行:列</span><span class="kbd">Ctrl+G</span></div>
+                            <div class="settings-section-title">视图与窗口</div>
                             <div><span>文件侧边栏</span><span class="kbd">Alt+1</span></div>
                             <div><span>结构视图</span><span class="kbd">Alt+7</span></div>
-                            <div><span>文件树中打开 / 展开</span><span class="kbd">双击</span></div>
-                            <div><span>文件树中展开 / 收起目录</span><span class="kbd">单击箭头</span></div>
-                            <div><span>文件树中多选</span><span class="kbd">Ctrl+单击</span></div>
-                            <div><span>文件树中连续选择</span><span class="kbd">Shift+单击</span></div>
-                            <div><span>文件树中追加范围选择</span><span class="kbd">Ctrl+Shift+单击</span></div>
-                            <div><span>文件树中重命名</span><span class="kbd">F2 / Shift+F6</span></div>
-                            <div><span>文件树中复制 / 剪切 / 粘贴</span><span class="kbd">Ctrl+C / Ctrl+X / Ctrl+V</span></div>
-                            <div><span>重新打开关闭的标签页</span><span class="kbd">Ctrl+Shift+T</span></div>
-                            <div><span>搜索</span><span class="kbd">Ctrl+F</span></div>
-                            <div><span>代码/文本视图转到行:列</span><span class="kbd">Ctrl+G</span></div>
-                            <div><span>展开 / 收起节点</span><span class="kbd">Ctrl+= / Ctrl+-</span></div>
-                            <div><span>全部展开 / 收起</span><span class="kbd">Ctrl+Shift+= / -</span></div>
+                            <div><span>终端</span><span class="kbd">Alt+F12</span></div>
+                            <div><span>调试控制台</span><span class="kbd">F12</span></div>
+                            <div><span>快速切换</span><span class="kbd">Ctrl+`</span></div>
                             <div><span>编辑器字号</span><span class="kbd">Ctrl+滚轮</span></div>
                             <div><span>全屏 / 退出全屏</span><span class="kbd">F11</span></div>
+                            <div class="settings-section-title">AI 助手</div>
+                            <div><span>打开 / 关闭 AI 面板</span><span class="kbd">Alt+9</span></div>
+                            <div><span>发送 / 换行</span><span class="kbd">Enter / Shift+Enter</span></div>
+                            <div><span>切换为 Ctrl+Enter 发送</span><span class="kbd">设置 · AI 助手</span></div>
+                            <div class="settings-section-title">文件树</div>
+                            <div><span>打开 / 展开</span><span class="kbd">双击</span></div>
+                            <div><span>展开 / 收起目录</span><span class="kbd">单击箭头</span></div>
+                            <div><span>多选</span><span class="kbd">Ctrl+单击</span></div>
+                            <div><span>连续选择</span><span class="kbd">Shift+单击</span></div>
+                            <div><span>追加范围选择</span><span class="kbd">Ctrl+Shift+单击</span></div>
+                            <div><span>重命名</span><span class="kbd">F2 / Shift+F6</span></div>
+                            <div><span>复制 / 剪切 / 粘贴</span><span class="kbd">Ctrl+C / Ctrl+X / Ctrl+V</span></div>
+                            <div class="settings-section-title">编辑器</div>
+                            <div><span>多光标（添加 / 列光标）</span><span class="kbd">Alt+单击 / 中键拖动</span></div>
+                            <div><span>展开 / 收起节点</span><span class="kbd">Ctrl+= / Ctrl+-</span></div>
+                            <div><span>全部展开 / 收起</span><span class="kbd">Ctrl+Shift+= / -</span></div>
                         </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="integration">
@@ -372,6 +729,7 @@
                     <div class="settings-pane hidden" data-pane="plugins">
                         <div class="fmt-pane-title">插件</div>
                         <div class="fmt-pane-sub">扩展新的文件格式、工具菜单命令与主题</div>
+                        <div class="plugin-section-title">已安装</div>
                         <div class="plugin-toolbar">
                             <button type="button" id="plugin-add" class="dlg-btn">添加插件…</button>
                             <button type="button" id="plugin-import" class="dlg-btn">导入插件(.zip)…</button>
@@ -386,8 +744,46 @@
                             </select>
                         </div>
                         <div class="fmt-hint hint-indent" id="plugin-dir-line">插件目录：—</div>
-                        <div class="plugin-list" id="plugin-list"></div>
+                        <div class="plugin-list-box">
+                            <div class="plugin-list" id="plugin-list"></div>
+                        </div>
+                        <div class="plugin-market">
+                            <div class="plugin-market-head">
+                                <span class="plugin-market-title">插件市场</span>
+                                <a class="plugin-link plugin-market-src" id="plugin-market-source"
+                                   href="https://gitee.com/organizations/cadt-datalens-plugins/projects"
+                                   data-url="https://gitee.com/organizations/cadt-datalens-plugins/projects"
+                                   target="_blank" rel="noopener">Gitee · CaDt-DataLens 插件市场</a>
+                                <button type="button" id="plugin-market-refresh" class="dlg-btn">刷新</button>
+                            </div>
+                            <div class="plugin-list-box">
+                                <div class="plugin-list" id="plugin-market-list"></div>
+                            </div>
+                        </div>
                         <div class="fmt-hint">插件在之后打开的文件上生效，已打开的文件不受影响；插件代码会在界面内运行，请只安装可信来源的插件。</div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="developer">
+                        <div class="fmt-pane-title">开发者</div>
+                        <div class="fmt-pane-sub">调试、日志与诊断工具</div>
+                        <div class="settings-section-title">日志</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-developer-mode">
+                                开发者模式（记录调试日志）
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">开启后额外记录调试信息；错误和警告始终写入运行日志。</div>
+                        <div class="popover-row">
+                            <span class="popover-label">运行日志</span>
+                            <button type="button" id="opt-open-logs" class="dlg-btn">打开日志目录</button>
+                        </div>
+                        <div class="fmt-hint hint-indent" id="opt-log-path">日志文件：—</div>
+                        <div class="settings-section-title">调试控制台</div>
+                        <div class="popover-row">
+                            <span class="popover-label">调试控制台</span>
+                            <button type="button" id="opt-debug-console" class="dlg-btn">打开调试控制台 (F12)</button>
+                        </div>
+                        <div class="fmt-hint hint-indent">在底部面板中显示（与终端共用容器，可来回切换），实时输出调试、信息、警告与错误；面板右上角按钮可在独立窗口中打开。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="about">
                         <div class="about-body">
@@ -402,6 +798,10 @@
                                 <span>组织</span><span>CandySweet</span>
                                 <span>版本</span><span>v1.0.0</span>
                             </div>
+                            <div class="about-update">
+                                <button type="button" id="about-check-update" class="dlg-btn">检查更新</button>
+                                <span id="about-update-status" class="about-update-status"></span>
+                            </div>
                             <div class="about-repo">
                                 <span class="about-repo-label">开源仓库地址</span>
                                 <a class="about-link" href="https://github.com/candysweet-cdt/CaDt-DataLens" data-url="https://github.com/candysweet-cdt/CaDt-DataLens" target="_blank" rel="noopener" title="https://github.com/candysweet-cdt/CaDt-DataLens">GitHub</a>
@@ -414,10 +814,121 @@
                 </div>
             </div>
         </div>
+        <div id="dlg-model-editor-mask" class="ai-model-editor-mask hidden"></div>
+        <div id="dlg-model-editor" class="dialog ai-model-editor hidden" role="dialog" aria-label="模型配置">
+            <div class="dialog-head">
+                <span class="dialog-title" id="dlg-model-title">新建模型</span>
+                <button type="button" id="ai-model-editor-close" class="ai-icon-btn" title="关闭">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
+            </div>
+            <div class="dialog-body ai-model-editor-body">
+                        <div class="popover-row">
+                            <span class="popover-label">名称</span>
+                            <input id="ai-opt-name" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off">
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">提供商</span>
+                            <select id="ai-opt-provider" class="opt-select">
+                                <option value="openai">OpenAI 兼容</option>
+                                <option value="anthropic">Anthropic 原生</option>
+                            </select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">Base URL</span>
+                            <input id="ai-opt-baseurl" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="https://api.deepseek.com/v1">
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">API Key</span>
+                            <div class="ai-settings-key">
+                                <input id="ai-opt-apikey" class="ai-settings-input" type="password" spellcheck="false" autocomplete="off">
+                                <button type="button" id="ai-opt-key-toggle" class="dlg-btn" title="显示 / 隐藏">显示</button>
+                            </div>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">模型</span>
+                            <div class="ai-settings-key">
+                                <input id="ai-opt-model" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="deepseek-flash">
+                                <button type="button" id="ai-opt-models" class="dlg-btn">获取列表</button>
+                            </div>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">温度</span>
+                            <input type="range" id="ai-opt-temp" min="0" max="2" step="0.1" value="0.7">
+                            <span id="ai-opt-temp-val" class="popover-value">0.7</span>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">最大输出</span>
+                            <input id="ai-opt-maxtokens" class="ai-settings-input" type="number" min="1" max="393216" step="1">
+                            <span class="popover-value">tokens</span>
+                        </div>
+                        <div id="ai-opt-reasoning-group" class="hidden">
+                            <div class="popover-row">
+                                <span class="popover-label">推理强度</span>
+                                <select id="ai-opt-reasoning" class="opt-select">
+                                    <option value="">自动</option>
+                                    <option value="low">低</option>
+                                    <option value="medium">中</option>
+                                    <option value="high">高</option>
+                                </select>
+                            </div>
+                            <div class="fmt-hint hint-indent">OpenAI 兼容协议：按 reasoning_effort 发送；自动则不发送该字段。</div>
+                        </div>
+                        <div id="ai-opt-thinking-group" class="hidden">
+                            <div class="popover-row">
+                                <label class="popover-label">
+                                    <input type="checkbox" id="ai-opt-thinking">
+                                    扩展思考
+                                </label>
+                            </div>
+                            <div class="popover-row">
+                                <span class="popover-label">思考预算</span>
+                                <input id="ai-opt-budget" class="ai-settings-input" type="number" min="1024" max="393215" step="256">
+                                <span class="popover-value">tokens</span>
+                            </div>
+                            <div class="fmt-hint hint-indent">仅 Anthropic 原生；开启后请求省略 temperature。预算须小于最大输出，调整时会自动修正。</div>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">上下文窗口</span>
+                            <input id="ai-opt-context" class="ai-settings-input" type="number" min="2048" max="1048576" step="1024">
+                            <span class="popover-value">tokens</span>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">连接</span>
+                            <div class="ai-settings-key">
+                                <button type="button" id="ai-opt-test" class="dlg-btn primary">测试连接</button>
+                                <span id="ai-opt-status" class="ai-settings-status">—</span>
+                            </div>
+                        </div>
+                        <div class="fmt-hint hint-indent" id="ai-opt-dir">应用数据目录：—</div>
+                        <div class="settings-section-title">网络与请求</div>
+                        <div class="popover-row">
+                            <span class="popover-label">代理</span>
+                            <select id="ai-opt-proxy" class="opt-select">
+                                <option value="system">跟随系统</option>
+                                <option value="direct">直连</option>
+                                <option value="custom">自定义</option>
+                            </select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">代理地址</span>
+                            <input id="ai-opt-proxy-url" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:7890">
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">自定义请求头</span>
+                            <textarea id="ai-opt-headers" class="ai-settings-input ai-settings-textarea" rows="3" spellcheck="false" placeholder="每行一条：Header-Name=value"></textarea>
+                        </div>
+                        <div class="fmt-hint hint-indent">代理支持 http/https/socks5；自定义请求头最多 8 条，内容不写入日志。</div>
+                    </div>
+            <div class="dialog-footer">
+                <button type="button" id="ai-model-editor-cancel" class="dlg-btn">取消</button>
+                <button type="button" id="ai-model-editor-save" class="dlg-btn primary">保存</button>
+            </div>
+        </div>
         <div id="dlg-confirm" class="dialog hidden" role="dialog" aria-label="关闭">
             <div class="dialog-head">
                 <span class="dialog-title">关闭</span>
-                <button type="button" class="dialog-close" data-close="1" title="关闭">&#xE8BB;</button>
+                <button type="button" class="dialog-close" data-close="1" title="关闭"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
             </div>
             <div class="dialog-body">
                 <span id="dlg-confirm-text">有未保存的修改，关闭后将丢弃。</span>
@@ -430,7 +941,7 @@
         <div id="dlg-name" class="dialog dialog-name hidden" role="dialog" aria-label="名称">
             <div class="dialog-head">
                 <span id="dlg-name-title" class="dialog-title">新建文件</span>
-                <button type="button" class="dialog-close" data-close="1" title="关闭">&#xE8BB;</button>
+                <button type="button" class="dialog-close" data-close="1" title="关闭"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
             </div>
             <div class="dialog-body">
                 <label id="dlg-name-label" class="dlg-label" for="dlg-name-input">文件名</label>
@@ -448,7 +959,7 @@
                     <img class="dialog-icon" src="/icon.png" alt="">
                     <span class="dialog-title">转到行:列</span>
                 </div>
-                <button type="button" class="dialog-close" data-close="1" title="关闭">&#xE8BB;</button>
+                <button type="button" class="dialog-close" data-close="1" title="关闭"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
             </div>
             <div class="dialog-body">
                 <div class="goto-row">
@@ -462,6 +973,33 @@
                 </div>
             </div>
         </div>
+        <div id="dlg-props" class="dialog dialog-props hidden" role="dialog" aria-label="文件属性">
+            <div class="dialog-head">
+                <span class="dialog-title">文件属性</span>
+                <button type="button" class="dialog-close" data-close="1" title="关闭"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+            </div>
+            <div class="dialog-body">
+                <div id="dlg-props-grid" class="props-grid"></div>
+                <div class="dialog-footer">
+                    <button type="button" id="btn-props-ok" class="dlg-btn primary">确定</button>
+                </div>
+            </div>
+        </div>
+        <div id="dlg-update" class="dialog dialog-update hidden" role="dialog" aria-label="检查更新">
+            <div class="dialog-head">
+                <span class="dialog-title">检查更新</span>
+                <button type="button" class="dialog-close" data-close="1" title="关闭"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+            </div>
+            <div class="dialog-body">
+                <div id="dlg-update-status" class="update-status">正在检查更新…</div>
+                <div id="dlg-update-notes" class="update-notes hidden"></div>
+                <div class="dialog-footer">
+                    <button type="button" id="btn-update-download" class="dlg-btn primary hidden">下载安装包</button>
+                    <button type="button" id="btn-update-page" class="dlg-btn hidden">打开发布页</button>
+                    <button type="button" id="btn-update-close" class="dlg-btn">关闭</button>
+                </div>
+            </div>
+        </div>
     </div>
     <div id="editor-wrap">
         <nav id="activity-bar" aria-label="工具窗口">
@@ -472,12 +1010,18 @@
                 <button type="button" id="ab-structure" class="ab-btn" title="结构 (Alt+7)" aria-label="结构" aria-pressed="false">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4.5h12M6.5 8h9.5M9 11.5h7M11.5 15h4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 </button>
-                <button type="button" id="ab-search" class="ab-btn" title="搜索节点 (Ctrl+F)" aria-label="搜索节点">
+                <button type="button" id="ab-search" class="ab-btn" title="内容搜索 (Ctrl+F)" aria-label="内容搜索">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="m12.8 12.8 3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 </button>
                 <button type="button" id="ab-git" class="ab-btn" title="Git：变更列表" aria-label="Git">
                     <span class="ab-dot" aria-hidden="true"></span>
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="6" cy="5" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="6" cy="15" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="14" cy="9" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7v6M6 9.4c0-2.2 2.4-2.2 5.6-2.3M14 11v.6c0 2-1.6 3.4-4.6 3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="6" cy="10" r=".1" fill="none"/></svg>
+                </button>
+                <button type="button" id="ab-ai" class="ab-btn" title="AI 助手 (Alt+9)" aria-label="AI 助手" aria-pressed="false">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6zM5.1 12.9l.5 1.4 1.4.5-1.4.5-.5 1.4-.5-1.4-1.4-.5 1.4-.5z" fill="currentColor"/></svg>
+                </button>
+                <button type="button" id="ab-chats" class="ab-btn" title="AI 会话 (Alt+8)" aria-label="AI 会话" aria-pressed="false">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.2 5.2c0-.8.6-1.4 1.4-1.4h7.1c.8 0 1.4.6 1.4 1.4v4.2c0 .8-.6 1.4-1.4 1.4H7.4l-2.7 2.1V10.8h-.1c-.8 0-1.4-.6-1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8.2 12.2v2.2c0 .8.6 1.4 1.4 1.4h4.2l2.4 1.8v-1.8c.8 0 1.4-.6 1.4-1.4V9.9c0-.8-.6-1.4-1.4-1.4h-2.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
                 </button>
                 <button type="button" id="ab-more" class="ab-btn" title="视图与工具窗口" aria-label="更多">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="10" r="1.2" fill="currentColor"/><circle cx="10" cy="10" r="1.2" fill="currentColor"/><circle cx="15" cy="10" r="1.2" fill="currentColor"/></svg>
@@ -486,6 +1030,9 @@
             </div>
             <div class="ab-spacer"></div>
             <div class="ab-group ab-bottom">
+                <button type="button" id="ab-debug" class="ab-btn hidden" title="调试控制台 (F12)" aria-label="调试控制台" aria-pressed="false">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><ellipse cx="10" cy="11.5" rx="3" ry="3.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="10" cy="7.3" r="1.15" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9.2 6.3 8.3 4.7M10.8 6.3l.9-1.6M6.9 9.3 4.8 8.3M6.8 11.5H4.2M6.9 13.7l-2.1 1M13.1 9.3l2.1-1M13.2 11.5h2.6M13.1 13.7l2.1 1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
                 <button type="button" id="ab-terminal" class="ab-btn" title="终端 (Alt+F12)" aria-label="终端" aria-pressed="false">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 6.2 4 3.8-4 3.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.6 13.8H16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 </button>
@@ -505,14 +1052,19 @@
                 <div class="sb-tools">
                     <button type="button" id="sb-mode-list" class="sb-tool" title="文件列表" aria-pressed="false"></button>
                     <button type="button" id="sb-mode-tree" class="sb-tool" title="文件树" aria-pressed="true"></button>
+                    <button type="button" id="sb-filter-btn" class="sb-tool" title="过滤文件名" aria-pressed="false"></button>
                     <button type="button" id="sb-refresh" class="sb-tool" title="刷新"></button>
                 </div>
+            </div>
+            <div id="sb-filter-row" class="sb-filter-row hidden">
+                <input id="sb-filter" type="text" class="sb-filter-input" placeholder="输入名称过滤…" spellcheck="false" autocomplete="off">
             </div>
             <div id="sb-body" class="sb-body"></div>
             <div id="structure-panel">
                 <div class="sb-head">
                     <span class="sb-title">结构</span>
                     <div class="sb-tools">
+                        <button type="button" id="structure-export" class="sb-tool" title="结构化复制 / 导出"></button>
                         <button type="button" id="structure-collapse" class="sb-tool" title="全部折叠"></button>
                         <button type="button" id="structure-refresh" class="sb-tool" title="刷新结构"></button>
                     </div>
@@ -545,6 +1097,20 @@
                     </div>
                 </div>
             </div>
+            <div id="ai-sessions-panel" class="ai-sessions-panel">
+                <div class="sb-head">
+                    <span class="sb-title">AI 会话</span>
+                    <div class="sb-tools">
+                        <button type="button" id="ai-session-new" class="sb-tool" title="新建会话">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                        </button>
+                        <button type="button" id="ai-session-more" class="sb-tool" title="会话操作">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1" fill="currentColor"/><circle cx="8" cy="8" r="1" fill="currentColor"/><circle cx="12.5" cy="8" r="1" fill="currentColor"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div id="ai-session-list" class="ai-session-list"></div>
+            </div>
             <div id="sidebar-resize" class="sidebar-resize" title="拖动调整宽度"></div>
         </aside>
         <div id="main-pane">
@@ -571,17 +1137,175 @@
                 </div>
             </div>
         </div>
+        <aside id="ai-panel" class="hidden" aria-label="AI 助手">
+            <div class="ai-resize ai-resize-l" data-ai-resize="l" title="拖动调整宽度"></div>
+            <div class="ai-resize ai-resize-r" data-ai-resize="r"></div>
+            <div class="ai-resize ai-resize-t" data-ai-resize="t" title="拖动调整高度"></div>
+            <div class="ai-resize ai-resize-b" data-ai-resize="b"></div>
+            <div class="ai-resize ai-resize-tl" data-ai-resize="tl"></div>
+            <div class="ai-resize ai-resize-tr" data-ai-resize="tr"></div>
+            <div class="ai-resize ai-resize-bl" data-ai-resize="bl"></div>
+            <div class="ai-resize ai-resize-br" data-ai-resize="br"></div>
+            <div class="ai-head" id="ai-head">
+                <div class="ai-head-row ai-head-title-row">
+                    <span class="ai-title">AI 助手</span>
+                    <div class="ai-head-actions">
+                        <div class="ai-mode-seg" id="ai-mode-seg" aria-label="显示方式">
+                            <button type="button" data-ai-mode="dock" title="停靠：无文件时占满内容区，打开文件后分屏">
+                                <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M9.8 3v10" stroke="currentColor" stroke-width="1.1"/></svg>
+                            </button>
+                            <button type="button" data-ai-mode="fullscreen" title="全屏：仅覆盖文件内容区">
+                                <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M6 6.2h1.4V4.8M10 6.2H8.6V4.8M6 9.8h1.4v1.4M10 9.8H8.6v1.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+                            </button>
+                            <button type="button" data-ai-mode="float" title="悬浮：打开可移到其他屏幕的独立窗口">
+                                <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="8.4" height="7.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/><rect x="6.4" y="6.4" width="7.2" height="6.4" rx="1" fill="var(--panel)" stroke="currentColor" stroke-width="1.1"/></svg>
+                            </button>
+                        </div>
+                        <button type="button" id="ai-changes" class="ai-chip-btn hidden" title="本会话的工作区文件改动">变更 <span id="ai-changes-count">0</span></button>
+                        <button type="button" id="ai-more" class="ai-icon-btn" title="更多工具与设置">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="8" r="1.15" fill="currentColor"/><circle cx="8" cy="8" r="1.15" fill="currentColor"/><circle cx="12" cy="8" r="1.15" fill="currentColor"/></svg>
+                        </button>
+                        <button type="button" id="ai-close" class="ai-icon-btn" title="关闭 (Alt+9)">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div id="ai-changes-pop" class="ai-popover hidden"></div>
+            <div id="ai-todos" class="ai-todos hidden"></div>
+            <div id="ai-messages" class="ai-messages" role="log" aria-live="polite"></div>
+            <button type="button" id="ai-scroll-btn" class="ai-scroll-btn hidden" title="回到底部">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.6v8M4.6 8.4L8 11.8l3.4-3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <div id="ai-slash" class="ai-slash hidden"></div>
+            <div id="ai-ctx-banner" class="ai-ctx-banner hidden">
+                <span id="ai-ctx-banner-text">上下文接近窗口上限</span>
+                <button type="button" id="ai-ctx-compact" class="dlg-btn">压缩上下文</button>
+            </div>
+            <div class="ai-composer">
+                <div id="ai-queue" class="ai-queue hidden"></div>
+                <div id="ai-takeover" class="ai-takeover hidden"></div>
+                <div id="ai-attach" class="ai-attach hidden"></div>
+                <textarea id="ai-input" class="ai-input" rows="2" placeholder="发消息或粘贴图片；/ 调用指令，@ 提及文件" spellcheck="false" autocomplete="off"></textarea>
+                <div class="ai-composer-bottom">
+                    <button type="button" id="ai-attach-btn" class="ai-plus-btn" title="添加附件或指令">+</button>
+                    <button type="button" id="ai-permission" class="ai-pill" title="权限：仅可查看">仅可查看</button>
+                    <button type="button" id="ai-plan" class="ai-pill" title="计划模式：先只读探索并给出计划，批准后执行" aria-pressed="false">计划</button>
+                    <span id="ai-hint" class="ai-hint"></span>
+                    <button type="button" id="ai-model-chip" class="ai-pill ai-model-pill" title="切换模型与推理等级">选择模型</button>
+                    <button type="button" id="ai-stop" class="ai-send-btn ai-stop hidden" title="停止生成">
+                        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.3" fill="currentColor"/></svg>
+                    </button>
+                    <button type="button" id="ai-send" class="ai-send-btn" title="发送">
+                        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.5V4M4.6 7.4L8 4l3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="ai-stats-wrap">
+                <div id="ai-stats" class="ai-stats hidden">
+                    <button type="button" id="ai-stats-session" class="ai-stat-btn" title="会话统计">
+                        <svg class="ai-stat-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 4.8V8l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span class="ai-stat-text">
+                            <span id="ai-stats-turns" class="ai-stats-item"></span>
+                            <span id="ai-stats-speed" class="ai-stats-item hidden"></span>
+                        </span>
+                    </button>
+                    <span id="ai-stats-sep" class="ai-stats-sep">·</span>
+                    <button type="button" id="ai-stats-token" class="ai-stat-btn" title="Token 用量">
+                        <svg class="ai-stat-icon" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4.2" rx="4.5" ry="1.7" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M3.5 4.2v7.6c0 1 2 1.7 4.5 1.7s4.5-.7 4.5-1.7V4.2M3.5 8c0 1 2 1.7 4.5 1.7S12.5 9 12.5 8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+                        <span class="ai-stat-text">
+                            <span id="ai-stats-total" class="ai-stats-item hidden"></span>
+                            <span id="ai-stats-cache" class="ai-stats-item hidden"></span>
+                        </span>
+                    </button>
+                    <button type="button" id="ai-ctx-btn" class="ai-ctx-btn" title="上下文用量">
+                        <span id="ai-ctx-ring" class="ai-ctx-ring"></span>
+                        <span id="ai-stats-ctx-pct">0%</span>
+                    </button>
+                </div>
+                <div id="ai-session-pop" class="ai-ctx-pop ai-stat-pop hidden">
+                    <div class="ai-stat-pop-head">
+                        <span class="ai-stat-pop-title">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 4.8V8l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            会话统计
+                        </span>
+                        <b id="ai-session-pop-turns">—</b>
+                    </div>
+                    <div class="ai-stat-divider"></div>
+                    <div class="ai-stat-row"><span>模型用时</span><b id="ai-session-model">—</b></div>
+                    <div class="ai-stat-row"><span>工具调用用时</span><b id="ai-session-tools">—</b></div>
+                    <div class="ai-stat-row"><span>首 token 平均（TTFT）</span><b id="ai-session-ttft">—</b></div>
+                    <div class="ai-stat-row"><span>输出速度（TPS）</span><b id="ai-session-tps">—</b></div>
+                </div>
+                <div id="ai-token-pop" class="ai-ctx-pop ai-stat-pop hidden">
+                    <div class="ai-stat-pop-head">
+                        <span class="ai-stat-pop-title">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4.2" rx="4.5" ry="1.7" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M3.5 4.2v7.6c0 1 2 1.7 4.5 1.7s4.5-.7 4.5-1.7V4.2M3.5 8c0 1 2 1.7 4.5 1.7S12.5 9 12.5 8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+                            Token 用量
+                        </span>
+                        <b id="ai-token-pop-total">—</b>
+                    </div>
+                    <div class="ai-stat-divider"></div>
+                    <div class="ai-stat-row"><span>缓存命中</span><b id="ai-token-hit">—</b></div>
+                    <div class="ai-stat-row"><span>未缓存输入</span><b id="ai-token-uncached">—</b></div>
+                    <div class="ai-stat-row"><span>缓存读取</span><b id="ai-token-cached">—</b></div>
+                    <div class="ai-stat-row"><span>输出</span><b id="ai-token-output">—</b></div>
+                </div>
+                <div id="ai-ctx-pop" class="ai-ctx-pop hidden">
+                    <div class="ai-ctx-pop-head">
+                        <span>上下文已用 <b id="ai-ctx-pop-pct">0%</b></span>
+                        <span id="ai-ctx-pop-size"></span>
+                    </div>
+                    <div class="ai-ctx-bar">
+                        <i id="ai-ctx-seg-system" class="ai-ctx-seg system"></i>
+                        <i id="ai-ctx-seg-tools" class="ai-ctx-seg tools"></i>
+                        <i id="ai-ctx-seg-messages" class="ai-ctx-seg messages"></i>
+                    </div>
+                    <div class="ai-ctx-legend">
+                        <div class="ai-ctx-row"><i class="ai-ctx-dot system"></i><span>系统提示词</span><b id="ai-ctx-tok-system">~0</b></div>
+                        <div class="ai-ctx-row"><i class="ai-ctx-dot tools"></i><span>工具定义</span><b id="ai-ctx-tok-tools">~0</b></div>
+                        <div class="ai-ctx-row"><i class="ai-ctx-dot messages"></i><span>对话消息</span><b id="ai-ctx-tok-messages">~0</b></div>
+                    </div>
+                    <button type="button" id="ai-ctx-pop-compact" class="dlg-btn ai-ctx-compact">压缩上下文</button>
+                </div>
+            </div>
+            <div id="ai-dialog" class="ai-dialog hidden">
+                <div class="ai-dialog-card" role="dialog" aria-modal="true">
+                    <div class="ai-dialog-head">
+                        <span id="ai-dialog-title"></span>
+                        <button type="button" id="ai-dialog-close" class="ai-icon-btn" title="关闭 (Esc)">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                        </button>
+                    </div>
+                    <div id="ai-dialog-body" class="ai-dialog-body"></div>
+                    <div id="ai-dialog-foot" class="ai-dialog-foot"></div>
+                </div>
+            </div>
+        </aside>
         </div>
         <div id="terminal-panel" class="hidden">
             <div id="terminal-resize" class="term-resize" title="拖动调整高度"></div>
             <div class="term-head">
-                <div class="term-tabs" id="term-tabs"></div>
+                <span class="term-title">终端</span>
+                <div class="term-tabs-wrap">
+                    <div class="term-tabs" id="term-tabs"></div>
+                    <div class="term-tab-actions">
+                        <button type="button" id="term-new" class="term-btn" title="新建终端（默认 Shell）" aria-label="新建终端">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                        </button>
+                        <button type="button" id="term-shell-menu" class="term-btn" title="选择 Shell 新建终端" aria-label="选择 Shell 新建终端">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                    </div>
+                </div>
                 <div class="term-actions">
-                    <button type="button" id="term-new" class="term-btn" title="新建终端">＋</button>
-                    <button type="button" id="term-panel-close" class="term-btn" title="关闭面板">✕</button>
+                    <button type="button" id="term-panel-close" class="term-btn" title="关闭面板" aria-label="关闭面板">
+                        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                    </button>
                 </div>
             </div>
             <div class="term-body" id="term-body"></div>
+            <div id="debug-view" class="hidden"></div>
         </div>
         </div>
     </div>
@@ -598,6 +1322,10 @@
             <span id="st-size"></span>
             <span id="st-eol"></span>
             <span id="st-enc"></span>
+            <span id="st-update" class="st-update" style="display:none"></span>
+            <span id="st-count" class="st-count"></span>
+            <button type="button" id="st-md-width" class="st-zoom" title="Markdown 预览宽度"></button>
+            <button type="button" id="st-ai-width" class="st-zoom" title="AI 全屏内容宽度" style="display:none"></button>
             <button type="button" id="st-zoom" class="st-zoom" title="缩放比例"></button>
             <button type="button" id="st-pos" class="st-zoom" title="当前光标位置（点击或 Ctrl+G 跳转）"></button>
         </div>
@@ -606,6 +1334,7 @@
         </button>
     </footer>
 </div>
+<div id="app-toasts" class="app-toasts" aria-live="polite"></div>
 <script src="./src/main.js" type="module"></script>
 </body>
 </html>

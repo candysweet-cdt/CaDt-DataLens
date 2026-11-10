@@ -33,10 +33,11 @@ const (
 const appVersion = "v1.0.0"
 
 type App struct {
-	ctx            context.Context
-	startupTargets []OpenTarget
-	dirty          bool
-	forceClose     bool
+	ctx                 context.Context
+	startupTargets      []OpenTarget
+	startupSettingsPane string
+	dirty               bool
+	forceClose          bool
 }
 
 type OpenTarget struct {
@@ -66,15 +67,34 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	applyTaskbarIcon()
+	ensureWindowShown(ctx)
+	if a.IsDebugConsoleWindow() {
+		// 独立调试控制台窗口：小尺寸独立窗，不处理启动文件/目录
+		runtime.WindowSetTitle(ctx, "调试控制台 · CaDt-DataLens")
+		runtime.WindowSetSize(ctx, 780, 460)
+		return
+	}
+	if a.IsAIFloatWindow() {
+		runtime.WindowSetTitle(ctx, "AI 助手 · CaDt-DataLens")
+	}
+	a.startupSettingsPane = parseOpenSettingsArg(os.Args[1:])
 	a.startupTargets = parseOpenTargets(os.Args[1:])
-	runtime.OnFileDrop(ctx, func(x, y int, paths []string) {
-		if targets := parseOpenTargets(paths); len(targets) > 0 {
-			runtime.EventsEmit(ctx, "open-targets", targets)
-		}
-	})
+	// 外部文件拖放由前端 runtime.OnFileDrop 注册窗口监听并直接打开；
+	// 这里不再订阅 wails:file-drop，否则同一次拖放会被两侧各处理一遍。
+}
+
+// domReady 页面就绪后再显示窗口，避开 WebView2 初始化占住 UI 线程的那段时间。
+func (a *App) domReady(ctx context.Context) {
+	showWindowWhenReady(ctx)
 }
 
 func (a *App) secondInstance(data options.SecondInstanceData) {
+	if pane := parseOpenSettingsArg(data.Args); pane != "" {
+		runtime.EventsEmit(a.ctx, "app-open-settings", pane)
+		runtime.WindowShow(a.ctx)
+		return
+	}
 	targets := parseOpenTargets(data.Args)
 	if len(targets) == 0 {
 		targets = startupCwdTarget()
@@ -82,8 +102,26 @@ func (a *App) secondInstance(data options.SecondInstanceData) {
 	if len(targets) > 0 {
 		runtime.EventsEmit(a.ctx, "open-targets", targets)
 	}
-	runtime.WindowUnminimise(a.ctx)
+	// 只用 WindowShow：Windows 上 WindowUnminimise 走 WM_SYSCOMMAND/SC_RESTORE，
+	// 会把最大化的窗口还原成普通窗口；WindowShow 内部只在最小化时才恢复。
 	runtime.WindowShow(a.ctx)
+}
+
+func parseOpenSettingsArg(args []string) string {
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if strings.HasPrefix(arg, "--open-settings=") {
+			return strings.TrimPrefix(arg, "--open-settings=")
+		}
+	}
+	return ""
+}
+
+// ConsumeStartupSettings 返回本次启动携带的设置页并清空（供前端启动后打开）。
+func (a *App) ConsumeStartupSettings() string {
+	pane := a.startupSettingsPane
+	a.startupSettingsPane = ""
+	return pane
 }
 
 func pathArgs(args []string) []string {
@@ -907,6 +945,38 @@ func (a *App) MoveEntry(src, destDir, newName string) (string, error) {
 	return dest, nil
 }
 
+// SaveDataURL 把 data URL（base64）解码后写入目标文件（PNG 导出等二进制落盘用）。
+func (a *App) SaveDataURL(path string, dataURL string) error {
+	const marker = "base64,"
+	idx := strings.Index(dataURL, marker)
+	if path == "" {
+		return fmt.Errorf("没有目标文件")
+	}
+	if idx < 0 {
+		return fmt.Errorf("无效的数据 URL")
+	}
+	raw, err := base64.StdEncoding.DecodeString(dataURL[idx+len(marker):])
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0644)
+}
+
+// CopyFileTo 把已有文件复制到指定目标路径（图片另存为用）。
+func (a *App) CopyFileTo(srcPath, destPath string) error {
+	if srcPath == "" || destPath == "" {
+		return fmt.Errorf("路径为空")
+	}
+	if strings.EqualFold(srcPath, destPath) {
+		return nil
+	}
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(destPath, data, 0644)
+}
+
 func (a *App) SaveFileDialog(defaultName string) (string, error) {
 	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:           "保存文件",
@@ -925,6 +995,7 @@ type appConfig struct {
 	OpenMode        string   `json:"openMode"`
 	PluginsPathMode string   `json:"pluginsPathMode,omitempty"`
 	DisabledPlugins []string `json:"disabledPlugins,omitempty"`
+	DeveloperMode   bool     `json:"developerMode,omitempty"`
 }
 
 func defaultAppConfig() appConfig {
@@ -954,6 +1025,7 @@ func readAppConfig() appConfig {
 	if stored.DisabledPlugins != nil {
 		cfg.DisabledPlugins = stored.DisabledPlugins
 	}
+	cfg.DeveloperMode = stored.DeveloperMode
 	return cfg
 }
 
@@ -1092,7 +1164,15 @@ func (a *App) ShowInFolder(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("没有文件路径")
 	}
-	cmd := exec.Command("explorer.exe", "/select,", path)
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("路径不存在：%s", path)
+	}
+	args := []string{path}
+	if !info.IsDir() {
+		args = []string{"/select,", path}
+	}
+	cmd := exec.Command("explorer.exe", args...)
 	if err := cmd.Start(); err != nil {
 		return err
 	}

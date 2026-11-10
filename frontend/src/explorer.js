@@ -4,6 +4,7 @@ const ICONS = {
     file: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.8h5.2L12 5.6v7.6H4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9.2 2.8v2.8H12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
     list: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.2h10M3 8h10M3 11.8h10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
     tree: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.2v9.6M3 6h4.2M3 11.8h4.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M7.2 4.6h5.2v2.8H7.2zM7.2 10.4h5.2v2.8H7.2z" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
+    filter: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11L9.6 8.4v4.2l-3.2 1.6V8.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
     refresh: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 8a4.8 4.8 0 1 1-1.4-3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12.8 2.6v3.2H9.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 function normalizePath(path) {
@@ -52,9 +53,10 @@ function el(tag, className, text) {
 
 export function createExplorer(options) {
     const {
-        body, titleEl, refreshBtn, listBtn, treeBtn,
+        body, titleEl, refreshBtn, listBtn, treeBtn, filterBtn, onToggleFilter,
         readDir, openPath, openFolder, openFileDialog, isSupported,
-        onModeChange, onContextMenu, listLimit = 200, readLimit = 1000, listReadLimit = 5000,
+        onModeChange, onContextMenu, onMove, onExternalDrop, canDrag,
+        listLimit = 200, readLimit = 1000, listReadLimit = 5000,
     } = options;
     let mode = 'tree';
     let visible = false;
@@ -71,6 +73,7 @@ export function createExplorer(options) {
     let autoRefreshSeconds = -1;
     let autoRefreshTimer = 0;
     let autoRefreshBusy = false;
+    let dragState = null;
 
     const canList = (name) => (typeof isSupported === 'function' ? isSupported(name) : true);
 
@@ -92,7 +95,7 @@ export function createExplorer(options) {
     function updateTitle() {
         const root = currentRoot();
         if (titleEl) {
-            titleEl.textContent = root ? (baseName(root) || root) : '资源';
+            titleEl.textContent = root ? '项目' : '资源';
         }
         if (refreshBtn) refreshBtn.disabled = !root;
     }
@@ -128,6 +131,53 @@ export function createExplorer(options) {
         return row;
     }
 
+    function clearDropHighlight() {
+        for (const row of body.querySelectorAll('.sb-row.drop-target')) row.classList.remove('drop-target');
+    }
+
+    function clearDragState() {
+        clearDropHighlight();
+        for (const row of body.querySelectorAll('.sb-row.dragging')) row.classList.remove('dragging');
+        dragState = null;
+    }
+
+    function dropAllowed(node) {
+        if (!dragState || !dragState.items.length || !node || !node.isDir) return false;
+        const dest = node.path;
+        const items = dragState.items;
+        if (items.some((item) => samePath(item.path, dest))) return false;
+        if (items.some((item) => item.isDir && isWithin(item.path, dest))) return false;
+        // 全部都已经在该目录里，没必要高亮
+        if (items.every((item) => samePath(parentPath(item.path), dest))) return false;
+        return true;
+    }
+
+    // ---- 文件名即时过滤：只过滤已加载节点，命中目录自动按展开渲染 ----
+    let filterText = '';
+
+    function treeFilterHit(node) {
+        if (!filterText) return true;
+        const name = String(node.name || '').toLowerCase();
+        if (name.includes(filterText)) return true;
+        if (node.isDir && Array.isArray(node.children)) {
+            return node.children.some((child) => treeFilterHit(child));
+        }
+        return false;
+    }
+
+    function setFilter(text) {
+        const next = String(text || '').trim().toLowerCase();
+        if (next === filterText) return;
+        filterText = next;
+        if (mode === 'tree') renderTree();
+        else renderList();
+    }
+
+    function isEmptyDirNode(node) {
+        return !!(node && node.isDir && node.loaded && !node.loading && !node.error &&
+            !node.truncated && Array.isArray(node.children) && node.children.length === 0);
+    }
+
     function treeRow(node) {
         const row = el('div', 'sb-row sb-tree-row' + (node.root ? ' sb-root' : '') +
             (node.isDir ? ' sb-dir' : '') + (samePath(node.path, activePath) ? ' current' : '') +
@@ -137,8 +187,11 @@ export function createExplorer(options) {
         row.dataset.path = node.path;
         row.dataset.dir = node.isDir ? '1' : '0';
         row.tabIndex = -1;
-        const chev = el('span', 'sb-chev' + (node.isDir && node.expanded ? ' open' : ''));
-        if (node.isDir) {
+        const emptyDir = isEmptyDirNode(node);
+        const chev = emptyDir
+            ? el('span', 'sb-chev-spacer')
+            : el('span', 'sb-chev' + (node.isDir && node.expanded ? ' open' : ''));
+        if (node.isDir && !emptyDir) {
             chev.innerHTML = ICONS.chevron;
             chev.title = node.expanded ? '收起目录' : '展开目录';
         }
@@ -183,20 +236,87 @@ export function createExplorer(options) {
                 onContextMenu({kind: 'tree', name: node.name, path: node.path, isDir: node.isDir, isRoot: !!node.root}, e.clientX, e.clientY, node);
             }
         });
+        row.draggable = !node.root;
+        row.addEventListener('dragstart', (e) => {
+            if (node.root || (typeof canDrag === 'function' && !canDrag())) {
+                e.preventDefault();
+                return;
+            }
+            if (!selectionHas(node.path)) selectOnly(node);
+            const items = selection.filter((item) => item && item.path).map((item) => ({...item}));
+            if (!items.length) {
+                e.preventDefault();
+                return;
+            }
+            dragState = {items};
+            row.classList.add('dragging');
+            try {
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', items.map((item) => item.path).join('\n'));
+            } catch (err) {}
+        });
+        row.addEventListener('dragend', clearDragState);
+        row.addEventListener('dragover', (e) => {
+            // 外部文件拖入：目录行（含根行）接受复制，文件行不拦截（交给全局打开）
+            const isFileDrag = !!(e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files'));
+            if (isFileDrag) {
+                if (node.isDir) {
+                    e.preventDefault();
+                    try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
+                    clearDropHighlight();
+                    row.classList.add('drop-target');
+                }
+                return;
+            }
+            if (!dropAllowed(node)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            try { e.dataTransfer.dropEffect = 'move'; } catch (err) {}
+            clearDropHighlight();
+            row.classList.add('drop-target');
+        });
+        row.addEventListener('dragleave', (e) => {
+            if (!row.contains(e.relatedTarget)) row.classList.remove('drop-target');
+        });
+        row.addEventListener('drop', (e) => {
+            const isFileDrag = !!(e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files'));
+            if (isFileDrag) {
+                if (!node.isDir) return;
+                // 浏览器 File 对象拿不到完整路径：不做 stopPropagation，
+                // 放行 Wails 的原生解析链路，路径在 file-drop 事件里带回
+                e.preventDefault();
+                if (typeof onExternalDrop === 'function') onExternalDrop(node.path);
+                clearDropHighlight();
+                return;
+            }
+            if (!dropAllowed(node)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const items = dragState.items.map((item) => ({...item}));
+            const destDir = node.path;
+            clearDragState();
+            if (typeof onMove === 'function') onMove(items, destDir);
+        });
         return row;
     }
 
     function appendTreeRows(node, parent) {
         parent.appendChild(treeRow(node));
-        if (!node.isDir || !node.expanded) return;
+        if (!node.isDir || isEmptyDirNode(node)) return;
+        // 过滤时：命中后代的目录按展开渲染（不改节点自身的折叠状态）
+        const expandForFilter = !!filterText && (node.children || []).some((child) => treeFilterHit(child));
+        if (!node.expanded && !expandForFilter) return;
         const box = el('div', 'sb-children');
         if (node.loading) {
             box.appendChild(statusRow('加载中…'));
         } else if (node.error) {
             box.appendChild(statusRow('无法读取：' + node.error, true));
         } else {
-            for (const child of node.children) appendTreeRows(child, box);
-            if (!node.children.length) box.appendChild(statusRow('空文件夹'));
+            const children = filterText
+                ? (node.children || []).filter((child) => treeFilterHit(child))
+                : (node.children || []);
+            for (const child of children) appendTreeRows(child, box);
+            if (!children.length && filterText) box.appendChild(statusRow('无匹配文件'));
             if (node.truncated) box.appendChild(statusRow('仅显示前 ' + readLimit + ' 项'));
         }
         parent.appendChild(box);
@@ -261,6 +381,7 @@ export function createExplorer(options) {
                 node.truncated = !!(result && result.truncated);
                 node.loaded = true;
                 node.error = '';
+                if (!node.children.length) node.expanded = false;
             } catch (e) {
                 node.error = String((e && e.message) || e);
                 node.loaded = true;
@@ -563,7 +684,11 @@ export function createExplorer(options) {
             body.appendChild(emptyState('此目录没有可用的数据文件'));
         } else {
             const frag = document.createDocumentFragment();
-            for (const entry of listState.entries) frag.appendChild(listRow(entry));
+            const entries = filterText
+                ? listState.entries.filter((entry) => String(entry.name || '').toLowerCase().includes(filterText))
+                : listState.entries;
+            for (const entry of entries) frag.appendChild(listRow(entry));
+            if (!entries.length) body.appendChild(emptyState('没有匹配的文件'));
             body.appendChild(frag);
             body.scrollTop = prevTop;
             updateSelectionBoundaries();
@@ -621,6 +746,7 @@ export function createExplorer(options) {
         tree = null;
         selection = [];
         anchorPath = null;
+        filterText = '';
         treeSeq++;
         revealSeq++;
         if (visible && mode === 'tree') {
@@ -740,6 +866,10 @@ export function createExplorer(options) {
         node.truncated = !!truncated;
         node.loaded = true;
         node.error = '';
+        if (!next.length && node.expanded) {
+            node.expanded = false;
+            changed = true;
+        }
         return changed;
     }
 
@@ -864,7 +994,7 @@ export function createExplorer(options) {
     }
 
     function toggleNode(node) {
-        if (!node || !node.isDir) return;
+        if (!node || !node.isDir || isEmptyDirNode(node)) return;
         node.expanded = !node.expanded;
         if (!node.expanded) {
             renderTree();
@@ -990,6 +1120,12 @@ export function createExplorer(options) {
 
     if (refreshBtn) {
         refreshBtn.innerHTML = ICONS.refresh;
+        if (filterBtn) {
+            filterBtn.innerHTML = ICONS.filter;
+            filterBtn.addEventListener('click', () => {
+                if (typeof onToggleFilter === 'function') onToggleFilter();
+            });
+        }
         refreshBtn.addEventListener('click', refresh);
     }
     if (listBtn) {
@@ -1019,6 +1155,7 @@ export function createExplorer(options) {
         setVisible,
         setMode,
         getMode: () => mode,
+        setFilter,
         setRoot,
         getRoot: currentRoot,
         setActive,
