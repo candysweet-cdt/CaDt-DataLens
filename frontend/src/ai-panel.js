@@ -64,6 +64,91 @@ const AI_BUILTIN_SKILLS = [
             '5. 最后给出建议的版本号与发布日期（若用户未指定版本，不要擅自写入文件）。',
         ].join('\n'),
     },
+    {
+        name: 'cadt-datalens',
+        description: '用 CaDt-DataLens 图形界面为用户打开/预览工作区文件，支持定位到 行:列；当用户说「打开看看 / 预览 / 在界面里检查」时使用',
+        content: [
+            '# CaDt-DataLens 图形界面查看',
+            '',
+            '你运行在 CaDt-DataLens 桌面应用内。当用户想让某个文件在图形界面里打开查看时，用 run_command 后台启动程序即可（单实例模式会自动转交给已开的窗口加标签页）：',
+            '',
+            '- 可执行文件：`{{EXE_PATH}}`；若用户在 设置→系统集成 注册过 datalens 命令，直接用 `datalens` 也行。',
+            '- 启动必须立即返回（不要让命令等 GUI 退出）：`cmd /c start "" "{{EXE_PATH}}" "D:/data/a.json" --line 42`。',
+            '- 定位：`文件:行:列` 语法（如 `a.json:42:8`）或 `--line N --column M`，打开后整行选中。',
+            '- `--new-window` 强制新窗口；打开目录遵循「一目录一窗口」：异目录自动开新窗口，同目录已在当前窗口时提示即可。',
+            '- 格式：JSON/JSONL/YAML/XML/SVG/CSV/TSV/TOML/INI/Markdown/代码/图片/二进制 hex；>10MB 只读，>100MB 拒绝。',
+            '- 无需处理窗口关闭确认；文件用完由用户自己关。',
+        ].join('\n'),
+    },
+    {
+        name: 'docx',
+        description: '创建、编辑、提取 Word (.docx/.doc) 文档，以及 docx↔pdf/Markdown 转换；用 python-docx/pandoc/LibreOffice 完成',
+        content: [
+            '# Word 文档处理（docx）',
+            '',
+            '通过 run_command 在本机执行 Python / pandoc / LibreOffice 完成任务；生成脚本用 write_file 写入工作区再执行。',
+            '',
+            '- 环境探测：`python -c "import docx"`；缺库用 `pip install python-docx`；提取文本可用 pandoc（`pandoc -f docx -t markdown 文件`）。',
+            '- 创建：优先 python-docx；标题用内置 Heading 样式（不要手工加粗模拟），中文正文常见 宋体/微软雅黑 小四或五号，行距约 1.3；列表、表格、页眉页脚均有现成 API。',
+            '- 编辑：原文件只读，输出到 `<原名>_updated.docx`；用户明确要求原地改时先复制 `<原名>_backup.docx` 备份。',
+            '- 提取/分析：pandoc 转 Markdown 最快；需要逐段落/表格结构时用 python-docx 遍历。',
+            '- 转换：docx→PDF 用 LibreOffice（`soffice --headless --convert-to pdf --outdir <目录> <文件>`）；.doc→.docx 同理（`--convert-to docx`）。没装 LibreOffice 先向用户说明并征得同意再安装，不要拿 Word/WPS 凑合。',
+            '- 中文引号在 Python/JS 字符串里注意转义；长文档先 read_file 采样再动手，不要凭空编造内容。',
+            '- 写工作区文件会走审批；交付时报告输出文件路径。',
+        ].join('\n'),
+    },
+    {
+        name: 'pdf',
+        description: 'PDF 生成与处理：合并/拆分/提取文本表格图片、Office/HTML/图片转 PDF、加水印、填表单；用 pypdf/PyMuPDF/reportlab/LibreOffice 完成',
+        content: [
+            '# PDF 处理（pdf）',
+            '',
+            '通过 run_command 执行 Python 完成处理；脚本用 write_file 写入工作区再执行；原文件只读，结果一律输出新文件。',
+            '',
+            '- 环境探测：`python -c "import pypdf, fitz"`；缺库 `pip install pypdf pymupdf pdfplumber reportlab`。',
+            '- 提取：文本/表格/图片用 PyMuPDF(fitz) 或 pdfplumber；只取几页时先看页数再决定范围。',
+            '- 合并/拆分/旋转/删页/元数据：pypdf（PdfWriter）；加密解密用 pypdf 或 pikepdf。',
+            '- 生成：结构化文档用 reportlab；中文必须注册 TTF 字体（如 `pdfmetrics.registerFont(TTFont("hei", "C:/Windows/Fonts/simhei.ttf"))`），否则中文全是黑块。',
+            '- Office→PDF：LibreOffice `soffice --headless --convert-to pdf --outdir <目录> <文件>`；HTML→PDF 可用本机 Edge：`msedge --headless --print-to-pdf="<输出>.pdf" file:///<绝对路径>`（矢量输出，勿用截图拼接）。',
+            '- 图片→PDF：Pillow `Image.save("out.pdf", save_all=True, append_images=[...])` 即可。',
+            '- 交付时报告：输出路径、页数、大小；内容有缺页/乱码要先自查再交付。',
+        ].join('\n'),
+    },
+    {
+        name: 'skill-creator',
+        description: '为本应用 AI 助手创建或改进技能（.cadt/skills 或应用级 ai-skills 的 SKILL.md）；用户想把某个重复工作流沉淀成技能时使用',
+        content: [
+            '# 技能创作（skill-creator）',
+            '',
+            '本应用的技能就是一个含 frontmatter 的 Markdown 文件。三层来源：工作区 `.cadt/skills/<name>/SKILL.md`（或 `<name>.md`）、应用级 `%APPDATA%/CandySweet/CaDt-DataLens/ai-skills/`、内置；同名优先级 工作区 > 应用 > 内置。',
+            '',
+            '- 流程：明确技能目标与触发场景 → 写草稿 → 用 2–3 个真实请求验证（让 AI skill_use 加载后执行）→ 按结果修订。',
+            '- frontmatter：`name`（小写连字符，与目录名一致）+ `description`（写清「做什么 + 什么时候触发」，描述要稍主动，模型容易漏触发）。',
+            '- 正文：祈使句、给字面示例；目标 <500 行；细节多就拆 `references/*.md`，正文里指示「做 X 前先 read_file references/y.md」。',
+            '- 写作原则：解释「为什么」比堆 MUST 更有效；模型反复重复的步骤考虑简化；示例胜过规则。',
+            '- 更新已有技能：保留原 name 与目录名；用 read_file 先读原文，edit_file 做增量修改（走审批）。',
+            '- 完成后告诉用户：技能已出现在 设置→AI 助手→技能 或 /skill 列表里，同名工作区技能会覆盖内置技能。',
+        ].join('\n'),
+    },
+    {
+        name: 'plugin-creator',
+        description: '为 CaDt-DataLens 开发插件（plugin.json + cadt.* API：注册格式/工具命令/主题/图标主题）；用户要给应用加格式或功能时使用',
+        content: [
+            '# 插件开发（plugin-creator）',
+            '',
+            'CaDt-DataLens 插件 = 一个文件夹：`plugin.json` 清单 + 入口 JS（默认 main.js，≤2MB），运行在界面 WebView 里。',
+            '',
+            '- 清单必填：`id`（小写连字符，唯一，即安装目录名）、`name`、`author`、`description`；常用可选：`entry`、`extensions`、`version`、`license`、`homepage`、`repository`、`keywords`、`minAppVersion`、`icon`（≤128KB）。',
+            '- 入口脚本以 `cadt` 参数执行，可用 API：',
+            '  - `cadt.registerFormat(driver)`：注册新文件格式（复用树/表格/代码/文本视图；内置格式永远优先）。',
+            '  - `cadt.addCommand(spec)`：向 工具(U) 菜单加命令。',
+            '  - `cadt.addTheme(spec)` / `cadt.registerIconTheme(spec)`：注册配色主题 / 文件图标主题。',
+            '  - `cadt.runCommandSync(opts)` / `cadt.runCommand(opts)`：执行进程（同步/流式）；`cadt.openVirtualDoc(name, content)`：打开虚拟文档（扩展名定高亮）。',
+            '- 工作区是 CaDt-DataLens 仓库时，先 `read_file docs/plugins/README.md` 拿完整字段与示例，再参考 `docs/plugins/examples/`。',
+            '- 安装：设置→插件 添加文件夹或导入 .zip；插件目录默认 exe 旁 `plugins\\`，可在设置切到应用数据目录。',
+            '- 迭代已有插件：保持 id 不变，改完把 version 语义化 +1；改完在插件页禁用再启用即可重载。',
+        ].join('\n'),
+    },
 ];
 
 const AI_BUILTIN_PROMPTS = [
@@ -2976,6 +3061,20 @@ export function createAIPanel(options) {
 
     let skillsCache = {at: 0, list: []};
 
+    let exePathPromise = null;
+    function getAIExePath() {
+        if (!exePathPromise) {
+            exePathPromise = Promise.resolve(backend.AIExePath ? backend.AIExePath() : '').catch(() => '');
+        }
+        return exePathPromise;
+    }
+
+    async function builtinSkillText(text) {
+        if (!text.includes('{{EXE_PATH}}')) return text;
+        const exe = String(await getAIExePath() || '').trim();
+        return text.split('{{EXE_PATH}}').join(exe || 'datalens.exe');
+    }
+
     function skillSourceLabel(source) {
         if (source === 'builtin') return '内置';
         if (source === 'workspace') return '工作区';
@@ -2991,7 +3090,7 @@ export function createAIPanel(options) {
                 description: builtin.description,
                 path: '',
                 source: 'builtin',
-                content: builtin.content,
+                content: await builtinSkillText(builtin.content),
                 builtin: true,
             });
         }

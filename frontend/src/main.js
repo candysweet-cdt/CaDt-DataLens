@@ -1370,6 +1370,7 @@ const mockBackend = {
     async AITestConnection(cfg) { window.__mockAiTestCfg = cfg; return '连接成功（mock）'; },
     async AIListModels(cfg) { window.__mockAiModelsCfg = cfg; return ['deepseek-chat', 'deepseek-reasoner', 'deepseek-flash']; },
     async AIAppDir() { return 'mock://appdata/CandySweet/CaDt-DataLens'; },
+    async AIExePath() { return window.__mockExePath || 'mock://bin/datalens.exe'; },
     async OpenAIFloatWindow(root) { window.__mockAIFloatRoot = root; return null; },
     async OpenSettingsInMainWindow(pane) { window.__mockOpenSettingsInMain = pane; return null; },
     async ConsumeStartupSettings() { const pane = window.__mockStartupSettings || ''; window.__mockStartupSettings = ''; return pane; },

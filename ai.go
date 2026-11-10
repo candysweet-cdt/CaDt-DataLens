@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -297,6 +298,15 @@ func (a *App) AIListModels(cfg AIConfig) ([]string, error) {
 // AIAppDir 返回应用数据根目录（记忆 app 模式、技能 app 级目录都挂在其下）。
 func (a *App) AIAppDir() string {
 	return appDataRoot()
+}
+
+// AIExePath 返回当前可执行文件绝对路径（内置技能 {{EXE_PATH}} 占位用；失败返回空串）。
+func (a *App) AIExePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Clean(exe)
 }
 
 // AIEnsureDir 创建记忆/技能目录（MkdirAll，已存在不报错）。
