@@ -209,6 +209,8 @@
                     <div class="snav-children">
                         <button type="button" class="snav-item snav-child" data-pane="models">模型</button>
                         <button type="button" class="snav-item snav-child" data-pane="ai">AI 助手</button>
+                        <button type="button" class="snav-item snav-child" data-pane="context">上下文注入</button>
+                        <button type="button" class="snav-item snav-child" data-pane="preferences">用户偏好</button>
                     </div>
                 </div>
                 <div id="snav-formats" class="snav-group expanded">
@@ -438,7 +440,7 @@
                     </div>
                     <div class="settings-pane hidden" data-pane="ai">
                         <div class="fmt-pane-title">AI 助手</div>
-                        <div class="fmt-pane-sub">记忆、提示词、写审批与聊天行为</div>
+                        <div class="fmt-pane-sub">记忆、写审批与聊天行为</div>
                         <div class="settings-section-title">上下文与记忆</div>
                         <div class="popover-row">
                             <span class="popover-label">记忆模式</span>
@@ -467,24 +469,7 @@
                                 <button type="button" id="ai-opt-open-skills" class="dlg-btn">技能管理…</button>
                             </div>
                         </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-context">
-                                注入工作区上下文
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-agents">
-                                注入 AGENTS.md
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-envvars">
-                                注入环境变量名列表（不含值）
-                            </label>
-                        </div>
+                        <div class="fmt-hint hint-indent">系统提示词与逐项注入开关已移至左侧「上下文注入」页。</div>
                         <div class="settings-section-title">写操作审批</div>
                         <div class="fmt-hint hint-indent">「总是允许此文件」的授权清单；移除后恢复逐次审批。</div>
                         <div class="popover-row">
@@ -503,6 +488,22 @@
                                 <option value="ctrl-enter">Ctrl+Enter 发送 / Enter 换行</option>
                             </select>
                         </div>
+                        <div class="popover-row">
+                            <span class="popover-label">默认输出语言</span>
+                            <select id="ai-opt-output-lang" class="opt-select">
+                                <option value="zh">中文（简体）</option>
+                                <option value="en">English</option>
+                                <option value="auto">跟随用户输入</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent">控制 AI 回复语言，不改变代码、命令与路径；下一轮对话生效。</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-auto-title">
+                                首轮自动生成会话标题
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">首次回复后额外请求一次模型，用首条消息生成短标题；失败保留原标题。</div>
                         <div class="popover-row">
                             <span class="popover-label">聊天字号</span>
                             <input type="range" id="ai-opt-chatfont" min="10" max="32" step="1" value="13">
@@ -538,10 +539,6 @@
                                 <input type="checkbox" id="ai-opt-assistant-card">
                                 AI 回复显示卡片边框
                             </label>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">会话保留上限</span>
-                            <input id="ai-opt-maxsessions" class="ai-settings-input" type="number" min="2" max="500" step="1">
                         </div>
                         <div class="settings-section-title">对话日志</div>
                         <div class="popover-row">
@@ -643,7 +640,28 @@
                             </select>
                         </div>
                         <div class="fmt-hint hint-indent">请求失败（429 限流 / 5xx / 网络错误）时按指数退避自动重试：1s → 2s → 4s → … 上限 30s；接口返回 Retry-After 时优先遵循。4xx 参数/鉴权错误不重试。</div>
-                        <div class="settings-section-title">提示词模板</div>
+                        <div class="fmt-hint hint-indent">系统提示词模板已移至左侧「上下文注入」页。</div>
+                        <div class="settings-section-title">配置迁移</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-export-keys">
+                                导出时包含 API Key
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label"></span>
+                            <div class="ai-settings-key">
+                                <button type="button" id="ai-opt-export" class="dlg-btn">导出配置…</button>
+                                <button type="button" id="ai-opt-import" class="dlg-btn">导入配置…</button>
+                                <button type="button" id="ai-opt-clear-sessions" class="dlg-btn">清空全部会话</button>
+                            </div>
+                        </div>
+                        <div class="fmt-hint hint-indent">导入按 id 合并配置与模板；默认不含 API Key。</div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="context">
+                        <div class="fmt-pane-title">上下文注入</div>
+                        <div class="fmt-pane-sub">系统提示词始终发送；以下内容按项控制，修改后下一轮对话生效。</div>
+                        <div class="settings-section-title">系统提示词</div>
                         <div class="popover-row">
                             <span class="popover-label">模板</span>
                             <div class="ai-settings-key">
@@ -663,23 +681,92 @@
                                 <button type="button" id="ai-opt-prompt-del" class="dlg-btn">删除模板</button>
                             </div>
                         </div>
-                        <div class="fmt-hint hint-indent">模板作为全局默认提示词；会话内可在面板「提示词」里临时覆盖。内置模板不可删除。</div>
-                        <div class="settings-section-title">配置迁移</div>
+                        <div class="fmt-hint hint-indent">模板作为全局默认提示词；会话内可在面板「提示词」里临时覆盖。内置模板不可删除；系统提示词本身始终发送。</div>
+                        <div class="settings-section-title">工作区上下文</div>
                         <div class="popover-row">
                             <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-export-keys">
-                                导出时包含 API Key
+                                <input type="checkbox" id="ai-opt-inject-root">
+                                范围根（工作区名）
                             </label>
                         </div>
                         <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-active">
+                                当前活动文件（路径 / 视图 / 未保存状态）
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-caret">
+                                光标行列与选区
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-viewport">
+                                可见行范围
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-openfiles">
+                                已打开文件列表（最多 20 条）
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">路径按范围根转相对路径；工作区外只留文件名，不发送用户名与盘符。</div>
+                        <div class="settings-section-title">项目与记忆</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-agents">
+                                注入 AGENTS.md 全文（≤64KB）
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-memory">
+                                注入 MEMORY.md 索引（≤8KB）
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-skills">
+                                注入技能索引
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-prefs">
+                                注入用户偏好（&lt;user_preferences&gt;）
+                            </label>
+                        </div>
+                        <div class="settings-section-title">环境变量</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-envvars">
+                                注入环境变量名列表（不含值）
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">只发送名称与描述，变量值永远不会发送给模型。</div>
+                        <div class="settings-section-title">工具结果</div>
+                        <div class="fmt-hint">read_file / get_content 等工具返回的正文由 AI 主动调用产生，不走注入开关；能否调用由当前权限档决定。</div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="preferences">
+                        <div class="fmt-pane-title">用户偏好</div>
+                        <div class="fmt-pane-sub">长期生效的偏好会注入每轮对话的系统上下文；AI 也能通过 preference_list / preference_write / preference_remove 工具读取、新增、修改与删除。</div>
+                        <div class="settings-section-title">全部偏好</div>
+                        <div class="popover-row">
+                            <span class="popover-label">筛选</span>
+                            <input id="ai-opt-pref-filter" class="ai-settings-input" type="text" placeholder="搜索偏好内容…" spellcheck="false" autocomplete="off">
+                            <span class="popover-value" id="ai-opt-pref-count">0 条</span>
+                        </div>
+                        <div id="ai-opt-prefs" class="ai-pref-list standalone"></div>
+                        <div class="popover-row">
                             <span class="popover-label"></span>
                             <div class="ai-settings-key">
-                                <button type="button" id="ai-opt-export" class="dlg-btn">导出配置…</button>
-                                <button type="button" id="ai-opt-import" class="dlg-btn">导入配置…</button>
-                                <button type="button" id="ai-opt-clear-sessions" class="dlg-btn">清空全部会话</button>
+                                <button type="button" id="ai-opt-pref-add" class="dlg-btn">添加偏好…</button>
                             </div>
                         </div>
-                        <div class="fmt-hint hint-indent">导入按 id 合并配置与模板；默认不含 API Key。</div>
+                        <div class="fmt-hint">每条一句话（≤500 字），最多 100 条；「你 / AI」标出来源。偏好随 AI 配置一起导出 / 导入，也会被 AI 的 preference_* 工具即时更新。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="formats">
                         <div class="fmt-pane-title">通用数据格式</div>
@@ -1207,6 +1294,9 @@
                         </button>
                     </div>
                 </div>
+                <div class="ai-session-search">
+                    <input type="search" id="ai-session-search" class="ai-session-search-input" placeholder="搜索会话内容…" autocomplete="off" spellcheck="false">
+                </div>
                 <div id="ai-session-list" class="ai-session-list"></div>
             </div>
             <div id="sidebar-resize" class="sidebar-resize" title="拖动调整宽度"></div>
@@ -1248,6 +1338,9 @@
                 <div class="ai-head-row ai-head-title-row">
                     <span class="ai-title">AI 助手</span>
                     <div class="ai-head-actions">
+                        <button type="button" id="ai-new-session" class="ai-icon-btn" title="新建会话（当前工作区）">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.3 2.7h6.3a1.7 1.7 0 0 1 1.7 1.7v4.8a1.7 1.7 0 0 1-1.7 1.7H6.3L3.6 13.4V4.4a1.7 1.7 0 0 1 1.7-1.7z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M8.4 5v3.6M6.6 6.8h3.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+                        </button>
                         <div class="ai-mode-seg" id="ai-mode-seg" aria-label="显示方式">
                             <button type="button" data-ai-mode="dock" title="停靠：无文件时占满内容区，打开文件后分屏">
                                 <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M9.8 3v10" stroke="currentColor" stroke-width="1.1"/></svg>

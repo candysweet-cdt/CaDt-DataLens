@@ -36,6 +36,7 @@ type App struct {
 	ctx                 context.Context
 	startupTargets      []OpenTarget
 	startupSettingsPane string
+	startupAISession    string
 	dirty               bool
 	forceClose          bool
 }
@@ -69,6 +70,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	applyTaskbarIcon()
 	ensureWindowShown(ctx)
+	cleanupSQLTempFiles()
 	if a.IsDebugConsoleWindow() {
 		// 独立调试控制台窗口：小尺寸独立窗，不处理启动文件/目录
 		runtime.WindowSetTitle(ctx, "调试控制台 · CaDt-DataLens")
@@ -79,6 +81,7 @@ func (a *App) startup(ctx context.Context) {
 		runtime.WindowSetTitle(ctx, "AI 助手 · CaDt-DataLens")
 	}
 	a.startupSettingsPane = parseOpenSettingsArg(os.Args[1:])
+	a.startupAISession = parseAISessionArg(os.Args[1:])
 	a.startupTargets = parseOpenTargets(os.Args[1:])
 	// 外部文件拖放由前端 runtime.OnFileDrop 注册窗口监听并直接打开；
 	// 这里不再订阅 wails:file-drop，否则同一次拖放会被两侧各处理一遍。
@@ -117,11 +120,26 @@ func parseOpenSettingsArg(args []string) string {
 	return ""
 }
 
+func parseAISessionArg(args []string) string {
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if strings.HasPrefix(arg, "--ai-session=") {
+			return strings.TrimSpace(strings.TrimPrefix(arg, "--ai-session="))
+		}
+	}
+	return ""
+}
+
 // ConsumeStartupSettings 返回本次启动携带的设置页并清空（供前端启动后打开）。
 func (a *App) ConsumeStartupSettings() string {
 	pane := a.startupSettingsPane
 	a.startupSettingsPane = ""
 	return pane
+}
+
+// GetStartupAISession 返回本次启动要打开的 AI 会话 id（软切换新窗口使用）。
+func (a *App) GetStartupAISession() string {
+	return a.startupAISession
 }
 
 func pathArgs(args []string) []string {
@@ -1152,6 +1170,36 @@ func (a *App) OpenDirInNewWindow(dir string) error {
 		return err
 	}
 	cmd := exec.Command(exe, "--new-window", dir)
+	cmd.Dir = dir
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_ = cmd.Process.Release()
+	return nil
+}
+
+// OpenWorkspaceForConversation 软切换：当前窗口已有工作区时，另开窗口打开目标工作区，
+// 并把目标 AI 会话 id 传给新窗口（新窗口启动后恢复工作区环境并选中该会话）。
+func (a *App) OpenWorkspaceForConversation(dir string, sessionID string) error {
+	if strings.TrimSpace(dir) == "" {
+		return fmt.Errorf("没有目录")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("不是目录：%s", dir)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	args := []string{"--new-window", dir}
+	if id := strings.TrimSpace(sessionID); id != "" {
+		args = append(args, "--ai-session="+id)
+	}
+	cmd := exec.Command(exe, args...)
 	cmd.Dir = dir
 	if err := cmd.Start(); err != nil {
 		return err

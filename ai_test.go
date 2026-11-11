@@ -961,3 +961,13 @@ func TestAIRetryDelayExponential(t *testing.T) {
 		t.Fatalf("Retry-After 7 应生效，实际 %v", d)
 	}
 }
+
+func TestAIHomeDir(t *testing.T) {
+	want, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("当前环境无法获取用户主目录: %v", err)
+	}
+	if got := (&App{}).AIHomeDir(); got != filepath.Clean(want) {
+		t.Fatalf("AIHomeDir = %q，期望 %q", got, filepath.Clean(want))
+	}
+}

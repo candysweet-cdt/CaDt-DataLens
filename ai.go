@@ -399,6 +399,15 @@ func (a *App) AIAppDir() string {
 	return appDataRoot()
 }
 
+// AIHomeDir 返回当前用户主目录（用户级技能 ~/.agents/skills 解析用；失败返回空串）。
+func (a *App) AIHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Clean(home)
+}
+
 // AIExePath 返回当前可执行文件绝对路径（内置技能 {{EXE_PATH}} 占位用；失败返回空串）。
 func (a *App) AIExePath() string {
 	exe, err := os.Executable()

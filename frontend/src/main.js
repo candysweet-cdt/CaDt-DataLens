@@ -294,6 +294,8 @@ const mockFiles = {
     aiPreferences: {name: 'user-preferences.md', content: '# 用户偏好\n\n- 喜欢简洁表格，先结论后细节。\n'},
     aiSkill: {name: 'SKILL.md', content: '---\nname: demo-skill\ndescription: 演示技能：回答先给结论\n---\n\n# Demo Skill\n\n回答时先给结论，再列要点。\n'},
     workspaceSkill: {name: 'workspace-skill.md', content: '---\nname: workspace-skill\ndescription: 工作区技能：回答附示例\n---\n\n# Workspace Skill\n\n回答时附一个最小示例。\n'},
+    workspaceAgentsSkill: {name: 'workspace-agents-skill.md', content: '---\nname: workspace-agents-skill\ndescription: 工作区通用技能：来自 <工作区>/.agents/skills\n---\n\n# Workspace Agents Skill\n\n来自工作区通用目录的示例技能。\n'},
+    userAgentsSkill: {name: 'agents-skill.md', content: '---\nname: agents-skill\ndescription: 用户通用技能：来自 ~/.agents/skills\n---\n\n# User Agents Skill\n\n来自用户主目录通用技能目录的示例技能。\n'},
 };
 const mockTree = {
     'mock://samples': [
@@ -348,6 +350,20 @@ const mockTree = {
     'mock://samples/.cadt/skills/demo-skill': [
         {name: 'SKILL.md', path: 'mock://samples/.cadt/skills/demo-skill/SKILL.md', isDir: false},
     ],
+    'mock://samples/.agents/skills': [
+        {name: 'demo-skill', path: 'mock://samples/.agents/skills/demo-skill', isDir: true},
+        {name: 'workspace-agents-skill.md', path: 'mock://samples/.agents/skills/workspace-agents-skill.md', isDir: false},
+    ],
+    'mock://samples/.agents/skills/demo-skill': [
+        {name: 'SKILL.md', path: 'mock://samples/.agents/skills/demo-skill/SKILL.md', isDir: false},
+    ],
+    'mock://home/.agents/skills': [
+        {name: 'demo-skill', path: 'mock://home/.agents/skills/demo-skill', isDir: true},
+        {name: 'agents-skill.md', path: 'mock://home/.agents/skills/agents-skill.md', isDir: false},
+    ],
+    'mock://home/.agents/skills/demo-skill': [
+        {name: 'SKILL.md', path: 'mock://home/.agents/skills/demo-skill/SKILL.md', isDir: false},
+    ],
     'mock://appdata/CandySweet/CaDt-DataLens': [
         {name: 'ai-memory', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-memory', isDir: true},
         {name: 'ai-skills', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-skills', isDir: true},
@@ -401,9 +417,67 @@ function mockDropPath(path) {
     }
 }
 
+const mockAISessions = new Map();
+const mockAISessionImages = new Map();
+let mockAIConfigText = '';
+
 const mockBackend = {
+    async AIConfigRead() {
+        return mockAIConfigText;
+    },
+    async AIConfigWrite(data) {
+        mockAIConfigText = String(data || '');
+        return null;
+    },
+    async AISessionStoreRoot() {
+        return 'mock://appdata/CandySweet/CaDt-DataLens/ai-sessions';
+    },
+    async AISessionList() {
+        return Array.from(mockAISessions.values()).map((item) => item.meta);
+    },
+    async AISessionRead(id) {
+        const item = mockAISessions.get(String(id));
+        return item ? item.log : '';
+    },
+    async AISessionAppend(id, lines) {
+        const key = String(id);
+        const item = mockAISessions.get(key) || {meta: '{}', log: ''};
+        item.log += lines;
+        mockAISessions.set(key, item);
+        return null;
+    },
+    async AISessionRewrite(id, content) {
+        const key = String(id);
+        const item = mockAISessions.get(key) || {meta: '{}', log: ''};
+        item.log = content;
+        mockAISessions.set(key, item);
+        return null;
+    },
+    async AISessionWriteMeta(id, data) {
+        const key = String(id);
+        const item = mockAISessions.get(key) || {meta: '{}', log: ''};
+        item.meta = data;
+        mockAISessions.set(key, item);
+        return null;
+    },
+    async AISessionSaveImage(id, name, dataURL) {
+        mockAISessionImages.set(String(id) + '/' + name, dataURL);
+        return 'images/' + name;
+    },
+    async AISessionReadImage(id, name) {
+        return mockAISessionImages.get(String(id) + '/' + name) || '';
+    },
+    async AISessionDelete(id) {
+        mockAISessions.delete(String(id));
+        return null;
+    },
+    async AISessionDeleteAll() {
+        mockAISessions.clear();
+        return null;
+    },
     async GetStartupFiles() {
         if (mockScenario.has('empty')) return [];
+        if (mockScenario.has('wsdir')) return [];
         if (mockScenario.has('gbk')) return [mockDir + 'sample-gbk.json'];
         if (mockScenario.has('image')) return [mockDir + 'sample.png'];
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
@@ -415,8 +489,12 @@ const mockBackend = {
     },
     async GetStartupTargets() {
         if (mockScenario.has('line')) return [{path: mockDir + 'sample.json', line: 5, column: 3}];
+        if (mockScenario.has('wsdir')) return [{path: mockScenario.get('wsdir') || mockDir.slice(0, -1), line: 0, column: 0}];
         const files = await this.GetStartupFiles();
         return files.map((path) => ({path, line: 0, column: 0}));
+    },
+    async GetStartupAISession() {
+        return window.__mockStartupAISession || mockScenario.get('aisession') || '';
     },
     async OpenFile(path, enc) {
         window.__mockLastOpenEnc = enc;
@@ -464,11 +542,12 @@ const mockBackend = {
     },
     async GetPathInfo(path) {
         const base = String(path || '').split('/').pop();
+        const isDir = !!mockTree[String(path || '').replace(/\/+$/, '')];
         return {
             path,
             name: base,
-            isDir: false,
-            size: (mockFiles.base || mockFiles.json).content.length,
+            isDir,
+            size: isDir ? 0 : (mockFiles.base || mockFiles.json).content.length,
             modified: Date.now() - 3600 * 1000,
             readOnly: false,
         };
@@ -1120,6 +1199,10 @@ const mockBackend = {
     },
     async OpenInNewWindows(paths) { window.__mockNewWindows = (window.__mockNewWindows || []).concat([paths]); },
     async OpenDirInNewWindow(dir) { window.__mockNewWindowDir = dir; window.__mockNewWindows = (window.__mockNewWindows || []).concat([[dir]]); },
+    async OpenWorkspaceForConversation(dir, sessionId) {
+        window.__mockSoftSwitch = {dir, sessionId: sessionId || ''};
+        window.__mockNewWindows = (window.__mockNewWindows || []).concat([[dir]]);
+    },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
     async LogFrontend(level, message) { (window.__mockLogs = window.__mockLogs || []).push(level + ': ' + message); },
     async GetDeveloperMode() { return !!window.__mockDevMode; },
@@ -1131,6 +1214,46 @@ const mockBackend = {
     async CopyFileTo(srcPath) { return srcPath; },
     async GetClipboardText() { return window.__mockClipboard || ''; },
     async ForceClose() { window.__mockForceClosed = (window.__mockForceClosed || 0) + 1; },
+    async WebSearch(query, maxResults) {
+        window.__mockWebSearch = {query, maxResults};
+        return {
+            query,
+            engine: 'bing',
+            endpoint: 'https://www.bing.com/search?format=rss&q=' + encodeURIComponent(query),
+            results: [
+                {
+                    title: 'Wails v2 发布 | Wails 框架',
+                    url: 'https://wails.io/zh-Hans/blog/wails-v2-released/',
+                    snippet: 'Wails v2 正式发布：用 Go 与 Web 前端构建桌面应用，内置原生窗口与单文件打包。',
+                    published: 'Sat, 12 Sep 2026 17:27:00 GMT',
+                },
+                {
+                    title: 'The Wails Project | Wails',
+                    url: 'https://wails.io/zh-Hans/',
+                    snippet: 'Wails v2 turns what used to be tedious and painful into a delightfully simple process.',
+                    published: 'Mon, 26 Oct 2026 03:20:00 GMT',
+                },
+            ].slice(0, maxResults || 8),
+        };
+    },
+    async WebFetch(url, maxChars) {
+        window.__mockWebFetch = {url, maxChars};
+        return {
+            url,
+            finalUrl: url,
+            status: 200,
+            contentType: 'text/html',
+            charset: 'utf-8',
+            title: 'Wails v2 发布 | Wails 框架',
+            text: 'Wails v2 正式发布\n\nWails v2 允许使用 Go 和任意前端技术栈构建桌面应用。\n它内置原生窗口、WebView2 与单一可执行文件打包。\n\n（mock 页面正文）',
+            links: [
+                {text: '快速开始', url: 'https://wails.io/zh-Hans/docs/gettingstarted/installation'},
+                {text: 'GitHub 仓库', url: 'https://github.com/wailsapp/wails'},
+            ],
+            truncated: false,
+            bytes: 2048,
+        };
+    },
     async AISendChat(sessionId, cfg, messages, tools, retryMax) {
         const run = {stopped: false, timers: []};
         window.__mockAiRuns = window.__mockAiRuns || new Map();
@@ -1261,6 +1384,52 @@ const mockBackend = {
             }, finalDelay + 40);
             return null;
         }
+        if (mockScenario.has('aiweb')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            const emitToolcall = (name, args) => {
+                const argChunks = args.match(/.{1,16}/gs) || [];
+                argChunks.forEach((chunk, i) => {
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: i === 0 ? 'call_mock_web_' + name : '',
+                        name: i === 0 ? name : '',
+                        argsDelta: chunk,
+                    }), 70 + i * 40);
+                });
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 90 + argChunks.length * 40 + 50);
+            };
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先联网查一下 Wails v2 的资料。\n\n'}), 20);
+                emitToolcall('web_search', JSON.stringify({query: 'Wails v2 发布时间', maxResults: 3}));
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            if (lastTool.name === 'web_search') {
+                emitToolcall('web_fetch', JSON.stringify({url: 'https://wails.io/zh-Hans/blog/wails-v2-released/', maxChars: 4000}));
+                return null;
+            }
+            const finalText = [
+                '查到了：Wails v2 于 2022 年 9 月正式发布，支持 Go + Web 前端构建桌面应用。',
+                '',
+                '来源：',
+                '- [Wails v2 发布 | Wails 框架](https://wails.io/zh-Hans/blog/wails-v2-released/)',
+                '- [The Wails Project](https://wails.io/zh-Hans/)',
+                '',
+                '（mock 联网检索链路结束）',
+            ].join('\n');
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
         if (mockScenario.has('aitool')) {
             const toolMessages = (messages || []).filter((message) => message.role === 'tool');
             if (!toolMessages.length) {
@@ -1376,6 +1545,88 @@ const mockBackend = {
             }
             const lastTool = toolMessages[toolMessages.length - 1];
             const finalText = '已收到回答：' + String(lastTool.content || '').slice(0, 300) + '\n\n（mock ask_user 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aibigwrite')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                const lines = [];
+                for (let i = 1; i <= 80; i += 1) lines.push('- 第 ' + i + ' 行：mock 大 diff 演示内容');
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_bigwrite',
+                    name: 'write_file',
+                    argsDelta: JSON.stringify({
+                        path: 'big-diff.md',
+                        content: '# Mock 大文件\n\n' + lines.join('\n') + '\n',
+                    }),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const finalText = '大 diff 写入结果：' + String(toolMessages[toolMessages.length - 1].content || '').slice(0, 200) + '\n\n（mock 大 diff 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aipref')) {
+            const userCount = (messages || []).filter((message) => message.role === 'user').length;
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const lastContent = String((lastTool && lastTool.content) || '');
+            const emitTool = (callId, name, args) => {
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId,
+                    name,
+                    argsDelta: JSON.stringify(args),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+            };
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先把这条偏好记下来。\n\n'}), 20);
+                emitTool('call_mock_pref_write', 'preference_write', {text: '演示偏好：回答尽量简洁'});
+                return null;
+            }
+            if (lastContent.startsWith('已记录用户偏好') || lastContent.startsWith('已更新用户偏好')) {
+                emitTool('call_mock_pref_list', 'preference_list', {});
+                return null;
+            }
+            if (lastContent.startsWith('用户偏好（共')) {
+                const match = lastContent.match(/\[(pref-[^\]]+)\]/);
+                if (match && userCount < 2 && !lastContent.includes('更新版')) {
+                    emitTool('call_mock_pref_edit', 'preference_write', {
+                        id: match[1],
+                        text: '演示偏好：回答尽量简洁（更新版）',
+                    });
+                    return null;
+                }
+                if (match && userCount >= 2) {
+                    emitTool('call_mock_pref_remove', 'preference_remove', {id: match[1]});
+                    return null;
+                }
+            }
+            const finalText = '偏好工具结果：' + lastContent.slice(0, 300) + '\n\n（mock 用户偏好链路结束）';
             const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
             let finalDelay = 30;
             finalChunks.forEach((chunk, i) => {
@@ -1532,6 +1783,7 @@ const mockBackend = {
     async AITestConnection(cfg) { window.__mockAiTestCfg = cfg; return '连接成功（mock）'; },
     async AIListModels(cfg) { window.__mockAiModelsCfg = cfg; return ['deepseek-chat', 'deepseek-reasoner', 'deepseek-flash']; },
     async AIAppDir() { return 'mock://appdata/CandySweet/CaDt-DataLens'; },
+    async AIHomeDir() { return window.__mockHomeDir || 'mock://home'; },
     async AIExePath() { return window.__mockExePath || 'mock://bin/datalens.exe'; },
     async OpenAIFloatWindow(root) { window.__mockAIFloatRoot = root; return null; },
     async OpenSettingsInMainWindow(pane) { window.__mockOpenSettingsInMain = pane; return null; },
@@ -1934,11 +2186,68 @@ const APP_ACTIONS = [
     'toggle_fullscreen', 'toggle_always_on_top', 'set_theme', 'open_settings', 'set_setting',
     'ai_new_session', 'ai_switch_session', 'flash', 'refresh_explorer', 'type_text', 'press_key',
     'open_browser_tab', 'close_browser_tab',
+    'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal',
 ];
 
 function appActionDocInfo(doc) {
     if (!doc) return null;
     return {name: doc.name, path: doc.path || '', mode: doc.mode || '', dirty: !!doc.dirty, format: (doc.format && doc.format.id) || ''};
+}
+
+function appActionDocCaret(doc) {
+    const out = {cursor: null, selection: null};
+    if (!doc || doc.binary) return out;
+    const lineColAt = (text, offset) => {
+        const before = String(text).slice(0, Math.max(0, Math.min(Number(offset) || 0, String(text).length)));
+        const lines = before.split('\n');
+        return {line: lines.length, column: lines[lines.length - 1].length + 1};
+    };
+    try {
+        const mode = String(doc.mode || '');
+        const ace = doc.editor && doc.editor.aceEditor;
+        if ((!mode || mode === 'code' || mode === 'split') && ace && ace.getCursorPosition) {
+            const pos = ace.getCursorPosition();
+            out.cursor = {line: (Number(pos.row) || 0) + 1, column: (Number(pos.column) || 0) + 1};
+            if (ace.getSelectionRange && ace.getSelectedText) {
+                const sel = ace.getSelectionRange();
+                const empty = sel.start.row === sel.end.row && sel.start.column === sel.end.column;
+                if (!empty) {
+                    const selected = ace.getSelectedText() || '';
+                    out.selection = {
+                        start: {line: sel.start.row + 1, column: sel.start.column + 1},
+                        end: {line: sel.end.row + 1, column: sel.end.column + 1},
+                        chars: selected.length,
+                        preview: selected.slice(0, 300),
+                    };
+                }
+            }
+            if (ace.renderer && ace.renderer.getFirstVisibleRow && ace.session && ace.session.screenToDocumentRow) {
+                try {
+                    const first = ace.renderer.getFirstVisibleRow();
+                    const last = ace.renderer.getLastVisibleRow ? ace.renderer.getLastVisibleRow() : first;
+                    out.viewport = {
+                        fromLine: (Number(ace.session.screenToDocumentRow(first, 0)) || 0) + 1,
+                        toLine: (Number(ace.session.screenToDocumentRow(last, 0)) || 0) + 1,
+                    };
+                } catch (e) {}
+            }
+            return out;
+        }
+        const textarea = doc.pane && doc.pane.querySelector('textarea.jsoneditor-text');
+        if ((!mode || mode === 'text') && textarea && typeof textarea.selectionStart === 'number') {
+            out.cursor = lineColAt(textarea.value, textarea.selectionEnd);
+            if (textarea.selectionEnd > textarea.selectionStart) {
+                const selected = textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
+                out.selection = {
+                    start: lineColAt(textarea.value, textarea.selectionStart),
+                    end: lineColAt(textarea.value, textarea.selectionEnd),
+                    chars: selected.length,
+                    preview: selected.slice(0, 300),
+                };
+            }
+        }
+    } catch (e) {}
+    return out;
 }
 
 function appActionResolveDoc(ref) {
@@ -1970,6 +2279,28 @@ function appActionEditableTarget(selector, allowNonEditable) {
     return el;
 }
 
+// 文档当前文本（含未保存修改）：编辑器在树/代码模式下 getText 会按当前设置序列化
+function appActionDocText(doc) {
+    if (!doc || doc.binary) return '';
+    try {
+        if (doc.editor && typeof doc.editor.getText === 'function') return String(doc.editor.getText() || '');
+    } catch (e) {}
+    return String(doc.content || '');
+}
+
+function appActionTermTail(term, maxLines) {
+    const buf = term && term.buffer && term.buffer.active;
+    if (!buf) return '';
+    const end = Number(buf.length) || 0;
+    const start = Math.max(0, end - maxLines);
+    const lines = [];
+    for (let i = start; i < end; i++) {
+        const line = buf.getLine(i);
+        lines.push(line ? line.translateToString(true) : '');
+    }
+    return lines.join('\n');
+}
+
 async function runAppAction(action, params, scope) {
     const actionScope = scope || 'full';
     const p = params || {};
@@ -1992,6 +2323,148 @@ async function runAppAction(action, params, scope) {
                 fullscreen: !!rtFullscreen,
                 alwaysOnTop: !!settings.alwaysOnTop,
                 readOnlyMode: !!settings.readOnlyMode,
+            };
+        }
+        case 'get_settings': {
+            const all = JSON.parse(JSON.stringify(settings));
+            const keys = Array.isArray(p.keys) ? p.keys.map((key) => String(key)) : null;
+            if (!keys) return {values: all, writableKeys: Object.keys(APP_SETTING_RULES)};
+            const values = {};
+            const missing = [];
+            for (const key of keys) {
+                if (Object.prototype.hasOwnProperty.call(all, key)) values[key] = all[key];
+                else missing.push(key);
+            }
+            return {values, missing, writableKeys: Object.keys(APP_SETTING_RULES)};
+        }
+        case 'get_editor': {
+            const doc = appActionResolveDoc(p.target);
+            if (!doc) throw new Error('找不到文档：' + (p.target == null ? 'active' : p.target));
+            const text = appActionDocText(doc);
+            const detail = {
+                ...appActionDocInfo(doc),
+                path: doc.path || '',
+                active: doc === file,
+                enc: doc.enc || '',
+                eol: doc.eol || '',
+                hasBom: !!doc.hasBom,
+                size: Number(doc.size) || 0,
+                large: !!doc.large,
+                binary: !!doc.binary,
+                image: !!doc.image,
+                untitled: !!doc.untitled,
+                treeAvailable: !!doc.treeAvailable,
+                parseError: doc.parseError ? String((doc.parseError && doc.parseError.message) || doc.parseError) : '',
+                readOnly: !!(settings.readOnlyMode || doc.large || doc.binary),
+                lines: doc.binary ? 0 : (text ? text.split('\n').length : 0),
+                chars: doc.binary ? 0 : text.length,
+                cursor: null,
+                selection: null,
+            };
+            const caret = appActionDocCaret(doc);
+            detail.cursor = caret.cursor;
+            detail.selection = caret.selection;
+            detail.viewport = caret.viewport || null;
+            return detail;
+        }
+        case 'get_content': {
+            const doc = appActionResolveDoc(p.target);
+            if (!doc) throw new Error('找不到文档：' + (p.target == null ? 'active' : p.target));
+            if (doc.binary) throw new Error('二进制/图片文档没有文本内容；可改用 read_file 读取磁盘文件');
+            const text = appActionDocText(doc);
+            const allLines = text.split('\n');
+            const startLine = Math.max(1, Math.round(Number(p.startLine) || 1));
+            const endLine = p.endLine != null && p.endLine !== '' ? Math.max(startLine, Math.round(Number(p.endLine))) : 0;
+            const maxChars = Math.max(1000, Math.min(60000, Math.round(Number(p.maxChars) || 20000)));
+            let content = endLine ? allLines.slice(startLine - 1, endLine).join('\n') : text;
+            let truncated = endLine ? endLine < allLines.length : text.length > maxChars;
+            if (content.length > maxChars) {
+                content = content.slice(0, maxChars);
+                truncated = true;
+            }
+            return {
+                name: doc.name,
+                path: doc.path || '',
+                dirty: !!doc.dirty,
+                totalLines: allLines.length,
+                totalChars: text.length,
+                startLine,
+                endLine: endLine || undefined,
+                truncated,
+                content,
+            };
+        }
+        case 'get_git': {
+            const changes = [];
+            for (const [path, state] of gitStateCache.map) changes.push({path, state});
+            changes.sort((a, b) => a.path.localeCompare(b.path));
+            const counts = {};
+            for (const change of changes) counts[change.state] = (counts[change.state] || 0) + 1;
+            const activeKey = file && file.path ? String(file.path).replace(/\\/g, '/') : '';
+            return {
+                available: !!(gitStateCache.available && gitStateCache.dir),
+                dir: gitStateCache.dir || '',
+                branch: gitStateCache.branch || '',
+                reason: gitStateCache.reason || '',
+                counts,
+                total: changes.length,
+                changes: changes.slice(0, 300),
+                truncated: changes.length > 300,
+                activeFileState: activeKey ? (gitStateCache.map.get(activeKey) || '') : '',
+            };
+        }
+        case 'get_ai': {
+            if (!aiPanel) throw new Error('AI 面板未初始化');
+            if (aiPanel.bridgeGetState) return aiPanel.bridgeGetState();
+            return {open: !!(aiPanel.isOpen && aiPanel.isOpen()), mode: aiPanel.getMode ? aiPanel.getMode() : ''};
+        }
+        case 'get_explorer': {
+            const selection = explorer && explorer.getSelection ? explorer.getSelection() : [];
+            return {
+                visible: !!settings.showSidebar,
+                view: currentSidebarView(),
+                mode: explorer && explorer.getMode ? explorer.getMode() : '',
+                root: (explorer && explorer.getRoot ? explorer.getRoot() : '') || '',
+                selectionCount: selection.length,
+                selection: selection.slice(0, 50).map((item) => ({path: item.path, name: item.name, isDir: !!item.isDir})),
+            };
+        }
+        case 'get_plugins': {
+            let list;
+            try {
+                list = await backend.GetPlugins();
+            } catch (e) {
+                throw new Error('读取插件失败：' + ((e && e.message) || e));
+            }
+            const plugins = (Array.isArray(list) ? list : []).map((plugin) => ({
+                id: plugin.id,
+                name: plugin.name,
+                version: plugin.version || '',
+                author: plugin.author || '',
+                description: plugin.description || '',
+                enabled: plugin.enabled !== false,
+                extensions: Array.isArray(plugin.extensions) ? plugin.extensions : [],
+            }));
+            return {count: plugins.length, plugins};
+        }
+        case 'get_terminal': {
+            const lines = Math.max(1, Math.min(200, Math.round(Number(p.lines) || 40)));
+            const sessions = [];
+            for (const session of terminalUI.sessions.values()) {
+                sessions.push({
+                    id: session.id,
+                    label: session.customName || session.defaultLabel || session.baseName || '',
+                    shell: session.shell || '',
+                    active: session.id === terminalUI.activeId,
+                });
+            }
+            const target = p.id ? terminalUI.sessions.get(String(p.id)) : (terminalUI.sessions.get(terminalUI.activeId) || null);
+            return {
+                open: !!(terminalUI && terminalUI.open),
+                activeId: terminalUI.activeId || '',
+                sessions,
+                tailSessionId: target ? target.id : '',
+                tail: target ? appActionTermTail(target.term, lines) : '',
             };
         }
         case 'open_file': {
@@ -2218,6 +2691,7 @@ window.__lens = {
     get currentMode() { return currentMode; },
     get explorer() { return explorer; },
     get structurePanel() { return structurePanel; },
+    get terminalUI() { return terminalUI; },
     get closedTabs() { return closedTabs; },
     openCloseConfirm,
     openPaths,
@@ -2343,11 +2817,19 @@ const defaultSettings = {
     aiChatFontCjk: 'follow',
     aiChatCodeFont: 'follow',
     aiShowThinking: true,
-    aiShowUsage: true,
+    aiShowUsage: false,
     aiAssistantCard: false,
     aiMaxSessions: 50,
     aiInjectContext: true,
+    aiInjectRoot: true,
+    aiInjectActiveFile: true,
+    aiInjectCaret: true,
+    aiInjectViewport: true,
+    aiInjectOpenFiles: true,
     aiInjectAgentsMd: true,
+    aiInjectMemory: true,
+    aiInjectSkills: true,
+    aiInjectPreferences: true,
     aiInjectEnvVars: true,
     formatSettings: defaultFormatSettings(),
 };
@@ -2358,6 +2840,11 @@ try {
     settings.formatSettings = {...defaultFormatSettings(), ...(stored.formatSettings || {})};
     for (const f of formatDefs) {
         settings.formatSettings[f.id] = {...defaultFormatSettings()[f.id], ...(settings.formatSettings[f.id] || {})};
+    }
+    const fineInjectKeys = ['aiInjectRoot', 'aiInjectActiveFile', 'aiInjectCaret', 'aiInjectViewport', 'aiInjectOpenFiles',
+        'aiInjectMemory', 'aiInjectSkills', 'aiInjectPreferences'];
+    if (stored.aiInjectContext === false && !fineInjectKeys.some((key) => Object.prototype.hasOwnProperty.call(stored, key))) {
+        for (const key of fineInjectKeys) settings[key] = false;
     }
 } catch (e) {}
 // 未知主题（可能是已卸载插件注册的）先保留，等插件加载后 CSS 生效
@@ -2417,12 +2904,14 @@ for (const key of ['aiChatFontEn', 'aiChatFontCjk', 'aiChatCodeFont']) {
     if (typeof settings[key] !== 'string' || !settings[key]) settings[key] = 'follow';
 }
 settings.aiShowThinking = settings.aiShowThinking !== false;
-settings.aiShowUsage = settings.aiShowUsage !== false;
+settings.aiShowUsage = settings.aiShowUsage === true;
 settings.aiAssistantCard = settings.aiAssistantCard === true;
 settings.aiMaxSessions = Math.min(500, Math.max(2, Number(settings.aiMaxSessions) || 50));
 settings.aiInjectContext = settings.aiInjectContext !== false;
-settings.aiInjectAgentsMd = settings.aiInjectAgentsMd !== false;
-settings.aiInjectEnvVars = settings.aiInjectEnvVars !== false;
+for (const key of ['aiInjectRoot', 'aiInjectActiveFile', 'aiInjectCaret', 'aiInjectViewport', 'aiInjectOpenFiles',
+    'aiInjectAgentsMd', 'aiInjectMemory', 'aiInjectSkills', 'aiInjectPreferences', 'aiInjectEnvVars']) {
+    settings[key] = settings[key] !== false;
+}
 if (!settings.csvTableMigrated) {
     settings.formatSettings.csv.view = 'table';
     settings.csvTableMigrated = true;
@@ -2895,7 +3384,7 @@ function selectSettingsPane(pane) {
     }
     const aiGroup = document.getElementById('snav-ai');
     if (aiGroup) {
-        const inAI = pane === 'models' || pane === 'ai';
+        const inAI = pane === 'models' || pane === 'ai' || pane === 'context' || pane === 'preferences';
         if (inAI && !aiGroup.classList.contains('expanded')) {
             aiGroup.classList.add('expanded');
             const parent = aiGroup.querySelector('.snav-parent');
@@ -2907,7 +3396,7 @@ function selectSettingsPane(pane) {
     else if (String(pane).startsWith('lang-')) renderLangPane(pane.slice(5));
     else if (pane === 'plugins') renderPluginsPane();
     else if (pane === 'envvars') renderEnvVarsPane();
-    if (pane === 'ai' || pane === 'models') {
+    if (pane === 'ai' || pane === 'models' || pane === 'context' || pane === 'preferences') {
         if (!aiPanel) initAIPanel();
         if (aiPanel && typeof aiPanel.refreshSettings === 'function') {
             try { aiPanel.refreshSettings(); } catch (e) {}
@@ -4205,7 +4694,8 @@ const CONVERT_ENCODINGS = [['utf-8', 'UTF-8'], ['gbk', 'GBK'], ['gb18030', 'GB18
 const INDENTS = [['2', '2 空格'], ['4', '4 空格'], ['tab', 'Tab']];
 const EOLS = [['follow', '跟随原文件'], ['lf', 'LF'], ['crlf', 'CRLF']];
 const VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
-const CSV_VIEWS = [['table', '表格视图'], ['tree', '树视图'], ['text', '文本视图']];
+const CSV_VIEWS = [['table', '表格视图'], ['sql', 'SQL 查询'], ['tree', '树视图'], ['text', '文本视图']];
+const JSONL_VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图'], ['sql', 'SQL 查询']];
 const MARKDOWN_VIEWS = [['split', '分屏'], ['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
 const HTML_VIEWS = [['split', '分屏'], ['code', '代码视图'], ['text', '文本视图']];
 const IMAGE_VIEWS = [['image', '图片视图'], ['binary', '二进制视图'], ['text', '文本视图']];
@@ -4243,7 +4733,13 @@ function viewOptionsFor(fmt, doc) {
     if (isHtmlDoc(doc)) return HTML_VIEWS;
     if (fmt && fmt.id === 'markdown') return MARKDOWN_VIEWS;
     if (isSvgDoc(doc)) return SVG_VIEWS;
+    if (fmt && fmt.id === 'jsonl') return JSONL_VIEWS;
     return fmt && (fmt.table || fmt.id === 'csv') ? CSV_VIEWS : VIEWS;
+}
+
+function isSqlSupportedDoc(doc) {
+    const id = doc && doc.format && doc.format.id;
+    return id === 'csv' || id === 'jsonl';
 }
 
 function viewDisabled(mode) {
@@ -4255,11 +4751,13 @@ function viewDisabled(mode) {
     if (mode === 'preview') return !(file.format && file.format.preview) || !!file.large;
     if (mode === 'render') return !isSvgDoc(file);
     if (mode === 'split') return !canSplitDoc(file);
+    if (mode === 'sql') return !isSqlSupportedDoc(file);
     return false;
 }
 
 function viewDisabledTitle(mode) {
     if (mode === 'preview' && file && file.large) return '大文件不支持预览';
+    if (mode === 'sql') return 'SQL 查询仅支持 CSV / TSV / JSONL';
     return '当前文件只支持代码视图';
 }
 
@@ -4271,6 +4769,7 @@ function viewLabel(mode) {
     if (mode === 'preview') return '预览';
     if (mode === 'render') return '渲染视图';
     if (mode === 'table') return '表格视图';
+    if (mode === 'sql') return 'SQL 查询';
     if (mode === 'text') return '文本视图';
     if (mode === 'code') return '代码视图';
     return '树视图';
@@ -7851,11 +8350,55 @@ function renderHtmlPreview(doc) {
     ensureHtmlPreviewRoot(doc).then(apply).catch(() => apply());
 }
 
+// SVG 渲染用的源文本：渲染视图下 jsoneditor 可能已把树值序列化成 JSON 填进编辑器，
+// 真源保存在 _svgSrcText；其余情况以编辑器文本为准，最后回退打开时的原文。
+function svgSourceFor(doc) {
+    if (!doc) return '';
+    if (doc.mode === 'render' && doc._svgSrcText != null && doc._svgSrcText.trim()) return doc._svgSrcText;
+    let text = '';
+    try { text = doc.editor ? doc.editor.getText() : ''; } catch (e) { text = ''; }
+    if (!text.trim() && doc._svgSrcText != null && doc._svgSrcText.trim()) text = doc._svgSrcText;
+    if (!text.trim() && doc.rawText != null) text = doc.rawText;
+    return text;
+}
+
+function looksLikeSvg(text) {
+    return /<svg[\s>]/i.test(String(text || ''));
+}
+
+// 渲染失败时隐藏 <img> 并在画布中央显示原因，避免只剩一片空白（图片 onerror 原本没有处理）
+function setSvgRenderError(doc, message) {
+    if (!doc || !doc.svgRenderImg) return;
+    const status = doc.svgRenderStatus;
+    if (!message) {
+        doc.svgRenderError = '';
+        doc.svgRenderImg.style.display = '';
+        if (status) {
+            status.classList.add('hidden');
+            status.textContent = '';
+        }
+        return;
+    }
+    doc.svgRenderError = message;
+    doc.svgRenderImg.style.display = 'none';
+    if (status) {
+        status.textContent = message;
+        status.classList.remove('hidden');
+    }
+}
+
 function renderSplitSvg(doc) {
     if (!doc || !doc.svgRenderImg || !doc.editor) return;
-    let text = '';
-    try { text = doc.editor.getText(); } catch (e) { return; }
-    if (!text || !text.trim()) return;
+    const text = svgSourceFor(doc);
+    if (!text || !text.trim()) {
+        setSvgRenderError(doc, '当前没有可渲染的 SVG 源码');
+        return;
+    }
+    if (!looksLikeSvg(text)) {
+        setSvgRenderError(doc, '当前源码不是 SVG（缺少 <svg> 根元素），已停止渲染');
+        return;
+    }
+    setSvgRenderError(doc, '');
     doc.svgRenderImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(text);
 }
 
@@ -7908,7 +8451,8 @@ function enterSplitView(doc) {
         if (kind === 'svg' && doc.mode === 'tree') {
             try { src = doc.format.stringify(doc.editor.get()); } catch (e) {}
         }
-        if (src == null) src = doc.editor.getText();
+        // 从渲染视图切分屏时真源是 _svgSrcText：走到这里时编辑器文本可能已经被序列化成 JSON
+        if (src == null) src = kind === 'svg' ? svgSourceFor(doc) : doc.editor.getText();
         doc.editor.setMode('code');
         if (kind === 'svg') doc.editor.setText(src);
         doc.text = doc.editor.getText();
@@ -8175,11 +8719,17 @@ function showSvgRender(doc) {
     createSvgRenderView(doc);
     if (doc.pane) doc.pane.classList.add('svg-render-active');
     if (!doc.svgRenderImg || !doc.editor) return;
-    // 树模式下 getText() 是 JSON 序列化，必须走 format.stringify(editor.get()) 还原成 SVG 文本
-    let svgText = null;
-    try { svgText = doc.format.stringify(doc.editor.get()); } catch (e) {
-        svgText = doc.rawText != null ? doc.rawText : (doc.content || '');
+    // 真源优先用进入渲染视图时保存的 _svgSrcText（树模式下 getText() 是 JSON 序列化）
+    const svgText = svgSourceFor(doc);
+    if (!svgText || !svgText.trim()) {
+        setSvgRenderError(doc, '当前没有可渲染的 SVG 源码');
+        return;
     }
+    if (!looksLikeSvg(svgText)) {
+        setSvgRenderError(doc, '当前内容不是 SVG（缺少 <svg> 根元素），已停止渲染');
+        return;
+    }
+    setSvgRenderError(doc, '');
     doc.svgRenderImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
 }
 
@@ -8202,6 +8752,11 @@ function enterSvgRender(doc) {
         if (!src || !src.trim()) src = doc.rawText != null ? doc.rawText : (doc.content || '');
         doc._svgSrcText = src;
         doc.editor.setMode('code');
+        // setMode('code') 会把树值序列化成 JSON 填进编辑器，必须立刻写回 SVG 源文本，
+        // 否则随后切分屏/保存拿到的都是 JSON（渲染本身正常，分屏则整片空白）
+        doc.editor.setText(src);
+        doc.text = src;
+        if (!doc.dirty) doc.bases.code = src;
         doc.mode = 'render';
         currentMode = 'render';
         showSvgRender(doc);
@@ -8225,10 +8780,15 @@ function createSvgRenderView(doc) {
     img.onload = () => {
         doc.svgRenderW = img.naturalWidth || 240;
         doc.svgRenderH = img.naturalHeight || 120;
+        setSvgRenderError(doc, '');
         applySvgZoom(doc);
     };
-    scroll.appendChild(img);
+    img.onerror = () => setSvgRenderError(doc, 'SVG 渲染失败：浏览器无法解码该内容');
+    const status = document.createElement('div');
+    status.className = 'svg-render-status hidden';
+    scroll.append(img, status);
     doc.svgRenderScroll = scroll;
+    doc.svgRenderStatus = status;
     wrap.appendChild(scroll);
     doc.pane.appendChild(wrap);
     doc.svgRenderEl = wrap;
@@ -8393,9 +8953,261 @@ function leaveCsvTable(doc, mode) {
     }
 }
 
+// ---------- 大文件只读 SQL 查询视图 ----------
+
+function sqlKindFor(doc) {
+    if (!doc) return '';
+    if (doc.format && doc.format.id === 'jsonl') return 'jsonl';
+    const ext = String(doc.name || '').split('.').pop().toLowerCase();
+    return ext === 'tsv' ? 'tsv' : 'csv';
+}
+
+function currentSqlSourceText(doc) {
+    try {
+        if (doc && doc.editor) {
+            const sourceMode = doc.sqlSourceMode || doc.mode;
+            if (sourceMode === 'tree' && doc.format && typeof doc.format.stringify === 'function') {
+                return doc.format.stringify(doc.editor.get());
+            }
+            return doc.editor.getText();
+        }
+    } catch (e) {}
+    return (doc && (doc.text || doc.savedText || doc.content)) || '';
+}
+
+function createSqlView(doc) {
+    if (!doc || !doc.pane || doc.sqlEl) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'sql-view';
+    const bar = document.createElement('div');
+    bar.className = 'sql-bar';
+    const meta = document.createElement('span');
+    meta.className = 'sql-meta';
+    meta.textContent = '尚未导入';
+    const hint = document.createElement('span');
+    hint.className = 'sql-hint';
+    hint.textContent = '查询临时副本，不会修改原文件';
+    const limit = document.createElement('select');
+    limit.className = 'sql-limit opt-select';
+    for (const n of [100, 500, 1000, 5000]) {
+        const option = document.createElement('option');
+        option.value = String(n);
+        option.textContent = '最多 ' + n + ' 行';
+        limit.appendChild(option);
+    }
+    limit.value = '500';
+    const reimport = document.createElement('button');
+    reimport.type = 'button';
+    reimport.className = 'sql-btn';
+    reimport.textContent = '重新导入';
+    bar.append(meta, hint, limit, reimport);
+    const queryWrap = document.createElement('div');
+    queryWrap.className = 'sql-query-wrap';
+    const input = document.createElement('textarea');
+    input.className = 'sql-query';
+    input.spellcheck = false;
+    input.placeholder = 'SELECT * FROM t LIMIT 100;';
+    input.value = 'SELECT * FROM t LIMIT 100;';
+    const run = document.createElement('button');
+    run.type = 'button';
+    run.className = 'sql-btn primary';
+    run.textContent = '运行 (Ctrl+Enter)';
+    queryWrap.append(input, run);
+    const status = document.createElement('div');
+    status.className = 'sql-status';
+    const result = document.createElement('div');
+    result.className = 'sql-result-wrap';
+    wrap.append(bar, queryWrap, status, result);
+    doc.pane.appendChild(wrap);
+    doc.sqlEl = {wrap, meta, input, run, status, result, limit, reimport};
+    run.addEventListener('click', () => runSqlQuery(doc));
+    reimport.addEventListener('click', () => importSqlDoc(doc, true));
+    input.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            runSqlQuery(doc);
+        }
+    });
+    limit.addEventListener('change', () => {
+        if (doc.sqlInfo) runSqlQuery(doc);
+    });
+}
+
+function sqlSetStatus(doc, text, isError) {
+    if (!doc || !doc.sqlEl) return;
+    doc.sqlEl.status.textContent = text || '';
+    doc.sqlEl.status.classList.toggle('error', !!isError);
+}
+
+async function importSqlDoc(doc, force) {
+    if (!doc || !doc.sqlEl || doc.sqlImporting) return;
+    if (doc.sqlInfo && !force) return;
+    if (!backend.SQLImport) {
+        sqlSetStatus(doc, '当前版本不支持 SQL 查询', true);
+        return;
+    }
+    if (doc.sqlInfo) {
+        try { await backend.SQLClose(doc.sqlInfo.id); } catch (e) {}
+        doc.sqlInfo = null;
+    }
+    doc.sqlImporting = true;
+    sqlSetStatus(doc, '正在导入临时副本…', false);
+    if (doc.sqlEl.run) doc.sqlEl.run.disabled = true;
+    try {
+        const kind = sqlKindFor(doc);
+        const useText = !doc.path || !!doc.dirty;
+        const text = useText ? currentSqlSourceText(doc) : '';
+        const info = await backend.SQLImport(doc.path || '', kind, doc.enc || 'utf-8', text, useText);
+        doc.sqlInfo = info;
+        doc.sqlEl.meta.textContent = info.rows + ' 行 × ' + (info.columns || []).length + ' 列 · 导入 ' +
+            info.elapsedMs + ' ms' + (info.truncated ? ' · 已截断' : '');
+        doc.sqlEl.input.value = doc.sqlQuery || 'SELECT * FROM t LIMIT 100;';
+        doc.sqlQuery = doc.sqlEl.input.value;
+        sqlSetStatus(doc, useText ? '已导入编辑器当前内容（含未保存修改）' : '已导入磁盘文件', false);
+        await runSqlQuery(doc);
+    } catch (e) {
+        sqlSetStatus(doc, '导入失败：' + ((e && e.message) || e), true);
+    } finally {
+        doc.sqlImporting = false;
+        if (doc.sqlEl && doc.sqlEl.run) doc.sqlEl.run.disabled = false;
+    }
+}
+
+async function runSqlQuery(doc) {
+    if (!doc || !doc.sqlEl || !doc.sqlInfo) return;
+    if (!backend.SQLQuery) {
+        sqlSetStatus(doc, '当前版本不支持 SQL 查询', true);
+        return;
+    }
+    const query = doc.sqlEl.input.value.trim();
+    if (!query) {
+        sqlSetStatus(doc, '请输入 SQL', true);
+        return;
+    }
+    doc.sqlQuery = doc.sqlEl.input.value;
+    const limit = Number(doc.sqlEl.limit.value) || 500;
+    doc.sqlEl.run.disabled = true;
+    sqlSetStatus(doc, '查询中…', false);
+    try {
+        const result = await backend.SQLQuery(doc.sqlInfo.id, query, limit);
+        renderSqlResult(doc, result);
+    } catch (e) {
+        doc.sqlEl.result.textContent = '';
+        sqlSetStatus(doc, '查询失败：' + ((e && e.message) || e), true);
+    } finally {
+        doc.sqlEl.run.disabled = false;
+    }
+}
+
+function renderSqlResult(doc, result) {
+    const box = doc.sqlEl.result;
+    box.textContent = '';
+    const columns = (result && result.columns) || [];
+    const rows = (result && result.rows) || [];
+    const nulls = (result && result.nulls) || [];
+    const meta = rows.length + ' 行 × ' + columns.length + ' 列 · ' + (result.elapsedMs || 0) + ' ms' +
+        (result.truncated ? ' · 已截断（可加 LIMIT 或调大上限）' : '') +
+        (result.message ? ' · ' + result.message : '');
+    sqlSetStatus(doc, meta, false);
+    if (!columns.length) {
+        const empty = document.createElement('div');
+        empty.className = 'sql-empty';
+        empty.textContent = result.message || '语句已执行（无结果集）';
+        box.appendChild(empty);
+        return;
+    }
+    const table = document.createElement('table');
+    table.className = 'sql-result-table';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const column of columns) {
+        const th = document.createElement('th');
+        th.textContent = column;
+        headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    for (let r = 0; r < rows.length; r++) {
+        const tr = document.createElement('tr');
+        for (let c = 0; c < columns.length; c++) {
+            const td = document.createElement('td');
+            const isNull = !!(nulls[r] && nulls[r][c]);
+            if (isNull) {
+                const span = document.createElement('span');
+                span.className = 'sql-null';
+                span.textContent = 'NULL';
+                td.appendChild(span);
+            } else {
+                const value = rows[r][c] == null ? '' : String(rows[r][c]);
+                td.textContent = value;
+                if (value) td.title = value.length > 200 ? value.slice(0, 200) + '…' : value;
+            }
+            tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    box.appendChild(table);
+}
+
+function disposeSqlDoc(doc) {
+    if (!doc || !doc.sqlInfo) return;
+    const id = doc.sqlInfo.id;
+    doc.sqlInfo = null;
+    try {
+        if (backend.SQLClose) Promise.resolve(backend.SQLClose(id)).catch(() => {});
+    } catch (e) {}
+}
+
+function enterSqlView(doc) {
+    if (!doc || !isSqlSupportedDoc(doc) || !doc.editor) return;
+    doc.sqlPrevMode = currentMode === 'sql' ? (doc.sqlPrevMode || 'code') : currentMode;
+    doc.sqlSourceMode = doc.sqlPrevMode;
+    for (const cls of ['table-active', 'preview-active', 'image-active', 'binary-active', 'render-active', 'split-active', 'svg-render-active']) {
+        doc.pane.classList.remove(cls);
+    }
+    doc.pane.classList.add('sql-active');
+    doc.mode = 'sql';
+    currentMode = 'sql';
+    createSqlView(doc);
+    updateStatus();
+    updateSearchState();
+    if (!doc.sqlInfo) importSqlDoc(doc, false);
+    else if (doc.dirty) sqlSetStatus(doc, '文件有未保存修改；点「重新导入」可生效', false);
+    setTimeout(() => {
+        if (doc.sqlEl && doc.sqlEl.input) doc.sqlEl.input.focus();
+    }, 0);
+}
+
+function leaveSqlView(doc, mode) {
+    if (!doc || !doc.pane) return;
+    doc.pane.classList.remove('sql-active');
+    if (mode === 'sql') return;
+    // 先把编辑器恢复成源格式文本（树视图用 stringify 还原），再走通用视图切换，
+    // 避免「树视图 → SQL → 树视图」被当成 CSV/JSONL 文本重新解析。
+    try {
+        const text = currentSqlSourceText(doc);
+        doc.loading = true;
+        doc.editor.setMode('text');
+        doc.editor.setText(text);
+        doc.text = text;
+    } catch (e) {
+        console.warn('leave sql view failed', e);
+    } finally {
+        doc.loading = false;
+    }
+    currentMode = 'text';
+    doc.mode = 'text';
+    if (mode !== 'text') switchMode(mode);
+    else {
+        updateStatus();
+        updateSearchState();
+    }
+}
+
 function createDoc(data) {
-    if (data.binary) {
-        return {
+    if (data.binary) {        return {
             id: ++docSeq,
             path: data.path,
             name: data.name,
@@ -8621,6 +9433,7 @@ function requestCloseDoc(doc) {
 function closeDocNow(doc, remember = true) {
     const idx = docs.indexOf(doc);
     if (idx < 0) return;
+    disposeSqlDoc(doc);
     const wasActive = doc === file;
     if (doc.path && remember) {
         closedTabs.push({path: doc.path, name: doc.name});
@@ -8892,6 +9705,7 @@ function showSvgMenu(doc, x, y) {
             }
         }},
         {sep: true},
+        ...aiReferenceFileMenuItems(doc),
         {label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => copyText(doc.path, '路径')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)},
     ];
@@ -8928,6 +9742,7 @@ function showImageMenu(doc, x, y) {
             }
         }},
         {sep: true},
+        ...aiReferenceFileMenuItems(doc),
         {label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => copyText(doc.path, '路径')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)},
     ];
@@ -8976,6 +9791,7 @@ function showMdPreviewMenu(doc, x, y) {
         items.push({label: '刷新预览', icon: 'E72C', action: () => renderMarkdownPreview(doc)});
     }
     items.push({sep: true});
+    items.push(...aiReferenceFileMenuItems(doc));
     items.push({label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => copyText(doc.path, '路径')});
     items.push({label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)});
     ctxMenu.open(items, x, y);
@@ -9000,6 +9816,7 @@ function showTabMenu(doc, x, y) {
         {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => copyText(doc.path, '路径')},
         {label: '复制文件名', icon: 'E8C8', action: () => copyText(doc.name, '文件名')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: () => showPathInFolder(doc.path)},
+        ...aiReferenceFileMenuItems(doc),
         {label: '在 AI 中询问此文件', iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>', disabled: !hasPath, action: () => askAIAboutPath(doc.path)},
         {sep: true},
         {label: '在新窗口中打开', shortcut: 'Shift+F4', icon: 'E8A7', disabled: !hasPath, action: () => openInNewWindows([doc.path])},
@@ -9540,9 +10357,10 @@ function showExplorerMenu(info, x, y, node) {
         items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => openInNewWindows([info.path])});
         items.push({
             label: '在 AI 中询问此文件',
-            iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>',
+            iconHtml: AI_REFERENCE_ICON_HTML,
             action: () => askAIAboutPath(info.path),
         });
+        items.push(...aiReferenceFileMenuItems({path: info.path, name: info.name}));
         if (gitStateCache.map.get(info.path.replace(/\\/g, '/'))) {
             items.push({label: 'Git：查看差异', icon: 'E8D3', action: () => showGitDiff(info.path)});
         }
@@ -9607,7 +10425,7 @@ function showExplorerMenu(info, x, y, node) {
 
 function selectedText() {
     if (!editor) return '';
-    if (currentMode === 'code' && editor.aceEditor) return editor.aceEditor.getSelectedText();
+    if ((currentMode === 'code' || currentMode === 'split') && editor.aceEditor) return editor.aceEditor.getSelectedText();
     if (currentMode === 'text') {
         const ta = textArea();
         if (ta) return ta.value.slice(ta.selectionStart, ta.selectionEnd);
@@ -9695,6 +10513,7 @@ function showEditorMenu(x, y) {
     const editable = code || text;
     const readonly = !!file.binary || !!file.large || !!settings.readOnlyMode;
     const hasPath = !!file.path;
+    const referenceItems = aiEditorReferenceMenuItems();
     ctxMenu.open([
         {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', disabled: readonly, action: doUndo},
         {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', disabled: readonly, action: doRedo},
@@ -9721,6 +10540,8 @@ function showEditorMenu(x, y) {
             ],
         },
         {sep: true},
+        ...referenceItems,
+        ...(referenceItems.length ? [{sep: true}] : []),
         {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => copyText(file.path, '路径')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: showInFolder},
     ], x, y);
@@ -10875,6 +11696,10 @@ async function openFolderDialog() {
 
 function openFolderWorkspace(dir) {
     if (!dir) return;
+    if (workspaceFolder && sessionPathKey(dir) !== sessionPathKey(workspaceFolder)) {
+        // 切换工作区前先落盘旧工作区环境（per-workspace 会话恢复需要）。
+        saveSessionNow();
+    }
     workspaceFolder = dir;
     toggleSidebarFilter(false);
     scheduleSessionSave();
@@ -10889,6 +11714,7 @@ function openFolderWorkspace(dir) {
     applySidebarUI();
     renderWorkspaceCrumbs();
     refreshGitStatus();
+    if (aiPanel && aiPanel.refreshSessionList) aiPanel.refreshSessionList();
     flash('已打开文件夹：' + (baseNameOf(dir) || dir));
 }
 
@@ -10916,12 +11742,14 @@ async function openFolderSmart(dir) {
 
 function closeFolder() {
     if (!workspaceFolder) return;
+    saveSessionNow();
     workspaceFolder = null;
     if (explorer) explorer.setRoot(null);
     gitStateCache.available = false;
     gitStateCache.branch = '';
     renderWorkspaceCrumbs();
     scheduleSessionSave();
+    if (aiPanel && aiPanel.refreshSessionList) aiPanel.refreshSessionList();
     flash('已关闭文件夹');
 }
 
@@ -11022,6 +11850,47 @@ function askAIAboutPath(path) {
     if (aiPanel.attachPath) aiPanel.attachPath(path, {focus: true});
 }
 
+const AI_REFERENCE_ICON_HTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>';
+
+function aiPanelOpenNow() {
+    return !!(aiPanel && aiPanel.isOpen && aiPanel.isOpen());
+}
+
+function aiReferenceFileMenuItems(doc) {
+    if (!aiPanelOpenNow() || !doc || !doc.path) return [];
+    return [{
+        label: '引用该文件',
+        iconHtml: AI_REFERENCE_ICON_HTML,
+        action: () => {
+            if (aiPanel && aiPanel.referencePath) aiPanel.referencePath(doc.path, doc.name || '');
+        },
+    }];
+}
+
+function aiEditorReferenceMenuItems() {
+    if (!aiPanelOpenNow() || !file || !file.path) return [];
+    const selected = selectedText();
+    if (selected && selected.trim()) {
+        const caret = appActionDocCaret(file);
+        if (caret.selection) {
+            return [{
+                label: '引用选取',
+                iconHtml: AI_REFERENCE_ICON_HTML,
+                action: () => {
+                    if (aiPanel && aiPanel.referenceSelection) aiPanel.referenceSelection();
+                },
+            }];
+        }
+    }
+    return [{
+        label: '引用该文件',
+        iconHtml: AI_REFERENCE_ICON_HTML,
+        action: () => {
+            if (aiPanel && aiPanel.referencePath) aiPanel.referencePath(file.path, file.name || '');
+        },
+    }];
+}
+
 function setAIPanelMode(mode) {
     if (!aiPanel) initAIPanel();
     if (aiPanel) aiPanel.setMode(mode);
@@ -11079,20 +11948,64 @@ function initAIPanel() {
         isMock: !hasWails,
         floatWindow: !!window.__aiFloatWindow || (!hasWails && mockScenario.has('aifloat')),
         mockEmpty: mockScenario.has('aiempty'),
-        getWorkspaceContext: () => ({
-            workspaceFolder: workspaceFolder || '',
-            activeFile: file ? {path: file.path || '', name: file.name || ''} : null,
-            openFiles: docs.map((doc) => doc.path || doc.name).filter(Boolean),
-        }),
+        getWorkspaceContext: () => {
+            const caret = file ? appActionDocCaret(file) : {cursor: null, selection: null};
+            return {
+                workspaceFolder: workspaceFolder || '',
+                activeFile: file ? {
+                    path: file.path || '',
+                    name: file.name || '',
+                    mode: file.mode || '',
+                    dirty: !!file.dirty,
+                    cursor: caret.cursor,
+                    selection: caret.selection ? {
+                        start: caret.selection.start,
+                        end: caret.selection.end,
+                        chars: caret.selection.chars,
+                    } : null,
+                    viewport: caret.viewport || null,
+                } : null,
+                openFiles: docs.map((doc) => doc.path || doc.name).filter(Boolean),
+            };
+        },
         getScopeRoot: () => workspaceFolder || (file && file.path ? parentDirOf(file.path) : ''),
+        openWorkspaceFolder: (dir, sessionId) => {
+            if (!dir) return false;
+            if (window.__aiFloatWindow) return false;
+            const targetKey = sessionPathKey(dir);
+            if (workspaceFolder && sessionPathKey(workspaceFolder) === targetKey) return 'same';
+            if (!workspaceFolder) {
+                openFolderWorkspace(dir);
+                return 'current';
+            }
+            // 当前窗口已有工作区：不硬切换，另开窗口打开目标工作区（软切换）。
+            saveSessionNow();
+            if (backend.OpenWorkspaceForConversation) {
+                Promise.resolve(backend.OpenWorkspaceForConversation(dir, sessionId || ''))
+                    .catch((e) => flash('打开新窗口失败：' + ((e && e.message) || e), true));
+                return 'window';
+            }
+            if (backend.OpenDirInNewWindow) {
+                Promise.resolve(backend.OpenDirInNewWindow(dir))
+                    .catch((e) => flash('打开新窗口失败：' + ((e && e.message) || e), true));
+                return 'window';
+            }
+            return false;
+        },
         getSelection: () => {
             const text = selectedText();
             if (!file || !text) return null;
-            return {path: file.path || file.name || '', name: file.name || '选中内容', text};
+            const caret = appActionDocCaret(file);
+            return {
+                path: file.path || '',
+                name: file.name || '选中内容',
+                text,
+                selection: caret.selection,
+            };
         },
         pickFiles: () => backend.OpenFilesDialog(),
-        showContextMenu: (items, x, y) => {
-            if (ctxMenu) ctxMenu.open(items, x, y);
+        showContextMenu: (items, x, y, options) => {
+            if (ctxMenu) ctxMenu.open(items, x, y, Object.assign({ignoreScrollWithin: '#ai-panel'}, options));
         },
         openPath: (path) => {
             if (window.__aiFloatWindow && backend.OpenInNewWindows) {
@@ -11903,6 +12816,14 @@ function switchMode(mode) {
     }
     if (doc && doc.splitActive) exitSplitView(doc);
     if (currentMode === mode) return;
+    if (mode === 'sql') {
+        enterSqlView(doc);
+        return;
+    }
+    if (currentMode === 'sql') {
+        leaveSqlView(doc, mode);
+        return;
+    }
     if (mode === 'image') {
         if (doc && doc.image) enterImageView(doc);
         return;
@@ -13141,7 +14062,75 @@ async function copyExternalIntoDir(paths, destDir) {
 
 // ---- 会话恢复：标签页/分组/分屏布局持久化，重启后还原 ----
 const sessionKey = 'cadt.session.v1';
+// 按工作区保存环境：软切换（新窗口打开另一工作区）时恢复该工作区上次的标签/布局。
+const workspaceSessionsKey = 'cadt.workspace-sessions.v1';
+const WORKSPACE_SESSION_LIMIT = 30;
 let sessionTimer = 0;
+
+function sessionPathKey(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/[\\/]+$/, '').toLowerCase();
+}
+
+function readWorkspaceSessions() {
+    try {
+        const data = JSON.parse(localStorage.getItem(workspaceSessionsKey) || '{}');
+        return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function readWorkspaceSession(dir) {
+    const key = sessionPathKey(dir);
+    if (!key) return null;
+    const map = readWorkspaceSessions();
+    const sess = map[key];
+    return sess && typeof sess === 'object' ? sess : null;
+}
+
+function writeWorkspaceSession(sess) {
+    const key = sessionPathKey(sess && sess.workspace);
+    if (!key) return;
+    // 只保存属于该工作区的文件环境，避免工作区切换后把另一工作区的标签带进本工作区。
+    const inside = (path) => {
+        const fileKey = sessionPathKey(path);
+        return !!fileKey && (fileKey === key || fileKey.startsWith(key + '/'));
+    };
+    const groups = [];
+    let filtered = false;
+    for (const group of (sess.groups || [])) {
+        const source = group && Array.isArray(group.paths) ? group.paths : [];
+        const paths = source.filter(inside);
+        if (!paths.length) {
+            filtered = true;
+            continue;
+        }
+        if (paths.length !== source.length) filtered = true;
+        groups.push({
+            paths,
+            active: paths.includes(group.active) ? group.active : paths[0],
+        });
+    }
+    const modes = {};
+    for (const [path, mode] of Object.entries(sess.modes || {})) {
+        if (inside(path)) modes[path] = mode;
+    }
+    const map = readWorkspaceSessions();
+    map[key] = {
+        workspace: sess.workspace,
+        groups,
+        current: sess.current && inside(sess.current) ? sess.current : '',
+        split: filtered ? null : (sess.split || null),
+        modes,
+        savedAt: Date.now(),
+    };
+    const keys = Object.keys(map);
+    if (keys.length > WORKSPACE_SESSION_LIMIT) {
+        keys.sort((a, b) => (Number(map[a] && map[a].savedAt) || 0) - (Number(map[b] && map[b].savedAt) || 0));
+        for (const k of keys.slice(0, keys.length - WORKSPACE_SESSION_LIMIT)) delete map[k];
+    }
+    localStorage.setItem(workspaceSessionsKey, JSON.stringify(map));
+}
 
 function serializeSplitSession(node, gidToIdx) {
     if (typeof node === 'string') {
@@ -13155,7 +14144,8 @@ function serializeSplitSession(node, gidToIdx) {
 }
 
 function serializeSession() {
-    if (!docs.length) return null;
+    // 工作区可以单独持久化：只打开文件夹、没有打开文件时也应在重启后恢复。
+    if (!docs.length && !workspaceFolder) return null;
     const groups = [];
     const gidToIdx = new Map();
     for (const g of editorGroups) {
@@ -13167,10 +14157,10 @@ function serializeSession() {
             active: (docs.find((d) => d.id === g.activeId && d.path) || entries[0]).path,
         });
     }
-    if (!groups.length) return null;
+    if (!groups.length && !workspaceFolder) return null;
     const modes = {};
     for (const d of docs) {
-        if (d.path && d.mode) modes[d.path] = d.mode;
+        if (d.path && d.mode) modes[d.path] = d.mode === 'sql' ? (d.sqlPrevMode || 'text') : d.mode;
     }
     return {
         workspace: workspaceFolder || '',
@@ -13190,15 +14180,27 @@ function saveSessionNow() {
     sessionTimer = 0;
     try {
         const sess = serializeSession();
-        if (sess) localStorage.setItem(sessionKey, JSON.stringify(sess));
-        else localStorage.removeItem(sessionKey);
+        if (sess) {
+            localStorage.setItem(sessionKey, JSON.stringify(sess));
+            writeWorkspaceSession(sess);
+        } else {
+            localStorage.removeItem(sessionKey);
+        }
     } catch (e) {}
 }
+
+// 关闭窗口时兜底保存一次，避免刚打开文件夹就退出时丢失（防抖还没触发）。
+// AI 悬浮窗与调试控制台共享同一 localStorage，不能让它们覆盖主窗口的会话。
+window.addEventListener('pagehide', () => {
+    if (window.__aiFloatWindow || window.__consoleWindowMode) return;
+    if (!docs.length && !workspaceFolder) return;
+    saveSessionNow();
+});
 
 function readSession() {
     try {
         const sess = JSON.parse(localStorage.getItem(sessionKey) || 'null');
-        if (sess && Array.isArray(sess.groups) && sess.groups.length) return sess;
+        if (sess && (sess.workspace || (Array.isArray(sess.groups) && sess.groups.length))) return sess;
     } catch (e) {}
     return null;
 }
@@ -13218,7 +14220,7 @@ async function restoreSession(sess) {
     try {
         if (sess.workspace && !workspaceFolder) openFolderWorkspace(sess.workspace);
         const idxToGid = new Map();
-        for (const gspec of sess.groups) {
+        for (const gspec of (sess.groups || [])) {
             const g = createGroup();
             focusedGroupId = g.id;
             idxToGid.set(idxToGid.size, g.id);
@@ -15506,6 +16508,12 @@ initCodeFoldHover();
         }
     }
     logFrontend('info', '前端启动完成：' + navigator.userAgent);
+    let startupAISession = '';
+    if (backend.GetStartupAISession) {
+        try {
+            startupAISession = await backend.GetStartupAISession() || '';
+        } catch (e) {}
+    }
     let targets = [];
     if (backend.GetStartupTargets) {
         try {
@@ -15513,7 +16521,24 @@ initCodeFoldHover();
         } catch (e) {}
     }
     if (targets && targets.length) {
+        // 先读取目标目录上次的工作区环境，再打开目标：打开目录会触发一次防抖保存，
+        // 若先打开再读，空环境可能把旧环境覆盖掉。
+        let workspaceSession = null;
+        if (!floatWindow && backend.GetPathInfo) {
+            for (const target of targets) {
+                if (!target || !target.path) continue;
+                let info = null;
+                try {
+                    info = await backend.GetPathInfo(target.path);
+                } catch (e) {}
+                if (info && info.isDir) {
+                    workspaceSession = readWorkspaceSession(info.path);
+                    break;
+                }
+            }
+        }
         await openTargets(targets);
+        if (workspaceSession) await restoreSession(workspaceSession);
     } else {
         const files = await backend.GetStartupFiles();
         if (files && files.length) await openPaths(files);
@@ -15528,6 +16553,19 @@ initCodeFoldHover();
         if (aiPanel) aiPanel.open(true);
     } else {
         setTimeout(() => autoCheckUpdateOnStart(), 2000);
+        // 软切换新窗口：打开 AI 面板并选中目标会话（工作区已在上一步恢复）。
+        if (startupAISession && aiPanel && aiPanel.bridgeListSessions) {
+            try {
+                if (aiPanel.whenReady) await aiPanel.whenReady();
+            } catch (e) {}
+            const session = aiPanel.bridgeListSessions().find((item) => item.id === startupAISession);
+            if (session && (!session.workspace || sessionPathKey(session.workspace) === sessionPathKey(workspaceFolder))) {
+                aiPanel.open(true);
+                try {
+                    aiPanel.bridgeSwitchSession(startupAISession);
+                } catch (e) {}
+            }
+        }
     }
     try {
         if (backend.ConsumeStartupSettings) {

@@ -40,8 +40,8 @@ v2 补齐三类「harness 级」能力：
 
 ### 1.3 工具与权限（ai-panel.js:3285 AI_TOOL_DEFS / 3480 toolsForScope）
 
-- 现有 15 工具：list_dir、read_file、search_text、memory_list、memory_read、memory_write、skill_use、ask_user、app_control、env_list、env_create、todo_write、write_file、edit_file、run_command。
-- 三档：对话（仅 skill_use 可交互）/ 读取 / 编辑；planMode 收走 memory_write、write_file、edit_file、run_command。
+- 现有 32 工具：list_dir、read_file、search_text、web_search、web_fetch、memory_list、memory_read、memory_write、preference_list、preference_write、preference_remove、skill_use、plan_mode、ask_user、app_control、env_list、env_create、todo_write、write_file、edit_file、run_command，另有 browser_* 11 个（navigate / back / forward / reload / snapshot / screenshot / click / type / press_key / evaluate / close）。
+- 三档：对话（仅 skill_use 可交互）/ 读取 / 编辑；planMode 收走 memory_write、preference_write、preference_remove、write_file、edit_file、run_command。
 - `run_command`（ai-panel.js:4889，schema 3692）：edit 档逐条审批（requestCommandApproval）、full 档免审批；后端 `AIRunShellCommand`（ai_command_windows.go:51）→ `RunCommandSync`（commands.go:74）同步执行，shell 优先级 Git Bash → pwsh → Windows PowerShell → cmd，超时不算错误（TimedOut=true + 已捕获输出）。**输出经两层上限**：后端 `commandOutputCap` 8 MB（commands.go:27，超限写入 `…输出超过 8 MB 上限，已截断…`），前端 `clip` 再把 stdout/stderr 各截到 **16000 字符**（附 `…（输出已截断）`）——模型实际最多看到约 32 KB 文本。
 
 ### 1.4 进程桥与终端（commands.go / terminal_windows.go）
@@ -53,8 +53,9 @@ v2 补齐三类「harness 级」能力：
 
 ### 1.5 会话持久化与多窗口
 
-- 会话全在前端 localStorage `datalens-ai-sessions`（ai-panel.js:4），Go 侧不感知；**无单会话消息条数上限**（原 `AI_MESSAGE_LIMIT` 已移除，改为 contextWindow 预算 + 自动压缩）、会话数上限 `maxSessions()`、图片预算裁剪与归档兜底（persistSessions，ai-panel.js:1121）。
-- 多窗口模式（openMode=window）下每个窗口独立 WebView2 → 独立 localStorage；Wails `EventsEmit` 是**广播**，所有窗口都能收到。
+- 会话自 2026-11-11 起存磁盘 `%APPDATA%\CandySweet\CaDt-DataLens\ai-sessions\<id>\`（追加式 `session.v1.jsonl` + `meta.json` + `images/`），Go 侧只提供读写接口不解析内容；**无单会话消息条数上限**、无会话数上限、无图片预算裁剪与配额降级。
+- 多窗口模式（openMode=window）每个窗口是独立进程但共享同一 WebView2 用户目录与 `ai-sessions/`；并发写按每会话独立文件 + 追加式写入处理（先写先得，后加载按日志重放合并），详见 `docs/reports/session-storage-jsonl.md`。
+- 会话搜索使用**可重建的 SQLite 派生索引** `ai-index.db`（modernc），JSONL 仍是唯一真源；AI 配置（profiles/prompts/preferences）存 `ai-config.json`，localStorage 保留镜像。
 - Go 侧除 AI watchdog 外无任何 timer/Ticker/cron 基础设施。
 
 ---
@@ -91,8 +92,8 @@ AI 直接复用 ConPTY 会话可跑交互式程序，但需要 `TermSessionsList
 ### 3.1 架构决策（先定边界）
 
 - **调度器放 Go 侧**：Chromium 对最小化/后台页面的 timer 节流不可控，Go ticker 不受影响；且面板关闭时前端逻辑仍活着（initAIPanel 启动即注册），Go 发事件即可驱动执行。
-- **任务定义存 Go 侧**：`%APPDATA%\CandySweet\CaDt-DataLens\ai-schedules.json`——Go 独立管理，不依赖 localStorage。
-- **执行体在前端**：会话数据在 localStorage，Go 拿不到；触发 = Go 发 `sched-fire` 事件 → 前端向目标会话注入一条 user 消息走现有 `submitText` 流程。
+- **任务定义与运行历史存 SQLite**（`%APPDATA%\CandySweet\CaDt-DataLens\ai-schedule.db`，modernc pure Go）——**已定方向，但调度器本身尚未实现**；不再是 `ai-schedules.json`。
+- **执行体在前端**：会话在磁盘 JSONL、AI 配置在 `ai-config.json`，Go 可读取；但触发仍沿用「Go 发 `sched-fire` 事件 → 前端向目标会话注入 user 消息走 `submitText`」，以复用审批/流式/通知管线。
 - **v1 边界（明确写入 UI 文案）**：任务仅在**应用运行期间**有效；窗口关闭后任务挂起，重开后不补跑（启动时把 `nextRunAt` 重算，错过的只记日志）。若未来要「关闭也执行」，Go 侧只能做到 Windows Toast 提醒，无法替用户跑 AI 轮次。
 
 ### 3.2 数据模型
@@ -164,7 +165,7 @@ Schedule {
 
 ### 4.5 持久化
 
-- 子对话**不随 sessions 持久化**（重开应用后卡片保留元数据 + 最终摘要，展开显示「子对话已归档」）；避免 localStorage 预算被并行探索撑爆。
+- 子对话**不随 sessions 持久化**（重开应用后卡片保留元数据 + 最终摘要，展开显示「子对话已归档」）；避免会话存储被并行探索撑爆。
 
 ---
 
@@ -188,7 +189,7 @@ Schedule {
 ## 7. 风险与备注
 
 1. **事件路由改造是最大回归面**：handleEvent 同时服务主流、oneShot（/compact）与未来的子流——改造时三种路径都要有回归用例（验证清单 C 已含）。
-2. **限额**：15 轮上限、contextWindow 预算 + 自动压缩、localStorage 图片预算 3.2MB——子代理并行探索会放大 token/存储消耗；v1 用独立上限 + 不持久化子对话规避。
+2. **限额**：15 轮上限、contextWindow 预算 + 自动压缩、会话存储体积（v1 不持久化子对话）——子代理并行探索会放大 token/存储消耗；v1 用独立上限 + 不持久化子对话规避。
 3. **多窗口广播**：sched-fire 会被所有窗口收到，去重逻辑必须做（3.4）；子代理无此问题（事件按 roundId 只被持有者消费）。
 4. **Chromium 节流**：任何「前端 setTimeout 调度」的替代实现都不可靠，调度器必须在 Go（3.1）。
 5. **cron 依赖决策**：自写 5 字段（无依赖、约 200 行）vs robfig/cron/v3（MIT）——建议自写，与项目风格一致；若作者想支持秒级/复杂语法再引库。

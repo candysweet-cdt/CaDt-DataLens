@@ -726,6 +726,22 @@ func TestParseOpenSettingsArg(t *testing.T) {
 	}
 }
 
+func TestParseAISessionArg(t *testing.T) {
+	cases := map[string]string{
+		"":                         "",
+		"--new-window":             "",
+		"--ai-session=session-abc": "session-abc",
+		"--new-window C:\\tmp --ai-session=session-abc": "session-abc",
+		"--ai-session=": "",
+		"--ai-session":  "",
+	}
+	for args, want := range cases {
+		if got := parseAISessionArg(strings.Fields(args)); got != want {
+			t.Fatalf("parseAISessionArg(%q) = %q, want %q", args, got, want)
+		}
+	}
+}
+
 func TestConsumeStartupSettings(t *testing.T) {
 	app := &App{startupSettingsPane: "models"}
 	if got := app.ConsumeStartupSettings(); got != "models" {

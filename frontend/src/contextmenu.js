@@ -12,6 +12,7 @@ export function createContextMenu() {
     document.body.appendChild(root);
     let panels = [root];
     let isOpen = false;
+    let openOptions = {};
 
     function closeDeeper(depth) {
         while (panels.length > depth + 1) {
@@ -25,6 +26,7 @@ export function createContextMenu() {
         root.classList.add('hidden');
         root.textContent = '';
         isOpen = false;
+        openOptions = {};
     }
 
     function place(panel, x, y) {
@@ -126,9 +128,10 @@ export function createContextMenu() {
         }
     }
 
-    function open(items, x, y) {
+    function open(items, x, y, options) {
         close();
         isOpen = true;
+        openOptions = options || {};
         render(root, items, 0);
         place(root, x == null ? 24 : x, y == null ? 24 : y);
     }
@@ -151,6 +154,8 @@ export function createContextMenu() {
     document.addEventListener('scroll', (e) => {
         if (!isOpen) return;
         if (e.target && e.target.closest && e.target.closest('.ctx-menu')) return;
+        // AI 流式输出会自动滚动消息区；面板内菜单不应因此被关闭
+        if (openOptions.ignoreScrollWithin && e.target && e.target.closest && e.target.closest(openOptions.ignoreScrollWithin)) return;
         close();
     }, true);
 
