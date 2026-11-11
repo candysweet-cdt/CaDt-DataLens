@@ -27,7 +27,7 @@
 - 会话归档：会话菜单新增「归档会话 / 取消归档」；归档会话从活动列表移入可折叠「已归档」区，保留查看、重命名、导出与取消归档；归档会话禁止继续发送/压缩，且不会被会话数量上限优先淘汰。持久化字段 `archivedAt`。
 - 内置技能：随包内置 `code-review`（只读代码审查）、`json-toolkit`（JSON/JSONL/YAML/TOML/CSV 校验与修改）、`release-notes`（更新日志/发布说明）三个技能；技能列表、`/skill`、`skill_use` 与技能管理统一可见，支持启用/禁用；同名用户技能优先覆盖内置。
 - 通知：任务完成、任务失败、AI 提问时显示应用内 toast（可点击跳到对应会话）；窗口失焦时应用内通道还会让任务栏闪烁并可播放提示音；系统级 Windows Toast 独立开关。设置 → AI 助手 → 通知可分别开关应用内通知、系统通知、完成/失败/提问事件与失焦提醒。
-- AskQuestion：新增 `ask_user` 工具，一次最多 5 个问题；每题可单选或多选，可标记推荐项，可允许自定义回答；提问和计划批准会接管底部 composer（不再插入消息流），回答后恢复输入框并在转录中保留只读问答记录。设置项：超时时长（不超时/30 秒/1 分钟/5 分钟/10 分钟/30 分钟）与超时处理（按 AI 推荐项继续 / 继续阻塞等待 / 直接停止本轮 / 交给 AI 决定）。超时停止会结束本轮；超时继续会把结果作为工具结果交回模型。
+- AskQuestion：新增 `ask_user` 工具，一次最多 5 个问题；每题可单选或多选，可标记推荐项，可允许自定义回答；提问和计划批准会接管底部 composer（不再插入消息流），回答后恢复输入框并在转录中保留只读问答记录。设置项：超时时长（不超时/30 秒/1 分钟/5 分钟/10 分钟/30 分钟）与超时处理（按 AI 推荐项继续 / 继续阻塞等待 / 直接停止本轮 / 交给 AI 决定）。超时停止会结束本轮；超时继续会把结果作为工具结果交回模型。`ask_user` 另支持逐次覆盖超时：可选参数 `timeoutSec`（秒，`0` = 本次不限时，范围 0–3600）与 `timeoutAction`（`recommended` / `wait` / `abort` / `ai_decide`），只影响本次提问，不写回设置；两者省略时沿用设置。实现见 `resolveAskTimeout`（ai-panel.js），实际生效值记录在 `ask.timeoutSec` / `ask.timeoutAction`；本次为定制时 `ask.timeoutCustom` 为 true，composer 倒计时会附加「（本次自定义 N 秒）」。
 - Plan 模式：composer 新增「计划」胶囊，`/plan` 进入、`/plan off` 退出，`/plan <指令>` 进入并直接开始规划；计划模式下不提供 `write_file` / `edit_file`，提示词要求只读探索并输出 Markdown 计划。计划完成后在底部 composer 接管处显示计划预览与「继续规划 / 执行计划」；执行时自动退出计划模式并发送批准指令；仅可查看权限下会提示先切换编辑权限。计划模式状态随会话持久化。
 - 底部 composer：改为带圆角/阴影的浮动面板；队列、附件和输入框都在面板内。提问/计划批准会临时替换面板内容，回答或决定后恢复。
 - 消息排队与插话：生成中 Enter 把消息加入排队（面板内可见、可移除/插话），本轮结束后自动发送；Ctrl+Enter 立即插话（停止当前回复并把该消息排到队首）；普通停止不自动清空队列。
@@ -139,7 +139,8 @@
 - **长会话懒加载**：打开/切换会话时只渲染最近一段消息，初始窗口至少约 1M tokens（取 `1M` 与当前 Profile `contextWindow` 的较大值，按估算 tokens 从末尾回溯并按轮次对齐）；列表顶部显示「↑ 上方还有 N 条更早消息」，上滑触顶或点击后按约 250k tokens 分块补载，并补偿滚动位置保持视口不跳。消息变少（`/compact`、编辑重发、清空）时窗口自动重置；窗口状态仅内存保存，重启后重新从最近一段开始。
 - localStorage `datalens-ai-sessions`：`[{id, title, createdAt, scope, systemPrompt?, promptTemplateId?, profileId?, todos[], changes[], messages:[{role, content, images?:[{id,mime,data,width,height,name,logFile?}], toolCalls?, ts, model, reasoning?, turnStartedAt?, turnMs?, finishedAt?}], summary?:{text, upTo, createdAt}, archived?:[], logFile?, logSavedAt?}]`；当前会话 id 存 `datalens-ai`。
 - 图片受 localStorage 预算保护：全局图片数据超过约 3.2MB 时，旧图片会只保留 `logFile` 引用并从消息中移除 base64；对话日志仍保留完整图片文件。
-- 标题自动取首条用户消息前 20 字；新建/切换/重命名/删除；消息上限 200 条。
+- **无消息条数上限**（原 `AI_MESSAGE_LIMIT=200` 已移除）：条数与 token 无关，硬裁剪会静默丢弃历史。上下文规模由 `contextWindow` 预算 + 自动压缩管理。localStorage 写满时分四级降级：移除旧图片 → 移除全部图片 → 把最旧消息移入 `session.archived`（与 `/compact` 同一通路，**不丢弃**，上限 `AI_ARCHIVE_LIMIT=400`）→ 仍失败则提示「会话保存失败」并保留内存数据。
+- 标题自动取首条用户消息前 20 字；新建/切换/重命名/删除。
 - 持久化时机：每轮（含工具轮）结束后写入；流式中不写盘。轮次耗时存于最终 assistant 的 `turnMs`，用户消息带 `turnStartedAt`。
 - **导出会话为 Markdown**：侧边栏行内 `⋯` 或面板 `⋯`（悬浮窗）→ `SaveFileDialog` → 用户/助手段落 + 工具调用摘要 + 变更记录附录。
 
@@ -172,7 +173,7 @@
 | `/context` | **上下文统计**：会话消息数/字符数/**估算 tokens** 与 `contextWindow` 占比；系统注入（提示词+AGENTS.md+记忆+技能索引+workspace_context）估算；待发送附加内容；最近一次 API `usage` 实际值（若有）；超阈值给出「建议 /compact」 | 纯前端计算，不发请求 |
 | `/compact` | **压缩上下文**：用当前 Profile 对会话做摘要（幕后一次性请求，不计入对话流），历史替换为「摘要 + 保留最近 6 条」；**压缩前原文存入会话 `archived[]`**（可查看不发送） | 进行中显示进度、可取消 |
 | `/clear` | 清空当前会话消息（会话保留） | 需确认 |
-| `/model` | 打开 Profile 切换下拉 | 等效 composer 下拉 |
+| `/model` | 提示并聚焦 composer 右下角的模型胶囊（**不自动弹出下拉**） | 切换配置请点模型胶囊 |
 | `/export` | 导出会话为 Markdown | 等效 head 按钮 |
 | `/memory` | 打开记忆管理对话框 | 等效 head「记忆」 |
 | `/skill <name>` | 手动调用技能（全文注入下一轮） | 等效「技能…」chip |
@@ -185,7 +186,7 @@
 
 - **Token 估算**（无 tokenizer 依赖）：`tokens ≈ ceil(ascii字符数/4 + CJK字符数×0.75)`，界面标注「估算」；有 API `usage` 返回值时展示实际值并标注。
 - **压缩后请求构建**：`msgs = [{role:'system', content:'<会话摘要>…'}] + 最近 6 条原文`；摘要存 `session.summary {text, upTo, createdAt}`，`upTo` 之前的消息进 `archived[]`。
-- **阈值提示（不静默压缩）**：估算占比 ≥ `autoCompactThreshold`（默认 80%）时，输入区上方显示 banner「上下文约 X%，建议 /compact」+ 一键按钮；**默认不自动压缩**（摘要会丢信息，交用户决策）。
+- **阈值提示 + 自动压缩**：估算占比 ≥ `autoCompactThreshold`（默认 80%）时，输入区上方显示 banner「上下文约 X%，建议 /compact」+ 一键按钮。设置项「自动压缩」开启（`autoCompact`，默认开启）时，在一轮回复正常结束后检查一次预算，超阈值则自动发起 `/compact`；同一会话连续自动压缩 2 次后不再自动触发，改为提示「建议开启新会话或减少附件」。自动压缩期间不打断生成，正在提问 / 计划待批准 / 队列有待发消息时不会触发。
 - **输入硬限**：单轮请求总估算 tokens > `contextWindow` 时阻止发送并提示（先 /compact 或减附加）；阈值预留 10% 余量（估算误差）。
 
 ---
@@ -300,7 +301,7 @@ runTurn(session, userMsg):
 ## 11. Todolist
 
 - `todo_write(todos[{content, status: pending|in_progress|completed}])` → 面板顶部 `#ai-todos` 固定区。
-- 显示：○ 待办 / ▶ 进行中（高亮）/ ✓ 完成划线；进度 N/M；全部完成 3 秒后折叠单行「✓ 任务完成（N 项）」，点击展开。
+- 显示：○ 待办 / ▶ 进行中（高亮）/ ✓ 完成划线；进度 N/M；全部完成后 3 秒自动折叠为单行「任务 · 已全部完成 · N 项」（`ai-todos-label` + `ai-todos-sum`），点击标题栏展开/收起。
 - systemPrompt（读取/编辑档）注入守则：多步任务先 `todo_write` 规划、每步更新状态。
 - 随会话持久化、随会话切换恢复。
 
@@ -462,7 +463,8 @@ ai-skills/
 | 配置导入/导出 | — | — | 导出 profiles/prompts/memoryMode/approvedProfiles 为 JSON（**默认不含 apiKey**，勾选才含）；导入按 id 合并 |
 | 快捷键登记 | — | — | Alt+9 与发送键登记进设置-快捷键页 |
 | 上下文窗口 | per profile `contextWindow` | `128000` | 8K–1M tokens；用于 /context 占比与发送前超限拦截（§5.2） |
-| 压缩提示阈值 | `autoCompactThreshold` | `0.8` | 占比 ≥ 阈值显示「建议 /compact」banner（**不静默压缩**） |
+| 压缩提示阈值 | `autoCompactThreshold` | `0.8` | 占比 ≥ 阈值显示「建议 /compact」banner，并作为自动压缩的触发点 |
+| 自动压缩上下文 | `autoCompact` | `true` | 每轮结束后超阈值自动 `/compact`；同会话连续 2 次后停止自动触发 |
 | 自动对话日志 | `logEnabled` | `true` | 每轮结束写 Markdown 到应用数据 `ai-logs/`；图片写 `ai-logs/images/`；设置页可开关/打开目录 |
 
 ### 17.2 固定不配置（写明理由）
@@ -562,3 +564,14 @@ Go 新增仅 `ai.go`（流式 + AIMemoryDir 一个小方法）；其余全复用
 21. **/init 写盘**：与 AI 写文件同一审批通道（用户主动触发也走审批卡片），工作区外不可用。
 17. **悬浮/吸附是应用内浮层**：非独立 OS 窗口（不能拖出应用外；Wails v2 多窗口受限），层级需与菜单/对话框/右键菜单协调（面板 z-index 低于模态对话框）；拖拽用 pointer events + setPointerCapture，避免与文本选区冲突。
 18. **停靠↔吸附切换抖动**：同一 DOM 重定位时流式渲染不中断（事件按 id 路由与 DOM 无关，已天然解耦）。
+
+## 应用操作桥（app_control 工具 + cadt-ui 技能，2026-11-11）
+
+AI 助手可通过 **app_control** 工具像真人一样操作当前应用窗口：标签页管理、视图/主题/设置切换、面板开关、AI 会话管理等。仅限当前窗口；不改工作区文件；**所有权限档（含对话档）可用**——UI 操作不落盘，危险路径（关闭脏标签）复用既有确认弹窗由真人批准。
+
+- 执行端：main.js `runAppAction(action, params)`（挂在 `window.__lens.runAppAction` 可手动调试），动作映射到既有闭包函数（switchMode/activateDoc/requestCloseDoc/toggleDockView/openSettings…），宿主对象以 `runAppAction` + `hostAppActions`（动作名列表，用于报错提示）注入。
+- 工具参数：`{action: string, params?: object}`；未知动作报错并附 `APP_ACTIONS` 全表。
+- `set_setting` 走 `APP_SETTING_RULES` 白名单（bool/number 范围/enum/theme），改后 `applySettings()` 即时生效并持久化；openMode 的后端同步走 applySettings 内既有 syncedOpenMode 逻辑。
+- AI 会话桥：ai-panel 返回对象新增 `bridgeNewSession({title,message})`（open + newSession + submitText）、`bridgeSwitchSession(id)`、`bridgeListSessions()`；`ai_new_session` 带 message 会真实触发一次模型调用。
+- 配套内置技能 **cadt-ui**：动作全表 + 使用顺序（先 get_state）+ 边界（不保存/不删除/不跨窗口/无任意 DOM 模拟）。
+- 刻意不提供：保存/另存为（写文件走 write_file/edit_file 审批）、删除/重命名（已有专用工具+回收站）、跨窗口操作、鼠标模拟；键盘模拟 type_text/press_key 仅完全权限档。
