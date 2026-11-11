@@ -9,7 +9,7 @@
 ## 总评
 
 CaDt-DataLens 的 AI 助手在**功能覆盖上已达 dsh 的八成以上**：流式双协议、无硬上限的工具循环、
-三档权限+写审批、上下文压缩、技能/记忆注入、todolist、重试均已落地且核心链路健壮（有 Go 测试背书）。
+四档权限+写审批、上下文压缩、技能/记忆注入、todolist、重试均已落地且核心链路健壮（有 Go 测试背书）。
 **最大差距**集中在三处：①持久化是「快照式 localStorage」而非 dsh 的「事件溯源 JSONL」，导致中断
 恢复只能靠归一化兜底（running 工具永久执行中、回合无收尾事件）；②错误只有人读文案、没有稳定分类码，
 无法做 QUOTA/CONTEXT_WINDOW_EXCEEDED 等语义化路由与自动恢复；③安全纵深少了「凭据打码」与
@@ -31,7 +31,7 @@ CaDt-DataLens 的 AI 助手在**功能覆盖上已达 dsh 的八成以上**：�
   env_list/env_create，以及 browser_* 共 11 个（navigate/back/forward/reload/snapshot/screenshot/
   click/type/press_key/evaluate/close，Go 侧 browser_windows.go 有真实绑定）。
   browser_* 与 env_* 为审查日当天新落地，未列入原始审查范围，此处仅记录存在，未做逐项对照。
-- **权限模型**：读取/工作区内修改/完全权限 三档 + 计划模式；写操作走 diff 审批卡 +
+- **权限模型**：只读访问/每次询问/自动审批/完全权限 四档 + 计划模式；写操作走 diff 审批卡 +
   会话级/永久授权记忆；app_control 可在设置整体关闭（`appControlOn`，ai-panel.js:554/3894）。
 - **持久化**：会话（含消息/待审批/待提问/Todolist/变更记录）存 localStorage
   `datalens-ai-sessions`（单 key 全量 JSON，L6/1143；图片预算 3.2MB + 分级降级，L24/1112-1183）；

@@ -3,6 +3,7 @@
 import {iconSvg} from './icons.js';
 import {createFileIcon} from './fileicons.js';
 import {createSessionDiskStore, replaySessionLog} from './ai-session-store.js';
+import {commandFamilySignature, commandText, matchCommandRule} from './ai-command-rules.js';
 const AI_CONFIG_KEY = 'datalens-ai';
 const AI_SESSIONS_KEY = 'datalens-ai-sessions';
 // 会话存储：默认写磁盘 JSONL；设为 legacy 可临时退回整包 localStorage（排障用）。
@@ -23,6 +24,8 @@ const AI_WRITE_LIMIT = 256 * 1024;
 const AI_DIFF_MAX_LINES = 4000;
 const AI_DIFF_PREVIEW_LIMIT = 40;
 const AI_CHANGES_LIMIT = 200;
+const AI_SCOPES = ['read', 'edit', 'auto', 'full'];
+const AI_WRITE_SCOPES = ['edit', 'auto', 'full'];
 const AI_TODO_LIMIT = 50;
 const AI_PREF_LIMIT = 100;
 const AI_PREF_TEXT_LIMIT = 500;
@@ -1038,7 +1041,8 @@ export function createAIPanel(options) {
                     text: aiTextOf(line && line.text),
                 })).slice(0, AI_DIFF_PREVIEW_LIMIT + 8)
                 : [],
-            remember: ['session', 'always'].includes(raw.remember) ? raw.remember : '',
+            remember: ['session', 'always', 'family', 'pre', 'auto'].includes(raw.remember) ? raw.remember : '',
+            autoRule: ['exact', 'family', 'auto'].includes(raw.autoRule) ? raw.autoRule : '',
         };
     }
 
@@ -1265,7 +1269,7 @@ export function createAIPanel(options) {
             createdAt: Number(raw.createdAt) || Date.now(),
             updatedAt: Number(raw.updatedAt) || Number(raw.createdAt) || Date.now(),
             _recovered: messages.some((message) => message && message._recovered),
-            scope: ['read', 'edit', 'full'].includes(raw.scope) ? raw.scope : 'read',
+            scope: AI_SCOPES.includes(raw.scope) ? raw.scope : 'read',
             workspace: aiTextOf(raw.workspace),
             profileId: aiTextOf(raw.profileId),
             systemPrompt: aiTextOf(raw.systemPrompt),
@@ -3195,8 +3199,19 @@ export function createAIPanel(options) {
         }
         const result = document.createElement('div');
         result.className = 'ai-approval-result ' + approval.state;
+        const ruleNote = approval.autoRule === 'auto'
+            ? '（自动审批放行）'
+            : approval.autoRule === 'family'
+                ? '（本会话同类命令授权）'
+                : approval.autoRule === 'exact'
+                    ? '（本会话相同命令授权）'
+                    : approval.remember === 'family'
+                    ? '（同类命令已放行）'
+                    : approval.remember === 'session'
+                        ? '（相同命令已放行）'
+                        : '';
         result.textContent = approval.state === 'approved'
-            ? (message.status === 'running' ? '正在执行命令…' : '命令已执行')
+            ? (message.status === 'running' ? '正在执行命令…' : '命令已执行' + ruleNote)
             : approval.state === 'denied'
                 ? '已放弃，命令未执行'
                 : (approval.state === 'failed'
@@ -3300,7 +3315,9 @@ export function createAIPanel(options) {
             result.textContent = approval.state === 'approved'
                 ? (message.status === 'running'
                     ? '正在应用更改…'
-                    : (approval.remember === 'pre' ? '已按授权自动应用更改' : '已应用更改'))
+                    : (approval.remember === 'pre'
+                        ? '已按授权自动应用更改'
+                        : (approval.remember === 'auto' ? '已按自动审批应用更改' : '已应用更改')))
                 : approval.state === 'denied'
                     ? '已放弃，文件未修改'
                     : (approval.state === 'failed'
@@ -3836,7 +3853,7 @@ export function createAIPanel(options) {
     async function acceptPlan(session, message) {
         if (!session || stream || !session.planMode || !message || !message.planMode) return;
         if (currentScopeOf(session) === 'read') {
-            flash('当前为「仅可查看」，执行阶段无法修改文件；请先在下方切换权限', true);
+            flash('当前为「只读访问」，执行阶段无法修改文件；请先在下方切换权限', true);
             return;
         }
         session.planMode = false;
@@ -4948,7 +4965,7 @@ export function createAIPanel(options) {
         },
         write_file: {
             name: 'write_file',
-            description: '创建新文件或整体覆盖工作区内的文本文件。写操作会先显示 diff 并由用户审批；需「工作区内修改」或「完全权限」。',
+            description: '创建新文件或整体覆盖工作区内的文本文件。写操作会先显示 diff；「每次询问」档由用户审批，「自动审批」/「完全权限」直接应用。需写权限档。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -4960,7 +4977,7 @@ export function createAIPanel(options) {
         },
         edit_file: {
             name: 'edit_file',
-            description: '在工作区文件中把唯一的 oldString 替换为 newString。oldString 必须逐字复制且只出现一次；写操作需审批；需「工作区内修改」或「完全权限」。',
+            description: '在工作区文件中把唯一的 oldString 替换为 newString。oldString 必须逐字复制且只出现一次；写操作会先显示 diff；「每次询问」档需审批，「自动审批」/「完全权限」直接应用。需写权限档。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -4973,7 +4990,7 @@ export function createAIPanel(options) {
         },
         todo_write: {
             name: 'todo_write',
-            description: '创建或更新当前会话的任务清单。多步任务先规划，每完成一步更新状态；需「工作区内修改」或「完全权限」。',
+            description: '创建或更新当前会话的任务清单。多步任务先规划，每完成一步更新状态；需「每次询问」「自动审批」或「完全权限」。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -4995,7 +5012,7 @@ export function createAIPanel(options) {
         },
         run_command: {
             name: 'run_command',
-            description: '在终端执行一条命令并返回退出码、stdout、stderr。shell 优先级：Git Bash → PowerShell 7 → Windows PowerShell → cmd。用于测试、构建、git 查看等；不要运行交互式或长驻命令。编辑档每条命令需用户审批，完全权限免审批。',
+            description: '在终端执行一条命令并返回退出码、stdout、stderr。shell 优先级：Git Bash → PowerShell 7 → Windows PowerShell → cmd。用于测试、构建、git 查看等；不要运行交互式或长驻命令。「每次询问」档每条命令需审批；「自动审批」档白名单内的低风险命令自动执行、其余仍审批；完全权限免审批。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -5071,7 +5088,7 @@ export function createAIPanel(options) {
         },
         browser_click: {
             name: 'browser_click',
-            description: '点击页面上匹配 CSS 选择器的第一个元素。需「工作区内修改」及以上权限。',
+            description: '点击页面上匹配 CSS 选择器的第一个元素。需「每次询问」及以上权限。',
             parameters: {
                 type: 'object',
                 properties: {selector: {type: 'string', description: 'CSS 选择器'}},
@@ -5080,7 +5097,7 @@ export function createAIPanel(options) {
         },
         browser_type: {
             name: 'browser_type',
-            description: '向匹配 CSS 选择器的输入框填入文本（触发 input/change 事件）。需「工作区内修改」及以上权限。',
+            description: '向匹配 CSS 选择器的输入框填入文本（触发 input/change 事件）。需「每次询问」及以上权限。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -5092,7 +5109,7 @@ export function createAIPanel(options) {
         },
         browser_press_key: {
             name: 'browser_press_key',
-            description: '向页面上当前聚焦的元素派发一个按键事件（如 Enter）。需「工作区内修改」及以上权限。',
+            description: '向页面上当前聚焦的元素派发一个按键事件（如 Enter）。需「每次询问」及以上权限。',
             parameters: {
                 type: 'object',
                 properties: {key: {type: 'string', description: '按键名，如 Enter、Tab'}},
@@ -5149,13 +5166,13 @@ export function createAIPanel(options) {
         ];
         if (appControlOn()) list.push(AI_TOOL_DEFS.app_control);
         if (!planMode) list.push(AI_TOOL_DEFS.memory_write, AI_TOOL_DEFS.preference_write, AI_TOOL_DEFS.preference_remove, AI_TOOL_DEFS.env_create);
-        // 浏览器：read 档起可浏览（导航/快照/截图），edit 档起可操作页面，full 档可执行任意脚本
+        // 浏览器：read 档起可浏览（导航/快照/截图），写权限档起可操作页面，full 档可执行任意脚本
         list.push(
             AI_TOOL_DEFS.browser_navigate, AI_TOOL_DEFS.browser_back, AI_TOOL_DEFS.browser_forward,
             AI_TOOL_DEFS.browser_reload, AI_TOOL_DEFS.browser_snapshot, AI_TOOL_DEFS.browser_screenshot,
             AI_TOOL_DEFS.browser_close,
         );
-        if (scope === 'edit' || scope === 'full') {
+        if (AI_WRITE_SCOPES.includes(scope)) {
             list.push(AI_TOOL_DEFS.todo_write);
             if (!planMode) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file, AI_TOOL_DEFS.run_command);
             if (!planMode) list.push(AI_TOOL_DEFS.browser_click, AI_TOOL_DEFS.browser_type, AI_TOOL_DEFS.browser_press_key);
@@ -5293,6 +5310,43 @@ export function createAIPanel(options) {
         const key = aiPathKey(path);
         if ((config.approvedPaths || []).some((item) => aiPathKey(item) === key)) return true;
         return !!(session && (session.approvedPaths || []).some((item) => aiPathKey(item) === key));
+    }
+
+    // 终端命令的会话级放行只存内存：重启应用或重新加载对话后需要重新授权。
+    const commandApprovalRules = new Map();
+
+    function commandRulesFor(session) {
+        if (!session || !session.id) return [];
+        return commandApprovalRules.get(session.id) || [];
+    }
+
+    function addCommandApprovalRule(session, rule) {
+        if (!session || !session.id || !rule) return;
+        const cwdKey = aiPathKey(rule.cwd);
+        const command = rule.mode === 'exact' ? commandText(rule.command) : '';
+        const signature = rule.mode === 'family' ? String(rule.signature || '') : '';
+        if (rule.mode === 'exact' && !command) return;
+        if (rule.mode === 'family' && !signature) return;
+        const list = commandRulesFor(session);
+        const exists = list.some((item) => item.mode === rule.mode && item.cwdKey === cwdKey &&
+            (item.mode === 'exact' ? item.command === command : item.signature === signature));
+        if (exists) return;
+        list.push({
+            mode: rule.mode,
+            command,
+            signature,
+            cwdKey,
+            cwd: aiNormalizePath(rule.cwd),
+            createdAt: Date.now(),
+        });
+        if (list.length > 30) list.splice(0, list.length - 30);
+        commandApprovalRules.set(session.id, list);
+    }
+
+    function matchCommandApproval(session, command, cwd) {
+        const rules = commandRulesFor(session);
+        if (!rules.length) return null;
+        return matchCommandRule(rules, command, aiPathKey(cwd));
     }
 
     function diffLinesOf(text) {
@@ -5467,15 +5521,41 @@ export function createAIPanel(options) {
         pendingApprovals.delete(key);
         const approval = entry.approval;
         approval.state = approved ? 'approved' : 'denied';
-        approval.remember = remember || '';
-        if (approval.kind !== 'command') {
-            if (approved && remember === 'always') {
-                aiAddUnique(config.approvedPaths, approval.path);
-                saveAIConfig();
-                renderApprovedSettings();
-            } else if (approved && remember === 'session' && entry.session) {
-                aiAddUnique(entry.session.approvedPaths, approval.path);
+        approval.remember = typeof remember === 'string' ? remember : '';
+        if (approval.kind === 'command') {
+            approval.remember = '';
+            const wants = remember && typeof remember === 'object' ? remember : null;
+            if (approved && wants) {
+                const family = wants.family ? commandFamilySignature(approval.command) : null;
+                if (family) {
+                    addCommandApprovalRule(entry.session, {
+                        mode: 'family',
+                        signature: family.signature,
+                        cwd: approval.cwd,
+                    });
+                    approval.remember = 'family';
+                } else if (wants.exact) {
+                    addCommandApprovalRule(entry.session, {
+                        mode: 'exact',
+                        command: approval.command,
+                        cwd: approval.cwd,
+                    });
+                    approval.remember = 'session';
+                }
+            } else if (approved && remember === 'session') {
+                addCommandApprovalRule(entry.session, {
+                    mode: 'exact',
+                    command: approval.command,
+                    cwd: approval.cwd,
+                });
+                approval.remember = 'session';
             }
+        } else if (approved && remember === 'always') {
+            aiAddUnique(config.approvedPaths, approval.path);
+            saveAIConfig();
+            renderApprovedSettings();
+        } else if (approved && remember === 'session' && entry.session) {
+            aiAddUnique(entry.session.approvedPaths, approval.path);
         }
         toolMessage.status = 'running';
         toolMessage.content = approval.kind === 'command'
@@ -5840,8 +5920,21 @@ export function createAIPanel(options) {
         } catch (e) {}
     }
 
+    function isAutoWriteRisky(path) {
+        const rel = aiRelPath(getScopeRoot(), path).toLowerCase();
+        if (rel === 'agents.md' || rel.endsWith('/agents.md')) return true;
+        if (rel === '.git' || rel.startsWith('.git/') || rel.includes('/.git/')) return true;
+        if (rel === '.cadt' || rel.startsWith('.cadt/') || rel.includes('/.cadt/')) return true;
+        if (rel === '.agents' || rel.startsWith('.agents/') || rel.includes('/.agents/')) return true;
+        return false;
+    }
+
     async function applyWorkspaceWrite(session, toolMessage, info) {
-        const preApproved = currentScopeOf(session) === 'full' || isPathApproved(session, info.path);
+        const scope = currentScopeOf(session);
+        const dirty = isFileDirty(info.path);
+        const userApproved = scope === 'full' || isPathApproved(session, info.path);
+        const autoApproved = !userApproved && scope === 'auto' && !dirty && !isAutoWriteRisky(info.path);
+        const preApproved = userApproved || autoApproved;
         if (preApproved) {
             toolMessage.approval = {
                 state: 'approved',
@@ -5851,13 +5944,13 @@ export function createAIPanel(options) {
                 added: info.added,
                 removed: info.removed,
                 newFile: info.newFile,
-                dirty: isFileDirty(info.path),
+                dirty,
                 truncated: info.truncated,
                 diff: info.diff,
-                remember: 'pre',
+                remember: userApproved ? 'pre' : 'auto',
             };
             toolMessage.status = 'running';
-            toolMessage.content = '已授权，正在应用更改…';
+            toolMessage.content = autoApproved ? '自动审批已放行，正在应用更改…' : '已授权，正在应用更改…';
             refreshToolWrap(session, toolMessage);
         } else {
             const decision = await requestApproval(session, toolMessage, info);
@@ -6361,13 +6454,36 @@ export function createAIPanel(options) {
                 if (!backend.AIRunShellCommand) throw new Error('当前版本不支持执行命令');
                 const cwd = aiResolveScopePath(aiTextOf(input.cwd).trim() || '.', ctx.session);
                 const timeoutMs = aiClampInt(input.timeoutMs, 1000, 120000, 30000);
-                const preApproved = currentScopeOf(ctx.session) === 'full';
+                const scope = currentScopeOf(ctx.session);
+                const preApproved = scope === 'full';
                 if (!preApproved) {
-                    const decision = await requestCommandApproval(ctx.session, ctx.toolMessage, {command, cwd});
-                    if (!decision.approved) {
-                        return decision.cancelled
-                            ? '用户已停止生成，命令未执行。'
-                            : '用户取消了本次命令，未执行。';
+                    const sessionRule = matchCommandApproval(ctx.session, command, cwd);
+                    const autoSafe = !sessionRule && scope === 'auto' && commandFamilySignature(command);
+                    const rule = sessionRule || (autoSafe ? {mode: 'auto'} : null);
+                    if (rule) {
+                        ctx.toolMessage.approval = {
+                            state: 'approved',
+                            kind: 'command',
+                            tool: 'run_command',
+                            command,
+                            cwd,
+                            remember: 'pre',
+                            autoRule: rule.mode,
+                        };
+                        ctx.toolMessage.status = 'running';
+                        ctx.toolMessage.content = rule.mode === 'family'
+                            ? '已按本会话同类命令授权，正在执行…'
+                            : (rule.mode === 'auto'
+                                ? '自动审批已放行，正在执行…'
+                                : '已按本会话相同命令授权，正在执行…');
+                        refreshToolWrap(ctx.session, ctx.toolMessage);
+                    } else {
+                        const decision = await requestCommandApproval(ctx.session, ctx.toolMessage, {command, cwd});
+                        if (!decision.approved) {
+                            return decision.cancelled
+                                ? '用户已停止生成，命令未执行。'
+                                : '用户取消了本次命令，未执行。';
+                        }
                     }
                 }
                 ctx.toolMessage.status = 'running';
@@ -6408,14 +6524,18 @@ export function createAIPanel(options) {
     }
 
     function workspaceRulesText(scope, planMode) {
-        if (scope !== 'read' && scope !== 'edit' && scope !== 'full') return '';
+        if (!AI_SCOPES.includes(scope)) return '';
         const root = getScopeRoot() || '';
         const full = scope === 'full';
+        const auto = scope === 'auto';
+        const canWrite = AI_WRITE_SCOPES.includes(scope);
         const scopeText = scope === 'edit'
-            ? '编辑档：可读取工作区、写入持久记忆，并通过 write_file / edit_file 修改工作区文件，可用 run_command 执行命令（每条命令先经用户审批）。工作区写操作会先显示 diff 并由用户审批；已授权文件除外。'
-            : (full
-                ? '完全权限：可读取与修改工作区内外文件，写操作与终端命令不再请求审批。请严格按用户意图操作，避免破坏性改动。'
-                : '读取档：可列目录、读文件、搜索文本、联网检索、读写持久记忆；不要尝试修改工作区文件或执行命令。');
+            ? '每次询问：可读取工作区、写入持久记忆，并通过 write_file / edit_file 修改工作区文件，可用 run_command 执行命令（工作区写操作先显示 diff、每条命令先请求审批）。'
+            : auto
+                ? '自动审批：可读取与修改工作区文件、执行命令；工作区写操作自动应用（目标文件有未保存修改时仍请求确认），白名单内的低风险命令自动执行，其他命令逐条审批。'
+                : full
+                    ? '完全权限：可读取与修改工作区内外文件，写操作与终端命令不再请求审批。请严格按用户意图操作，避免破坏性改动。'
+                    : '只读访问：可列目录、读文件、搜索文本、联网检索、读写持久记忆；不要尝试修改工作区文件或执行命令。';
         const lines = [
             '<workspace_rules>',
             '范围根：' + (root ? aiDisplayRootLabel(root) + '（工具路径相对此根）' : '（未打开工作区）'),
@@ -6444,7 +6564,7 @@ export function createAIPanel(options) {
             ] : [
                 '- 复杂的多步实现类任务可调用 plan_mode(true) 进入计划模式，先只读探索并给出计划，批准后再执行；简单问题不要进入。',
             ]),
-            ...(scope === 'edit' || full ? [
+            ...(canWrite ? [
                 ...(planMode ? [] : [
                     '- 修改文件前必须先 read_file 确认内容；不要凭记忆构造 oldString。',
                     '- edit_file 的 oldString 必须逐字复制且只出现一次；多处命中时请扩大上下文使其唯一，未命中时重新读取文件。',
@@ -6453,7 +6573,8 @@ export function createAIPanel(options) {
                 ]),
                 '- 多步任务先用 todo_write 规划，并在每完成一步后更新任务状态。',
                 ...(full && !planMode ? ['- 完全权限下没有审批兜底（含终端命令）：破坏性操作前先向用户说明。'] : []),
-                ...(scope === 'edit' && !planMode ? ['- 写操作被用户放弃时，按用户意图调整方案，不要重复发起同一改动。'] : []),
+                ...(!full && !planMode ? ['- 写操作被用户放弃时，按用户意图调整方案，不要重复发起同一改动。'] : []),
+                ...(auto && !planMode ? ['- 自动审批档：工作区写操作会自动应用，但目标文件有未保存修改时会转为逐次确认；终端命令只有白名单内的低风险命令自动执行，其余会请求确认。'] : []),
             ] : []),
             '</workspace_rules>',
         ];
@@ -6670,7 +6791,7 @@ export function createAIPanel(options) {
 
     function currentScopeOf(session) {
         const scope = session && session.scope;
-        return ['read', 'edit', 'full'].includes(scope) ? scope : 'read';
+        return AI_SCOPES.includes(scope) ? scope : 'read';
     }
 
     // ---------- 流式对话 ----------
@@ -7432,8 +7553,16 @@ export function createAIPanel(options) {
 
     function scopeLabel(scope) {
         if (scope === 'full') return '完全权限';
-        if (scope === 'edit') return '工作区内修改';
-        return '仅可查看';
+        if (scope === 'auto') return '自动审批';
+        if (scope === 'edit') return '每次询问';
+        return '只读访问';
+    }
+
+    function scopeDescription(scope) {
+        if (scope === 'full') return '不再询问，可自由访问你的文件、终端和网络';
+        if (scope === 'auto') return '仅在检测到潜在风险时询问';
+        if (scope === 'edit') return '执行命令、修改工作区文件前，始终询问';
+        return '只能查看文件与页面，不执行修改';
     }
 
     function updateScopeUI() {
@@ -7442,8 +7571,8 @@ export function createAIPanel(options) {
             const scope = currentScope();
             el.permission.textContent = scopeLabel(scope);
             const root = getScopeRoot() || '';
-            el.permission.title = '权限：' + scopeLabel(scope) + '\n' + (root ? '范围根：' + root : '未打开工作区');
-            el.permission.classList.toggle('active', scope === 'full');
+            el.permission.title = '权限：' + scopeLabel(scope) + '（' + scopeDescription(scope) + '）\n' + (root ? '范围根：' + root : '未打开工作区');
+            el.permission.classList.toggle('active', scope === 'auto' || scope === 'full');
         }
         if (el.plan) {
             const plan = !!(session && session.planMode);
@@ -7468,7 +7597,11 @@ export function createAIPanel(options) {
         }
         if (scope === 'edit' && !editHintShown.has(session.id)) {
             editHintShown.add(session.id);
-            flash('已切换为「工作区内修改」：AI 写文件前会显示 diff、执行命令前会请求确认');
+            flash('已切换为「每次询问」：AI 写文件前会显示 diff、执行命令前会请求确认');
+        }
+        if (scope === 'auto' && !editHintShown.has('auto-' + session.id)) {
+            editHintShown.add('auto-' + session.id);
+            flash('已启用「自动审批」：工作区写操作自动应用，低风险命令自动执行，风险操作仍会询问');
         }
         if (scope === 'full' && !editHintShown.has('full-' + session.id)) {
             editHintShown.add('full-' + session.id);
@@ -7477,30 +7610,46 @@ export function createAIPanel(options) {
     }
 
     function confirmFullPermission(onConfirm) {
-        const warning = dialogNode('div', 'ai-dialog-hint',
-            '启用完全权限后，AI 可以直接修改文件、在终端执行命令且不再逐次审批，并且可以访问工作区外路径。仅建议在你信任当前任务时使用。');
-        warning.style.color = 'var(--red)';
-        const label = document.createElement('label');
-        label.className = 'ai-dialog-hint';
-        label.style.display = 'flex';
-        label.style.alignItems = 'center';
-        label.style.gap = '6px';
-        const check = document.createElement('input');
-        check.type = 'checkbox';
-        label.append(check, document.createTextNode('我已了解风险，并愿意继续'));
+        const intro = dialogNode('div', 'ai-perm-intro',
+            '开启后，AI 可以在当前设备上直接执行高权限操作，包括文件处理、命令执行和联网访问。主要范围包括：');
+        const list = dialogNode('div', 'ai-perm-list');
+        const rows = [
+            {icon: 'folder', title: '文件和文件夹', desc: '查看、新建、更新、上传或移除设备上的文件与文件夹'},
+            {icon: 'terminal', title: '终端命令', desc: '执行终端命令、安装依赖，并调整必要的系统配置'},
+            {icon: 'globe', title: '互联网和已连接的应用', desc: '打开网页、传输数据，并调用你已启用的插件或连接应用'},
+        ];
+        for (const item of rows) {
+            const row = dialogNode('div', 'ai-perm-row');
+            const icon = dialogNode('span', 'ai-perm-row-icon');
+            icon.innerHTML = iconSvg(item.icon, 18);
+            const text = dialogNode('div', 'ai-perm-row-text');
+            text.append(
+                dialogNode('div', 'ai-perm-row-title', item.title),
+                dialogNode('div', 'ai-perm-row-desc', item.desc),
+            );
+            row.append(icon, text);
+            list.appendChild(row);
+        }
+        const note = dialogNode('div', 'ai-perm-note',
+            '请只在信任当前任务和上下文时开启；该权限可能增加敏感数据暴露、误操作或提示注入风险，可随时关闭。');
         const cancel = dialogButton('取消', 'dlg-btn', closeAIDialog);
-        const enable = dialogButton('启用完全权限', 'dlg-btn primary', () => {
-            if (!check.checked) return;
+        const enable = dialogButton('确认', 'dlg-btn danger', () => {
             closeAIDialog();
             onConfirm();
         });
-        enable.disabled = true;
-        check.addEventListener('change', () => { enable.disabled = !check.checked; });
-        openAIDialog('确认启用完全权限？', [warning, label], [cancel, enable]);
+        openAIDialog('允许 AI 使用完全权限？', [intro, list, note], [cancel, enable]);
+        el.dialog.classList.add('ai-permission-dialog');
+        if (el.dialogTitle) {
+            el.dialogTitle.textContent = '';
+            const icon = document.createElement('i');
+            icon.className = 'ai-dialog-title-icon';
+            icon.innerHTML = iconSvg('warn', 15);
+            el.dialogTitle.append(icon, document.createTextNode('允许 AI 使用完全权限？'));
+        }
     }
 
     function setScope(scope) {
-        if (!['read', 'edit', 'full'].includes(scope)) return;
+        if (!AI_SCOPES.includes(scope)) return;
         const session = currentSession();
         if (!session) return;
         if (scope === 'full') {
@@ -7551,11 +7700,15 @@ export function createAIPanel(options) {
         if (!el.permission || !showContextMenu) return;
         const rect = el.permission.getBoundingClientRect();
         const scope = currentScope();
-        showContextMenu([
-            {label: '仅可查看', checked: scope === 'read', action: () => setScope('read')},
-            {label: '工作区内修改', checked: scope === 'edit', action: () => setScope('edit')},
-            {label: '完全权限', checked: scope === 'full', action: () => setScope('full')},
-        ], rect.left, rect.top - 104);
+        const items = AI_SCOPES.map((value) => ({
+            label: scopeLabel(value),
+            description: scopeDescription(value),
+            icon: value === 'read' ? 'eye' : (value === 'edit' ? 'shield' : (value === 'auto' ? 'zap' : 'warn')),
+            selected: scope === value,
+            danger: value === 'full',
+            action: () => setScope(value),
+        }));
+        showContextMenu(items, rect.left, rect.top - 280);
     }
 
     function reasoningLevelOf(profile) {
@@ -8408,6 +8561,7 @@ export function createAIPanel(options) {
         }
         askConfirm('删除会话「' + (session.title || '新会话') + '」及其全部消息？', () => {
             sessions = sessions.filter((s) => s.id !== session.id);
+            commandApprovalRules.delete(session.id);
             clearQueueForSession(session.id);
             if (!sessions.length) sessions.push(createSessionData());
             const next = sessions[Math.max(0, Math.min(sessions.length - 1, 0))];
@@ -8753,6 +8907,7 @@ export function createAIPanel(options) {
 
     function openAIDialog(title, bodyNodes, footerNodes) {
         if (!el.dialog) return;
+        el.dialog.classList.remove('ai-permission-dialog');
         if (el.dialogTitle) el.dialogTitle.textContent = title || '';
         if (el.dialogBody) {
             el.dialogBody.innerHTML = '';
@@ -8767,6 +8922,7 @@ export function createAIPanel(options) {
 
     function closeAIDialog() {
         if (!el.dialog) return;
+        el.dialog.classList.remove('ai-permission-dialog');
         el.dialog.classList.add('hidden');
         if (el.dialogBody) el.dialogBody.innerHTML = '';
         if (el.dialogFoot) el.dialogFoot.innerHTML = '';
@@ -9573,6 +9729,7 @@ export function createAIPanel(options) {
         if (!session) return;
         askConfirm('清空当前会话的全部消息？', () => {
             session.messages = [];
+            commandApprovalRules.delete(session.id);
             session.summary = null;
             session.archived = [];
             archivedFlowOpen.delete(session.id);
@@ -10845,6 +11002,7 @@ export function createAIPanel(options) {
         if (opt.clearSessions) opt.clearSessions.addEventListener('click', () => {
             askConfirm('清空全部 AI 会话（含消息、任务清单与变更记录）？', () => {
                 sessions = [createSessionData()];
+                commandApprovalRules.clear();
                 messageQueue.length = 0;
                 config.activeSessionId = sessions[0].id;
                 if (sessionUseDisk()) {
@@ -11219,6 +11377,7 @@ export function createAIPanel(options) {
         const toolMessage = entry.toolMessage;
         const approval = entry.approval;
         const isCommand = approval.kind === 'command';
+        const commandFamily = isCommand ? commandFamilySignature(approval.command) : null;
         el.takeover.dataset.takeoverKey = 'approval:' + (toolMessage.toolCallId || '');
         el.takeover.textContent = '';
         const card = document.createElement('div');
@@ -11277,6 +11436,12 @@ export function createAIPanel(options) {
             line.className = 'ai-command-line ai-command-line-fill';
             line.textContent = approval.command || '';
             body.appendChild(line);
+            const note = document.createElement('div');
+            note.className = 'ai-approval-more';
+            note.textContent = commandFamily
+                ? '命令将在工作目录中执行；同类命令授权仅本次对话，且不含管道、重定向或命令串联。'
+                : '命令将在工作目录中执行；授权仅本次对话。';
+            body.appendChild(note);
         } else if (approval.diff && approval.diff.length) {
             renderDiffInto(body, approval);
             if (approval.truncated) {
@@ -11298,6 +11463,7 @@ export function createAIPanel(options) {
         options.className = 'ai-approval-remember';
         let alwaysBox = null;
         let sessionBox = null;
+        let familyBox = null;
         if (!isCommand) {
             const sessionLabel = document.createElement('label');
             sessionBox = document.createElement('input');
@@ -11310,14 +11476,33 @@ export function createAIPanel(options) {
             options.append(sessionLabel, alwaysLabel);
             foot.appendChild(options);
         } else {
-            const hint = document.createElement('span');
-            hint.className = 'ai-takeover-hint';
-            hint.textContent = '命令将在工作目录中执行';
-            foot.appendChild(hint);
+            const exactLabel = document.createElement('label');
+            exactLabel.title = '相同命令 + 相同工作目录才自动执行；授权仅本次对话';
+            sessionBox = document.createElement('input');
+            sessionBox.type = 'checkbox';
+            sessionBox.dataset.aiCommandRemember = 'exact';
+            exactLabel.append(sessionBox, document.createTextNode(' 本会话允许相同命令'));
+            options.appendChild(exactLabel);
+            if (commandFamily) {
+                const familyLabel = document.createElement('label');
+                familyLabel.title = '同类命令：' + commandFamily.signature + '（同目录；不含管道、重定向或命令串联）';
+                familyBox = document.createElement('input');
+                familyBox.type = 'checkbox';
+                familyBox.dataset.aiCommandRemember = 'family';
+                familyLabel.append(familyBox, document.createTextNode(' 本会话允许同类命令（' + commandFamily.signature + '）'));
+                options.appendChild(familyLabel);
+            }
+            foot.appendChild(options);
         }
         const actions = document.createElement('div');
         actions.className = 'ai-approval-actions';
-        const readRemember = () => (alwaysBox && alwaysBox.checked ? 'always' : (sessionBox && sessionBox.checked ? 'session' : ''));
+        const readRemember = () => {
+            if (!isCommand) return alwaysBox && alwaysBox.checked ? 'always' : (sessionBox && sessionBox.checked ? 'session' : '');
+            return {
+                exact: !!(sessionBox && sessionBox.checked),
+                family: !!(familyBox && familyBox.checked),
+            };
+        };
         const deny = document.createElement('button');
         deny.type = 'button';
         deny.className = 'dlg-btn';
@@ -11661,12 +11846,12 @@ export function createAIPanel(options) {
         foot.className = 'ai-takeover-foot';
         const hint = document.createElement('span');
         hint.className = 'ai-takeover-hint';
-        hint.textContent = currentScopeOf(session) === 'read' ? '执行计划前请切换到编辑权限' : '批准后开始执行';
+        hint.textContent = currentScopeOf(session) === 'read' ? '执行计划前请切换到「每次询问」或更高权限' : '批准后开始执行';
         if (currentScopeOf(session) === 'read') {
             const permission = document.createElement('button');
             permission.type = 'button';
             permission.className = 'dlg-btn';
-            permission.textContent = '切换编辑权限';
+            permission.textContent = '切换到每次询问';
             permission.addEventListener('click', () => {
                 setScope('edit');
                 updateComposerTakeover(true);

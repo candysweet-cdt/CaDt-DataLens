@@ -8,7 +8,7 @@
 
 ## 0. 背景与目标
 
-v1 已交付：单流 Agent 循环（15 轮）、15 个工具、三档权限、写审批、计划模式、上下文压缩、图片附件、记忆/技能、app_control 应用操作桥。
+v1 已交付：单流 Agent 循环（15 轮）、15 个工具、四档权限（只读访问 / 每次询问 / 自动审批 / 完全权限）、写审批、计划模式、上下文压缩、图片附件、记忆/技能、app_control 应用操作桥。
 
 v2 补齐三类「harness 级」能力：
 
@@ -41,7 +41,7 @@ v2 补齐三类「harness 级」能力：
 ### 1.3 工具与权限（ai-panel.js:3285 AI_TOOL_DEFS / 3480 toolsForScope）
 
 - 现有 32 工具：list_dir、read_file、search_text、web_search、web_fetch、memory_list、memory_read、memory_write、preference_list、preference_write、preference_remove、skill_use、plan_mode、ask_user、app_control、env_list、env_create、todo_write、write_file、edit_file、run_command，另有 browser_* 11 个（navigate / back / forward / reload / snapshot / screenshot / click / type / press_key / evaluate / close）。
-- 三档：对话（仅 skill_use 可交互）/ 读取 / 编辑；planMode 收走 memory_write、preference_write、preference_remove、write_file、edit_file、run_command。
+- 四档：只读访问 / 每次询问 / 自动审批 / 完全权限；planMode 收走 memory_write、preference_write、preference_remove、write_file、edit_file、run_command。
 - `run_command`（ai-panel.js:4889，schema 3692）：edit 档逐条审批（requestCommandApproval）、full 档免审批；后端 `AIRunShellCommand`（ai_command_windows.go:51）→ `RunCommandSync`（commands.go:74）同步执行，shell 优先级 Git Bash → pwsh → Windows PowerShell → cmd，超时不算错误（TimedOut=true + 已捕获输出）。**输出经两层上限**：后端 `commandOutputCap` 8 MB（commands.go:27，超限写入 `…输出超过 8 MB 上限，已截断…`），前端 `clip` 再把 stdout/stderr 各截到 **16000 字符**（附 `…（输出已截断）`）——模型实际最多看到约 32 KB 文本。
 
 ### 1.4 进程桥与终端（commands.go / terminal_windows.go）

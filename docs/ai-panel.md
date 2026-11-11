@@ -1,6 +1,6 @@
 # AI 助手面板 v1 方案（Agent 全套 · 计划，待批准后实施）
 
-> 状态：**已实施（批次 1–6 完成）+ 2026-11-10 UI 改版（精简发送区 / 权限三档 / 独立悬浮窗 / 模型设置页 / 轮次计时与过程折叠 / 会话管理迁左侧边栏）+ 2026-11-10 Agent 能力补齐（会话归档 / 内置技能 / 通知 / AskQuestion / Plan 模式 / 消息排队与插话 / composer 接管 / 状态栏 AI 宽度）+ 2026-11-11 头部新建会话按钮与空会话新建去重 + 2026-11-11 AskQuestion 改版（跳过按钮 / 自己输入项默认开 / 多选勾选框）+ 2026-11-11 用户偏好（设置列表 + preference_* 工具 + 上下文注入）+ 2026-11-11 联网检索（web_search / web_fetch + web-research 技能）+ 2026-11-11 工作区上下文自动注入（打开文件 / 光标 / 选区）+ 2026-11-11 排队消息可编辑 + 2026-11-11 上下文注入细粒度开关与独立设置页** · 拟定日期：2026-11-10（v9 修订：斜杠命令与上下文管理——/context /compact /clear /model 等 + 上下文窗口配置）
+> 状态：**已实施（批次 1–6 完成）+ 2026-11-10 UI 改版（精简发送区 / 权限四档 / 独立悬浮窗 / 模型设置页 / 轮次计时与过程折叠 / 会话管理迁左侧边栏）+ 2026-11-10 Agent 能力补齐（会话归档 / 内置技能 / 通知 / AskQuestion / Plan 模式 / 消息排队与插话 / composer 接管 / 状态栏 AI 宽度）+ 2026-11-11 头部新建会话按钮与空会话新建去重 + 2026-11-11 AskQuestion 改版（跳过按钮 / 自己输入项默认开 / 多选勾选框）+ 2026-11-11 用户偏好（设置列表 + preference_* 工具 + 上下文注入）+ 2026-11-11 联网检索（web_search / web_fetch + web-research 技能）+ 2026-11-11 工作区上下文自动注入（打开文件 / 光标 / 选区）+ 2026-11-11 排队消息可编辑 + 2026-11-11 上下文注入细粒度开关与独立设置页** · 拟定日期：2026-11-10（v9 修订：斜杠命令与上下文管理——/context /compact /clear /model 等 + 上下文窗口配置）
 > 定位：IDEA / Qoder 式**右侧 AI 助手面板**：多会话流式聊天 + **思考链流式显示**（R1 类 reasoning / Claude thinking）+ **Agent 能力**（范围模式 / 工具调用 / 写操作审批 / Todolist / 变更记录）+ **提示词系统**（预设模板 / 会话临时改 / 上下文与 AGENTS.md 自动注入）+ **记忆系统**（双模式持久记忆）+ **技能系统**（SKILL.md 双目录 + skill_use）+ **多配置 Profile** + **三种显示方式**（停靠 / 吸附 / 悬浮）+ **斜杠命令与上下文管理**（/compact 压缩、/context 统计）。
 > API 由用户自配，协议：**OpenAI 兼容 + Anthropic 原生**。
 > 安全原则：API Key 只存前端 localStorage、不落 Go 磁盘、不进日志；工作区文件写操作全部经用户审批。
@@ -10,8 +10,8 @@
 ## 0. 2026-11-10 UI 改版
 
 - 显示方式：停靠 / 全屏（仅覆盖文件内容区）/ 悬浮（独立进程窗口，可移动到其他屏幕）。
-- 发送区：`+` 菜单附加文件/技能/指令；权限胶囊（仅可查看 / 工作区内修改 / 完全权限，完全权限二次确认）；模型胶囊（切换配置与推理等级）；圆形发送/停止按钮。
-- 权限：完全权限对工作区内写操作自动应用，并允许工作区外绝对路径；工作区内修改仍需逐次审批。
+- 发送区：`+` 菜单附加文件/技能/指令；权限胶囊（只读访问 / 每次询问 / 自动审批 / 完全权限，完全权限二次确认）；模型胶囊（切换配置与推理等级）；圆形发送/停止按钮。
+- 权限：只读访问仅提供读取工具；每次询问对所有工作区写操作与命令逐次审批；自动审批自动应用工作区写操作（目标文件有未保存修改时仍询问），并自动执行白名单内的低风险命令，其余命令仍审批；完全权限对工作区内写操作与命令免审批，并允许工作区外绝对路径。
 - 设置：新增「模型」页，承载 Profile / API / 模型 / 上下文窗口 / 思考等级 / 代理 / 自定义头 / 预设 / 导入导出；已配置模型以卡片列表展示，新建/编辑使用独立三级弹层（保存生效、取消回滚、支持复制/删除/设为当前）；「AI 助手」页保留记忆、提示词、审批与聊天行为；新增「用户偏好」页承载偏好的筛选与增删改查。「模型」「AI 助手」「用户偏好」在设置导航中归入可折叠的「AI」组（与「数据格式」同构）。
 - 弹层：从设置内打开确认框/命名框时，设置弹层保持可见，关闭确认框后回到设置；终端标签页关闭图标按 SVG 子元素命中修复；独立调试控制台关闭走 `runtime.Quit`/`ForceClose`。
 - 悬浮窗内的设置入口经单实例 IPC 转发到主窗口；主窗口未运行时启动主窗口并直接打开对应设置页。
@@ -29,8 +29,8 @@
 - 内置技能：随包内置 `code-review`（只读代码审查）、`json-toolkit`（JSON/JSONL/YAML/TOML/CSV 校验与修改）、`release-notes`（更新日志/发布说明）、`cadt-datalens`（命令行打开文件/跳转行:列）、`cadt-ui`（app_control 动作表）、`web-research`（联网检索）、`docx` / `pdf`（文档处理）、`skill-creator`（技能创作）、`plugin-creator`（插件开发）十个技能；技能列表、`/skill`、`skill_use` 与技能管理统一可见，支持启用/禁用；同名用户技能优先覆盖内置。
 - 通知：任务完成、任务失败、AI 提问时显示应用内 toast（可点击跳到对应会话）；窗口失焦时应用内通道还会让任务栏闪烁并可播放提示音；系统级 Windows Toast 独立开关。设置 → AI 助手 → 通知可分别开关应用内通知、系统通知、完成/失败/提问事件与失焦提醒。
 - AskQuestion：新增 `ask_user` 工具，一次最多 5 个问题；每题可单选或多选（多选题选项前带勾选框图标），可标记推荐项；面板默认在选项后追加一个「自己输入」项（`allow_custom=false` 时才关闭，默认开）。接管卡底部为「跳过」+「提交/继续」（原「停止本轮」已移除）：点「跳过」不回答问题但不中断本轮，以 `skipped` 状态把「用户选择不回答」作为工具结果交回模型，卡片显示「已跳过」。提问和计划批准会接管底部 composer（不再插入消息流），回答后恢复输入框并在转录中保留只读问答记录。设置项：超时时长（不超时/30 秒/1 分钟/5 分钟/10 分钟/30 分钟）与超时处理（按 AI 推荐项继续 / 继续阻塞等待 / 直接停止本轮 / 交给 AI 决定）。超时停止会结束本轮；超时继续会把结果作为工具结果交回模型。`ask_user` 另支持逐次覆盖超时：可选参数 `timeoutSec`（秒，`0` = 本次不限时，范围 0–3600）与 `timeoutAction`（`recommended` / `wait` / `abort` / `ai_decide`），只影响本次提问，不写回设置；两者省略时沿用设置。实现见 `resolveAskTimeout`（ai-panel.js），实际生效值记录在 `ask.timeoutSec` / `ask.timeoutAction`；本次为定制时 `ask.timeoutCustom` 为 true，composer 倒计时会附加「（本次自定义 N 秒）」。
-- Plan 模式：composer 新增「计划」胶囊，`/plan` 进入、`/plan off` 退出，`/plan <指令>` 进入并直接开始规划；计划模式下不提供 `write_file` / `edit_file`，提示词要求只读探索并输出 Markdown 计划。计划完成后在底部 composer 接管处显示计划预览与「继续规划 / 执行计划」；执行时自动退出计划模式并发送批准指令；仅可查看权限下会提示先切换编辑权限。计划模式状态随会话持久化。
-- 用户偏好：设置 → AI →「用户偏好」独立页（可筛选搜索），可手动添加、编辑、删除（每条 ≤500 字，上限 100 条，重复文本拦截）；每条带来源标记（你 / AI）与条数统计。偏好存在 `datalens-ai.preferences[]`，每轮对话注入 `<user_preferences>` 块（在任务目标与安全规则下优先遵循）。新增 `preference_list` / `preference_write` / `preference_remove` 工具：读取档即可用、免审批、计划模式不可用；改/删按 id（`preference_write` 带 id 即修改），写入即时刷新设置列表；随 AI 配置导出 / 导入。
+- Plan 模式：composer 新增「计划」胶囊，`/plan` 进入、`/plan off` 退出，`/plan <指令>` 进入并直接开始规划；计划模式下不提供 `write_file` / `edit_file`，提示词要求只读探索并输出 Markdown 计划。计划完成后在底部 composer 接管处显示计划预览与「继续规划 / 执行计划」；执行时自动退出计划模式并发送批准指令；只读访问权限下会提示先切换到「每次询问」或更高权限。计划模式状态随会话持久化。
+- 用户偏好：设置 → AI →「用户偏好」独立页（可筛选搜索），可手动添加、编辑、删除（每条 ≤500 字，上限 100 条，重复文本拦截）；每条带来源标记（你 / AI）与条数统计。偏好存在 `datalens-ai.preferences[]`，每轮对话注入 `<user_preferences>` 块（在任务目标与安全规则下优先遵循）。新增 `preference_list` / `preference_write` / `preference_remove` 工具：只读访问即可用、免审批、计划模式不可用；改/删按 id（`preference_write` 带 id 即修改），写入即时刷新设置列表；随 AI 配置导出 / 导入。
 - 底部 composer：改为带圆角/阴影的浮动面板；队列、附件和输入框都在面板内。提问/计划批准会临时替换面板内容，回答或决定后恢复。
 - 消息排队与插话：生成中 Enter 把消息加入排队（面板内可见、可编辑/移除/插话），本轮结束后自动发送；Ctrl+Enter 立即插话（停止当前回复并把该消息排到队首）；普通停止不自动清空队列。队列「编辑」会把该条及其附件取回输入区；若输入区已有草稿，草稿自动放回队尾。
 - AI 内容宽度：状态栏「AI 宽度」按钮（和 Markdown 预览宽度一样使用状态栏弹出菜单）；停靠与全屏模式均显示，选项自动（默认，< 920px 跟随、≥ 920px 最大 920px）/ 720 / 860 / 920 / 1100 / 1300 / 跟随。
@@ -277,17 +277,17 @@ runTurn(session, userMsg):
 | `preference_list()` | 读取 AI 配置 `preferences[]`（id + 文本 + 来源） | 读取+ | 免 |
 | `preference_write(text, id?)` | 新增；带 id 即修改该条（≤500 字符，上限 100 条，重复文本去重），即时刷新设置列表 | 读取+（计划模式不可用） | 免 |
 | `preference_remove(id?, text?)` | 按 id 或内容精确匹配删除 | 读取+（计划模式不可用） | 免 |
-| `skill_use(name)` | 在 rank 100–600 的扫描根中取胜出技能，读取 `<name>/SKILL.md` 或 `<name>.md`（≤64KB），结果 = 全文 + 「遵循该技能指令」 | **三档通用**（唯一例外，见 §16） | 免（显示加载卡片） |
+| `skill_use(name)` | 在 rank 100–600 的扫描根中取胜出技能，读取 `<name>/SKILL.md` 或 `<name>.md`（≤64KB），结果 = 全文 + 「遵循该技能指令」 | **四档通用**（唯一例外，见 §16） | 免（显示加载卡片） |
 | `write_file(path, content)` | `SaveFile(path, content, '', false, 'utf-8')`（新建文件） | 编辑 | **是** |
 | `edit_file(path, oldString, newString)` | `OpenFile` → 唯一性校验（多处命中=错误回给模型）→ 替换 → `SaveFile` **保留原 eol/bom/enc** | 编辑 | **是** |
 | `todo_write(todos[])` | 纯前端状态 → §11 | 编辑 | 免 |
-| `run_command(command, cwd?, timeoutMs?)` | 后端 `AIRunShellCommand`：shell 优先级 **Git Bash → PowerShell 7 → Windows PowerShell → cmd**；默认 30s、上限 120s；stdout/stderr 各截断 16KB | 编辑 / 完全权限（计划模式不可用） | 编辑档**是**（逐条，命令 + cwd）；完全权限免 |
+| `run_command(command, cwd?, timeoutMs?)` | 后端 `AIRunShellCommand`：shell 优先级 **Git Bash → PowerShell 7 → Windows PowerShell → cmd**；默认 30s、上限 120s；stdout/stderr 各截断 16KB | 每次询问 / 自动审批 / 完全权限（计划模式不可用） | 每次询问**是**（逐条，命令 + cwd；可勾选本会话相同/同类命令放行）；自动审批仅风险命令**是**；完全权限免 |
 
 > AI 改写不再按目标文件的 512KB 设硬限制：`edit_file` / `write_file` 可处理到应用读取上限（>10MB 视为大文件，仍不可读写）；超过 4000 行时 diff 自动降级为公共前缀 / 后缀 + 中间变更块，审批预览最多 40 行。单次写入内容仍上限 256KB，大文件用 `edit_file` 做局部替换。
 >
 > `web_search` / `web_fetch` 由 Go 后端 `webtools.go` 执行（跟随系统代理、25s 超时、响应上限 4MB）；只允许 http/https 公网地址（解析到回环 / 内网 / 链路本地 / 保留地址即拒绝），抓取内容按不可信外部数据处理、不执行页面脚本，也不需要额外 API Key。
 >
-> memory 工具在**读取档即可用**（记忆是 AI 的工作笔记而非用户数据）；写入免审批但每次显示卡片，可追溯。`skill_use` 三档通用（只读知识加载零副作用），是「对话档无工具」原则的唯一例外。`preference_*` 操作设置页的「用户偏好」列表（存于 AI 配置），同样读取档可用、免审批，删除即时生效。
+> memory 工具在**只读访问即可用**（记忆是 AI 的工作笔记而非用户数据）；写入免审批但每次显示卡片，可追溯。`skill_use` 四档通用（只读知识加载零副作用），是只读档工具集的唯一例外。`preference_*` 操作设置页的「用户偏好」列表（存于 AI 配置），同样只读访问可用、免审批，删除即时生效。
 
 **范围安全**（工作区工具执行前）：路径相对 scopeRoot 解析，归一后校验仍在 scopeRoot 内；越界直接返回工具结果「路径超出工作区范围」由模型自行调整。memory/skills 目录独立于范围检查（专用目录 + 文件名白名单兜底）。symlink 逃逸风险见 §21。
 
@@ -297,7 +297,11 @@ runTurn(session, userMsg):
 
 ## 9. 审批流（工作区写操作）
 
-0. AI 发起 `run_command`（仅编辑档）→ 插入命令审批卡片：显示完整命令与工作目录，按钮 **执行 / 放弃**；完全权限档直接执行。工具结果返回 shell 名称、退出码、stdout/stderr、耗时；超时标记「已终止」并保留已捕获输出。命令卡默认收起为一行「run_command + 命令 + 状态」，点击展开完整输出，输出区带独立背景色。
+0. AI 发起 `run_command`（每次询问 / 自动审批档）→ 插入命令审批卡片：显示完整命令与工作目录，按钮 **执行 / 放弃**；自动审批档白名单命令直接执行，完全权限档直接执行。工具结果返回 shell 名称、退出码、stdout/stderr、耗时；超时标记「已终止」并保留已捕获输出。命令卡默认收起为一行「run_command + 命令 + 状态」，点击展开完整输出，输出区带独立背景色。
+   - **本会话允许相同命令**：完整命令字符串 + cwd（规范化后）完全一致才自动执行。
+   - **本会话允许同类命令**：仅对白名单开发命令显示，签名 = 可执行文件 + 子命令（如 `git status`、`go test`、`npm run build`）；要求同 cwd、单条简单命令（无管道、重定向、命令串联、`$()`/反引号），并排除危险参数（`-exec`、`--output`、`-o`、`--prefix`、`-C` 等）。
+   - 授权只存内存 `Map<sessionId, rules>`，不写会话 JSONL/meta；重启应用、重新加载对话或清空会话即失效。解释器（`powershell`/`pwsh`/`cmd`/`bash`/`python`/`node` 等）与 `rm`/`cat` 等无同类放行，只能相同命令或逐条审批。
+   - 同类白名单：`git`（status/diff/log/show/rev-parse/ls-files/blame/grep/shortlog/describe/whatchanged/merge-base/name-rev/for-each-ref）、`go`（test/build/vet/list/env/version/doc）、`npm`/`pnpm`（test/run &lt;script&gt;/ls/view/outdated）、`dotnet`（build/test/list）、`cargo`（check/build/test/clippy/metadata）。构建类命令可能产生构建产物。
 1. AI 发起 `write_file`/`edit_file` → 该工具轮**挂起**，面板内插入审批卡片：
    - 头部：工具名 + 目标路径 + ±行数；`edit_file` 显示**未保存修改警告**（若文件在编辑器中且 dirty）
    - diff 视图：前端 ~40 行 LCS 行 diff（对齐 gitinfo `computeLineMarks` 思路），+绿 −红 上下文灰，新文件全绿
@@ -306,19 +310,21 @@ runTurn(session, userMsg):
 3. 应用记录进会话 `changes[]`（§12）。
 4. 审批等待无超时（用户决策）；「停止」按钮可中止等待。
 
+> 自动审批档：工作区写操作跳过审批卡直接应用，工具卡显示「已按自动审批应用更改」，diff 仍可展开复查；目标文件在编辑器中存在未保存修改，或路径属于 `AGENTS.md` / `.cadt/` / `.agents/` / `.git/` 时自动退回逐次审批。终端命令只有白名单内的低风险命令自动执行，其余仍弹出命令审批卡。
+
 ---
 
-## 10. 范围模式（session.scope，三档）
+## 10. 范围模式（session.scope，四档）
 
 | 档位 | 工具 | 说明 |
 |---|---|---|
-| **对话**（默认） | 无（唯一例外：`skill_use`，见 §16） | 纯聊天 + 手动附加 |
-| **读取** | list_dir / read_file / search_text / web_search / web_fetch / memory_* / preference_*（写删计划模式不可用） | 范围根 = `workspaceFolder`，无工作区时 = 当前文件所在目录；免审批但每次调用显示卡片 |
-| **编辑** | 读取档 + write_file / edit_file / todo_write / run_command | 工作区写操作全部审批、终端命令逐条审批；首次切换 flash 规则说明 |
-| **完全权限** | 编辑档全部工具 + 工作区外路径 + 命令免审批 | 启用前有二次确认；破坏性操作需自行向用户说明 |
+| **只读访问**（默认） | list_dir / read_file / search_text / web_search / web_fetch / memory_* / preference_*（写删计划模式不可用）+ `skill_use` | 范围根 = `workspaceFolder`，无工作区时 = 当前文件所在目录；免审批但每次调用显示卡片 |
+| **每次询问** | 只读工具 + write_file / edit_file / todo_write / run_command + 页面点击/输入 | 工作区写操作全部审批、终端命令逐条审批；首次切换 flash 规则说明 |
+| **自动审批** | 与「每次询问」相同 | 工作区写操作自动应用（目标文件有未保存修改，或路径属于 `AGENTS.md` / `.cadt/` / `.agents/` / `.git/` 时仍审批）；白名单内的低风险命令自动执行，其余命令逐条审批；不允许工作区外路径 |
+| **完全权限** | 每次询问全部工具 + 工作区外路径 + 命令免审批 + browser_evaluate | 启用前有二次确认（风险说明弹窗）；破坏性操作需自行向用户说明 |
 
 - scopeRoot 显示在 composer 上方（缩略 + tooltip 全路径）。
-- 切换即时生效（下一轮请求的 tools 列表变化）；随会话持久化。
+- 切换即时生效（下一轮请求的 tools 列表变化）；随会话持久化。自动审批的写入仍记录在会话变更与工具卡片中，diff 可展开复查；命令的同类签名与白名单见 §9。
 - 编辑模式开启时若工作区有 git → 一次性提示「建议先提交当前更改以便回退」（**不做自动 commit**）。
 
 ---
@@ -327,7 +333,7 @@ runTurn(session, userMsg):
 
 - `todo_write(todos[{content, status: pending|in_progress|completed}])` → 面板顶部 `#ai-todos` 固定区。
 - 显示：○ 待办 / ▶ 进行中（高亮）/ ✓ 完成划线；进度 N/M；全部完成后 3 秒自动折叠为单行「任务 · 已全部完成 · N 项」（`ai-todos-label` + `ai-todos-sum`），点击标题栏展开/收起。
-- systemPrompt（读取/编辑档）注入守则：多步任务先 `todo_write` 规划、每步更新状态。
+- systemPrompt（可写档）注入守则：多步任务先 `todo_write` 规划、每步更新状态。
 - 随会话持久化、随会话切换恢复。
 
 ---
@@ -374,7 +380,7 @@ runTurn(session, userMsg):
 - `read_file` / `get_content` 等工具结果由 AI 主动调用产生，不受注入开关控制；能否调用由权限档决定。
 - **右键引用（仅 AI 面板打开时）**：标签页 / 编辑器空白处右键「引用该文件」，有选区时改为「引用选取」；只把文件名、绝对路径、起止行列放进附件（`<file_reference>` / `<selection_reference>`），不读正文，避免污染上下文。
 - **面板内弹出菜单**：权限 / 模型 / 更多等菜单使用全局 `ctxMenu` 打开时传 `ignoreScrollWithin: '#ai-panel'`，流式输出自动滚动或工具卡片插入不会关闭菜单；点击外部、Esc 或滚动面板外区域才关闭。
-- **读取/编辑档额外注入「工作区规范」**：范围根、免审批/需审批规则、工具守则（先 list/read 确认再改、edit_file 的 oldString 必须逐字唯一复制、不越界、改动前说明意图）。
+- **读取及以上档额外注入「工作区规范」**：范围根、免审批/需审批规则、工具守则（先 list/read 确认再改、edit_file 的 oldString 必须逐字唯一复制、不越界、改动前说明意图）。
 - composer 发送行显示「本次上下文约 N 字符」。
 
 ### 14.4 AGENTS.md 自动注入（开关 `opt-ai-inject-agents-md` 默认开）
@@ -388,7 +394,7 @@ runTurn(session, userMsg):
 3. `<memory>` MEMORY.md 索引（§15.4）
 4. `<skills>` 技能索引（§16.3）
 5. `<workspace_context>` 上下文注入（§14.3）
-6. 「工作区规范」（读取/编辑档）
+6. 「工作区规范」（读取及以上档）
 7. `<output_language>` 默认输出语言（中文（简体）/ English / 跟随用户输入）
 
 ---
@@ -416,7 +422,7 @@ runTurn(session, userMsg):
 
 - 单文件 ≤64KB（超出截断写入并标注）；文件名白名单：`[A-Za-z0-9_\-\u4e00-\u9fff]{1,64}\.md`（禁路径分隔符与 `..`）。
 
-### 15.3 记忆工具（读取+编辑档可用，见 §8）
+### 15.3 记忆工具（只读访问起可用，见 §8）
 
 - `memory_list()` / `memory_read(name)` / `memory_write(name, content)`。
 - **写入免审批**（记忆是 AI 的工作笔记，低风险），但每次显示工具卡片（文件名 + 字符数），可追溯；MEMORY.md 与主题文件一致由守则约束。
@@ -425,7 +431,7 @@ runTurn(session, userMsg):
 ### 15.4 注入与守则
 
 - 每轮注入 `MEMORY.md`（存在时，≤8KB 截断）到 `<memory>` 段（顺序见 §14.5）；主题文件由 AI 按索引用 `memory_read` 按需拉取。
-- 读取/编辑档守则注入：「你有持久记忆（列出工具）；用户偏好、项目重要事实、跨会话结论应写入记忆；写入后同步更新 MEMORY.md 索引；记忆与 AGENTS.md 分工——AGENTS.md 是用户手写约定（只读），记忆是你自己积累的笔记（可写）」。
+- 只读访问起守则注入：「你有持久记忆（列出工具）；用户偏好、项目重要事实、跨会话结论应写入记忆；写入后同步更新 MEMORY.md 索引；记忆与 AGENTS.md 分工——AGENTS.md 是用户手写约定（只读），记忆是你自己积累的笔记（可写）」。
 - 首次使用（目录空）：守则提示 AI 可在合适时机建立 MEMORY.md。
 
 ### 15.5 用户手动管理（head「记忆」按钮 → 对话框）
@@ -499,6 +505,7 @@ ai-skills/
 | 默认输出语言 | `outputLanguage` | `'zh'` | `zh` / `en` / `auto`；每轮注入 `<output_language>`，不改变代码、命令与路径；下一轮生效 |
 | 聊天字号 | `aiChatFont` | `13` | 12–20，仅面板消息区 |
 | 审批记忆策略 | `approvedPaths[]` | 每次询问 | 审批卡片可选「本会话允许此文件 / 总是允许此文件」；设置页可查看授权清单并一键清除 |
+| 终端命令本会话放行 | 内存 `Map<sessionId, rules>` | 无 | 审批卡片可选「本会话允许相同命令」（命令 + cwd）或「本会话允许同类命令」（白名单签名）；不落盘，重启/重新加载/清空会话失效 |
 | 用户偏好 | `preferences[]` | 空 | 长期偏好的短条目（id/text/source，≤500 字、上限 100 条）；设置页可增删改，AI 用 `preference_*` 维护；每轮注入 `<user_preferences>` |
 | 上下文注入开关 | `aiInjectRoot` / `aiInjectActiveFile` / `aiInjectCaret` / `aiInjectViewport` / `aiInjectOpenFiles` / `aiInjectAgentsMd` / `aiInjectMemory` / `aiInjectSkills` / `aiInjectPreferences` / `aiInjectEnvVars` | 全开 | 设置 → AI →「上下文注入」逐项控制；旧 `aiInjectContext=false` 首次升级时迁移为工作区子项全部关闭 |
 | 会话存储 | 磁盘 `ai-sessions/` | — | 追加式 JSONL + 每会话 `meta.json`；不自动删除，手动删除进回收站；`datalens-ai-storage=legacy` 可临时回退旧 localStorage |
@@ -543,8 +550,8 @@ Go 新增仅 `ai.go`（流式 + AIMemoryDir 一个小方法）；其余全复用
 
 1. **Go 流式内核**：ai.go 双协议（文本+思考链+工具调用事件归一化）+ **代理/自定义头** + stop/test/models/**AIAppDir/AIEnsureDir** + mock → `go build` + `go test ./...`
 2. **面板 UI + 会话 + OpenAI 兼容对话跑通**：面板结构/活动栏/Alt+9/视图菜单/空态 + **三种显示方式**（停靠含最大化/吸附/悬浮，几何持久化）+ 流式收发 + **思考链折叠区**（ai-think 流式展开/完成收起）+ **常用消息操作**（复制/重新生成/编辑重发/回到底部/导出 md/重试/停止）+ **基础斜杠命令**（/clear /context 估算 /help /model /export /memory /skill）+ **发送键/聊天字号/用量显示/会话管理**
-3. **注入系统 + 工具桥（读取档 + memory + skills）**：workspace_context/AGENTS.md/MEMORY.md/**技能索引**注入与守则 + 三档切换 + 工具 schema + list/read/search/**memory 三件套**/**skill_use** 执行 + 工具卡片 + 附加（chips/文件树右键/**技能 chip**）
-4. **编辑档**：审批 diff 卡片/edit_file/write_file/**审批记忆（本会话/总是允许+授权清单）**/变更记录/todo_write+显示
+3. **注入系统 + 工具桥（读取档 + memory + skills）**：workspace_context/AGENTS.md/MEMORY.md/**技能索引**注入与守则 + 四档切换 + 工具 schema + list/read/search/**memory 三件套**/**skill_use** 执行 + 工具卡片 + 附加（chips/文件树右键/**技能 chip**）
+4. **每次询问 / 自动审批档**：审批 diff 卡片/edit_file/write_file/**审批记忆（本会话/总是允许+授权清单）**/变更记录/todo_write+显示
 5. **Anthropic 原生**：事件块解析（文本+thinking+tool_use）/tool_result 回传/**thinking+signature 回传**/扩展思考开关+预算/设置切换
 6. **Profile + 提示词模板 + 记忆/技能管理 + 设置 pane 完整**：Profile 管理/**contextWindow/代理与自定义头表单**/预设快填/模板管理/**记忆对话框（查看/删除/打开）**/**技能管理对话框（来源/禁用/新建/打开目录）**/注入开关/模型列表/测试连接/**配置导入导出**/快捷键登记/**/compact 摘要+归档+阈值 banner+/init**/超限拦截/palette 全注册/全量回归
 
@@ -576,7 +583,7 @@ Go 新增仅 `ai.go`（流式 + AIMemoryDir 一个小方法）；其余全复用
 - [ ] **上下文限制**：contextWindow 改小后 /context 占比变化；达阈值出现「建议 /compact」banner；超限阻止发送并提示；有 usage 的端点显示实际值。
 - [ ] todo：多步任务清单实时更新、完成折叠；切换会话恢复。
 - [ ] 变更记录：应用/放弃分类正确、点击打开文件；memory 写入不进变更列表；git 提示一次性出现。
-- [ ] 三档切换：对话档不发 tools；编辑档首次切换有规则提示。
+- [ ] 四档切换：只读档不发写工具；每次询问/自动审批/完全权限首次切换有规则提示；完全权限二次确认弹窗内容与取消/确认按钮正确。
 - [ ] 提示词：模板切换生效、会话临时改仅本会话、注入状态行三种来源显示准确。
 - [ ] Anthropic：流式 + tool_use 全流程（官方 key 或兼容网关）；扩展思考开启后思考区显示、多轮工具调用 thinking+signature 回传不报签名错误；关闭时无 thinking 块。
 - [ ] 回归：终端/侧栏/md 分屏同步/布局不受影响；浏览器 mock 全流程可走。
@@ -606,12 +613,13 @@ Go 新增仅 `ai.go`（流式 + AIMemoryDir 一个小方法）；其余全复用
 19. **Token 为估算值**：不引入 tokenizer 依赖，按字符近似（标注「估算」）；展示 API usage 实际值时区分标注；超限拦截预留 10% 余量避免误杀。
 20. **/compact 信息损失**：摘要不可逆（原文进 archived 仅查看不回灌）；压缩前二次确认，可取消；连续压缩会产生「摘要的摘要」，提示用户。
 21. **/init 写盘**：与 AI 写文件同一审批通道（用户主动触发也走审批卡片），工作区外不可用。
+22. **终端本会话放行边界**：只存内存、不落盘；相同命令要求命令 + cwd 完全一致；同类命令只认白名单签名、同 cwd、无管道/重定向/命令串联，解释器命令不支持同类放行；重启、重新加载或清空会话即失效。
 17. **悬浮/吸附是应用内浮层**：非独立 OS 窗口（不能拖出应用外；Wails v2 多窗口受限），层级需与菜单/对话框/右键菜单协调（面板 z-index 低于模态对话框）；拖拽用 pointer events + setPointerCapture，避免与文本选区冲突。
 18. **停靠↔吸附切换抖动**：同一 DOM 重定位时流式渲染不中断（事件按 id 路由与 DOM 无关，已天然解耦）。
 
 ## 应用操作桥（app_control 工具 + cadt-ui 技能，2026-11-11）
 
-AI 助手可通过 **app_control** 工具像真人一样操作当前应用窗口：标签页管理、视图/主题/设置切换、面板开关、AI 会话管理等。仅限当前窗口；不改工作区文件；**所有权限档（含对话档）可用**——UI 操作不落盘，危险路径（关闭脏标签）复用既有确认弹窗由真人批准。
+AI 助手可通过 **app_control** 工具像真人一样操作当前应用窗口：标签页管理、视图/主题/设置切换、面板开关、AI 会话管理等。仅限当前窗口；不改工作区文件；**所有权限档可用**——UI 操作不落盘，危险路径（关闭脏标签）复用既有确认弹窗由真人批准。
 
 - 执行端：main.js `runAppAction(action, params)`（挂在 `window.__lens.runAppAction` 可手动调试），动作映射到既有闭包函数（switchMode/activateDoc/requestCloseDoc/toggleDockView/openSettings…），宿主对象以 `runAppAction` + `hostAppActions`（动作名列表，用于报错提示）注入。
 - 工具参数：`{action: string, params?: object}`；未知动作报错并附 `APP_ACTIONS` 全表。

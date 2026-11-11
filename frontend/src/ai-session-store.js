@@ -199,7 +199,7 @@ export function buildSessionMeta(session) {
         createdAt: Number(session && session.createdAt) || 0,
         updatedAt: Number(session && session.updatedAt) || 0,
         workspace: textOf(session && session.workspace),
-        scope: ['read', 'edit', 'full'].includes(session && session.scope) ? session.scope : 'read',
+        scope: ['read', 'edit', 'auto', 'full'].includes(session && session.scope) ? session.scope : 'read',
         profileId: textOf(session && session.profileId),
         systemPrompt: textOf(session && session.systemPrompt),
         promptTemplateId: textOf(session && session.promptTemplateId),

@@ -77,7 +77,8 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 
 - 右侧 AI 面板（`Alt+9`）与 AI 会话侧栏（`Alt+8`）：会话存磁盘（追加式 JSONL + 图片外置），支持首轮自动标题、内容搜索、回退到某一轮与会话数据诊断。
 - 流式对话、思考链、工具调用、计划模式、上下文自动压缩与归档；工作区读写 / 终端等工具按权限档审批。
-- 记忆、技能、提示词与用户偏好可管理并随配置导出导入；技能按 dsh 式 rank 扫描工作区 `.cadt/skills`、`.agents/skills`、应用 `ai-skills`、用户 `~/.agents/skills` 与内置技能；支持 OpenAI 兼容端点与 Anthropic。
+- 权限四档：只读访问 / 每次询问 / 自动审批 / 完全权限；自动审批仅在检测到潜在风险时询问，完全权限启用前有风险说明确认。
+- 记忆、技能、提示词与用户偏好可管理并随配置导出导入；技能按 dsh 式 rank 扫描工作区 `.cadt/skills`、`.agents/skills`、应用 `ai-skills`、用户 `~/.agents/skills` 与内置技能；终端命令可按会话放行相同/同类命令（同类仅白名单，重启失效）；支持 OpenAI 兼容端点与 Anthropic。
 
 ## 快捷键
 

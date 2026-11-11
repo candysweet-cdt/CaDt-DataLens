@@ -97,13 +97,26 @@ export function createContextMenu() {
                 panel.appendChild(el('div', 'menu-sep'));
                 continue;
             }
-            const row = el('button', 'menu-item ctx-item' + (item.disabled ? ' disabled' : '') + (item.danger ? ' danger' : ''));
+            const rich = !!item.description;
+            const row = el('button', 'menu-item ctx-item' + (rich ? ' ctx-rich' : '') +
+                (item.disabled ? ' disabled' : '') + (item.danger ? ' danger' : ''));
             row.type = 'button';
             const icon = el('span', 'mi-icon');
-            renderMenuIcon(icon, item);
+            renderMenuIcon(icon, rich ? {...item, checked: false} : item);
             const label = el('span', 'mi-label', item.label);
             const key = el('span', 'mi-key', item.shortcut || '');
-            row.append(icon, label, key);
+            if (rich) {
+                const text = el('span', 'mi-text');
+                text.append(label, el('span', 'mi-desc', item.description));
+                row.append(icon, text, key);
+                if (item.selected || item.checked) {
+                    const check = el('span', 'mi-check');
+                    check.innerHTML = iconSvg('check', 14);
+                    row.appendChild(check);
+                }
+            } else {
+                row.append(icon, label, key);
+            }
             if (item.submenu && item.submenu.length) {
                 const arrow = el('span', 'ctx-arrow');
                 arrow.innerHTML = iconSvg('chevron-right', 10);
