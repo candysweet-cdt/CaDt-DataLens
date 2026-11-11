@@ -155,6 +155,7 @@ func startTermSession(id, shell string, cols, rows int, cwd string, emit func(ev
 	}
 	cmd := p.Command(argv0, args[1:]...)
 	cmd.Dir = cwd
+	cmd.Env = mergeEnv(os.Environ())
 	if err := cmd.Start(); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("启动 %s 失败：%w", args[0], err)

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +39,10 @@ const (
 	aiMaxModels           = 500
 	aiMaxImagesPerMessage = 6
 	aiMaxImageBase64      = 8 << 20
+	// aiChunkBatchWindow 合并 ai-think/ai-chunk 的时间窗：DeepSeek reasoning 每秒可达
+	// 上百个小块，逐块 EventsEmit 会造成 WebView2 IPC 洪泛、渲染进程主线程被压到流
+	// 结束才消化完（思考内容表现为「全部输出完才出现」）。窗口内的同类文本合并一次发出。
+	aiChunkBatchWindow = 30 * time.Millisecond
 )
 
 const (
@@ -45,6 +51,7 @@ const (
 	aiEventToolCall = "ai-toolcall"
 	aiEventDone     = "ai-done"
 	aiEventError    = "ai-error"
+	aiEventRetry    = "ai-retry"
 )
 
 var (
@@ -132,10 +139,78 @@ type aiErrorPayload struct {
 	Message string `json:"message"`
 }
 
+type aiRetryPayload struct {
+	Id      string `json:"id"`
+	Attempt int    `json:"attempt"`
+	Max     int    `json:"max"`
+	DelayMs int    `json:"delayMs"`
+	Reason  string `json:"reason"`
+}
+
 type aiEmitter func(event string, payload any)
 
+// aiChunkBatcher 按时间窗合并思考/正文增量。toolcall/done/error 不经批处理，
+// 终端事件发出前先同步 flush，保证前端收到 done 时内容已完整。
+type aiChunkBatcher struct {
+	mu      sync.Mutex
+	id      string
+	think   strings.Builder
+	content strings.Builder
+	timer   *time.Timer
+	emit    aiEmitter
+}
+
+func newAIChunkBatcher(id string, emit aiEmitter) *aiChunkBatcher {
+	return &aiChunkBatcher{id: id, emit: emit}
+}
+
+func (b *aiChunkBatcher) add(event, delta string) {
+	if delta == "" {
+		return
+	}
+	b.mu.Lock()
+	if event == aiEventThink {
+		b.think.WriteString(delta)
+	} else {
+		b.content.WriteString(delta)
+	}
+	if b.timer == nil {
+		b.timer = time.AfterFunc(aiChunkBatchWindow, b.flush)
+	}
+	b.mu.Unlock()
+}
+
+// flush 取出窗口内缓冲并按 think→content 顺序发出（由 AfterFunc 或 flushNow 调用）。
+func (b *aiChunkBatcher) flush() {
+	b.mu.Lock()
+	think := b.think.String()
+	content := b.content.String()
+	b.think.Reset()
+	b.content.Reset()
+	b.timer = nil
+	b.mu.Unlock()
+	if think != "" {
+		b.emit(aiEventThink, aiChunkPayload{Id: b.id, Delta: think})
+	}
+	if content != "" {
+		b.emit(aiEventChunk, aiChunkPayload{Id: b.id, Delta: content})
+	}
+}
+
+// flushNow 流结束前同步清空缓冲，done/error 随后发出，保证内容完整先于终态。
+func (b *aiChunkBatcher) flushNow() {
+	b.mu.Lock()
+	if b.timer != nil {
+		b.timer.Stop()
+		b.timer = nil
+	}
+	b.mu.Unlock()
+	b.flush()
+}
+
 type aiStreamEntry struct {
-	cancel context.CancelCauseFunc
+	cancel   context.CancelCauseFunc
+	watchdog *time.Timer
 }
 
 var aiStreams = struct {
@@ -153,10 +228,16 @@ const (
 // AISendChat 启动一轮流式对话。立即返回后由 goroutine 通过 ai-* 事件推送：
 // ai-chunk / ai-think / ai-toolcall / ai-done / ai-error。同一 sessionId 的新请求
 // 会先取消旧请求；AIStop 按 sessionId 前缀取消（前端传 session.id#round）。
-func (a *App) AISendChat(sessionId string, cfg AIConfig, messages []AIMessage, tools []AIToolDef) error {
+func (a *App) AISendChat(sessionId string, cfg AIConfig, messages []AIMessage, tools []AIToolDef, retryMax int) error {
 	sessionId = strings.TrimSpace(sessionId)
 	if sessionId == "" {
 		return errors.New("会话标识为空")
+	}
+	if retryMax < 0 {
+		retryMax = 0
+	}
+	if retryMax > 10 {
+		retryMax = 10
 	}
 	if err := validateAIConfig(cfg); err != nil {
 		return err
@@ -191,7 +272,7 @@ func (a *App) AISendChat(sessionId string, cfg AIConfig, messages []AIMessage, t
 		started := time.Now()
 		writeAppLog("info", "AI 请求：provider=%s host=%s model=%s messages=%d tools=%d",
 			aiProviderName(cfg), aiBaseHost(cfg.BaseURL), cfg.Model, len(messages), len(tools))
-		err := aiStreamResponse(ctx, cancel, sessionId, cfg, messages, tools, a.aiEmit)
+		err := aiStreamResponse(ctx, cancel, sessionId, cfg, messages, tools, a.aiEmit, retryMax)
 		cause := context.Cause(ctx)
 
 		switch {
@@ -228,6 +309,24 @@ func (a *App) AIStop(sessionId string) {
 	for _, cancel := range cancels {
 		cancel(context.Canceled)
 	}
+}
+
+// AITouchStream 重置匹配会话的空闲看门狗（sessionId 前缀匹配）。前端在工具
+// 执行/等待用户输入等无网络数据阶段定期调用，避免 120 秒空闲超时误杀挂起的流。
+func (a *App) AITouchStream(sessionId string) {
+	sessionId = strings.TrimSpace(sessionId)
+	if sessionId == "" {
+		return
+	}
+	aiStreams.Lock()
+	for id, entry := range aiStreams.entries {
+		if id == sessionId || strings.HasPrefix(id, sessionId+"#") {
+			if entry.watchdog != nil {
+				entry.watchdog.Reset(aiIdleTimeout)
+			}
+		}
+	}
+	aiStreams.Unlock()
 }
 
 // AITestConnection 验证当前 Profile 的地址/密钥/模型是否可用。
@@ -500,40 +599,161 @@ func aiToolSchema(tool AIToolDef) (json.RawMessage, error) {
 
 // aiStreamResponse 执行一次流式请求，事件经 emit 归一化输出。
 // 空闲 120 秒会取消 ctx，调用方通过 context.Cause 区分超时与用户停止。
-func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id string, cfg AIConfig, messages []AIMessage, tools []AIToolDef, emit aiEmitter) error {
+// retryMax > 0 时，对 429/5xx/网络错误做指数退避重试（优先遵循 Retry-After）；
+// 仅在尚未输出任何流内容前重试，进入 SSE 解析后不再重试。
+func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id string, cfg AIConfig, messages []AIMessage, tools []AIToolDef, emit aiEmitter, retryMax int) error {
 	watchdog := time.AfterFunc(aiIdleTimeout, func() { cancel(errAIIdleTimeout) })
 	defer watchdog.Stop()
 	touch := func() { watchdog.Reset(aiIdleTimeout) }
+	// 登记到流条目：工具执行/用户输入等长时间无网络数据时，前端经 AITouchStream 重置看门狗。
+	aiStreams.Lock()
+	if entry := aiStreams.entries[id]; entry != nil {
+		entry.watchdog = watchdog
+	}
+	aiStreams.Unlock()
 
-	req, err := aiBuildChatRequest(ctx, cfg, messages, tools)
-	if err != nil {
-		return err
-	}
-	client, err := newAIHTTPClient(cfg)
-	if err != nil {
-		return err
-	}
-	defer client.CloseIdleConnections()
+	for attempt := 0; ; attempt++ {
+		req, err := aiBuildChatRequest(ctx, cfg, messages, tools)
+		if err != nil {
+			return err
+		}
+		client, err := newAIHTTPClient(cfg)
+		if err != nil {
+			return err
+		}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("请求 AI 接口失败：%w", err)
-	}
-	defer resp.Body.Close()
-	touch()
+		resp, err := client.Do(req)
+		if err != nil {
+			client.CloseIdleConnections()
+			if ctx.Err() != nil {
+				// 用户停止 / 空闲超时 / 新请求顶替：交给调用方按 ctx cause 处理
+				return fmt.Errorf("请求 AI 接口失败：%w", err)
+			}
+			if attempt >= retryMax {
+				return fmt.Errorf("请求 AI 接口失败：%w", err)
+			}
+			delay := aiRetryDelay(attempt, "")
+			emit(aiEventRetry, aiRetryPayload{Id: id, Attempt: attempt + 1, Max: retryMax, DelayMs: int(delay.Milliseconds()), Reason: "网络错误"})
+			writeAppLog("warn", "AI 请求失败，%s 后第 %d/%d 次重试：%v", delay.Round(time.Millisecond), attempt+1, retryMax, err)
+			if !aiRetryWait(ctx, delay) {
+				return fmt.Errorf("请求 AI 接口失败：%w", err)
+			}
+			touch()
+			continue
+		}
+		touch()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return errors.New(aiStatusErrorText(resp))
-	}
-	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-	if contentType != "" && !strings.Contains(contentType, "text/event-stream") && !strings.Contains(contentType, "text/plain") {
-		return fmt.Errorf("网关未返回 SSE 流（Content-Type: %s）", resp.Header.Get("Content-Type"))
-	}
+		if aiRetryableStatus(resp.StatusCode) {
+			reason := fmt.Sprintf("HTTP %d", resp.StatusCode)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, aiErrorBodyLimit))
+			_ = resp.Body.Close()
+			client.CloseIdleConnections()
+			if attempt >= retryMax {
+				return errors.New(aiStatusErrorBodyText(resp.StatusCode, body))
+			}
+			delay := aiRetryDelay(attempt, resp.Header.Get("Retry-After"))
+			emit(aiEventRetry, aiRetryPayload{Id: id, Attempt: attempt + 1, Max: retryMax, DelayMs: int(delay.Milliseconds()), Reason: reason})
+			writeAppLog("warn", "AI 接口返回 %d，%s 后第 %d/%d 次重试", resp.StatusCode, delay.Round(time.Millisecond), attempt+1, retryMax)
+			if !aiRetryWait(ctx, delay) {
+				return errors.New(aiStatusErrorBodyText(resp.StatusCode, body))
+			}
+			touch()
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			defer resp.Body.Close()
+			defer client.CloseIdleConnections()
+			return errors.New(aiStatusErrorText(resp))
+		}
+		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+		if contentType != "" && !strings.Contains(contentType, "text/event-stream") && !strings.Contains(contentType, "text/plain") {
+			defer resp.Body.Close()
+			defer client.CloseIdleConnections()
+			return fmt.Errorf("网关未返回 SSE 流（Content-Type: %s）", resp.Header.Get("Content-Type"))
+		}
+		defer resp.Body.Close()
+		defer client.CloseIdleConnections()
 
-	if aiProviderOf(cfg) == aiProviderAnthropic {
-		return streamAnthropicSSE(resp.Body, id, emit, touch)
+		// 高频 think/content 经 30ms 微批合并；done/error 先 flush 再发出，toolcall 立即透传。
+		batcher := newAIChunkBatcher(id, emit)
+		defer batcher.flushNow()
+		wrapped := func(event string, payload any) {
+			switch event {
+			case aiEventThink, aiEventChunk:
+				if p, ok := payload.(aiChunkPayload); ok {
+					batcher.add(event, p.Delta)
+					return
+				}
+				emit(event, payload)
+			case aiEventDone, aiEventError:
+				batcher.flushNow()
+				emit(event, payload)
+			default:
+				emit(event, payload)
+			}
+		}
+		if aiProviderOf(cfg) == aiProviderAnthropic {
+			return streamAnthropicSSE(resp.Body, id, wrapped, touch)
+		}
+		return streamOpenAISSE(resp.Body, id, wrapped, touch)
 	}
-	return streamOpenAISSE(resp.Body, id, emit, touch)
+}
+
+// aiRetryableStatus：429（限流）与 5xx（服务端故障）值得重试；4xx 参数/鉴权错误重试无意义。
+func aiRetryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
+}
+
+// aiRetryDelay 计算第 attempt 次重试（从 0 计）前的等待：优先 Retry-After（秒），
+// 否则指数退避 1s→2s→4s…上限 30s，附 ±15% 抖动避免同时重试踩踏。
+func aiRetryDelay(attempt int, retryAfter string) time.Duration {
+	if v := strings.TrimSpace(retryAfter); v != "" {
+		if seconds, err := strconv.ParseFloat(v, 64); err == nil && seconds >= 0 {
+			return time.Duration(seconds * float64(time.Second))
+		}
+	}
+	base := time.Second << min(attempt, 5) // 1s 2s 4s 8s 16s 32s → 上限 30s
+	if base > 30*time.Second {
+		base = 30 * time.Second
+	}
+	jitter := time.Duration(float64(base) * (0.85 + 0.3*rand.Float64()))
+	return jitter
+}
+
+// aiRetryWait 等待重试间隔；被取消（用户停止/超时/新请求）返回 false。
+func aiRetryWait(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// aiStatusErrorBodyText 用已读取的状态码与响应体拼错误文案（响应体已关闭时使用）。
+func aiStatusErrorBodyText(statusCode int, body []byte) string {
+	text := strings.TrimSpace(string(body))
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if text != "" && json.Unmarshal([]byte(text), &envelope) == nil && strings.TrimSpace(envelope.Error.Message) != "" {
+		text = strings.TrimSpace(envelope.Error.Message)
+	}
+	if text == "" {
+		text = http.StatusText(statusCode)
+	}
+	runes := []rune(text)
+	if len(runes) > aiErrorTextLimit {
+		text = string(runes[:aiErrorTextLimit]) + "…"
+	}
+	return fmt.Sprintf("AI 接口返回 HTTP %d：%s", statusCode, text)
 }
 
 func aiBuildChatRequest(ctx context.Context, cfg AIConfig, messages []AIMessage, tools []AIToolDef) (*http.Request, error) {

@@ -18,6 +18,8 @@ const rawIcons = {
     'chevron-up': '<path d="M3.6 10L8 5.6l4.4 4.4"/>',
     'chevron-down': '<path d="M3.6 6L8 10.4l4.4-4.4"/>',
     'back': '<path d="M13 8H3.4"/><path d="M7.4 3.6L3.4 8l4 4.4"/>',
+    'forward': '<path d="M3 8h9.6"/><path d="M8.6 3.6L12.6 8l-4 4.4"/>',
+    'globe': '<circle cx="8" cy="8" r="5.6"/><path d="M2.4 8h11.2"/><path d="M8 2.4c1.8 1.6 2.7 3.4 2.7 5.6S9.8 12 8 13.6C6.2 12 5.3 10.2 5.3 8S6.2 4 8 2.4z"/>',
     'circle': '<circle cx="8" cy="8" r="4.4"/>',
     'warn': '<path d="M8 2.6L14 12.8H2L8 2.6z"/><path d="M8 6.6v2.8"/><path d="M8 11.5v.1"/>',
     'minimize': '<path d="M2.5 8.5h11"/>',

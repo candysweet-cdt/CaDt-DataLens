@@ -1,9 +1,16 @@
 // ai-panel.js：右侧 AI 助手面板（批次 2–6：会话 / 流式聊天 / 思考链 / 三形态 / 工具桥 / 记忆 / 技能 / 写审批 / Todolist / 变更记录 / 提示词 / 压缩 / 设置）
 // 设计文档见 docs/ai-panel.md。
+import {iconSvg} from './icons.js';
+import {createFileIcon} from './fileicons.js';
 const AI_CONFIG_KEY = 'datalens-ai';
 const AI_SESSIONS_KEY = 'datalens-ai-sessions';
+// 工具轮次轻提醒周期：对齐 harness（无硬性上限），每到周期注入一次系统提示。
+// 停止只由用户中止、上下文压缩或模型自然结束触发。
+const AI_TOOL_ROUND_LIMIT = 40;
 const AI_CHAT_INPUT_LIMIT = 100000;
-const AI_MESSAGE_LIMIT = 200;
+// 方案 B：不再按消息条数硬裁剪（条数与 token 无关，硬裁剪会静默丢弃历史）。
+// 上下文规模由 contextWindow 预算 + 自动 compact 管理；存储超限时改为归档到 session.archived。
+const AI_ARCHIVE_LIMIT = 400; // 与 /compact 共用：归档保留上限（条）
 const AI_WRITE_LIMIT = 256 * 1024;
 const AI_DIFF_MAX_LINES = 4000;
 const AI_DIFF_PREVIEW_LIMIT = 40;
@@ -78,6 +85,38 @@ const AI_BUILTIN_SKILLS = [
             '- `--new-window` 强制新窗口；打开目录遵循「一目录一窗口」：异目录自动开新窗口，同目录已在当前窗口时提示即可。',
             '- 格式：JSON/JSONL/YAML/XML/SVG/CSV/TSV/TOML/INI/Markdown/代码/图片/二进制 hex；>10MB 只读，>100MB 拒绝。',
             '- 无需处理窗口关闭确认；文件用完由用户自己关。',
+        ].join('\n'),
+    },
+    {
+        name: 'cadt-ui',
+        description: '用 app_control 工具像真人一样操作当前应用窗口（标签页/视图/主题/设置/面板/AI 会话）；需要操作软件本身而不是文件时使用',
+        content: [
+            '# 应用操作（cadt-ui）',
+            '',
+            '通过 app_control 工具调用动作，仅作用于当前窗口；不改工作区文件，所有权限档可用。操作前先 get_state 了解现状，改完再 get_state 确认。',
+            '',
+            '## 动作表',
+            '',
+            '- get_state：返回窗口快照（workspace/activeFile/tabs/sidebar/terminal/aiPanel/theme/fullscreen/alwaysOnTop/readOnlyMode）。',
+            '- open_file {path}：在本窗口打开文件（标签页）；open_folder {dir}：本窗口切换工作区目录（绝不会开新窗口）。',
+            '- activate_tab {index|path}：切换到某标签；close_tab {target}：target = active / 数字索引 / 路径 / "all" / "unmodified"；标签有未保存修改时会弹确认框，由用户决定——不要替用户强行关。',
+            '- reopen_closed_tab：撤销最近关闭的标签；move_tab {source,target,before}：同分栏内拖动排序（索引或路径）。',
+            '- set_view {mode}：切换当前文件视图 mode = tree / code / text / table / preview / render(SVG) / image / binary / split（不可用的视图会报错）。',
+            '- goto_line {line,column?}：当前文件跳转到行:列并整行选中。',
+            '- toggle_sidebar {view?}：开关侧边栏（同视图再点=收起）；set_sidebar_view {view}：view = files / git / structure。',
+            '- toggle_terminal：开关底部终端面板；toggle_ai_panel {open?}：开关 AI 面板；toggle_fullscreen / toggle_always_on_top。',
+            '- set_theme {theme}：theme = dark / light / darcula / idea-dark / idea-light / github / newsprint / night / pixyll / whitey。',
+            '- open_settings {pane?}：打开设置弹窗，pane = general / editor-tabs / formats / integration / models / ai / plugins / shortcuts / developer / about 或 fmt-<格式> / lang-<语言>。',
+            '- set_setting {key,value}：改受限白名单设置并即时生效（持久化）。可写键：autoSave, showSidebar, alwaysOnTop, codeWrap, codeGuides, treeGuides, treeCounts, mdLineNumbers, mdScrollSync, readOnlyMode, treeRefreshInterval(1/2/3/5/10), sidebarFont(10-20), editorFont(10-24), treeExpandDefault(expand/collapse), openMode(tab/window), theme, sidebarWidth(160-500), terminalHeight(120-480), aiPanelWidth(280-800)。未知键会报错并列出可用键。',
+            '- ai_new_session {title?,message?}：新建 AI 会话（本面板），message 非空会立刻发送（真实触发一次模型调用）；ai_switch_session {id}：切换会话。',
+            '- type_text {text,target?}：模拟键盘输入到焦点元素（或 target 选择器匹配的输入框），**仅完全权限档**；press_key {key,target?}：模拟按键（Enter/Escape/F3/单字符等，冒泡触发对话框确认、Esc 关闭、全局快捷键），**仅完全权限档**。',
+            '- flash {message,isError?}：在状态栏显示一条提示；refresh_explorer：刷新文件树。',
+            '',
+            '## 边界（刻意不提供）',
+            '',
+            '- 不保存/不另存为、不删除/不重命名文件（写文件走 write_file/edit_file 审批，或让用户手动）。',
+            '- 不跨窗口：多窗口模式的新开窗口、其他窗口的状态都不可触达。',
+            '- 鼠标点击不模拟；键盘模拟只有 type_text/press_key 且仅完全权限档。',
         ].join('\n'),
     },
     {
@@ -261,6 +300,15 @@ function aiFormatDuration(ms) {
     return hours + ' 小时' + (rest ? ' ' + rest + ' 分' : '');
 }
 
+// 流式轮次的实时计时（ZCode 风格，带十分位）：40.2 秒 / 3 分 40.2 秒
+function aiFormatLiveDuration(ms) {
+    const total = Math.max(0, Number(ms) / 1000);
+    if (total < 60) return total.toFixed(1) + ' 秒';
+    const minutes = Math.floor(total / 60);
+    const seconds = total - minutes * 60;
+    return minutes + ' 分 ' + seconds.toFixed(1) + ' 秒';
+}
+
 function aiFormatSessionTime(ts) {
     const date = new Date(Number(ts) || Date.now());
     const now = new Date();
@@ -365,6 +413,9 @@ export function createAIPanel(options) {
     const openPath = typeof opts.openPath === 'function' ? opts.openPath : () => {};
     const isFileDirty = typeof opts.isFileDirty === 'function' ? opts.isFileDirty : () => false;
     const onFileChanged = typeof opts.onFileChanged === 'function' ? opts.onFileChanged : () => {};
+    const runHostAppAction = typeof opts.runAppAction === 'function' ? opts.runAppAction : null;
+    const browserHost = opts.browserHost || null;
+    const hostAppActions = typeof opts.hostAppActions === 'function' ? opts.hostAppActions : null;
     const isMock = !!opts.isMock;
     const floatWindow = !!opts.floatWindow;
     const mockEmpty = !!opts.mockEmpty;
@@ -483,10 +534,12 @@ export function createAIPanel(options) {
         memoryMode: document.getElementById('ai-opt-memory-mode'),
         memoryPath: document.getElementById('ai-opt-memory-path'),
         threshold: document.getElementById('ai-opt-threshold'),
+        autoCompact: document.getElementById('ai-opt-autocompact'),
         openMemory: document.getElementById('ai-opt-open-memory'),
         openSkills: document.getElementById('ai-opt-open-skills'),
         injectContext: document.getElementById('ai-opt-inject-context'),
         injectAgents: document.getElementById('ai-opt-inject-agents'),
+        injectEnvVars: document.getElementById('ai-opt-inject-envvars'),
         sendKey: document.getElementById('ai-opt-sendkey'),
         chatFont: document.getElementById('ai-opt-chatfont'),
         chatFontVal: document.getElementById('ai-opt-chatfont-val'),
@@ -498,12 +551,14 @@ export function createAIPanel(options) {
         assistantCard: document.getElementById('ai-opt-assistant-card'),
         maxSessions: document.getElementById('ai-opt-maxsessions'),
         logEnabled: document.getElementById('ai-opt-log-enabled'),
+        appControl: document.getElementById('ai-opt-app-control'),
         notifyInApp: document.getElementById('ai-opt-notify-inapp'),
         notifySystem: document.getElementById('ai-opt-notify-system'),
         notifyFinish: document.getElementById('ai-opt-notify-finish'),
         notifyError: document.getElementById('ai-opt-notify-error'),
         notifyAsk: document.getElementById('ai-opt-notify-ask'),
         notifySound: document.getElementById('ai-opt-notify-sound'),
+        retryMax: document.getElementById('ai-opt-retry-max'),
         askTimeout: document.getElementById('ai-opt-ask-timeout'),
         askTimeoutAction: document.getElementById('ai-opt-ask-action'),
         logPath: document.getElementById('ai-opt-log-path'),
@@ -531,6 +586,9 @@ export function createAIPanel(options) {
     let mode = floatWindow ? 'dock' : normalizeFloatMode(settings.aiFloatMode);
     let stickBottom = true;
     let processFoldState = new Map();
+    // 流式期间被手动折叠/展开过的轮次 key：轮次结束后要丢弃这些记忆，
+    // 否则「处理中点过折叠条」会把状态带进完成态，压掉“完成后默认展开/收起”的判断。
+    const processFoldTouched = new Set();
     const thinkFoldState = new Map();
     // 消息懒加载：每会话记录当前渲染窗口起点；首屏至少覆盖约 1M tokens 上下文，上滑触顶再往前补。
     const renderWindows = new Map();
@@ -553,7 +611,11 @@ export function createAIPanel(options) {
     let slashState = {open: false, index: 0, items: []};
     let noteSeq = 0;
     const pendingApprovals = new Map();
+    // 工具卡折叠偏好（toolCallId -> collapsed）：手动展开/收起后跨重渲保留，
+    // 否则一轮内每次新输出触发 renderMessages 全量重建都会把手动展开的卡片折叠回去。
+    const toolFoldState = new Map();
     const pendingAsks = new Map();
+    const pendingEnvCreations = new Map();
     const askDrafts = new Map();
     const todoStates = new Map();
     let archivedExpanded = false;
@@ -561,6 +623,11 @@ export function createAIPanel(options) {
     const messageQueue = [];
     let queueSeq = 0;
     let interjectPending = false;
+    let storageSaveFailed = false;
+    let storageNoticeAt = 0;
+    let storageFailAt = 0;
+    let autoCompactCount = new Map();
+    let autoCompactWarnedAt = 0;
 
     // ---------- 配置与会话持久化 ----------
 
@@ -620,8 +687,12 @@ export function createAIPanel(options) {
             prompts: [],
             activePromptId: aiTextOf(stored.activePromptId),
             autoCompactThreshold: aiClamp(Number(stored.autoCompactThreshold) || 0.8, 0.5, 0.95),
+            autoCompact: stored.autoCompact !== false,
             logEnabled: stored.logEnabled !== false,
-            notifyInApp: stored.notifyInApp !== false,
+            appControlEnabled: stored.appControlEnabled !== false,
+            retryMax: aiClampInt(stored.retryMax, 0, 10, 5),
+            // 应用内完成 toast 默认关（作者反馈：太烦人）；未发版，旧存量值直接忽略
+            notifyInApp: false,
             notifySystem: stored.notifySystem === true,
             notifyFinish: stored.notifyFinish !== false,
             notifyError: stored.notifyError !== false,
@@ -801,6 +872,19 @@ export function createAIPanel(options) {
             timeoutAction: ['recommended', 'wait', 'abort', 'ai_decide'].includes(raw.timeoutAction)
                 ? raw.timeoutAction
                 : 'recommended',
+            timeoutCustom: !!raw.timeoutCustom,
+        };
+    }
+
+    function normalizeEnvAsk(raw) {
+        if (!raw || typeof raw !== 'object') return null;
+        const name = aiTextOf(raw.name).trim().slice(0, 128);
+        if (!name) return null;
+        const state = ['pending', 'approved', 'cancelled', 'failed'].includes(raw.state) ? raw.state : 'cancelled';
+        return {
+            state,
+            name,
+            description: aiTextOf(raw.description).slice(0, 500),
         };
     }
 
@@ -865,6 +949,13 @@ export function createAIPanel(options) {
                 message.status = 'done';
                 if (!message.content) message.content = '问题数据无效，已取消';
             }
+            message.envAsk = normalizeEnvAsk(raw.envAsk);
+            if (message.envAsk && message.envAsk.state === 'pending') {
+                // 会话重新加载后弹窗已不存在，挂起的变量创建统一降级为已取消
+                message.envAsk.state = 'cancelled';
+                message.status = 'done';
+                if (!message.content) message.content = '变量创建已取消（会话重新加载）';
+            }
             return message;
         }
         if (role === 'assistant') {
@@ -911,11 +1002,12 @@ export function createAIPanel(options) {
             profileId: aiTextOf(raw.profileId),
             systemPrompt: aiTextOf(raw.systemPrompt),
             promptTemplateId: aiTextOf(raw.promptTemplateId),
-            messages: messages.slice(-AI_MESSAGE_LIMIT),
+            messages,
             summary: raw.summary && typeof raw.summary === 'object' ? raw.summary : null,
             archived: Array.isArray(raw.archived) ? raw.archived : [],
             archivedAt: Number(raw.archivedAt) || 0,
             planMode: raw.planMode === true,
+            browserTabId: aiTextOf(raw.browserTabId),
             round: Number(raw.round) || 0,
             logFile: aiTextOf(raw.logFile),
             logSavedAt: Number(raw.logSavedAt) || 0,
@@ -1046,29 +1138,94 @@ export function createAIPanel(options) {
                 config.activeSessionId = sessions.length ? sessions[0].id : '';
             }
         }
-        for (const session of sessions) {
-            if (session.messages.length > AI_MESSAGE_LIMIT) {
-                session.messages = session.messages.slice(-AI_MESSAGE_LIMIT);
-            }
-        }
         trimSessionImagesForStorage();
         const save = () => {
             localStorage.setItem(AI_SESSIONS_KEY, JSON.stringify(sessions));
         };
+        // 分级降级：不再静默丢弃消息。图片 → 其余图片 → 归档最旧消息（进 session.archived，可找回）→ 提示用户。
+        let degraded = '';
+        let saved = false;
         try {
             save();
+            saved = true;
         } catch (e) {
             try {
                 stripSessionImages(true);
                 save();
+                saved = true;
+                degraded = '图片';
             } catch (e2) {
                 try {
                     stripSessionImages(false);
                     save();
-                } catch (e3) {}
+                    saved = true;
+                    degraded = '全部图片';
+                } catch (e3) {
+                    const moved = archiveOldestMessagesForStorage();
+                    if (moved > 0) {
+                        try {
+                            save();
+                            saved = true;
+                            degraded = moved + ' 条最旧消息（已归档）';
+                        } catch (e4) {
+                            try {
+                                stripSessionImages(false);
+                                save();
+                                saved = true;
+                                degraded = moved + ' 条最旧消息（已归档）+ 全部图片';
+                            } catch (e5) {}
+                        }
+                    }
+                }
             }
         }
+        if (saved && degraded) notifyStorageDegraded(degraded);
+        if (!saved) notifyStorageFailed();
+        storageSaveFailed = !saved;
         saveAIConfig();
+    }
+
+    // 存储写满时的最后兜底：把最旧消息移进 archived（不丢弃），并按归档上限裁掉更早的归档。
+    function archiveOldestMessagesForStorage() {
+        let moved = 0;
+        const targets = sessions.filter((session) => (session.messages || []).length > 6)
+            .sort((a, b) => JSON.stringify(b.messages).length - JSON.stringify(a.messages).length);
+        for (const session of targets) {
+            const keep = Math.max(6, Math.ceil(session.messages.length / 2));
+            let cut = session.messages.length - keep;
+            if (cut <= 0) continue;
+            // 不要切断 tool_calls / tool 的配对，从 user 消息处切
+            while (cut > 0 && session.messages[cut] && session.messages[cut].role !== 'user') cut--;
+            if (cut <= 0) continue;
+            const dropped = session.messages.slice(0, cut);
+            session.messages = session.messages.slice(cut);
+            session.archived = (session.archived || []).concat(dropped).slice(-AI_ARCHIVE_LIMIT);
+            moved += dropped.length;
+            break; // 一次只处理一个最占空间的会话，避免过度削减
+        }
+        return moved;
+    }
+
+    function notifyStorageDegraded(reason) {
+        const now = Date.now();
+        if (now - storageNoticeAt < 30000) return; // 30 秒内不重复提示
+        storageNoticeAt = now;
+        try {
+            if (typeof flash === 'function') {
+                flash('本地存储接近上限：已压缩为「' + reason + '」以继续保存（历史未丢弃，可在归档中找回）');
+            }
+        } catch (e) {}
+    }
+
+    function notifyStorageFailed() {
+        const now = Date.now();
+        if (now - storageFailAt < 30000) return;
+        storageFailAt = now;
+        try {
+            if (typeof showNote === 'function') {
+                showNote('本地存储已满，会话保存失败。请先 /compact 压缩上下文或删除旧会话；当前新消息仅存在于内存中。', true);
+            }
+        } catch (e) {}
     }
 
     function currentSession() {
@@ -1306,7 +1463,7 @@ export function createAIPanel(options) {
     function todoStateOf(session) {
         let state = todoStates.get(session.id);
         if (!state) {
-            state = {collapsed: false, userExpanded: false, timer: 0};
+            state = {collapsed: false, doneCollapsed: false, timer: 0};
             todoStates.set(session.id, state);
         }
         return state;
@@ -1319,39 +1476,44 @@ export function createAIPanel(options) {
         if (!session || !list.length) {
             el.todos.classList.add('hidden');
             el.todos.innerHTML = '';
+            positionOverlays();
             return;
         }
         el.todos.classList.remove('hidden');
         const state = todoStateOf(session);
         const done = list.filter((todo) => todo.status === 'completed').length;
+        const doing = list.filter((todo) => todo.status === 'in_progress').length;
+        const todo = list.length - done - doing;
         const allDone = done === list.length;
-        if (!allDone) {
-            state.collapsed = false;
-            state.userExpanded = false;
-            if (state.timer) {
-                clearTimeout(state.timer);
-                state.timer = 0;
-            }
-        }
+        if (!allDone) state.doneCollapsed = false;
         el.todos.innerHTML = '';
         el.todos.classList.toggle('collapsed', state.collapsed);
+        el.todos.classList.toggle('alldone', allDone);
         const head = document.createElement('button');
         head.type = 'button';
         head.className = 'ai-todos-head';
+        const ico = document.createElement('span');
+        ico.className = 'ai-todos-ico';
+        ico.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="4.6" r="1.25" fill="currentColor"/><rect x="6" y="3.8" width="8" height="1.6" rx="0.8" fill="currentColor"/><circle cx="3" cy="11.4" r="1.25" fill="currentColor"/><rect x="6" y="10.6" width="8" height="1.6" rx="0.8" fill="currentColor"/></svg>';
+        const label = document.createElement('span');
+        label.className = 'ai-todos-label';
+        label.textContent = '任务';
+        const sum = document.createElement('span');
+        sum.className = 'ai-todos-sum';
+        sum.textContent = allDone
+            ? '已全部完成 · ' + done + ' 项'
+            : [
+                done ? done + ' 已完成' : '',
+                doing ? doing + ' 进行中' : '',
+                todo ? todo + ' 待处理' : '',
+            ].filter(Boolean).join(' · ') || (list.length + ' 项');
         const chev = document.createElement('span');
         chev.className = 'ai-todos-chev';
         chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-        const label = document.createElement('span');
-        label.className = 'ai-todos-label';
-        label.textContent = allDone ? '任务完成（' + list.length + ' 项）' : '任务清单';
-        const progress = document.createElement('span');
-        progress.className = 'ai-todos-progress';
-        progress.textContent = done + '/' + list.length;
-        head.append(chev, label, progress);
+        head.append(ico, label, sum, chev);
         head.title = state.collapsed ? '展开任务清单' : '收起任务清单';
         head.addEventListener('click', () => {
             state.collapsed = !state.collapsed;
-            state.userExpanded = true;
             if (state.collapsed && state.timer) {
                 clearTimeout(state.timer);
                 state.timer = 0;
@@ -1362,29 +1524,31 @@ export function createAIPanel(options) {
         if (!state.collapsed) {
             const body = document.createElement('div');
             body.className = 'ai-todos-body';
-            for (const todo of list) {
-                const item = document.createElement('div');
-                item.className = 'ai-todo-item ' + todo.status;
-                const icon = document.createElement('span');
-                icon.className = 'ai-todo-icon';
-                icon.textContent = todo.status === 'completed' ? '✓' : (todo.status === 'in_progress' ? '▶' : '○');
+            for (const item of list) {
+                const row = document.createElement('div');
+                row.className = 'ai-todo-item ' + item.status;
+                const dot = document.createElement('span');
+                dot.className = 'ai-todo-dot';
                 const text = document.createElement('span');
                 text.className = 'ai-todo-text';
-                text.textContent = todo.content;
-                item.append(icon, text);
-                body.appendChild(item);
+                text.textContent = item.content;
+                row.append(dot, text);
+                body.appendChild(row);
             }
             el.todos.appendChild(body);
         }
-        if (allDone && !state.collapsed && !state.userExpanded && !state.timer) {
+        if (allDone && !state.collapsed && !state.timer && !state.doneCollapsed) {
             state.timer = setTimeout(() => {
                 state.timer = 0;
                 if (currentSession() && currentSession().id === session.id) {
                     state.collapsed = true;
+                    state.doneCollapsed = true;
                     renderTodos();
                 }
             }, 3000);
         }
+        // 渲染完成后刷新悬浮层位置：回到底部按钮等以 todos 当前高度为基准。
+        positionOverlays();
     }
 
     function updateChangesUI() {
@@ -1616,6 +1780,9 @@ export function createAIPanel(options) {
     function renderMessages(keepScroll) {
         if (!el.messages) return;
         const session = currentSession();
+        // 全量重建会把 scrollTop 钳到 0；keepScroll=true 时记录并在重建后恢复，
+        // 否则像切换计划模式这类重渲染会把当前对话弹到顶部。
+        const prevTop = el.messages.scrollTop;
         el.messages.innerHTML = '';
         slashState.open = false;
         renderTodos();
@@ -1641,9 +1808,33 @@ export function createAIPanel(options) {
         groups.forEach((group, groupIndex) => {
             renderTurn(group, session, groupIndex === groups.length - 1);
         });
-        if (stream && stream.sessionId === session.id) ensureProcessTicker();
+        if (stream && stream.sessionId === session.id) {
+            // 流式状态条钉在消息区最底部（任务清单卡片上方）：看板娘 + 甜澄漫游中 + 实时计时
+            const bar = document.createElement('div');
+            bar.className = 'ai-streaming-bar';
+            bar.dataset.processStart = String(Number(stream.startedAt) || 0);
+            const mascot = document.createElement('img');
+            mascot.className = 'ai-process-mascot';
+            mascot.src = '/brand/mascot.png';
+            mascot.alt = '';
+            mascot.draggable = false;
+            const label = document.createElement('span');
+            label.className = 'ai-streaming-label';
+            label.textContent = '甜澄漫游中';
+            const dots = document.createElement('span');
+            dots.className = 'ai-process-dots';
+            dots.innerHTML = '<i></i><i></i><i></i>';
+            const timer = document.createElement('span');
+            timer.className = 'ai-process-timer';
+            timer.textContent = aiFormatLiveDuration(Math.max(0, Date.now() - (Number(stream.startedAt) || 0)));
+            bar.append(mascot, label, dots, timer);
+            el.messages.appendChild(bar);
+            ensureProcessTicker();
+        }
         if (!keepScroll || stickBottom) {
             scrollToBottom(false);
+        } else {
+            el.messages.scrollTop = prevTop;
         }
         updateContextCount();
         updateScrollButton();
@@ -1670,12 +1861,17 @@ export function createAIPanel(options) {
     }
 
     function turnFinalItem(group) {
-        const last = group.items[group.items.length - 1];
-        if (!last || last.message.role !== 'assistant') return null;
-        const message = last.message;
-        return (message.status === 'streaming' || message.content || message.status === 'error' || message.status === 'stopped' || message.reasoning)
-            ? last
-            : null;
+        // 组尾可能是 tool 消息（如 /init 的 write_file）：回退找最后的 assistant；
+        // 带工具调用但正文为空的 assistant（工具回合）也算有效终结。
+        for (let i = group.items.length - 1; i >= 0; i--) {
+            const item = group.items[i];
+            if (item.message.role !== 'assistant') continue;
+            const message = item.message;
+            const valid = message.status === 'streaming' || message.content || message.status === 'error' ||
+                message.status === 'stopped' || message.reasoning || (Array.isArray(message.toolCalls) && message.toolCalls.length);
+            return valid ? item : null;
+        }
+        return null;
     }
 
     function turnStartMs(group) {
@@ -1721,7 +1917,40 @@ export function createAIPanel(options) {
         body.classList.add('ai-md');
         body.innerHTML = renderMarkdown((message && message.reasoning) || '');
         if (!streaming) enhanceAICodeBlocks(body);
+        resolveAIImages(body);
         body.scrollTop = scrollTop;
+    }
+
+    // resolveAIImages 把 AI 消息 Markdown 里的本地图片引用换成后端读取的 data URL。
+    // 路径规则与 read_file 一致：相对路径按范围根解析；绝对路径仅完全权限；越界/失败显示占位说明。
+    function resolveAIImages(scopeEl) {
+        if (!scopeEl || !backend.ReadImageAsDataURL) return;
+        for (const img of scopeEl.querySelectorAll('img')) {
+            // data-ai-src 由 markdown-it 图片渲染钩子写入（本地路径可能被 DOMPurify 从 src 删掉）
+            const raw = img.getAttribute('data-ai-src') || img.getAttribute('src') || '';
+            if (!raw || img.dataset.aiResolved === '1') continue;
+            if (/^(https?:|data:|blob:)/i.test(raw)) continue;
+            img.dataset.aiResolved = '1';
+            let abs;
+            try {
+                abs = aiResolveScopePath(raw, currentSession());
+            } catch (e) {
+                img.classList.add('ai-img-broken');
+                img.title = '图片无法加载：' + ((e && e.message) || e);
+                continue;
+            }
+            backend.ReadImageAsDataURL(abs).then((url) => {
+                if (url) {
+                    img.src = url;
+                } else {
+                    img.classList.add('ai-img-broken');
+                    img.title = '图片无法加载（格式不支持或超过 30MB）：' + abs;
+                }
+            }).catch((e) => {
+                img.classList.add('ai-img-broken');
+                img.title = '图片无法加载：' + abs + ((e && e.message) ? '（' + e.message + '）' : '');
+            });
+        }
     }
 
     function toggleThink(think) {
@@ -1770,15 +1999,22 @@ export function createAIPanel(options) {
         const duration = turnRunning && stream
             ? Math.max(0, Date.now() - (Number(stream.startedAt) || turnStartMs(group)))
             : turnDurationMs(group, finalItem, false);
-        if (hasBody || (finalItem && duration)) {
-            const key = session.id + ':' + (group.user ? 'u' + group.user.ts : 'g' + group.startIndex);
+        if (hasBody || (finalItem && duration)) {            const key = session.id + ':' + (group.user ? 'u' + group.user.ts : 'g' + group.startIndex);
             const fold = document.createElement('div');
             fold.className = 'ai-process' + (turnRunning ? ' streaming' : '');
             fold.dataset.processKey = key;
             if (turnRunning) fold.dataset.processStart = String(Number(stream.startedAt) || turnStartMs(group));
+            // 完成后默认收起；但最终回答没有正文时（如 15 轮上限截断、以工具调用收尾），
+            // 过程行是唯一信息载体，默认展开以免「全部折叠」看起来没有任何输出。
+            const hasFinalBody = !!(finalItem && (finalItem.message.content || finalItem.message.status !== 'done'));
+            // 轮次已结束：丢掉「处理中点过折叠条」留下的记忆，回到完成后默认值。
+            if (!turnRunning && processFoldTouched.has(key)) {
+                processFoldTouched.delete(key);
+                processFoldState.delete(key);
+            }
             const expanded = turnRunning
                 ? (processFoldState.has(key) ? processFoldState.get(key) : true)
-                : (processFoldState.has(key) ? processFoldState.get(key) : false);
+                : (processFoldState.has(key) ? processFoldState.get(key) : !hasFinalBody);
             fold.classList.toggle('collapsed', !expanded);
             const head = document.createElement('button');
             head.type = 'button';
@@ -1790,7 +2026,8 @@ export function createAIPanel(options) {
             if (!hasBody) chev.style.visibility = 'hidden';
             const label = document.createElement('span');
             label.className = 'ai-process-label';
-            label.textContent = processFoldLabel(group, finalItem, turnRunning);
+            // 流式时计时器在底部状态条（.ai-streaming-bar），fold 头只显示状态文本
+            label.textContent = turnRunning ? '处理中' : processFoldLabel(group, finalItem, turnRunning);
             head.append(chev, label);
             let body = null;
             const ensureBody = () => {
@@ -1809,6 +2046,9 @@ export function createAIPanel(options) {
                 if (!hasBody) return;
                 const next = fold.classList.contains('collapsed');
                 processFoldState.set(key, next);
+                // 轮次还在跑时记下「用户手动碰过」，等轮次结束后丢弃这条记忆。
+                if (turnRunning) processFoldTouched.add(key);
+                else processFoldTouched.delete(key);
                 if (next) ensureBody();
                 fold.classList.toggle('collapsed', !next);
             });
@@ -1832,12 +2072,12 @@ export function createAIPanel(options) {
                 stopProcessTicker();
                 return;
             }
-            for (const fold of el.messages.querySelectorAll('.ai-process.streaming')) {
-                const label = fold.querySelector('.ai-process-label');
-                const start = Number(fold.dataset.processStart) || 0;
-                if (label && start) label.textContent = '处理中，用时 ' + aiFormatDuration(Date.now() - start);
+            for (const bar of el.messages.querySelectorAll('.ai-streaming-bar')) {
+                const timer = bar.querySelector('.ai-process-timer');
+                const start = Number(bar.dataset.processStart) || 0;
+                if (timer && start) timer.textContent = aiFormatLiveDuration(Date.now() - start);
             }
-        }, 1000);
+        }, 100);
     }
 
     function stopProcessTicker() {
@@ -1903,7 +2143,7 @@ export function createAIPanel(options) {
             updateAssistantElement(wrap, message, message.status === 'streaming', options);
         } else {
             const bubble = document.createElement('div');
-            bubble.className = 'ai-user-bubble';
+            bubble.className = 'ai-user-bubble' + (message.systemNote ? ' system-note' : '');
             appendUserImages(bubble, message.images);
             if (message.content) {
                 const text = document.createElement('div');
@@ -2008,34 +2248,37 @@ export function createAIPanel(options) {
         }
     }
 
-    function renderApprovalBody(container, message, approval) {
+    function renderApprovalBody(container, message, approval, opts) {
         if (approval.kind === 'command') {
             renderCommandApprovalBody(container, message, approval);
             return;
         }
-        const meta = document.createElement('div');
-        meta.className = 'ai-approval-meta';
-        const path = document.createElement('span');
-        path.className = 'ai-approval-path';
-        path.textContent = approval.relPath || approval.path;
-        path.title = approval.path || '';
-        const stat = document.createElement('span');
-        stat.className = 'ai-approval-stat';
-        const add = document.createElement('span');
-        add.className = 'add';
-        add.textContent = '+' + approval.added;
-        const del = document.createElement('span');
-        del.className = 'del';
-        del.textContent = '−' + approval.removed;
-        stat.append(add, del);
-        if (approval.newFile) {
-            const tag = document.createElement('span');
-            tag.className = 'ai-approval-tag';
-            tag.textContent = '新文件';
-            stat.appendChild(tag);
+        // skipMeta：工具卡头部已带路径与 diff 统计时，正文不再重复
+        if (!(opts && opts.skipMeta)) {
+            const meta = document.createElement('div');
+            meta.className = 'ai-approval-meta';
+            const path = document.createElement('span');
+            path.className = 'ai-approval-path';
+            path.textContent = approval.relPath || approval.path;
+            path.title = approval.path || '';
+            const stat = document.createElement('span');
+            stat.className = 'ai-approval-stat';
+            const add = document.createElement('span');
+            add.className = 'add';
+            add.textContent = '+' + approval.added;
+            const del = document.createElement('span');
+            del.className = 'del';
+            del.textContent = '−' + approval.removed;
+            stat.append(add, del);
+            if (approval.newFile) {
+                const tag = document.createElement('span');
+                tag.className = 'ai-approval-tag';
+                tag.textContent = '新文件';
+                stat.appendChild(tag);
+            }
+            meta.append(path, stat);
+            container.appendChild(meta);
         }
-        meta.append(path, stat);
-        container.appendChild(meta);
 
         if (approval.dirty) {
             const warn = document.createElement('div');
@@ -2045,28 +2288,7 @@ export function createAIPanel(options) {
         }
 
         if (approval.diff && approval.diff.length) {
-            const diff = document.createElement('div');
-            diff.className = 'ai-diff';
-            for (const line of approval.diff) {
-                if (line.t === '…') {
-                    const gap = document.createElement('div');
-                    gap.className = 'ai-diff-line gap';
-                    gap.textContent = '…';
-                    diff.appendChild(gap);
-                    continue;
-                }
-                const row = document.createElement('div');
-                row.className = 'ai-diff-line ' + (line.t === '+' ? 'add' : (line.t === '-' ? 'del' : 'ctx'));
-                const sign = document.createElement('span');
-                sign.className = 'ai-diff-sign';
-                sign.textContent = line.t === '+' ? '+' : (line.t === '-' ? '−' : ' ');
-                const text = document.createElement('span');
-                text.className = 'ai-diff-text';
-                text.textContent = line.text || ' ';
-                row.append(sign, text);
-                diff.appendChild(row);
-            }
-            container.appendChild(diff);
+            renderDiffInto(container, approval);
             if (approval.truncated) {
                 const more = document.createElement('div');
                 more.className = 'ai-approval-more';
@@ -2117,6 +2339,45 @@ export function createAIPanel(options) {
                     : (approval.state === 'failed'
                         ? ('应用失败：' + (approval.error || '写入文件失败'))
                         : '审批已取消');
+            container.appendChild(result);
+            if (message.content) {
+                const output = document.createElement('div');
+                output.className = 'ai-approval-output';
+                output.textContent = message.content;
+                container.appendChild(output);
+            }
+        }
+    }
+
+    function renderEnvAskBody(container, message, envAsk) {
+        const meta = document.createElement('div');
+        meta.className = 'ai-approval-meta';
+        const name = document.createElement('span');
+        name.className = 'ai-approval-path env-ask-name';
+        name.textContent = envAsk.name;
+        meta.appendChild(name);
+        if (envAsk.description) {
+            const desc = document.createElement('span');
+            desc.className = 'ai-approval-stat env-ask-desc';
+            desc.textContent = envAsk.description;
+            meta.appendChild(desc);
+        }
+        container.appendChild(meta);
+
+        if (envAsk.state === 'pending') {
+            // 输入区已改为 composer 接管（renderEnvAskTakeover），消息流只留占位提示。
+            const wait = document.createElement('div');
+            wait.className = 'ai-approval-result pending';
+            wait.textContent = '等待你在下方输入区填写变量值…';
+            container.appendChild(wait);
+        } else {
+            const result = document.createElement('div');
+            result.className = 'ai-approval-result ' + envAsk.state;
+            result.textContent = envAsk.state === 'approved'
+                ? (message.status === 'running' ? '正在创建变量…' : '已创建环境变量 ' + envAsk.name)
+                : envAsk.state === 'failed'
+                    ? '创建失败：' + (message.content || '保存失败')
+                    : '已取消，未创建变量';
             container.appendChild(result);
             if (message.content) {
                 const output = document.createElement('div');
@@ -2205,6 +2466,97 @@ export function createAIPanel(options) {
         wrap.appendChild(card);
     }
 
+    // 工具卡 ZCode 风格：动词 + 图标 + 主参数（文件名/路径/命令）+ 目录 + diff 统计 + 状态
+    function toolMeta(name, approval) {
+        switch (name) {
+            case 'read_file': return {verb: '读取', icon: 'search'};
+            case 'list_dir': return {verb: '列目录', icon: 'folder'};
+            case 'search_text': return {verb: '搜索', icon: 'search'};
+            case 'write_file': return {verb: (approval && approval.newFile) ? '新建' : '写入', icon: 'save'};
+            case 'edit_file': return {verb: '编辑', icon: 'rename'};
+            case 'run_command': return {verb: '终端', icon: 'terminal'};
+            case 'memory_list': return {verb: '记忆目录', icon: 'doc'};
+            case 'memory_read': return {verb: '读取记忆', icon: 'doc'};
+            case 'memory_write': return {verb: '写入记忆', icon: 'doc'};
+            case 'skill_use': return {verb: '技能', icon: 'star'};
+            case 'ask_user': return {verb: '提问', icon: 'info'};
+            case 'app_control': return {verb: '应用操作', icon: 'gear'};
+            case 'todo_write': return {verb: '任务', icon: 'check'};
+            case 'env_list': case 'env_create': return {verb: '环境变量', icon: 'shield'};
+            default: return {verb: name || '工具', icon: 'doc'};
+        }
+    }
+
+    function toolPrimary(message) {
+        let args = {};
+        try {
+            args = JSON.parse(message.arguments || '{}') || {};
+        } catch (e) {}
+        const path = aiTextOf(args.path).trim();
+        const base = path ? path.replace(/^.*[\\/]/, '') : '';
+        const dir = base && path.length > base.length ? path.slice(0, path.length - base.length).replace(/[\\/]+$/, '') : '';
+        switch (message.name) {
+            case 'read_file': case 'write_file': case 'edit_file':
+                return {primary: base || path || '—', dir};
+            case 'list_dir':
+                return {primary: aiTextOf(args.path).trim() || '.', dir: ''};
+            case 'search_text':
+                return {primary: aiTextOf(args.query).trim() || '—', dir: ''};
+            case 'run_command':
+                return {primary: aiTextOf(args.command).trim().replace(/\s+/g, ' '), dir: ''};
+            case 'memory_read': case 'memory_write':
+                return {primary: aiTextOf(args.name).trim() || '—', dir: ''};
+            case 'memory_list':
+                return {primary: '记忆目录', dir: ''};
+            case 'skill_use':
+                return {primary: aiTextOf(args.name).trim() || '—', dir: ''};
+            case 'app_control':
+                return {primary: aiTextOf(args.action).trim() || '—', dir: ''};
+            case 'ask_user': case 'todo_write': case 'env_list': case 'env_create':
+                return {primary: '', dir: ''};
+            default:
+                return {primary: toolArgsSummary(message.arguments), dir: ''};
+        }
+    }
+
+    function toolFileVerb(message) {
+        return message.name === 'read_file' || message.name === 'write_file' || message.name === 'edit_file';
+    }
+
+    // diff 视图（带行号：− 行显示旧行号，+/空白行显示新行号）
+    function renderDiffInto(container, approval) {
+        if (!approval.diff || !approval.diff.length) return;
+        const diff = document.createElement('div');
+        diff.className = 'ai-diff';
+        let oldLine = 1;
+        let newLine = 1;
+        for (const line of approval.diff) {
+            if (line.t === '…') {
+                const gap = document.createElement('div');
+                gap.className = 'ai-diff-line gap';
+                gap.textContent = '…';
+                diff.appendChild(gap);
+                continue;
+            }
+            const row = document.createElement('div');
+            row.className = 'ai-diff-line ' + (line.t === '+' ? 'add' : (line.t === '-' ? 'del' : 'ctx'));
+            const no = document.createElement('span');
+            no.className = 'ai-diff-no';
+            no.textContent = line.t === '-' ? String(oldLine) : String(newLine);
+            if (line.t === '-') oldLine++;
+            else newLine++;
+            const sign = document.createElement('span');
+            sign.className = 'ai-diff-sign';
+            sign.textContent = line.t === '+' ? '+' : (line.t === '-' ? '−' : ' ');
+            const text = document.createElement('span');
+            text.className = 'ai-diff-text';
+            text.textContent = line.text || ' ';
+            row.append(no, sign, text);
+            diff.appendChild(row);
+        }
+        container.appendChild(diff);
+    }
+
     function renderToolMessage(wrap, message) {
         if (message.ask) {
             renderAskCard(wrap, message);
@@ -2212,9 +2564,10 @@ export function createAIPanel(options) {
         }
         const card = document.createElement('div');
         const approval = message.approval;
+        const envAsk = message.envAsk;
         const isCommand = message.name === 'run_command';
-        card.className = 'ai-tool-card ' + (message.status || 'done') + (approval ? ' has-approval' : '') + (isCommand ? ' command' : '');
-        if (approval && approval.state === 'pending') card.classList.add('approval-pending');
+        card.className = 'ai-tool-card ' + (message.status || 'done') + (approval ? ' has-approval' : '') + (envAsk ? ' has-approval' : '') + (isCommand ? ' command' : '');
+        if ((approval && approval.state === 'pending') || (envAsk && envAsk.state === 'pending')) card.classList.add('approval-pending');
         wrap.appendChild(card);
         const head = document.createElement('button');
         head.type = 'button';
@@ -2222,45 +2575,118 @@ export function createAIPanel(options) {
         const chev = document.createElement('span');
         chev.className = 'ai-tool-chev';
         chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-        const name = document.createElement('span');
-        name.className = 'ai-tool-name';
-        name.textContent = message.name || 'tool';
-        const args = document.createElement('span');
-        args.className = 'ai-tool-args';
-        args.textContent = toolArgsSummary(message.arguments);
-        if (isCommand) {
-            try {
-                const command = aiTextOf(JSON.parse(message.arguments || '{}').command).trim();
-                if (command) {
-                    args.textContent = command.replace(/\s+/g, ' ');
-                    args.title = command;
-                }
-            } catch (e) {}
+        // 动作词 + 图标 + 主参数（ZCode 风格）
+        const meta = toolMeta(message.name, approval);
+        const info = toolPrimary(message);
+        const icon = document.createElement('span');
+        icon.className = 'ai-tool-icon';
+        icon.innerHTML = iconSvg(meta.icon, 13);
+        const verb = document.createElement('span');
+        verb.className = 'ai-tool-verb';
+        verb.textContent = meta.verb;
+        // 执行中：头部最前放旋转加载图标（替代旧 border-left 指示）
+        if (message.status === 'running') {
+            const spinner = document.createElement('span');
+            spinner.className = 'ai-tool-spinner';
+            head.appendChild(spinner);
+        }
+        head.append(chev, icon, verb);
+        if (toolFileVerb(message) && info.primary && info.primary !== '—') {
+            head.appendChild(createFileIcon(info.primary, 'ai-tool-fileicon'));
+        }
+        if (info.primary) {
+            const primary = document.createElement('span');
+            primary.className = 'ai-tool-primary';
+            primary.textContent = info.primary;
+            primary.title = info.primary;
+            head.appendChild(primary);
+        }
+        if (info.dir) {
+            const dir = document.createElement('span');
+            dir.className = 'ai-tool-dir';
+            dir.textContent = info.dir;
+            dir.title = info.dir;
+            head.appendChild(dir);
+        }
+        if (approval && toolFileVerb(message) && message.name !== 'read_file' && (approval.added || approval.removed)) {
+            const add = document.createElement('span');
+            add.className = 'ai-tool-stat add';
+            add.textContent = '+' + approval.added;
+            const del = document.createElement('span');
+            del.className = 'ai-tool-stat del';
+            del.textContent = '−' + approval.removed;
+            head.append(add, del);
         }
         const state = document.createElement('span');
         state.className = 'ai-tool-state';
         state.textContent = toolStateText(message);
-        head.append(chev, name, args, state);
+        head.append(state);
         head.addEventListener('click', () => {
             card.dataset.userToggled = '1';
             card.classList.toggle('collapsed');
+            if (message.toolCallId) toolFoldState.set(message.toolCallId, card.classList.contains('collapsed'));
         });
         const body = document.createElement('div');
         body.className = 'ai-tool-body';
         if (approval) {
             body.classList.add('ai-tool-approval-body');
-            renderApprovalBody(body, message, approval);
+            // 已执行的写文件/编辑：头部已带路径与 diff 统计，正文只渲染 diff 视图
+            renderApprovalBody(body, message, approval, {skipMeta: message.name === 'write_file' || message.name === 'edit_file'});
+        } else if (envAsk) {
+            body.classList.add('ai-tool-approval-body');
+            renderEnvAskBody(body, message, envAsk);
+        } else if (isCommand) {
+            // $ 命令块（长命令折叠「展开命令」）+ 输出
+            let command = '';
+            try {
+                command = aiTextOf(JSON.parse(message.arguments || '{}').command).trim();
+            } catch (e) {}
+            if (command) {
+                const cmdLine = document.createElement('div');
+                cmdLine.className = 'ai-cmd-line';
+                const dollar = document.createElement('span');
+                dollar.className = 'ai-cmd-dollar';
+                dollar.textContent = '$';
+                const cmdText = document.createElement('span');
+                cmdText.className = 'ai-cmd-text';
+                cmdText.textContent = command;
+                cmdText.title = command;
+                cmdLine.append(dollar, cmdText);
+                if (command.length > 120 || /\n/.test(command)) {
+                    cmdLine.classList.add('clamped');
+                    const more = document.createElement('button');
+                    more.type = 'button';
+                    more.className = 'ai-cmd-more';
+                    more.textContent = '展开命令';
+                    more.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const clamped = cmdLine.classList.toggle('clamped');
+                        more.textContent = clamped ? '展开命令' : '收起命令';
+                    });
+                    body.append(cmdLine, more);
+                } else {
+                    body.appendChild(cmdLine);
+                }
+            }
+            const output = document.createElement('div');
+            output.className = 'ai-cmd-output';
+            output.textContent = message.content || (message.status === 'running' ? '执行中…' : '（无输出）');
+            body.appendChild(output);
         } else {
             body.textContent = message.content || (message.status === 'running' ? '执行中…' : '（无输出）');
         }
         card.append(head, body);
-        if (approval && approval.state === 'pending') return;
+        if ((approval && approval.state === 'pending') || (envAsk && envAsk.state === 'pending')) return;
         // 终端命令默认只显示一行摘要（命令 + 状态），点击展开完整输出。
         if (isCommand) {
             card.classList.add('collapsed');
-            return;
         }
         if (message.status !== 'running' && message.status !== 'error') card.classList.add('collapsed');
+        // 用户手动展开/收起过的卡片以偏好为准，覆盖上面的默认折叠规则。
+        if (message.toolCallId) {
+            const storedFold = toolFoldState.get(message.toolCallId);
+            if (storedFold !== undefined) card.classList.toggle('collapsed', storedFold);
+        }
     }
 
     function enhanceAICodeBlocks(root) {
@@ -2348,7 +2774,9 @@ export function createAIPanel(options) {
             think.remove();
         }
 
-        const md = wrap.querySelector('.ai-md');
+        // 只找正文容器的 markdown 区：think body 也带 ai-md class 且在 DOM 序上先于 bubble，
+        // 裸查 '.ai-md' 会命中它——content 为空时 textContent='' 会清掉刚渲染好的思考内容。
+        const md = wrap.querySelector('.ai-bubble .ai-md');
         if (md) {
             md.classList.toggle('error-text', message.status === 'error' && !message.content);
             if (message.status === 'error' && !message.content) {
@@ -2356,6 +2784,7 @@ export function createAIPanel(options) {
             } else if (message.content) {
                 md.innerHTML = renderMarkdown(message.content);
                 enhanceAICodeBlocks(md);
+                resolveAIImages(md);
             } else if (streaming) {
                 md.innerHTML = '<div class="ai-typing"><span></span><span></span><span></span></div>';
             } else if (message.status === 'stopped') {
@@ -2507,8 +2936,12 @@ export function createAIPanel(options) {
         const panelRect = panel.getBoundingClientRect();
         const composerRect = el.composer.getBoundingClientRect();
         if (!panelRect.height) return;
-        // composer 下面还有统计行：以 composer 顶边为基准，避免按钮/菜单压在输入框上。
-        const bottom = Math.max(8, panelRect.bottom - composerRect.top + 8);
+        // composer 下面还有统计行：以 composer 上方最靠上的可见覆盖物为基准
+        // （上下文警告条 → 任务清单 → composer），避免按钮/菜单压在它们上面。
+        const overlay = [el.ctxBanner, el.todos, el.composer].find((node) =>
+            node && !node.classList.contains('hidden') && node.getBoundingClientRect().height > 0);
+        const refRect = overlay ? overlay.getBoundingClientRect() : composerRect;
+        const bottom = Math.max(8, panelRect.bottom - refRect.top + 8);
         if (el.slash) {
             el.slash.style.bottom = bottom + 'px';
             el.slash.style.left = Math.max(9, composerRect.left - panelRect.left) + 'px';
@@ -2516,7 +2949,7 @@ export function createAIPanel(options) {
         }
         if (el.scrollBtn) {
             el.scrollBtn.style.bottom = bottom + 'px';
-            // 居中挂在 composer 正上方（CSS 里用 translateX(-50%) 对齐中心）。
+            // 居中挂在覆盖物正上方（CSS 里用 translateX(-50%) 对齐中心）。
             const center = composerRect.left - panelRect.left + composerRect.width / 2;
             el.scrollBtn.style.left = center + 'px';
             el.scrollBtn.style.right = 'auto';
@@ -2536,11 +2969,17 @@ export function createAIPanel(options) {
             });
         }
         const limit = endIndex == null ? session.messages.length : endIndex;
+        // tool 消息必须一对一响应最近一条已发送 assistant 的 tool_calls（OpenAI 校验，
+        // Anthropic 同理）。停止生成、压缩截断、历史恢复都可能留下孤立 tool 消息——
+        // 不跳过会让后续每一轮请求都被 HTTP 400 拒收。
+        let pendingCalls = new Set();
         for (let i = 0; i < limit; i++) {
             const message = session.messages[i];
             if (!message) continue;
             if (message.role === 'tool') {
                 if (message.status === 'running') continue;
+                if (!pendingCalls.has(message.toolCallId)) continue;
+                pendingCalls.delete(message.toolCallId);
                 messages.push({
                     role: 'tool',
                     toolCallId: message.toolCallId,
@@ -2574,6 +3013,13 @@ export function createAIPanel(options) {
                 }));
             }
             messages.push(item);
+            // 维护「待响应工具调用」集合：assistant 重置为自己的 calls，user 清空。
+            // 被跳过的 assistant（空内容/错误）不更新集合，其后的孤立 tool 消息自然被跳过。
+            if (message.role === 'assistant') {
+                pendingCalls = hasCalls ? new Set(message.toolCalls.map((call) => call.id)) : new Set();
+            } else {
+                pendingCalls = new Set();
+            }
         }
         return messages;
     }
@@ -2619,6 +3065,7 @@ export function createAIPanel(options) {
             '系统注入：AGENTS.md ' + (bundle.meta.agents.loaded ? '✓ ' + bundle.meta.agents.chars + ' 字符' : '—') +
                 ' · 记忆 ' + (bundle.meta.memory.loaded ? '✓ ' + bundle.meta.memory.mode + ' ' + bundle.meta.memory.chars + ' 字符' : '—') +
                 ' · 技能 ' + bundle.meta.skills.count + ' 个' +
+                ' · 环境变量 ' + (bundle.meta.env.count || 0) + ' 个' +
                 ' · 附加 ' + bundle.meta.attachments.count + ' 项',
         ];
         if (bundle.meta.memory.error && bundle.meta.memory.error !== '') {
@@ -3085,6 +3532,8 @@ export function createAIPanel(options) {
         if (!force && Date.now() - skillsCache.at < 5000) return skillsCache.list;
         const merged = new Map();
         for (const builtin of AI_BUILTIN_SKILLS) {
+            // 应用操作关闭时 cadt-ui 技能一并隐藏（避免模型加载用不到的动作表）
+            if (builtin.name === 'cadt-ui' && !appControlOn()) continue;
             merged.set(builtin.name, {
                 name: builtin.name,
                 description: builtin.description,
@@ -3212,9 +3661,21 @@ export function createAIPanel(options) {
                 required: ['name'],
             },
         },
+        plan_mode: {
+            name: 'plan_mode',
+            description: '进入或退出计划模式。复杂的多步实现类任务可先进入计划模式（只读探索并输出计划，用户批准后再执行）。计划模式下完成计划后：先输出完整计划等待用户批准，不要自行退出后直接执行。切换从下一轮对话生效。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    enabled: {type: 'boolean', description: 'true 进入计划模式，false 退出计划模式'},
+                    reason: {type: 'string', description: '切换原因（可选）'},
+                },
+                required: ['enabled'],
+            },
+        },
         ask_user: {
             name: 'ask_user',
-            description: '向用户提出一个或多个问题并等待回答。关键选择、补充信息或需要用户拍板时使用。最多 5 个问题，每题可单选或多选，可在最合理的一项上标记 recommended=true；不要用它询问可以自行查证的信息。',
+            description: '向用户提出一个或多个问题并等待回答。关键选择、补充信息或需要用户拍板时使用。最多 5 个问题，每题可单选或多选，可在最合理的一项上标记 recommended=true；不要用它询问可以自行查证的信息。可用 timeoutSec（秒，0=本次不限时）与 timeoutAction（recommended/wait/abort/ai_decide）只为本次提问定制超时，不修改用户设置。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -3247,8 +3708,29 @@ export function createAIPanel(options) {
                             required: ['question'],
                         },
                     },
+                    timeoutSec: {
+                        type: 'number',
+                        description: '本次提问的超时时长（秒），仅覆盖本次、不改设置；0 = 本次不限时；省略则用设置里的默认值',
+                    },
+                    timeoutAction: {
+                        type: 'string',
+                        enum: ['recommended', 'wait', 'abort', 'ai_decide'],
+                        description: '本次超时后的处理方式，仅覆盖本次；省略则用设置里的默认值',
+                    },
                 },
                 required: ['questions'],
+            },
+        },
+        app_control: {
+            name: 'app_control',
+            description: '操作当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话等。仅限当前窗口；不改工作区文件。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    action: {type: 'string', description: '动作名，如 get_state / open_file / set_view / set_theme / open_settings / ai_new_session'},
+                    params: {type: 'object', description: '动作参数（按 cadt-ui 技能的动作表），无参数可省略'},
+                },
+                required: ['action'],
             },
         },
         write_file: {
@@ -3311,7 +3793,107 @@ export function createAIPanel(options) {
                 required: ['command'],
             },
         },
+        env_list: {
+            name: 'env_list',
+            description: '列出用户在本应用中配置的环境变量（只返回名称、描述与启用状态；值永远不会提供）。终端与 run_command 已注入这些变量，命令里可直接引用。',
+            parameters: {type: 'object', properties: {}},
+        },
+        browser_navigate: {
+            name: 'browser_navigate',
+            description: '在本会话绑定的浏览器标签页中打开一个 URL（每会话独立浏览器，用户可见）。返回页面标题与状态。',
+            parameters: {
+                type: 'object',
+                properties: {url: {type: 'string', description: '完整 URL（含 https://）'}},
+                required: ['url'],
+            },
+        },
+        browser_back: {
+            name: 'browser_back',
+            description: '浏览器后退一页。',
+            parameters: {type: 'object', properties: {}},
+        },
+        browser_forward: {
+            name: 'browser_forward',
+            description: '浏览器前进一页。',
+            parameters: {type: 'object', properties: {}},
+        },
+        browser_reload: {
+            name: 'browser_reload',
+            description: '重新加载当前页面。',
+            parameters: {type: 'object', properties: {}},
+        },
+        browser_snapshot: {
+            name: 'browser_snapshot',
+            description: '读取当前页面的结构化快照：标题、URL、可见文本摘要、链接与可交互元素（输入框/按钮）列表。这是了解页面内容的主要方式。',
+            parameters: {type: 'object', properties: {}},
+        },
+        browser_screenshot: {
+            name: 'browser_screenshot',
+            description: '对当前页面截图并把图片附加到对话（你可看到它）。用于确认视觉效果或向用户展示页面。',
+            parameters: {type: 'object', properties: {}},
+        },
+        browser_click: {
+            name: 'browser_click',
+            description: '点击页面上匹配 CSS 选择器的第一个元素。需「工作区内修改」及以上权限。',
+            parameters: {
+                type: 'object',
+                properties: {selector: {type: 'string', description: 'CSS 选择器'}},
+                required: ['selector'],
+            },
+        },
+        browser_type: {
+            name: 'browser_type',
+            description: '向匹配 CSS 选择器的输入框填入文本（触发 input/change 事件）。需「工作区内修改」及以上权限。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    selector: {type: 'string', description: 'CSS 选择器'},
+                    text: {type: 'string', description: '要填入的文本'},
+                },
+                required: ['selector', 'text'],
+            },
+        },
+        browser_press_key: {
+            name: 'browser_press_key',
+            description: '向页面上当前聚焦的元素派发一个按键事件（如 Enter）。需「工作区内修改」及以上权限。',
+            parameters: {
+                type: 'object',
+                properties: {key: {type: 'string', description: '按键名，如 Enter、Tab'}},
+                required: ['key'],
+            },
+        },
+        browser_evaluate: {
+            name: 'browser_evaluate',
+            description: '在页面里执行任意 JavaScript 并返回结果。仅「完全权限」可用，谨慎使用。',
+            parameters: {
+                type: 'object',
+                properties: {script: {type: 'string', description: 'JavaScript 表达式'}},
+                required: ['script'],
+            },
+        },
+        browser_close: {
+            name: 'browser_close',
+            description: '关闭本会话绑定的浏览器标签页并释放其配置数据。',
+            parameters: {type: 'object', properties: {}},
+        },
+        env_create: {
+            name: 'env_create',
+            description: '创建一个新的环境变量：你只提供名称与描述，值由用户在弹出的输入框中亲自填写（你拿不到值）。创建成功后变量立即注入终端与命令桥。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    name: {type: 'string', description: '变量名（字母/数字/下划线，字母或下划线开头）'},
+                    description: {type: 'string', description: '这个变量是什么、用在哪里（用户与后续对话可见）'},
+                },
+                required: ['name', 'description'],
+            },
+        },
     };
+
+    // 应用操作开关（设置 → AI 助手 → 应用操作）：关闭时工具从列表移除、执行器硬拒绝、cadt-ui 技能隐藏
+    function appControlOn() {
+        return config.appControlEnabled !== false;
+    }
 
     function toolsForScope(scope, planMode) {
         const list = [
@@ -3322,16 +3904,107 @@ export function createAIPanel(options) {
             AI_TOOL_DEFS.memory_read,
             AI_TOOL_DEFS.skill_use,
             AI_TOOL_DEFS.ask_user,
+            AI_TOOL_DEFS.env_list,
+            AI_TOOL_DEFS.plan_mode,
         ];
-        if (!planMode) list.push(AI_TOOL_DEFS.memory_write);
+        if (appControlOn()) list.push(AI_TOOL_DEFS.app_control);
+        if (!planMode) list.push(AI_TOOL_DEFS.memory_write, AI_TOOL_DEFS.env_create);
+        // 浏览器：read 档起可浏览（导航/快照/截图），edit 档起可操作页面，full 档可执行任意脚本
+        list.push(
+            AI_TOOL_DEFS.browser_navigate, AI_TOOL_DEFS.browser_back, AI_TOOL_DEFS.browser_forward,
+            AI_TOOL_DEFS.browser_reload, AI_TOOL_DEFS.browser_snapshot, AI_TOOL_DEFS.browser_screenshot,
+            AI_TOOL_DEFS.browser_close,
+        );
         if (scope === 'edit' || scope === 'full') {
             list.push(AI_TOOL_DEFS.todo_write);
             if (!planMode) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file, AI_TOOL_DEFS.run_command);
+            if (!planMode) list.push(AI_TOOL_DEFS.browser_click, AI_TOOL_DEFS.browser_type, AI_TOOL_DEFS.browser_press_key);
         }
+        if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
         return list;
     }
 
     const MEMORY_NAME_RULE = /^[A-Za-z0-9_\-\u4e00-\u9fff]{1,64}\.md$/i;
+
+    // ---- 浏览器使用（每会话独立标签页 + 独立 profile）----
+
+    async function ensureBrowserTab(session) {
+        if (!browserHost) throw new Error('浏览器宿主不可用');
+        if (session.browserTabId) {
+            try {
+                const st = await backend.BrowserState(session.browserTabId);
+                if (st && st.id) return {id: session.browserTabId, state: st};
+            } catch (e) {}
+            session.browserTabId = '';
+        }
+        const opened = await runHostAppAction('open_browser_tab', {
+            url: 'about:blank',
+            profileKey: 'sess-' + session.id,
+        });
+        session.browserTabId = opened && opened.browserTab ? opened.browserTab.id : '';
+        if (!session.browserTabId) throw new Error('浏览器标签页创建失败');
+        persistSessions();
+        return {id: session.browserTabId, state: null};
+    }
+
+    // ExecuteScript 返回 {result:{value:"<json>"}}；把脚本结果对象解出来
+    function browserEvalObject(raw) {
+        let outer;
+        try {
+            outer = JSON.parse(raw);
+        } catch (e) {
+            throw new Error('脚本结果解析失败（外层）');
+        }
+        const value = outer && outer.result ? outer.result.value : undefined;
+        if (typeof value === 'string') {
+            try {
+                return JSON.parse(value);
+            } catch (e) {
+                return value;
+            }
+        }
+        return value;
+    }
+
+    function browserSnapshotText(page) {
+        const lines = [
+            '页面：' + (page.title || '（无标题）') + ' — ' + (page.url || ''),
+        ];
+        const text = String(page.text || '').replace(/\s+/g, ' ').trim();
+        if (text) {
+            lines.push('文本摘要：' + (text.length > 1500 ? text.slice(0, 1500) + '…（已截断）' : text));
+        }
+        if (Array.isArray(page.inputs) && page.inputs.length) {
+            lines.push('可交互元素：');
+            for (const el of page.inputs.slice(0, 30)) {
+                lines.push('- ' + el.tag + (el.type ? '[' + el.type + ']' : '') +
+                    (el.id ? '#' + el.id : '') + (el.name ? '[name=' + el.name + ']' : '') +
+                    (el.value ? ' 值=' + el.value : '') + (el.selector ? ' 选择器=' + el.selector : ''));
+            }
+        }
+        if (Array.isArray(page.links) && page.links.length) {
+            lines.push('链接（前 ' + Math.min(page.links.length, 30) + ' 个）：');
+            for (const link of page.links.slice(0, 30)) {
+                if (link.text || link.href) lines.push('- ' + (link.text || '(无文本)') + ' → ' + link.href);
+            }
+        }
+        if (lines.length === 1) lines.push('（页面为空）');
+        return lines.join(String.fromCharCode(10));
+    }
+
+    // 环境变量（AI 视角）：只取名称/描述/启用状态，值永远不出现在 AI 可见文本里
+    async function listEnvVarsForAI() {
+        if (!backend.GetEnvVars) return [];
+        const snap = await backend.GetEnvVars();
+        const vars = (snap && Array.isArray(snap.vars)) ? snap.vars : [];
+        return vars
+            .filter((v) => v && v.name)
+            .map((v) => ({
+                name: String(v.name),
+                description: String(v.description || ''),
+                enabled: v.enabled !== false,
+            }));
+    }
 
     function memoryFileName(value) {
         const name = String(value == null ? '' : value).trim();
@@ -3561,6 +4234,59 @@ export function createAIPanel(options) {
         persistSessions();
     }
 
+    // ---- env_create：AI 提供名称与描述，值由用户在卡片里亲自填写（值不进对话） ----
+
+    function requestEnvCreation(session, toolMessage, info) {
+        const envAsk = {
+            state: 'pending',
+            name: info.name,
+            description: info.description || '',
+        };
+        toolMessage.envAsk = envAsk;
+        toolMessage.status = 'pending';
+        toolMessage.content = '等待用户填写变量值…';
+        persistSessions();
+        refreshToolWrap(session, toolMessage);
+        const key = toolMessage.toolCallId || aiNowId('env-ask-');
+        const entry = {session, toolMessage, resolve: null};
+        pendingEnvCreations.set(key, entry);
+        // 先登记再刷新接管区：查找逻辑依赖 pendingEnvCreations 已有条目。
+        updateComposerTakeover(true);
+        return new Promise((resolve) => {
+            entry.resolve = resolve;
+        });
+    }
+
+    function decideEnvCreation(toolMessage, approved, value) {
+        if (!toolMessage) return;
+        const entry = pendingEnvCreations.get(toolMessage.toolCallId);
+        if (!entry) return;
+        pendingEnvCreations.delete(toolMessage.toolCallId);
+        const envAsk = toolMessage.envAsk;
+        if (envAsk) envAsk.state = approved ? 'approved' : 'cancelled';
+        toolMessage.status = 'running';
+        toolMessage.content = approved ? '正在创建变量…' : '用户取消了变量创建';
+        persistSessions();
+        refreshToolWrap(entry.session, toolMessage);
+        // value 只经此 Promise 传给执行器，不写入 toolMessage / 会话持久化
+        entry.resolve({approved: !!approved, value: approved ? String(value == null ? '' : value) : ''});
+        updateComposerTakeover(true);
+    }
+
+    function cancelPendingEnvCreations(reason) {
+        for (const [key, entry] of pendingEnvCreations) {
+            if (entry.toolMessage.envAsk) entry.toolMessage.envAsk.state = 'cancelled';
+            entry.toolMessage.status = 'done';
+            entry.toolMessage.content = reason || '变量创建已取消';
+            pendingEnvCreations.delete(key);
+            entry.resolve({approved: false, cancelled: true});
+            refreshToolWrap(entry.session, entry.toolMessage);
+        }
+        if (pendingEnvCreations.size) pendingEnvCreations.clear();
+        persistSessions();
+        updateComposerTakeover(true);
+    }
+
     function askTimeoutActionOf(ask) {
         const hasRecommended = (ask.questions || []).some((question) => question.options.some((option) => option.recommended));
         if (ask.timeoutAction === 'recommended' && !hasRecommended) {
@@ -3602,7 +4328,9 @@ export function createAIPanel(options) {
         const label = {recommended: '按 AI 推荐项继续', abort: '停止本轮', ai_decide: '交给 AI 决定'}[action] || '继续';
         const mm = Math.floor(left / 60);
         const ss = left % 60;
-        return '超时后' + label + ' · 剩余 ' + mm + ':' + String(ss).padStart(2, '0');
+        // 本次超时由 AI 定制时标注出来，避免用户以为时间不对
+        const custom = ask.timeoutCustom ? '（本次自定义 ' + ask.timeoutSec + ' 秒）' : '';
+        return '超时后' + label + custom + ' · 剩余 ' + mm + ':' + String(ss).padStart(2, '0');
     }
 
     function updateAskCountdown(entry) {
@@ -3753,14 +4481,33 @@ export function createAIPanel(options) {
         });
     }
 
+    const ASK_TIMEOUT_ACTIONS = ['recommended', 'wait', 'abort', 'ai_decide'];
+
+    // 本次提问的超时设置：工具可传 timeoutSec / timeoutAction 逐次覆盖，不写回 config。
+    // 未传（undefined/null/空串）才回落到设置里的默认值；0 表示本次不限时。
+    function resolveAskTimeout(input) {
+        const rawSec = input ? input.timeoutSec : undefined;
+        const hasOwnSec = rawSec !== undefined && rawSec !== null && String(rawSec).trim() !== '';
+        const timeoutSec = hasOwnSec
+            ? aiClampInt(rawSec, 0, 3600, config.askTimeout)
+            : aiClampInt(config.askTimeout, 0, 3600, 300);
+        const rawAction = input ? timeoutActionOf(input) : '';
+        const timeoutAction = ASK_TIMEOUT_ACTIONS.includes(rawAction)
+            ? rawAction
+            : (ASK_TIMEOUT_ACTIONS.includes(config.askTimeoutAction) ? config.askTimeoutAction : 'recommended');
+        return {timeoutSec, timeoutAction, custom: hasOwnSec || !!rawAction};
+    }
+
+    function timeoutActionOf(input) {
+        const value = String((input && (input.timeoutAction || input.timeout_action)) || '').trim();
+        return value;
+    }
+
     async function runAskQuestion(input, ctx) {
         if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('ask_user 缺少会话上下文');
         const questions = parseAskQuestions(input);
         if (!questions.length) throw new Error('ask_user 至少需要一个有效问题');
-        const timeoutSec = aiClampInt(config.askTimeout, 0, 3600, 300);
-        const timeoutAction = ['recommended', 'wait', 'abort', 'ai_decide'].includes(config.askTimeoutAction)
-            ? config.askTimeoutAction
-            : 'recommended';
+        const {timeoutSec, timeoutAction, custom} = resolveAskTimeout(input);
         const useTimer = timeoutSec > 0 && timeoutAction !== 'wait';
         const ask = {
             questions,
@@ -3772,6 +4519,7 @@ export function createAIPanel(options) {
             answeredAt: 0,
             timeoutSec,
             timeoutAction,
+            timeoutCustom: custom,
         };
         const toolMessage = ctx.toolMessage;
         toolMessage.ask = ask;
@@ -3940,6 +4688,188 @@ export function createAIPanel(options) {
             case 'ask_user': {
                 return await runAskQuestion(input, ctx);
             }
+            case 'plan_mode': {
+                if (!ctx || !ctx.session) throw new Error('缺少会话上下文');
+                const enabled = input.enabled === true;
+                if (ctx.session.planMode === enabled) {
+                    return enabled ? '当前已处于计划模式。' : '当前不在计划模式。';
+                }
+                const ok = setPlanMode(enabled, false, true);
+                if (!ok) throw new Error('切换失败（会话不存在或正在生成）');
+                return enabled
+                    ? '已进入计划模式：下一轮起只保留只读探索与规划类工具；请输出完整计划并等待用户批准。'
+                    : '已退出计划模式：下一轮起恢复当前权限档的完整工具集；写操作仍按权限档审批。';
+            }
+            case 'app_control': {
+                if (!appControlOn()) throw new Error('应用操作已被禁用（设置 → AI 助手 → 应用操作）');
+                if (typeof runHostAppAction !== 'function') throw new Error('当前宿主不支持应用操作桥');
+                const action = aiTextOf(input.action).trim();
+                if (!action) throw new Error('action 为空；先用 skill_use 加载 cadt-ui 获取动作表');
+                const params = (input.params && typeof input.params === 'object' && !Array.isArray(input.params)) ? input.params : {};
+                let result;
+                try {
+                    result = await runHostAppAction(action, params, currentScopeOf(ctx && ctx.session));
+                } catch (e) {
+                    const known = typeof hostAppActions === 'function' ? hostAppActions() : null;
+                    const hint = Array.isArray(known) && known.length ? '可用动作：' + known.join(', ') : '可用动作见 cadt-ui 技能';
+                    throw new Error(((e && e.message) || String(e)) + '（' + hint + '）');
+                }
+                return result === undefined ? 'OK' : (typeof result === 'string' ? result : JSON.stringify(result));
+            }
+            case 'env_list': {
+                const vars = await listEnvVarsForAI();
+                if (!vars.length) {
+                    return '尚未配置任何环境变量。可以让用户在 设置 → 环境变量 中添加，或用 env_create（你提供名称与描述，值由用户填写）。';
+                }
+                return '已配置的环境变量（值不可见）：\n' + vars.map((v) =>
+                    '- ' + v.name + (v.description ? ' — ' + v.description : '') + (v.enabled ? '' : '（未启用，不注入）')
+                ).join('\n');
+            }
+            case 'env_create': {
+                if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('缺少会话上下文');
+                const name = aiTextOf(input.name).trim();
+                if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) {
+                    throw new Error('变量名无效（字母/数字/下划线，字母或下划线开头，最长 128）');
+                }
+                const description = aiTextOf(input.description).trim().slice(0, 500);
+                const existing = await listEnvVarsForAI();
+                const found = existing.find((v) => v.name.toLowerCase() === name.toLowerCase());
+                if (found) {
+                    return '环境变量 ' + found.name + ' 已存在' + (found.enabled ? '' : '（当前未启用）') +
+                        '；如需修改值或描述，请让用户在 设置 → 环境变量 中编辑。';
+                }
+                const decision = await requestEnvCreation(ctx.session, ctx.toolMessage, {name, description});
+                if (!decision.approved) {
+                    return decision.cancelled ? '用户已停止生成，变量创建已取消。' : '用户放弃了变量创建，未做修改。';
+                }
+                const value = decision.value;
+                if (!value) {
+                    return '用户没有填写变量值，未创建。';
+                }
+                // 值只在这里使用一次，不写入 toolMessage / 会话
+                const snap = backend.GetEnvVars ? await backend.GetEnvVars() : null;
+                const current = (snap && Array.isArray(snap.vars)) ? snap.vars.filter((v) => v && v.name) : [];
+                try {
+                    await backend.SetEnvVars(current
+                        .map((v) => ({name: v.name, value: v.value, description: v.description || '', enabled: v.enabled !== false}))
+                        .concat([{name, value, description, enabled: true}]));
+                } catch (e) {
+                    if (ctx.toolMessage.envAsk) ctx.toolMessage.envAsk.state = 'failed';
+                    throw new Error('保存环境变量失败：' + ((e && e.message) || e));
+                }
+                return '已创建环境变量 ' + name + (description ? '（' + description + '）' : '') +
+                    '；值由用户填写，未包含在对话中。变量已注入终端与命令桥，命令里可直接引用。';
+            }
+            case 'browser_navigate': {
+                const url = aiTextOf(input.url).trim();
+                if (!/^(https?|about|data):/i.test(url)) throw new Error('URL 无效（需以 http/https/about/data 开头）');
+                const tab = await ensureBrowserTab(ctx.session);
+                await backend.BrowserNavigate(tab.id, url);
+                await new Promise((resolve) => setTimeout(resolve, 400));
+                let st = null;
+                try { st = await backend.BrowserState(tab.id); } catch (e) {}
+                return '已导航：' + url + (st ? (String.fromCharCode(10) + '当前页面：' + (st.title || '（加载中）') + ' — ' + (st.url || url)) : '');
+            }
+            case 'browser_back': {
+                const tab = await ensureBrowserTab(ctx.session);
+                await backend.BrowserGoBack(tab.id);
+                return '已后退一页。';
+            }
+            case 'browser_forward': {
+                const tab = await ensureBrowserTab(ctx.session);
+                await backend.BrowserGoForward(tab.id);
+                return '已前进一页。';
+            }
+            case 'browser_reload': {
+                const tab = await ensureBrowserTab(ctx.session);
+                await backend.BrowserReload(tab.id);
+                return '已重新加载页面。';
+            }
+            case 'browser_snapshot': {
+                const tab = await ensureBrowserTab(ctx.session);
+                const script = [
+                    'JSON.stringify({',
+                    'title: document.title,',
+                    'url: location.href,',
+                    'text: document.body ? document.body.innerText.slice(0, 4000) : "",',
+                    'inputs: [...document.querySelectorAll("input,textarea,select,button,[role=button]")].slice(0, 30).map((el, i) => ({',
+                    'tag: el.tagName,',
+                    'type: el.type || "",',
+                    'name: el.name || "",',
+                    'id: el.id || "",',
+                    'value: el.tagName === "INPUT" && el.type === "password" ? "(password)" : String(el.value || "").slice(0, 40),',
+                    'selector: el.id ? ("#" + el.id) : (el.name ? ("[name=" + el.name + "]") : (el.tagName.toLowerCase() + ":nth-of-type(" + (i + 1) + ")"))',
+                    '})),',
+                    'links: [...document.querySelectorAll("a")].slice(0, 30).map((a) => ({text: a.innerText.trim().slice(0, 60), href: a.href}))',
+                    '})',
+                ].join(' ');
+                const raw = await backend.BrowserEval(tab.id, script);
+                return browserSnapshotText(browserEvalObject(raw));
+            }
+            case 'browser_screenshot': {
+                const tab = await ensureBrowserTab(ctx.session);
+                if (!backend.BrowserCaptureScreenshot) throw new Error('截图通道不可用');
+                const base64 = await backend.BrowserCaptureScreenshot(tab.id);
+                if (!base64 || base64.length < 50) throw new Error('截图数据为空');
+                const normalized = aiNormalizeImage({mime: 'image/png', data: base64, name: '浏览器截图'});
+                if (!normalized) throw new Error('截图数据无法解析');
+                const imageMessage = {
+                    role: 'user',
+                    content: '[浏览器截图（browser_screenshot 工具自动附加）]',
+                    images: [normalized],
+                    ts: Date.now(),
+                };
+                ctx.session.messages.push(imageMessage);
+                persistSessions();
+                return '截图已捕获并作为图片附加到对话（下一轮请求模型可见）。';
+            }
+            case 'browser_click': {
+                const selector = aiTextOf(input.selector).trim();
+                if (!selector) throw new Error('selector 为空');
+                const tab = await ensureBrowserTab(ctx.session);
+                const script = '(() => { const el = document.querySelector(' + JSON.stringify(selector) + '); if (!el) return JSON.stringify({ok: false, message: "未找到元素"}); el.scrollIntoView({block: "center"}); el.click(); return JSON.stringify({ok: true, tag: el.tagName, text: String(el.innerText || "").slice(0, 60)}); })()';
+                const raw = await backend.BrowserEval(tab.id, script);
+                const result = browserEvalObject(raw);
+                if (!result || result.ok === false) throw new Error(result && result.message ? result.message : '点击失败');
+                return '已点击：' + (result.tag || '元素') + (result.text ? '（' + result.text + '）' : '');
+            }
+            case 'browser_type': {
+                const selector = aiTextOf(input.selector).trim();
+                const text = aiTextOf(input.text);
+                if (!selector) throw new Error('selector 为空');
+                const tab = await ensureBrowserTab(ctx.session);
+                const script = '(() => { const el = document.querySelector(' + JSON.stringify(selector) + '); if (!el) return JSON.stringify({ok: false, message: "未找到元素"}); el.focus(); el.value = ' + JSON.stringify(text) + '; el.dispatchEvent(new Event("input", {bubbles: true})); el.dispatchEvent(new Event("change", {bubbles: true})); return JSON.stringify({ok: true, tag: el.tagName}); })()';
+                const raw = await backend.BrowserEval(tab.id, script);
+                const result = browserEvalObject(raw);
+                if (!result || result.ok === false) throw new Error(result && result.message ? result.message : '填入失败');
+                return '已填入：' + (result.tag || '输入框');
+            }
+            case 'browser_press_key': {
+                const key = aiTextOf(input.key).trim() || 'Enter';
+                const tab = await ensureBrowserTab(ctx.session);
+                const script = '(() => { const el = document.activeElement || document.body; el.dispatchEvent(new KeyboardEvent("keydown", {key: ' + JSON.stringify(key) + ', bubbles: true})); el.dispatchEvent(new KeyboardEvent("keyup", {key: ' + JSON.stringify(key) + ', bubbles: true})); return JSON.stringify({ok: true}); })()';
+                const raw = await backend.BrowserEval(tab.id, script);
+                browserEvalObject(raw);
+                return '已派发按键：' + key;
+            }
+            case 'browser_evaluate': {
+                const script = aiTextOf(input.script);
+                if (!script.trim()) throw new Error('script 为空');
+                const tab = await ensureBrowserTab(ctx.session);
+                const raw = await backend.BrowserEval(tab.id, script);
+                const result = browserEvalObject(raw);
+                return '脚本结果：' + (typeof result === 'string' ? result : JSON.stringify(result)).slice(0, 4000);
+            }
+            case 'browser_close': {
+                const tabId = ctx.session.browserTabId;
+                if (!tabId) return '本会话没有绑定的浏览器标签页。';
+                if (runHostAppAction) {
+                    await runHostAppAction('close_browser_tab', {id: tabId});
+                }
+                ctx.session.browserTabId = '';
+                persistSessions();
+                return '已关闭浏览器标签页。';
+            }
             case 'write_file': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');
                 const path = aiResolveScopePath(input.path, ctx.session);
@@ -4036,8 +4966,11 @@ export function createAIPanel(options) {
                 session.todos = list;
                 const state = todoStates.get(session.id);
                 if (state) {
+                    // 只重置「全部完成 3 秒折叠」的计时，保留用户手动收起的 collapsed 偏好，
+                    // 否则每次 todo_write 更新进度都会把面板重新展开（扰民）。
                     clearTimeout(state.timer);
-                    todoStates.delete(session.id);
+                    state.timer = 0;
+                    state.doneCollapsed = false;
                 }
                 persistSessions();
                 if (isOpen() && currentSession() === session) renderTodos();
@@ -4115,11 +5048,20 @@ export function createAIPanel(options) {
             '- 先 list_dir / read_file 确认事实，再回答或引用。',
             '- search_text 用于定位文本，结果不足时改用 read_file。',
             '- memory_* 用于用户偏好、项目事实与跨会话结论；写后更新 MEMORY.md 索引。',
+            '- env_list 只返回环境变量的名称与描述，值永远不可见；需要用某个变量时，直接在命令中引用它（$名称 / %名称%）。',
+            '- env_create 由你提供变量名与描述，值由用户在弹窗中亲自填写；不要用 ask_user 或对话索取变量值（用户填进弹窗的值你看不到）。',
             '- skill_use 返回技能全文；加载后遵循其中指令。',
-            '- ask_user 用于必须由用户拍板的关键选择；问题与选项要具体，能在某一项上给出推荐时标记 recommended=true；不要用它询问可以自行查证的信息。',
+            ...(appControlOn() ? [
+                '- app_control 操作当前应用窗口（标签/视图/主题/设置/面板/AI 会话）；先 skill_use 加载 cadt-ui 拿动作表，再调用；它不改工作区文件，所有权限档可用。',
+            ] : []),
+            '- 回复里可用 Markdown 图片语法嵌入本地图片：![说明](工作区相对路径)；支持 png/jpg/jpeg/gif/webp/bmp/svg（≤30MB），完全权限下可用绝对路径；不要输出 base64 data URL。',
+            '- ask_user 用于必须由用户拍板的关键选择；问题与选项要具体，能在某一项上给出推荐时标记 recommended=true；不要用它询问可以自行查证的信息。需要更短/更长的等待时，给本次调用传 timeoutSec（0=不限时）和/或 timeoutAction，只影响本次，不要改用户设置。',
             ...(planMode ? [
                 '- 计划模式：只做只读探索并输出计划；不要调用写工具或 run_command（它们也不可用）。',
-            ] : []),
+                '- 计划完成后输出完整计划并停下等待用户批准；不要调用 plan_mode(false) 自行退出后直接执行。',
+            ] : [
+                '- 复杂的多步实现类任务可调用 plan_mode(true) 进入计划模式，先只读探索并给出计划，批准后再执行；简单问题不要进入。',
+            ]),
             ...(scope === 'edit' || full ? [
                 ...(planMode ? [] : [
                     '- 修改文件前必须先 read_file 确认内容；不要凭记忆构造 oldString。',
@@ -4146,22 +5088,24 @@ export function createAIPanel(options) {
         return '<attachment' + attrs + '>\n' + item.content + '\n</attachment>';
     }
 
+    function planModeBlock() {
+        return [
+            '<plan_mode>',
+            '当前处于计划模式：只允许只读探索与 ask_user，write_file / edit_file / run_command 不可用。',
+            '请输出一份可执行的 Markdown 计划：目标、涉及文件、按顺序的步骤、验证方式、风险与回滚。',
+            '不要开始实现；计划完成后输出完整计划并停下等待用户批准（用户会点击「执行计划」或发送补充意见）。',
+            '</plan_mode>',
+        ].join('\n');
+    }
+
     async function assembleSystemContext(session, attachmentList) {
         const base = effectiveSystemPrompt(session);
         const parts = [base];
-        if (session && session.planMode) {
-            parts.push([
-                '<plan_mode>',
-                '当前处于计划模式：只允许只读探索与 ask_user，write_file / edit_file / run_command 不可用。',
-                '请输出一份可执行的 Markdown 计划：目标、涉及文件、按顺序的步骤、验证方式、风险与回滚。',
-                '不要开始实现；用户会在界面上点击「执行计划」后才进入执行。',
-                '</plan_mode>',
-            ].join('\n'));
-        }
         const meta = {
             agents: {loaded: false, chars: 0, path: ''},
             memory: {loaded: false, chars: 0, path: '', mode: ''},
             skills: {count: 0, names: []},
+            env: {count: 0},
             workspace: {loaded: false, files: 0},
             attachments: {count: 0, chars: 0},
             errors: [],
@@ -4200,6 +5144,23 @@ export function createAIPanel(options) {
             }
         } catch (e) {
             meta.errors.push('技能索引：' + ((e && e.message) || e));
+        }
+
+        if (settings.aiInjectEnvVars !== false) {
+            try {
+                const vars = (await listEnvVarsForAI()).filter((v) => v.enabled);
+                if (vars.length) {
+                    parts.push([
+                        '<env_vars>',
+                        '以下环境变量由用户在本应用中配置，值不会提供给模型；终端与 run_command 已注入它们，命令里可直接引用（Bash 用 $名称，cmd 用 %名称%）：',
+                        ...vars.map((v) => '- ' + v.name + (v.description ? ' — ' + v.description : '')),
+                        '</env_vars>',
+                    ].join('\n'));
+                    meta.env = {count: vars.length};
+                }
+            } catch (e) {
+                meta.errors.push('环境变量：' + ((e && e.message) || e));
+            }
         }
 
         if (settings.aiInjectContext !== false) {
@@ -4415,6 +5376,7 @@ export function createAIPanel(options) {
             tools: toolsForScope(scope, !!session.planMode),
             profileCfg: configForProfile(profile),
             systemPrompt: AI_DEFAULT_SYSTEM_PROMPT,
+            baseSystemPrompt: AI_DEFAULT_SYSTEM_PROMPT,
             scope,
             plan: !!session.planMode,
         };
@@ -4442,6 +5404,7 @@ export function createAIPanel(options) {
         renderAttachments();
         updateContextCount();
         if (!stream || stream.sessionId !== session.id || stream.stopped) return true;
+        stream.baseSystemPrompt = bundle.text;
         stream.systemPrompt = bundle.text;
         startRound();
         return true;
@@ -4460,11 +5423,18 @@ export function createAIPanel(options) {
             finishStream();
             return;
         }
-        if (s.roundNo >= 15) {
-            showNote('已达到 15 轮工具调用上限，自动结束本轮。');
-            if (s.assistant.status === 'streaming') s.assistant.status = 'done';
-            finishStream();
-            return;
+        // 对齐 harness：无硬性轮数上限。每 AI_TOOL_ROUND_LIMIT 轮注入一次轻提醒，
+        // 停止只由用户中止、上下文压缩或模型自然结束触发。
+        if (s.roundNo > 0 && s.roundNo % AI_TOOL_ROUND_LIMIT === 0 && s.lastRoundNote !== s.roundNo) {
+            s.lastRoundNote = s.roundNo;
+            session.messages.push({
+                role: 'user',
+                content: '（系统提示）工具调用轮次已达 ' + s.roundNo + '。长任务可以继续执行；如已接近完成，建议适时总结收尾。',
+                status: 'done',
+                ts: Date.now(),
+                systemNote: true,
+            });
+            showNote('工具轮次已达 ' + s.roundNo + '，长任务可继续…');
         }
         s.roundNo += 1;
         s.roundId = session.id + '#' + s.baseRound + '-' + s.roundNo;
@@ -4472,6 +5442,11 @@ export function createAIPanel(options) {
         s.roundStartedAt = Date.now();
         s.firstTokenAt = 0;
         s.toolCalls.clear();
+        // 每轮刷新计划状态、工具集与系统提示：plan_mode 工具可在流中途切换会话状态。
+        s.plan = !!session.planMode;
+        s.tools = toolsForScope(currentScopeOf(session), !!session.planMode);
+        s.systemPrompt = (s.baseSystemPrompt || AI_DEFAULT_SYSTEM_PROMPT) +
+            (session.planMode ? '\n\n' + planModeBlock() : '');
         const index = session.messages.indexOf(s.assistant);
         if (index < 0) {
             finishStream();
@@ -4483,7 +5458,7 @@ export function createAIPanel(options) {
         }
         const apiMessages = buildApiMessages(session, index, s.systemPrompt);
         try {
-            const result = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, s.tools);
+            const result = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, s.tools, config.retryMax);
             if (result && typeof result.then === 'function') {
                 result.catch((e) => {
                     if (stream !== s) return;
@@ -4566,7 +5541,7 @@ export function createAIPanel(options) {
     }
 
     function notifyDesktop(options) {
-        const inApp = config.notifyInApp !== false;
+        const inApp = config.notifyInApp === true;
         const system = config.notifySystem === true;
         if (!inApp && !system) return;
         if (inApp) showAppToast(options);
@@ -4665,6 +5640,13 @@ export function createAIPanel(options) {
             const viewing = currentSession();
             if (viewing && (!session || viewing.id !== session.id)) flushMessageQueue(viewing.id);
         }
+        // 一轮结束后检查上下文预算：超阈值则自动压缩（不打断生成，此处已无 stream）。
+        if (session && !current.stopped && current.assistant.status === 'done') {
+            autoCompactCount.delete(session.id);
+            setTimeout(() => {
+                if (!stream && !oneShot && !currentQueueItems().length) maybeAutoCompact(session);
+            }, 0);
+        }
     }
 
     async function handleToolRound(s, calls) {
@@ -4682,10 +5664,33 @@ export function createAIPanel(options) {
         const saveToolTiming = () => {
             if (toolTimingSaved) return;
             toolTimingSaved = true;
+            stopToolHeartbeat();
             if (!requestingAssistant) return;
             requestingAssistant.toolMs = (Number(requestingAssistant.toolMs) || 0) + Math.max(0, Date.now() - toolStartedAt);
             persistSessions();
         };
+        // 工具执行/等待用户输入期间没有网络数据，Go 侧 120s 空闲看门狗会误杀挂起的流
+        // （ask_user 回答慢必触发）。心跳定期重置看门狗，直到工具循环结束。
+        let toolHeartbeat = 0;
+        const startToolHeartbeat = () => {
+            if (toolHeartbeat || !backend.AITouchStream) return;
+            toolHeartbeat = setInterval(() => {
+                if (stream !== s) {
+                    stopToolHeartbeat();
+                    return;
+                }
+                try {
+                    if (backend.AITouchStream) backend.AITouchStream(s.sessionId);
+                } catch (e) {}
+            }, 45000);
+        };
+        const stopToolHeartbeat = () => {
+            if (toolHeartbeat) {
+                clearInterval(toolHeartbeat);
+                toolHeartbeat = 0;
+            }
+        };
+        startToolHeartbeat();
         const allowedTools = new Set((s.tools || toolsForScope(s.scope, s.plan)).map((tool) => tool.name));
         for (const call of calls) {
             if (stream !== s || s.stopped) {
@@ -4729,13 +5734,7 @@ export function createAIPanel(options) {
             saveToolTiming();
             return;
         }
-        if (s.roundNo >= 15) {
-            saveToolTiming();
-            showNote('已达到 15 轮工具调用上限，自动结束本轮。');
-            if (s.assistant.status === 'streaming') s.assistant.status = 'done';
-            finishStream();
-            return;
-        }
+        // 轮次轻提醒统一在 startRound 注入；工具循环不再有硬性上限。
         const profile = activeProfile();
         const assistant = newAssistantMessage(profile);
         assistant.planMode = !!s.plan;
@@ -4748,6 +5747,38 @@ export function createAIPanel(options) {
         }
         saveToolTiming();
         startRound();
+    }
+
+    // 请求重试提示：显示在流式状态条内（429/5xx/网络错误指数退避时），收到数据后清除
+    function clearRetryNote() {
+        const note = el.messages && el.messages.querySelector('.ai-retry-note');
+        if (note) note.remove();
+    }
+
+    function showRetryNote(payload) {
+        const bar = el.messages && el.messages.querySelector('.ai-streaming-bar');
+        if (!bar) return;
+        let note = bar.querySelector('.ai-retry-note');
+        if (!note) {
+            note = document.createElement('span');
+            note.className = 'ai-retry-note';
+            const icon = document.createElement('span');
+            icon.className = 'ai-retry-icon';
+            icon.innerHTML = iconSvg('refresh', 11);
+            note.append(icon);
+            const timer = bar.querySelector('.ai-process-timer');
+            bar.insertBefore(note, timer || null);
+        }
+        const attempt = Math.max(1, Math.round(Number(payload && payload.attempt) || 1));
+        const max = Math.max(1, Math.round(Number(payload && payload.max) || 1));
+        const delayMs = Math.max(0, Number(payload && payload.delayMs) || 0);
+        const reason = String((payload && payload.reason) || '').trim() || '请求失败';
+        note.title = reason + '，' + (delayMs / 1000).toFixed(1) + ' 秒后重试';
+        note.dataset.reason = reason;
+        const label = note.querySelector('.ai-retry-text') || document.createElement('span');
+        label.className = 'ai-retry-text';
+        label.textContent = reason + ' · ' + (delayMs / 1000).toFixed(1) + ' 秒后重试 ' + attempt + '/' + max;
+        if (!label.parentNode) note.append(label);
     }
 
     function handleEvent(name, payload) {
@@ -4769,8 +5800,13 @@ export function createAIPanel(options) {
         if (!stream || !payload || payload.id !== stream.roundId) return;
         const current = stream;
         switch (name) {
+            case 'ai-retry': {
+                showRetryNote(payload);
+                break;
+            }
             case 'ai-chunk':
                 if (payload.delta) {
+                    clearRetryNote();
                     markFirstToken(current);
                     current.assistant.content += payload.delta;
                     scheduleStreamRender();
@@ -4778,6 +5814,7 @@ export function createAIPanel(options) {
                 break;
             case 'ai-think':
                 if (payload.delta) {
+                    clearRetryNote();
                     markFirstToken(current);
                     if (!current.thinkStartedAt) current.thinkStartedAt = Date.now();
                     current.assistant.reasoning += payload.delta;
@@ -4798,6 +5835,7 @@ export function createAIPanel(options) {
                 break;
             }
             case 'ai-done': {
+                clearRetryNote();
                 if (current.renderTimer) {
                     clearTimeout(current.renderTimer);
                     current.renderTimer = 0;
@@ -4827,11 +5865,38 @@ export function createAIPanel(options) {
                     handleToolRound(current, calls);
                     return;
                 }
+                // 空回复兜底：模型偶发返回 finishReason=stop 且无任何内容（ask_user 回答后
+                // 的续轮尤其常见）。移除空 assistant 自动重试一轮，而不是静默「已完成」。
+                if (payload.finishReason === 'stop' && !calls.length &&
+                    !String(current.assistant.content || '').trim() &&
+                    !String(current.assistant.reasoning || '').trim() &&
+                    !current.emptyRetried) {
+                    const session = sessionById(current.sessionId);
+                    if (session) {
+                        const idx = session.messages.indexOf(current.assistant);
+                        if (idx >= 0) session.messages.splice(idx, 1);
+                        const profile = activeProfile();
+                        const assistant = newAssistantMessage(profile);
+                        session.messages.push(assistant);
+                        current.assistant = assistant;
+                        current.emptyRetried = true;
+                        current.thinkStartedAt = 0;
+                        current.firstTokenAt = 0;
+                        current.roundStartedAt = Date.now();
+                        showNote('模型返回了空回复，已自动重试…');
+                        persistSessions();
+                        if (isOpen() && currentSession() === session) renderMessages(true);
+                        setStreamingUI(true);
+                        startRound();
+                        return;
+                    }
+                }
                 current.assistant.status = 'done';
                 finishStream();
                 break;
             }
             case 'ai-error':
+                clearRetryNote();
                 finishStreamError(payload.message || '请求失败');
                 break;
             default:
@@ -4849,6 +5914,7 @@ export function createAIPanel(options) {
         current.stopped = true;
         cancelPendingApprovals('用户已停止生成，写操作已取消');
         cancelPendingAsks('用户已停止生成，问题未回答');
+        cancelPendingEnvCreations('用户已停止生成，变量创建已取消');
         try {
             if (backend.AIStop) backend.AIStop(sessionId);
         } catch (e) {}
@@ -4959,10 +6025,10 @@ export function createAIPanel(options) {
         applyScope(scope);
     }
 
-    function setPlanMode(on, announce) {
+    function setPlanMode(on, announce, force) {
         const session = currentSession();
         if (!session) return false;
-        if (stream || oneShot) {
+        if ((stream || oneShot) && force !== true) {
             if (announce !== false) flash('生成中不能切换计划模式', true);
             return false;
         }
@@ -5441,6 +6507,65 @@ export function createAIPanel(options) {
         selection.addRange(range);
     }
 
+    // ---------- 输入框右键编辑菜单（撤销/重做/剪切/复制/粘贴/全选） ----------
+
+    function editableHasSelection(target) {
+        if (typeof target.selectionStart === 'number') return target.selectionEnd > target.selectionStart;
+        const selection = window.getSelection ? window.getSelection() : null;
+        return !!(selection && selection.rangeCount && !selection.isCollapsed);
+    }
+
+    function execEditable(target, command) {
+        target.focus();
+        try {
+            return !!document.execCommand(command);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function pasteIntoEditable(target) {
+        let text = '';
+        try {
+            if (backend.GetClipboardText) text = String((await backend.GetClipboardText()) || '');
+        } catch (e) {}
+        if (!text && navigator.clipboard && navigator.clipboard.readText) {
+            try {
+                text = await navigator.clipboard.readText();
+            } catch (e) {}
+        }
+        if (!text) return;
+        target.focus();
+        // execCommand('insertText') 会进 undo 栈（菜单粘贴也能 Ctrl+Z 撤销）；不可用时回退 setRangeText
+        let ok = false;
+        try {
+            ok = document.execCommand('insertText', false, text);
+        } catch (e) {}
+        if (!ok) {
+            if (typeof target.selectionStart === 'number') {
+                target.setRangeText(text, target.selectionStart, target.selectionEnd, 'end');
+            } else {
+                target.value += text;
+            }
+            target.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    }
+
+    function showAIEditMenu(event, target) {
+        if (!showContextMenu) return;
+        const hasSel = editableHasSelection(target);
+        showContextMenu([
+            {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', action: () => execEditable(target, 'undo')},
+            {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', action: () => execEditable(target, 'redo')},
+            {sep: true},
+            {label: '剪切', shortcut: 'Ctrl+X', icon: 'E8C6', disabled: !hasSel, action: () => execEditable(target, 'cut')},
+            {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !hasSel, action: () => execEditable(target, 'copy')},
+            {label: '粘贴', shortcut: 'Ctrl+V', icon: 'E77F', action: () => pasteIntoEditable(target)},
+            {sep: true},
+            {label: '全选', shortcut: 'Ctrl+A', icon: 'E8B3', action: () => execEditable(target, 'selectAll')},
+        ], event.clientX, event.clientY);
+    }
+
     function showAIMessageContextMenu(event) {
         if (!showContextMenu) return;
         const selection = window.getSelection ? window.getSelection() : null;
@@ -5535,6 +6660,21 @@ export function createAIPanel(options) {
                 const sessionBox = card && card.querySelector('input[data-ai-remember="session"]');
                 const remember = always && always.checked ? 'always' : (sessionBox && sessionBox.checked ? 'session' : '');
                 decideApproval(message, approveBtn.dataset.aiApprove === 'apply', remember);
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+        const envBtn = e.target.closest('[data-ai-env]');
+        if (envBtn) {
+            const wrap = envBtn.closest('.ai-msg');
+            const session = currentSession();
+            const index = wrap ? Number(wrap.dataset.aiIdx) : -1;
+            const message = session && index >= 0 ? session.messages[index] : null;
+            if (message) {
+                const card = envBtn.closest('.ai-tool-card');
+                const input = card && card.querySelector('[data-ai-env-value]');
+                decideEnvCreation(message, envBtn.dataset.aiEnv === 'create', input ? input.value : '');
             }
             e.preventDefault();
             e.stopPropagation();
@@ -6308,7 +7448,9 @@ export function createAIPanel(options) {
         const {tokens, windowSize, percent} = estimateCurrentTokens();
         const threshold = aiClamp(Number(config.autoCompactThreshold) || 0.8, 0.5, 0.95);
         const show = percent >= threshold;
+        const wasHidden = el.ctxBanner.classList.contains('hidden');
         el.ctxBanner.classList.toggle('hidden', !show);
+        if (wasHidden !== !show) positionOverlays();
         if (show && el.ctxBannerText) {
             el.ctxBannerText.textContent = '上下文约 ' + Math.round(percent * 100) + '%（约 ' + tokens + ' / ' + windowSize +
                 ' tokens，估算），建议压缩';
@@ -6339,50 +7481,107 @@ export function createAIPanel(options) {
         return transcript;
     }
 
-    function startCompact() {
+    // options.auto = true：自动压缩。不弹窗打断、用状态栏提示，且不要求用户在当前会话。
+    function startCompact(options) {
+        const auto = !!(options && options.auto);
+        const notify = (text, isError) => {
+            if (auto) {
+                try {
+                    if (typeof flash === 'function') flash(text, isError);
+                } catch (e) {}
+            } else {
+                showNote(text, isError);
+            }
+        };
         if (stream) {
-            showNote('请先停止当前生成，再压缩上下文。', true);
-            return;
+            if (!auto) notify('请先停止当前生成，再压缩上下文。', true);
+            return false;
         }
         if (oneShot) {
-            showNote('已有压缩任务在进行中。', true);
-            return;
+            if (!auto) notify('已有压缩任务在进行中。', true);
+            return false;
         }
-        const session = currentSession();
+        const session = (options && options.session) || currentSession();
         const profile = activeProfile();
         if (!session || !profile) {
-            showNote('请先配置 AI 并创建会话。', true);
-            return;
+            if (!auto) notify('请先配置 AI 并创建会话。', true);
+            return false;
         }
         if (session.archivedAt) {
-            showNote('该会话已归档，请先取消归档再压缩。', true);
-            return;
+            if (!auto) notify('该会话已归档，请先取消归档再压缩。', true);
+            return false;
         }
         if (session.messages.length <= 6) {
-            showNote('消息太少（≤6 条），无需压缩。');
-            return;
+            if (!auto) notify('消息太少（≤6 条），无需压缩。');
+            return false;
         }
         if (!backend.AISendChat) {
-            showNote('当前版本不支持压缩。', true);
-            return;
+            notify('当前版本不支持压缩。', true);
+            return false;
         }
         const id = session.id + '#compact-' + Date.now() + '-' + (++compactSeq);
-        oneShot = {id, kind: 'compact', sessionId: session.id, buffer: '', startedAt: Date.now()};
-        showNote('正在压缩上下文…（可点停止取消）');
+        oneShot = {id, kind: 'compact', sessionId: session.id, buffer: '', startedAt: Date.now(), auto};
+        notify(auto ? '上下文接近上限，正在自动压缩…' : '正在压缩上下文…（可点停止取消）');
         setStreamingUI(true);
         updateSendState();
         const messages = [
             {role: 'system', content: AI_COMPACT_SYSTEM_PROMPT},
             {role: 'user', content: '请压缩以下对话记录：\n\n' + compactTranscript(session)},
         ];
-        Promise.resolve(backend.AISendChat(id, configForProfile(profile), messages, [])).catch((e) => {
+        Promise.resolve(backend.AISendChat(id, configForProfile(profile), messages, [], config.retryMax)).catch((e) => {
             if (!oneShot || oneShot.id !== id) return;
             const message = (e && e.message) || String(e);
+            const wasAuto = oneShot.auto;
             oneShot = null;
             setStreamingUI(false);
             updateSendState();
-            showNote('压缩失败：' + message, true);
+            if (wasAuto) {
+                try {
+                    if (typeof flash === 'function') flash('自动压缩失败：' + message, true);
+                } catch (err) {}
+            } else {
+                showNote('压缩失败：' + message, true);
+            }
         });
+        return true;
+    }
+
+    // 自动压缩：上下文占用达到 autoCompactThreshold 时触发一次 /compact。
+    function maybeAutoCompact(session) {
+        const target = session || currentSession();
+        if (!target) return false;
+        if (!config.autoCompact) return false;
+        if (stream || oneShot) return false;
+        if (target.archivedAt) return false;
+        // 用户正在被提问 / 计划待批准时不要抢走 composer
+        if (currentPendingAskEntry() || planApprovalMessage(target)) return false;
+        if ((target.messages || []).length <= 6) return false;
+        const profile = activeProfile();
+        if (!profile) return false;
+        const windowSize = profile.contextWindow || 128000;
+        if (windowSize <= 0) return false;
+        const threshold = aiClamp(Number(config.autoCompactThreshold) || 0.8, 0.5, 0.95);
+        const bundle = lastSystemPrompt || AI_DEFAULT_SYSTEM_PROMPT;
+        const apiMessages = buildApiMessages(target, null, bundle);
+        let tokens = aiEstimateTokens(apiMessages.map((message) => aiTextOf(message.content)).join('\n')) +
+            aiImageStats(apiMessages).tokens;
+        tokens += toolsTokenEstimate(target);
+        if (tokens < windowSize * threshold) return false;
+        const c = autoCompactCount.get(target.id) || 0;
+        if (c >= 2) {
+            const now = Date.now();
+            if (now - autoCompactWarnedAt > 60000) {
+                autoCompactWarnedAt = now;
+                try {
+                    if (typeof flash === 'function') {
+                        flash('上下文已连续自动压缩 ' + c + ' 次仍接近上限，建议开启新会话或减少附件', true);
+                    }
+                } catch (e) {}
+            }
+            return false;
+        }
+        autoCompactCount.set(target.id, c + 1);
+        return startCompact({auto: true, session: target});
     }
 
     function finishCompact(payload) {
@@ -6471,9 +7670,16 @@ export function createAIPanel(options) {
         const stats = diffStats(ops);
         const preview = buildDiffPreview(ops);
         const callId = aiNowId('call_init_');
+        // /init 是用户主动发起的回合：必须带 user 消息开新组，否则 groupTurns 会把它
+        // 并进上一回合（组尾是 tool 消息 → turnFinalItem 为空 → 显示「未完成」）。
+        session.messages.push({
+            role: 'user',
+            content: '/init（生成 AGENTS.md 模板）',
+            ts: Date.now(),
+        });
         const assistantMessage = {
             role: 'assistant',
-            content: '按要求生成 AGENTS.md 模板。',
+            content: '',
             reasoning: '',
             thinkingSignature: '',
             toolCalls: [{id: callId, name: 'write_file', arguments: JSON.stringify({path: 'AGENTS.md'})}],
@@ -6969,9 +8175,11 @@ export function createAIPanel(options) {
         if (opt.assistantCard) opt.assistantCard.checked = settings.aiAssistantCard === true;
         if (opt.maxSessions) opt.maxSessions.value = String(aiClampInt(settings.aiMaxSessions, 2, 500, 50));
         if (opt.logEnabled) opt.logEnabled.checked = config.logEnabled !== false;
-        if (opt.notifyInApp) opt.notifyInApp.checked = config.notifyInApp !== false;
+        if (opt.appControl) opt.appControl.checked = appControlOn();
+        if (opt.notifyInApp) opt.notifyInApp.checked = config.notifyInApp === true;
         if (opt.notifySystem) opt.notifySystem.checked = config.notifySystem === true;
         if (opt.notifyFinish) opt.notifyFinish.checked = config.notifyFinish !== false;
+        if (opt.retryMax) opt.retryMax.value = String(config.retryMax);
         if (opt.notifyError) opt.notifyError.checked = config.notifyError !== false;
         if (opt.notifyAsk) opt.notifyAsk.checked = config.notifyAsk !== false;
         if (opt.notifySound) opt.notifySound.checked = config.notifySound !== false;
@@ -6988,7 +8196,9 @@ export function createAIPanel(options) {
         if (opt.memoryMode) opt.memoryMode.value = config.memoryMode === 'app' ? 'app' : 'workspace';
         if (opt.injectContext) opt.injectContext.checked = settings.aiInjectContext !== false;
         if (opt.injectAgents) opt.injectAgents.checked = settings.aiInjectAgentsMd !== false;
+        if (opt.injectEnvVars) opt.injectEnvVars.checked = settings.aiInjectEnvVars !== false;
         if (opt.threshold) opt.threshold.value = String(aiClamp(Number(config.autoCompactThreshold) || 0.8, 0.5, 0.95));
+        if (opt.autoCompact) opt.autoCompact.checked = config.autoCompact !== false;
         renderApprovedSettings();
     }
 
@@ -7267,8 +8477,9 @@ export function createAIPanel(options) {
             approvedPaths: config.approvedPaths,
             disabledSkills: config.disabledSkills,
             autoCompactThreshold: config.autoCompactThreshold,
+            autoCompact: config.autoCompact,
             logEnabled: config.logEnabled !== false,
-            notifyInApp: config.notifyInApp !== false,
+            notifyInApp: config.notifyInApp === true,
             notifySystem: config.notifySystem === true,
             notifyFinish: config.notifyFinish !== false,
             notifyError: config.notifyError !== false,
@@ -7346,6 +8557,7 @@ export function createAIPanel(options) {
             if (Number.isFinite(Number(data.autoCompactThreshold))) {
                 config.autoCompactThreshold = aiClamp(Number(data.autoCompactThreshold), 0.5, 0.95);
             }
+            if (typeof data.autoCompact === 'boolean') config.autoCompact = data.autoCompact;
             if (typeof data.logEnabled === 'boolean') config.logEnabled = data.logEnabled;
             for (const key of ['notifyInApp', 'notifySystem', 'notifyFinish', 'notifyError', 'notifyAsk', 'notifySound']) {
                 if (typeof data[key] === 'boolean') config[key] = data[key];
@@ -7573,6 +8785,11 @@ export function createAIPanel(options) {
             saveSettings();
             updateContextCount();
         });
+        if (opt.injectEnvVars) opt.injectEnvVars.addEventListener('change', () => {
+            settings.aiInjectEnvVars = !!opt.injectEnvVars.checked;
+            saveSettings();
+            updateContextCount();
+        });
         if (opt.sendKey) opt.sendKey.addEventListener('change', () => {
             settings.aiSendKey = opt.sendKey.value === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
             saveSettings();
@@ -7652,6 +8869,19 @@ export function createAIPanel(options) {
         bindNotifyToggle(opt.notifyError, 'notifyError', '任务失败通知');
         bindNotifyToggle(opt.notifyAsk, 'notifyAsk', 'AI 提问通知');
         bindNotifyToggle(opt.notifySound, 'notifySound', '失焦提醒（闪烁/提示音）');
+        // app_control 开关：切换后立即刷新技能列表缓存（cadt-ui 技能随开关显隐）
+        if (opt.appControl) opt.appControl.addEventListener('change', () => {
+            config.appControlEnabled = !!opt.appControl.checked;
+            saveAIConfig();
+            skillsCache.at = 0;
+            setSettingsStatus('应用操作（app_control）：' + (opt.appControl.checked ? '已开启' : '已关闭'), 'ok');
+        });
+        if (opt.retryMax) opt.retryMax.addEventListener('change', () => {
+            config.retryMax = aiClampInt(opt.retryMax.value, 0, 10, 5);
+            opt.retryMax.value = String(config.retryMax);
+            saveAIConfig();
+            setSettingsStatus(config.retryMax > 0 ? '失败重试：' + config.retryMax + ' 次（指数退避）' : '失败重试：关闭', 'ok');
+        });
         if (opt.askTimeout) opt.askTimeout.addEventListener('change', () => {
             config.askTimeout = aiClampInt(opt.askTimeout.value, 0, 3600, 300);
             opt.askTimeout.value = String(config.askTimeout);
@@ -7753,6 +8983,12 @@ export function createAIPanel(options) {
             config.autoCompactThreshold = aiClamp(Number(opt.threshold.value) || 0.8, 0.5, 0.95);
             opt.threshold.value = String(config.autoCompactThreshold);
             saveAIConfig();
+            updateCtxBanner();
+        });
+        if (opt.autoCompact) opt.autoCompact.addEventListener('change', () => {
+            config.autoCompact = !!opt.autoCompact.checked;
+            saveAIConfig();
+            setSettingsStatus(config.autoCompact ? '已开启自动压缩上下文' : '已关闭自动压缩上下文', 'ok');
             updateCtxBanner();
         });
         if (opt.prompt) opt.prompt.addEventListener('change', () => {
@@ -8029,7 +9265,14 @@ export function createAIPanel(options) {
             if (el.messages && el.messages.contains(e.target)) return;
             // 全屏模式下 AI 面板挂在主编辑区内：阻止事件落到主编辑区的空白右键菜单
             e.stopPropagation();
-            if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+            const editTarget = e.target.closest ? e.target.closest('input, textarea, [contenteditable="true"]') : null;
+            if (editTarget && panel.contains(editTarget)) {
+                // WebView2 没有可依赖的原生编辑菜单：composer 等输入框给撤销/重做/剪贴/复制/粘贴/全选
+                e.preventDefault();
+                showAIEditMenu(e, editTarget);
+                return;
+            }
+            if (e.target.closest && e.target.closest('select')) return;
             e.preventDefault();
         });
         if (el.scrollBtn) el.scrollBtn.addEventListener('click', () => scrollToBottom(true));
@@ -8140,6 +9383,78 @@ export function createAIPanel(options) {
         return null;
     }
 
+    function currentPendingEnvEntry() {
+        const session = currentSession();
+        if (!session) return null;
+        for (const entry of pendingEnvCreations.values()) {
+            if (entry.session === session && entry.toolMessage && entry.toolMessage.envAsk && entry.toolMessage.envAsk.state === 'pending') return entry;
+        }
+        return null;
+    }
+
+    function renderEnvAskTakeover(entry) {
+        const toolMessage = entry.toolMessage;
+        const envAsk = toolMessage.envAsk;
+        el.takeover.dataset.takeoverKey = 'env:' + (toolMessage.toolCallId || aiNowId('env-ask-'));
+        el.takeover.textContent = '';
+        const card = document.createElement('div');
+        card.className = 'ai-takeover-card ai-env-takeover';
+        const head = document.createElement('div');
+        head.className = 'ai-takeover-head';
+        const icon = document.createElement('span');
+        icon.className = 'ai-ask-icon';
+        icon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.8" width="11.6" height="8.4" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5.6 8h4.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+        const title = document.createElement('span');
+        title.className = 'ai-takeover-title';
+        title.textContent = '创建环境变量 · ' + envAsk.name;
+        head.append(icon, title);
+        const body = document.createElement('div');
+        body.className = 'ai-takeover-body';
+        if (envAsk.description) {
+            const desc = document.createElement('div');
+            desc.className = 'ai-ask-detail';
+            desc.textContent = envAsk.description;
+            body.appendChild(desc);
+        }
+        const row = document.createElement('div');
+        row.className = 'env-ask-row';
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.className = 'ai-settings-input env-ask-input';
+        input.placeholder = '输入变量值（仅你可见）';
+        input.spellcheck = false;
+        input.autocomplete = 'off';
+        const submit = (approved) => decideEnvCreation(toolMessage, approved, input.value);
+        input.addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') { e.preventDefault(); submit(true); }
+            else if (e.key === 'Escape') { e.preventDefault(); submit(false); }
+        });
+        row.appendChild(input);
+        const hint = document.createElement('div');
+        hint.className = 'ai-approval-more';
+        hint.textContent = '值由你亲自输入，AI 看不到；保存后注入终端与命令桥。Enter 创建 · Esc 放弃。';
+        const actions = document.createElement('div');
+        actions.className = 'ai-approval-actions';
+        const deny = document.createElement('button');
+        deny.type = 'button';
+        deny.className = 'dlg-btn';
+        deny.textContent = '放弃';
+        deny.addEventListener('click', () => submit(false));
+        const apply = document.createElement('button');
+        apply.type = 'button';
+        apply.className = 'dlg-btn primary';
+        apply.textContent = '创建';
+        apply.addEventListener('click', () => submit(true));
+        actions.append(deny, apply);
+        body.append(row, hint, actions);
+        card.append(head, body);
+        el.takeover.appendChild(card);
+        setTimeout(() => {
+            if (input.isConnected) input.focus();
+        }, 50);
+    }
+
     function planApprovalMessage(session) {
         if (!session || stream || oneShot || !session.planMode) return null;
         const index = lastAssistantIndex(session);
@@ -8163,12 +9478,9 @@ export function createAIPanel(options) {
         let draft = askDrafts.get(key);
         if (draft) return draft;
         draft = {
-            answers: entry.ask.questions.map((question) => ({
-                selected: question.options.filter((option) => option.recommended)
-                    .map((option) => option.label)
-                    .slice(0, question.multiSelect ? 8 : 1),
-                custom: '',
-            })),
+            idx: 0,
+            // 推荐项只显示「推荐」角标不预选：预选会和「点选自动下一题」冲突（点推荐=取消选中）。
+            answers: entry.ask.questions.map(() => ({selected: [], custom: ''})),
         };
         askDrafts.set(key, draft);
         return draft;
@@ -8178,10 +9490,12 @@ export function createAIPanel(options) {
         const ask = entry.ask;
         const draft = askDraftFor(entry);
         const key = askTakeoverKey(entry);
+        const multi = ask.questions.length > 1;
+        draft.idx = multi ? aiClampInt(draft.idx, 0, ask.questions.length - 1, 0) : 0;
         el.takeover.dataset.takeoverKey = 'ask:' + key;
         el.takeover.textContent = '';
         const card = document.createElement('div');
-        card.className = 'ai-takeover-card ai-ask-takeover';
+        card.className = 'ai-takeover-card ai-ask-takeover' + (multi ? ' multi' : '');
         const head = document.createElement('div');
         head.className = 'ai-takeover-head';
         const icon = document.createElement('span');
@@ -8189,7 +9503,7 @@ export function createAIPanel(options) {
         icon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".75" fill="currentColor"/></svg>';
         const title = document.createElement('span');
         title.className = 'ai-takeover-title';
-        title.textContent = 'AI 提问' + (ask.questions.length > 1 ? ' · ' + ask.questions.length + ' 个问题' : '');
+        title.textContent = 'AI 提问' + (multi ? ' · ' + ask.questions.length + ' 个问题' : '');
         head.append(icon, title);
         if (ask.deadline) {
             const countdown = document.createElement('span');
@@ -8200,97 +9514,172 @@ export function createAIPanel(options) {
         }
         const body = document.createElement('div');
         body.className = 'ai-takeover-body';
-        ask.questions.forEach((question, index) => {
-            const block = document.createElement('div');
-            block.className = 'ai-ask-form-q';
-            if (question.header) {
-                const header = document.createElement('div');
-                header.className = 'ai-ask-header';
-                header.textContent = question.header;
-                block.appendChild(header);
+        const qi = draft.idx;
+        const question = ask.questions[qi];
+        const answerDraft = draft.answers[qi];
+        const block = document.createElement('div');
+        block.className = 'ai-ask-form-q single';
+        const qrow = document.createElement('div');
+        qrow.className = 'ai-ask-qrow';
+        if (question.header) {
+            const header = document.createElement('span');
+            header.className = 'ai-ask-header';
+            header.textContent = question.header;
+            qrow.appendChild(header);
+        }
+        const q = document.createElement('span');
+        q.className = 'ai-ask-question';
+        q.textContent = question.question;
+        qrow.appendChild(q);
+        if (multi) {
+            const pager = document.createElement('span');
+            pager.className = 'ai-ask-pager';
+            const prev = document.createElement('button');
+            prev.type = 'button';
+            prev.className = 'ai-ask-page-btn';
+            prev.title = '上一个问题';
+            prev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+            prev.disabled = qi <= 0;
+            prev.addEventListener('click', () => {
+                draft.idx = Math.max(0, draft.idx - 1);
+                renderAskTakeover(entry);
+            });
+            const pos = document.createElement('span');
+            pos.className = 'ai-ask-page-pos';
+            pos.textContent = (qi + 1) + ' / ' + ask.questions.length;
+            const next = document.createElement('button');
+            next.type = 'button';
+            next.className = 'ai-ask-page-btn';
+            next.title = '下一个问题';
+            next.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+            next.disabled = qi >= ask.questions.length - 1;
+            next.addEventListener('click', () => {
+                draft.idx = Math.min(ask.questions.length - 1, draft.idx + 1);
+                renderAskTakeover(entry);
+            });
+            pager.append(prev, pos, next);
+            qrow.appendChild(pager);
+        }
+        block.appendChild(qrow);
+        if (question.detail) {
+            const detail = document.createElement('div');
+            detail.className = 'ai-ask-detail';
+            detail.textContent = question.detail;
+            block.appendChild(detail);
+        }
+        const options = document.createElement('div');
+        options.className = 'ai-ask-options';
+        for (let oi = 0; oi < question.options.length; oi++) {
+            const option = question.options[oi];
+            const selected = answerDraft.selected.includes(option.label);
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'ai-ask-option' + (option.recommended ? ' recommended' : '') + (selected ? ' selected' : '');
+            const num = document.createElement('span');
+            num.className = 'ai-ask-num';
+            num.textContent = (oi + 1) + '.';
+            const label = document.createElement('span');
+            label.className = 'ai-ask-option-label';
+            label.textContent = option.label;
+            button.append(num, label);
+            if (option.recommended) {
+                const badge = document.createElement('span');
+                badge.className = 'ai-ask-badge';
+                badge.textContent = '推荐';
+                button.appendChild(badge);
             }
-            const q = document.createElement('div');
-            q.className = 'ai-ask-question';
-            q.textContent = (ask.questions.length > 1 ? (index + 1) + '. ' : '') + question.question;
-            block.appendChild(q);
-            if (question.detail) {
-                const detail = document.createElement('div');
-                detail.className = 'ai-ask-detail';
-                detail.textContent = question.detail;
-                block.appendChild(detail);
+            if (option.description) {
+                const desc = document.createElement('span');
+                desc.className = 'ai-ask-option-desc';
+                desc.textContent = option.description;
+                button.appendChild(desc);
             }
-            const options = document.createElement('div');
-            options.className = 'ai-ask-options';
-            const answerDraft = draft.answers[index];
-            for (const option of question.options) {
-                const selected = answerDraft.selected.includes(option.label);
-                const button = document.createElement('button');
-                button.type = 'button';
-                button.className = 'ai-ask-option' + (option.recommended ? ' recommended' : '') + (selected ? ' selected' : '');
-                const label = document.createElement('span');
-                label.className = 'ai-ask-option-label';
-                label.textContent = option.label;
-                button.appendChild(label);
-                if (option.recommended) {
-                    const badge = document.createElement('span');
-                    badge.className = 'ai-ask-badge';
-                    badge.textContent = '推荐';
-                    button.appendChild(badge);
+            button.addEventListener('click', () => {
+                if (question.multiSelect) {
+                    const at = answerDraft.selected.indexOf(option.label);
+                    if (at >= 0) answerDraft.selected.splice(at, 1);
+                    else answerDraft.selected.push(option.label);
+                } else {
+                    answerDraft.selected = selected ? [] : [option.label];
+                    answerDraft.custom = '';
+                    if (answerDraft.selected.length && qi < ask.questions.length - 1) draft.idx = qi + 1;
                 }
-                if (option.description) {
-                    const desc = document.createElement('span');
-                    desc.className = 'ai-ask-option-desc';
-                    desc.textContent = option.description;
-                    button.appendChild(desc);
-                }
-                button.addEventListener('click', () => {
-                    if (question.multiSelect) {
-                        const at = answerDraft.selected.indexOf(option.label);
-                        if (at >= 0) answerDraft.selected.splice(at, 1);
-                        else answerDraft.selected.push(option.label);
-                    } else {
-                        answerDraft.selected = selected ? [] : [option.label];
-                        answerDraft.custom = '';
-                    }
+                renderAskTakeover(entry);
+            });
+            options.appendChild(button);
+        }
+        if (options.childNodes.length) block.appendChild(options);
+        if (question.allowCustom) {
+            const custom = document.createElement('div');
+            custom.className = 'ai-ask-custom';
+            const num = document.createElement('span');
+            num.className = 'ai-ask-num';
+            num.textContent = (question.options.length + 1) + '.';
+            const input = document.createElement('input');
+            input.className = 'ai-ask-input';
+            input.type = 'text';
+            input.placeholder = question.options.length ? '输入你的回答…' : '输入你的回答…';
+            input.spellcheck = false;
+            input.value = answerDraft.custom;
+            input.addEventListener('input', () => {
+                answerDraft.custom = input.value;
+            });
+            input.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                if (qi < ask.questions.length - 1) {
+                    draft.idx = qi + 1;
                     renderAskTakeover(entry);
-                });
-                options.appendChild(button);
-            }
-            if (options.childNodes.length) block.appendChild(options);
-            if (question.allowCustom) {
-                const custom = document.createElement('div');
-                custom.className = 'ai-ask-custom';
-                const input = document.createElement('input');
-                input.className = 'ai-ask-input';
-                input.type = 'text';
-                input.placeholder = question.options.length ? '其他回答…' : '输入回答…';
-                input.spellcheck = false;
-                input.value = answerDraft.custom;
-                input.addEventListener('input', () => {
-                    answerDraft.custom = input.value;
-                });
-                custom.appendChild(input);
-                block.appendChild(custom);
-            }
-            body.appendChild(block);
-        });
+                } else {
+                    submitAskAnswers(entry, draft.answers);
+                }
+            });
+            custom.append(num, input);
+            block.appendChild(custom);
+        }
+        body.appendChild(block);
         const foot = document.createElement('div');
         foot.className = 'ai-takeover-foot';
         const hint = document.createElement('span');
         hint.className = 'ai-takeover-hint';
-        hint.textContent = '可留空跳过；超时按设置处理';
+        hint.textContent = multi
+            ? 'Tab / 上下键选择，回车或空格选中；左右方向键切换问题'
+            : '可留空跳过；超时按设置处理';
         const stop = document.createElement('button');
         stop.type = 'button';
         stop.className = 'dlg-btn';
         stop.textContent = '停止本轮';
         stop.addEventListener('click', () => stopGeneration());
-        const submit = document.createElement('button');
-        submit.type = 'button';
-        submit.className = 'dlg-btn primary';
-        submit.textContent = '提交回答';
-        submit.addEventListener('click', () => submitAskAnswers(entry, draft.answers));
-        foot.append(hint, stop, submit);
+        const main = document.createElement('button');
+        main.type = 'button';
+        main.className = 'dlg-btn primary';
+        if (multi && qi < ask.questions.length - 1) {
+            main.textContent = '继续';
+            main.addEventListener('click', () => {
+                draft.idx = qi + 1;
+                renderAskTakeover(entry);
+            });
+        } else {
+            main.textContent = '提交回答';
+            main.addEventListener('click', () => submitAskAnswers(entry, draft.answers));
+        }
+        foot.append(hint, stop, main);
         card.append(head, body, foot);
+        if (multi) {
+            card.addEventListener('keydown', (e) => {
+                const tag = e.target && e.target.tagName;
+                if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+                if (e.key === 'ArrowLeft' && qi > 0) {
+                    e.preventDefault();
+                    draft.idx = qi - 1;
+                    renderAskTakeover(entry);
+                } else if (e.key === 'ArrowRight' && qi < ask.questions.length - 1) {
+                    e.preventDefault();
+                    draft.idx = qi + 1;
+                    renderAskTakeover(entry);
+                }
+            });
+        }
         el.takeover.appendChild(card);
     }
 
@@ -8360,11 +9749,13 @@ export function createAIPanel(options) {
     function updateComposerTakeover(force) {
         if (!el.takeover || !el.composer) return;
         const ask = currentPendingAskEntry();
+        const env = ask ? null : currentPendingEnvEntry();
         const session = currentSession();
-        const plan = ask ? null : planApprovalMessage(session);
+        const plan = (ask || env) ? null : planApprovalMessage(session);
         const planKey = plan ? planApprovalKey(session, plan) : '';
         let key = '';
         if (ask) key = 'ask:' + askTakeoverKey(ask);
+        else if (env) key = 'env:' + ((env.toolMessage && env.toolMessage.toolCallId) || '');
         else if (plan && dismissedPlanApproval !== planKey) key = 'plan:' + planKey;
         if (!force && key && el.takeover.dataset.takeoverKey === key) return;
         if (!key) {
@@ -8379,6 +9770,7 @@ export function createAIPanel(options) {
         el.takeover.classList.remove('hidden');
         el.composer.classList.add('ai-takeover-active');
         if (ask) renderAskTakeover(ask);
+        else if (env) renderEnvAskTakeover(env);
         else if (plan) renderPlanTakeover(session, plan);
         positionOverlays();
         if (stickBottom) scrollToBottom(false);
@@ -8670,5 +10062,33 @@ export function createAIPanel(options) {
         getMode: () => mode,
         refreshDockFill,
         getScope: currentScope,
+        bridgeNewSession: async (opts2) => {
+            const title = String((opts2 && opts2.title) || '').trim();
+            const message = String((opts2 && opts2.message) || '').trim();
+            if (typeof newSession !== 'function' || typeof submitText !== 'function') throw new Error('会话桥不可用');
+            open(true);
+            newSession();
+            const session = currentSession();
+            if (title && session) {
+                session.title = title.slice(0, 60);
+                persistSessions();
+                renderSessionList();
+            }
+            if (message) await submitText(message);
+            return session ? {id: session.id, title: session.title} : null;
+        },
+        bridgeSwitchSession: (id) => {
+            if (typeof switchSession !== 'function') throw new Error('会话桥不可用');
+            switchSession(String(id || ''));
+            return currentSession() ? {id: currentSession().id, title: currentSession().title} : null;
+        },
+        bridgeListSessions: () => (sessions || []).map((s) => ({
+            id: s.id,
+            title: s.title,
+            scope: s.scope || 'read',
+            planMode: !!s.planMode,
+            messages: (s.messages || []).length,
+            active: s.id === (config && config.activeSessionId),
+        })),
     };
 }

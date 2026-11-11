@@ -759,6 +759,26 @@ const mockBackend = {
     async RunCommandSync(exe, args, cwd, timeoutMs) {
         return {code: 0, stdout: '[mock] ' + exe + ' ' + (args || []).join(' ') + (cwd ? ' (cwd ' + cwd + ')' : ''), stderr: ''};
     },
+    async GetEnvVars() {
+        if (!window.__mockEnvVars) {
+            window.__mockEnvVars = {
+                encrypted: true,
+                supported: true,
+                vars: [{name: 'DEMO_API_KEY', value: 'sk-demo-123', description: '演示密钥（mock）', enabled: true}],
+            };
+        }
+        return JSON.parse(JSON.stringify(window.__mockEnvVars));
+    },
+    async SetEnvVars(vars) {
+        if (!window.__mockEnvVars) window.__mockEnvVars = {encrypted: true, vars: []};
+        window.__mockEnvVars.vars = JSON.parse(JSON.stringify(vars || []));
+        return null;
+    },
+    async SetEnvVarEncrypted(on) {
+        if (!window.__mockEnvVars) window.__mockEnvVars = {encrypted: false, vars: []};
+        window.__mockEnvVars.encrypted = !!on;
+        return null;
+    },
     async AIRunShellCommand(command, cwd, timeoutMs) {
         await new Promise((resolve) => setTimeout(resolve, 200));
         return {
@@ -781,6 +801,59 @@ const mockBackend = {
         return null;
     },
     async StopCommand() {},
+    async BrowserOpen(id, url, profileKey) {
+        if (!window.__mockBrowserTabs) window.__mockBrowserTabs = new Map();
+        if (window.__mockBrowserTabs.size >= 4) throw new Error('浏览器标签页最多同时 4 个');
+        const title = (url && url !== 'about:blank') ? '[mock] ' + url.replace(/^https?:\/\//, '') : '[mock] 新标签页';
+        window.__mockBrowserTabs.set(id, {id, url: url || 'about:blank', title});
+        return {id, url: url || 'about:blank', title};
+    },
+    async BrowserNavigate(id, url) {
+        const tab = window.__mockBrowserTabs && window.__mockBrowserTabs.get(id);
+        if (!tab) throw new Error('浏览器标签页不存在');
+        tab.url = url;
+        tab.title = '[mock] ' + url.replace(/^https?:\/\//, '');
+        return null;
+    },
+    async BrowserGoBack(id) { return null; },
+    async BrowserGoForward(id) { return null; },
+    async BrowserReload(id) { return null; },
+    async BrowserStop(id) { return null; },
+    async BrowserState(id) {
+        const tab = window.__mockBrowserTabs && window.__mockBrowserTabs.get(id);
+        if (!tab) throw new Error('浏览器标签页不存在');
+        return {id, url: tab.url, title: tab.title, canGoBack: false, canGoForward: false, loading: false};
+    },
+    async BrowserEval(id, script) {
+        return JSON.stringify({result: {value: '[mock eval] ' + String(script).slice(0, 60)}});
+    },
+    async BrowserCallCDP(id, method, paramsJSON) {
+        throw new Error('CDP 通道暂不可用（' + method + '）');
+    },
+    async BrowserCaptureScreenshot(id) {
+        const tab = window.__mockBrowserTabs && window.__mockBrowserTabs.get(id);
+        window.__mockShotUrl = tab ? tab.url : id;
+        return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    },
+    async BrowserSetBounds(id, x, y, w, h) {
+        if (!window.__mockBrowserBounds) window.__mockBrowserBounds = new Map();
+        window.__mockBrowserBounds.set(id, {x, y, w, h});
+        if (w > 0 && h > 0) {
+            if (!window.__mockBrowserVisible) window.__mockBrowserVisible = new Map();
+            window.__mockBrowserVisible.set(id, true);
+        }
+        return null;
+    },
+    async BrowserSetVisible(id, visible) {
+        if (!window.__mockBrowserVisible) window.__mockBrowserVisible = new Map();
+        window.__mockBrowserVisible.set(id, !!visible);
+        return null;
+    },
+    async BrowserFocus(id) { return null; },
+    async BrowserClose(id) {
+        if (window.__mockBrowserTabs) window.__mockBrowserTabs.delete(id);
+        return null;
+    },
     async GitStatusFor(dir) {
         if (!mockScenario.has('gitmock')) {
             return {available: false, reason: 'mock 无 git', entries: []};
@@ -1058,7 +1131,7 @@ const mockBackend = {
     async CopyFileTo(srcPath) { return srcPath; },
     async GetClipboardText() { return window.__mockClipboard || ''; },
     async ForceClose() { window.__mockForceClosed = (window.__mockForceClosed || 0) + 1; },
-    async AISendChat(sessionId, cfg, messages, tools) {
+    async AISendChat(sessionId, cfg, messages, tools, retryMax) {
         const run = {stopped: false, timers: []};
         window.__mockAiRuns = window.__mockAiRuns || new Map();
         window.__mockAiRuns.set(sessionId, run);
@@ -1086,12 +1159,14 @@ const mockBackend = {
             return null;
         }
         const slow = mockScenario.has('aislow') ? 180 : 24;
+        const retryLead = mockScenario.has('airetry');
+        const leadDelay = retryLead ? 2000 : 0;
         const reasoningText = mockScenario.has('aithink') ? '先读取用户的问题，再给出简洁回答。' : '';
         let content = '这是浏览器 mock 回复：已收到「' + prompt.slice(0, 60) + '」。\n\n';
         content += '在地址栏加 `?aithink` 可预览思考链，`?aierr` 预览错误，`?aislow` 测试停止按钮。';
         const thinkChunks = reasoningText ? reasoningText.match(/[^\n]{1,4}/g) || [] : [];
         const contentChunks = content.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
-        let delay = 30;
+        let delay = 30 + leadDelay;
         const schedule = (fn, ms) => {
             const timer = setTimeout(() => {
                 if (run.stopped) return;
@@ -1099,6 +1174,93 @@ const mockBackend = {
             }, ms);
             run.timers.push(timer);
         };
+        if (retryLead) {
+            schedule(() => emit('ai-retry', {id: sessionId, attempt: 1, max: 5, delayMs: 1500, reason: 'HTTP 429'}), 60);
+        }
+        if (mockScenario.has('aibrowser')) {
+            const lastMsg = (messages || [])[messages.length - 1];
+            const isToolRound = !!(lastMsg && lastMsg.role === 'tool');
+            const emitToolcall = (name, args) => {
+                const argChunks = args.match(/.{1,16}/gs) || [];
+                argChunks.forEach((chunk, i) => {
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: i === 0 ? 'call_mock_browser' : '',
+                        name: i === 0 ? name : '',
+                        argsDelta: chunk,
+                    }), 60 + i * 40);
+                });
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 90 + argChunks.length * 40 + 50);
+            };
+            const hasBrowserTool = (messages || []).some((m) => m.role === 'tool' && /^browser_/.test(m.name || ''));
+            if (!isToolRound && !hasBrowserTool) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我来打开页面并截图。' + String.fromCharCode(10) + String.fromCharCode(10)}), 20);
+                emitToolcall('browser_navigate', '{"url": "https://mock.example.com"}');
+                return null;
+            }
+            // 按最后一个工具名推进（中间可能插入带图 user 消息，不能用最后一条消息判断）
+            const lastTool = [...(messages || [])].reverse().find((m) => m.role === 'tool');
+            const prevName = lastTool ? lastTool.name : '';
+            if (prevName === 'browser_navigate') {
+                emitToolcall('browser_snapshot', '{}');
+                return null;
+            }
+            if (prevName === 'browser_snapshot') {
+                emitToolcall('browser_screenshot', '{}');
+                return null;
+            }
+            const finalText = '浏览器链路完成：' + String.fromCharCode(10, 10, 96, 96, 96) + String(lastMsg.content || '').slice(0, 200) + String.fromCharCode(96, 96, 96, 10) + 'mock browser 链路结束。';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop', usage: {promptTokens: 32, completionTokens: 48, totalTokens: 80, cachedTokens: 0}});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aicreateenv')) {
+            // 只有「最后一条消息是工具结果」才算工具回传轮，避免历史 tool 消息造成误判
+            const lastMsg = (messages || [])[messages.length - 1];
+            const isToolRound = !!(lastMsg && lastMsg.role === 'tool');
+            if (!isToolRound) {
+                const wantList = /env_list|列出环境变量|有哪些变量/.test(prompt);
+                const args = wantList ? '{}' : '{"name": "USER_SECRET_TOKEN", "description": "AI 请求创建的演示变量（mock 场景）"}';
+                const argChunks = args.match(/.{1,16}/gs) || [];
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: wantList ? '我列一下已配置的环境变量。\n\n' : '我来帮你创建一个环境变量。\n\n'}), 20);
+                argChunks.forEach((chunk, i) => {
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: i === 0 ? 'call_mock_env_1' : '',
+                        name: i === 0 ? (wantList ? 'env_list' : 'env_create') : '',
+                        argsDelta: chunk,
+                    }), 70 + i * 50);
+                });
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 90 + argChunks.length * 50 + 60);
+                return null;
+            }
+            const finalText = 'env 工具返回：\n\n```\n' + String(lastMsg.content || '') + '\n```\n\nmock env 工具链路完成。';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {
+                    id: sessionId,
+                    finishReason: 'stop',
+                    usage: {promptTokens: 24, completionTokens: 40, totalTokens: 64, cachedTokens: 0},
+                });
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
         if (mockScenario.has('aitool')) {
             const toolMessages = (messages || []).filter((message) => message.role === 'tool');
             if (!toolMessages.length) {
@@ -1741,10 +1903,319 @@ let ctxMenu = null;
 let palette = null;
 let aiPanel = null;
 let closedTabs = [];
+
+// 应用操作桥：AI 面板 app_control 工具的执行端（仅当前窗口，语义化动作，不模拟 DOM 事件）。
+const APP_SETTING_RULES = {
+    autoSave: {type: 'bool'},
+    showSidebar: {type: 'bool'},
+    alwaysOnTop: {type: 'bool'},
+    codeWrap: {type: 'bool'},
+    codeGuides: {type: 'bool'},
+    treeGuides: {type: 'bool'},
+    treeCounts: {type: 'bool'},
+    mdLineNumbers: {type: 'bool'},
+    mdScrollSync: {type: 'bool'},
+    readOnlyMode: {type: 'bool'},
+    fixedKeys: {type: 'bool'},
+    treeRefreshInterval: {type: 'enum', values: [0, 1, 2, 3, 5, 10]},
+    sidebarFont: {type: 'number', min: 10, max: 20},
+    editorFont: {type: 'number', min: 10, max: 24},
+    treeExpandDefault: {type: 'enum', values: ['expand', 'collapse']},
+    openMode: {type: 'enum', values: ['tab', 'window']},
+    theme: {type: 'theme'},
+    sidebarWidth: {type: 'number', min: 160, max: 500},
+    terminalHeight: {type: 'number', min: 120, max: 480},
+    aiPanelWidth: {type: 'number', min: 280, max: 800},
+};
+
+const APP_ACTIONS = [
+    'get_state', 'open_file', 'open_folder', 'activate_tab', 'close_tab', 'reopen_closed_tab', 'move_tab',
+    'set_view', 'goto_line', 'toggle_sidebar', 'set_sidebar_view', 'toggle_terminal', 'toggle_ai_panel',
+    'toggle_fullscreen', 'toggle_always_on_top', 'set_theme', 'open_settings', 'set_setting',
+    'ai_new_session', 'ai_switch_session', 'flash', 'refresh_explorer', 'type_text', 'press_key',
+    'open_browser_tab', 'close_browser_tab',
+];
+
+function appActionDocInfo(doc) {
+    if (!doc) return null;
+    return {name: doc.name, path: doc.path || '', mode: doc.mode || '', dirty: !!doc.dirty, format: (doc.format && doc.format.id) || ''};
+}
+
+function appActionResolveDoc(ref) {
+    if (ref == null || ref === '') return file;
+    if (typeof ref === 'number' && Number.isFinite(ref)) {
+        const idx = ref < 0 ? docs.length + ref : ref;
+        return docs[idx] || null;
+    }
+    const text = String(ref).trim();
+    if (!text || text.toLowerCase() === 'active') return file;
+    if (/^\d+$/.test(text)) return docs[Number(text)] || null;
+    return findDocByPath(text);
+}
+
+function appActionEditableTarget(selector, allowNonEditable) {
+    let el = null;
+    if (selector) {
+        try {
+            el = document.querySelector(String(selector));
+        } catch (e) {
+            return null;
+        }
+    } else {
+        el = document.activeElement;
+    }
+    if (!el || el === document.body) return allowNonEditable ? (el || document.body) : null;
+    const editable = el.matches && (el.matches('input, textarea') || el.isContentEditable);
+    if (!editable && !allowNonEditable) return null;
+    return el;
+}
+
+async function runAppAction(action, params, scope) {
+    const actionScope = scope || 'full';
+    const p = params || {};
+    switch (String(action || '').trim()) {
+        case 'get_state': {
+            const aiOpen = !!(aiPanel && aiPanel.isOpen && aiPanel.isOpen());
+            return {
+                workspace: workspaceFolder || null,
+                activeFile: appActionDocInfo(file),
+                tabs: docs.map((doc, index) => ({index, ...appActionDocInfo(doc), active: doc === file})),
+                closedTabsCount: closedTabs.length,
+                sidebar: {visible: !!settings.showSidebar, view: currentSidebarView()},
+                terminal: {open: !!(terminalUI && terminalUI.open), view: dockView},
+                aiPanel: {
+                    open: aiOpen,
+                    mode: aiPanel && aiPanel.getMode ? aiPanel.getMode() : '',
+                    sessions: aiPanel && aiPanel.bridgeListSessions ? aiPanel.bridgeListSessions() : [],
+                },
+                theme: settings.theme,
+                fullscreen: !!rtFullscreen,
+                alwaysOnTop: !!settings.alwaysOnTop,
+                readOnlyMode: !!settings.readOnlyMode,
+            };
+        }
+        case 'open_file': {
+            const target = String(p.path || '').trim();
+            if (!target) throw new Error('open_file 需要 path');
+            await openPathsHere([target]);
+            const doc = findDocByPath(target);
+            if (!doc) throw new Error('打开失败或文件不存在：' + target);
+            return {opened: appActionDocInfo(doc), tabs: docs.length};
+        }
+        case 'open_folder': {
+            const dir = String(p.dir || '').trim();
+            if (!dir) throw new Error('open_folder 需要 dir');
+            openFolderWorkspace(dir);
+            return {workspace: workspaceFolder || dir};
+        }
+        case 'activate_tab': {
+            const doc = appActionResolveDoc(p.index != null ? p.index : p.path);
+            if (!doc) throw new Error('找不到标签：' + (p.index != null ? p.index : p.path));
+            await activateDoc(doc);
+            return {active: appActionDocInfo(file)};
+        }
+        case 'close_tab': {
+            const target = p.target == null ? 'active' : p.target;
+            if (target === 'all') {
+                closeDocsWithConfirm(docs.slice(), '关闭全部标签页？未保存的修改将丢弃。');
+                return {closing: 'all', count: docs.length};
+            }
+            if (target === 'unmodified') {
+                const list = docs.filter((doc) => !doc.dirty);
+                closeDocsWithConfirm(list.slice(), '关闭全部未修改标签页？');
+                return {closing: 'unmodified', count: list.length};
+            }
+            const doc = appActionResolveDoc(target);
+            if (!doc) throw new Error('找不到标签：' + target);
+            const info = appActionDocInfo(doc);
+            requestCloseDoc(doc);
+            return {closing: info, note: info.dirty ? '该标签有未保存修改，已弹出确认框等待用户选择' : '已关闭'};
+        }
+        case 'reopen_closed_tab': {
+            reopenClosedTab();
+            return {active: appActionDocInfo(file)};
+        }
+        case 'move_tab': {
+            const src = appActionResolveDoc(p.source);
+            const dst = appActionResolveDoc(p.target);
+            if (!src || !dst) throw new Error('move_tab 需要 source 与 target（索引或路径）');
+            if (src === dst) throw new Error('source 与 target 是同一标签');
+            const group = groupOfDoc(src.id);
+            if (!group || !group.docIds.includes(dst.id)) throw new Error('两个标签不在同一分栏，无法移动');
+            moveTabInGroup(group.id, src.id, dst.id, p.before !== false);
+            return {order: groupDocs(group).map((doc) => doc.name)};
+        }
+        case 'set_view': {
+            const mode = String(p.mode || '').trim();
+            if (!mode) throw new Error('set_view 需要 mode');
+            if (!file || !editor) throw new Error('当前没有打开的文件');
+            switchMode(mode);
+            return {activeFile: appActionDocInfo(file), mode: file.mode || currentMode};
+        }
+        case 'goto_line': {
+            const line = Math.round(Number(p.line));
+            if (!line || line < 1) throw new Error('goto_line 需要正整数 line');
+            if (!file) throw new Error('当前没有打开的文件');
+            if (file.binary) throw new Error('当前文档是二进制或图片文件，没有行号可定位');
+            const column = Math.max(0, Math.round(Number(p.column) || 0));
+            const landed = await selectLineInDoc(file, line, column);
+            if (!landed) throw new Error('当前文档不支持按行定位（该视图没有行号）');
+            const result = {file: file.name, line: landed.line, column: landed.column};
+            if (landed.clamped) {
+                result.requestedLine = landed.requestedLine;
+                if (landed.requestedColumn && landed.requestedColumn !== landed.column) {
+                    result.requestedColumn = landed.requestedColumn;
+                }
+                result.note = '请求位置超出范围（共 ' + landed.lineCount + ' 行），已定位到第 ' + landed.line + ' 行';
+            }
+            return result;
+        }
+        case 'toggle_sidebar': {
+            toggleSidebarView(['files', 'git', 'structure', 'chats'].includes(p.view) ? p.view : settings.sidebarView || 'files');
+            return {sidebar: {visible: !!settings.showSidebar, view: currentSidebarView()}};
+        }
+        case 'set_sidebar_view': {
+            if (!['files', 'git', 'structure'].includes(p.view)) throw new Error('set_sidebar_view 需要 view = files / git / structure');
+            switchSidebarView(p.view);
+            if (!settings.showSidebar) {
+                settings.showSidebar = true;
+                applySettings();
+            }
+            return {sidebar: {visible: !!settings.showSidebar, view: currentSidebarView()}};
+        }
+        case 'toggle_terminal': {
+            toggleDockView('terminal');
+            return {terminal: {open: !!(terminalUI && terminalUI.open), view: dockView}};
+        }
+        case 'open_browser_tab': {
+            const doc = openBrowserTab(p.url || 'about:blank', p.profileKey || '');
+            return {browserTab: {id: doc.id, name: doc.name, url: doc.browserUrl}};
+        }
+        case 'close_browser_tab': {
+            const target = docs.find((d) => d.browser && (d.id === p.id || d.name === p.name || d.browserUrl === p.url));
+            if (!target) throw new Error('未找到浏览器标签页');
+            closeDocNow(target, false);
+            return {closed: true};
+        }
+        case 'toggle_ai_panel': {
+            if (!aiPanel) throw new Error('AI 面板未初始化');
+            if (p.open == null) aiPanel.toggle();
+            else aiPanel.open(!!p.open);
+            return {aiPanel: {open: !!(aiPanel.isOpen && aiPanel.isOpen())}};
+        }
+        case 'toggle_fullscreen': {
+            await toggleFullscreen();
+            return {fullscreen: !!rtFullscreen};
+        }
+        case 'toggle_always_on_top': {
+            toggleAlwaysOnTop();
+            return {alwaysOnTop: !!settings.alwaysOnTop};
+        }
+        case 'set_theme': {
+            if (!p.theme) throw new Error('set_theme 需要 theme');
+            setTheme(String(p.theme));
+            return {theme: settings.theme};
+        }
+        case 'open_settings': {
+            openSettings(p.pane ? String(p.pane) : 'general');
+            return {opened: true, pane: p.pane || 'general'};
+        }
+        case 'set_setting': {
+            const key = String(p.key || '').trim();
+            const rule = APP_SETTING_RULES[key];
+            if (!rule) {
+                throw new Error('不支持设置「' + key + '」。可写键：' + Object.keys(APP_SETTING_RULES).join(', '));
+            }
+            let value = p.value;
+            if (rule.type === 'bool') {
+                value = !!value;
+            } else if (rule.type === 'number') {
+                value = Math.round(Number(value));
+                if (!Number.isFinite(value) || value < rule.min || value > rule.max) {
+                    throw new Error(key + ' 需要数字 ' + rule.min + '–' + rule.max);
+                }
+            } else if (rule.type === 'enum') {
+                const num = Number(value);
+                const match = rule.values.some((v) => v === value) || (typeof value === 'string' && value !== '' && rule.values.includes(num));
+                if (!match) throw new Error(key + ' 仅支持：' + rule.values.join(' / '));
+                value = typeof rule.values[0] === 'number' ? num : value;
+            } else if (rule.type === 'theme') {
+                value = String(value || '').trim();
+                if (!value) throw new Error('theme 不能为空');
+            }
+            if (key === 'theme') {
+                setTheme(value);
+                return {key, value: settings.theme};
+            }
+            settings[key] = value;
+            applySettings();
+            return {key, value: settings[key]};
+        }
+        case 'ai_new_session': {
+            if (!aiPanel || !aiPanel.bridgeNewSession) throw new Error('AI 面板未初始化');
+            const session = await aiPanel.bridgeNewSession({title: p.title, message: p.message});
+            return {created: session, note: p.message ? '已在新会话发送消息（真实触发一次模型调用）' : '已创建空会话'};
+        }
+        case 'ai_switch_session': {
+            if (!aiPanel || !aiPanel.bridgeSwitchSession) throw new Error('AI 面板未初始化');
+            const session = aiPanel.bridgeSwitchSession(p.id);
+            if (!session) throw new Error('找不到会话：' + p.id);
+            return {switched: session};
+        }
+        case 'flash': {
+            const message = String(p.message || '').trim();
+            if (!message) throw new Error('flash 需要 message');
+            flash(message, !!p.isError);
+            return {shown: true};
+        }
+        case 'refresh_explorer': {
+            if (explorer && explorer.refresh) explorer.refresh();
+            return {refreshed: true};
+        }
+        case 'type_text': {
+            // 模拟键盘输入（仅完全权限档）：输入到焦点元素或 target 选择器匹配的输入框
+            if (actionScope !== 'full') throw new Error('type_text 需要「完全权限」权限档');
+            const text = String(p.text == null ? '' : p.text);
+            if (!text) throw new Error('type_text 需要 text');
+            const target = appActionEditableTarget(p.target);
+            if (!target) throw new Error('找不到可输入目标：先聚焦输入框，或用 target 传选择器');
+            target.focus();
+            let ok = false;
+            try {
+                ok = document.execCommand('insertText', false, text);
+            } catch (e) {}
+            if (!ok) {
+                if (typeof target.selectionStart === 'number') {
+                    target.setRangeText(text, target.selectionStart, target.selectionEnd, 'end');
+                } else {
+                    target.value += text;
+                }
+                target.dispatchEvent(new Event('input', {bubbles: true}));
+            }
+            return {typed: text.length, target: target.id || target.name || 'activeElement'};
+        }
+        case 'press_key': {
+            // 模拟按键（仅完全权限档）：派发 keydown/keyup 并冒泡，可触发对话框确认、Esc 关闭、全局快捷键等
+            if (actionScope !== 'full') throw new Error('press_key 需要「完全权限」权限档');
+            const key = String(p.key || '').trim();
+            if (!key) throw new Error('press_key 需要 key（如 Enter / Escape / F3 / a）');
+            const target = appActionEditableTarget(p.target, true) || document.activeElement || document.body;
+            target.focus && target.focus();
+            const init = {key, bubbles: true, cancelable: true};
+            target.dispatchEvent(new KeyboardEvent('keydown', init));
+            target.dispatchEvent(new KeyboardEvent('keyup', init));
+            return {dispatched: key, target: target.id || target.name || target.tagName || 'body'};
+        }
+        default:
+            throw new Error('未知动作「' + action + '」');
+    }
+}
+
 window.__lens = {
     get editor() { return editor; },
     get file() { return file; },
     get docs() { return docs; },
+    get currentMode() { return currentMode; },
     get explorer() { return explorer; },
     get structurePanel() { return structurePanel; },
     get closedTabs() { return closedTabs; },
@@ -1754,6 +2225,7 @@ window.__lens = {
     openFolderWorkspace,
     reopenClosedTab,
     setTheme,
+    runAppAction,
 };
 let dirty = false;
 let currentMode = 'tree';
@@ -1876,6 +2348,7 @@ const defaultSettings = {
     aiMaxSessions: 50,
     aiInjectContext: true,
     aiInjectAgentsMd: true,
+    aiInjectEnvVars: true,
     formatSettings: defaultFormatSettings(),
 };
 let settings = JSON.parse(JSON.stringify(defaultSettings));
@@ -1949,6 +2422,7 @@ settings.aiAssistantCard = settings.aiAssistantCard === true;
 settings.aiMaxSessions = Math.min(500, Math.max(2, Number(settings.aiMaxSessions) || 50));
 settings.aiInjectContext = settings.aiInjectContext !== false;
 settings.aiInjectAgentsMd = settings.aiInjectAgentsMd !== false;
+settings.aiInjectEnvVars = settings.aiInjectEnvVars !== false;
 if (!settings.csvTableMigrated) {
     settings.formatSettings.csv.view = 'table';
     settings.csvTableMigrated = true;
@@ -2360,6 +2834,7 @@ function openDialogEl(dlg, options) {
     dlg.style.top = '';
     dlg.style.transform = '';
     dlg.classList.remove('hidden');
+    syncAllBrowserTabs();
 }
 
 function closeTopDialog() {
@@ -2372,6 +2847,7 @@ function closeTopDialog() {
                 nameSubmit = null;
                 nameBusy = false;
             }
+            syncAllBrowserTabs();
             return;
         }
     }
@@ -2390,6 +2866,7 @@ function closeDialogs() {
     elsDialogs.props.classList.add('hidden');
     elsDialogs.update.classList.add('hidden');
     confirmAction = null;
+    syncAllBrowserTabs();
     nameSubmit = null;
     nameBusy = false;
 }
@@ -2429,6 +2906,7 @@ function selectSettingsPane(pane) {
     else if (String(pane).startsWith('fmt-')) renderFormatPane(pane.slice(4));
     else if (String(pane).startsWith('lang-')) renderLangPane(pane.slice(5));
     else if (pane === 'plugins') renderPluginsPane();
+    else if (pane === 'envvars') renderEnvVarsPane();
     if (pane === 'ai' || pane === 'models') {
         if (!aiPanel) initAIPanel();
         if (aiPanel && typeof aiPanel.refreshSettings === 'function') {
@@ -3457,6 +3935,271 @@ function marketDate(iso) {
 
 setupPluginsSettings();
 
+// ---- 设置：环境变量（私密值注入终端/命令桥；AI 只见名称与描述） ----
+
+const ENVVAR_NAME_RULE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+const envVarState = {vars: [], encrypted: false, supported: false};
+let envEditorEditing = '';
+
+async function renderEnvVarsPane() {
+    const listEl = document.getElementById('envvar-list');
+    if (!listEl) return;
+    const sel = document.getElementById('envvar-encrypted');
+    const hint = document.getElementById('envvar-storage-hint');
+    let snap = {encrypted: false, supported: false, vars: []};
+    try {
+        snap = (await backend.GetEnvVars()) || snap;
+    } catch (e) {
+        if (hint) hint.textContent = '读取环境变量失败：' + e;
+    }
+    envVarState.vars = Array.isArray(snap.vars) ? snap.vars : [];
+    envVarState.encrypted = !!snap.encrypted;
+    envVarState.supported = !!snap.supported;
+    if (sel) {
+        const encOpt = sel.querySelector('option[value="encrypted"]');
+        if (encOpt) {
+            encOpt.disabled = !envVarState.supported;
+            encOpt.textContent = envVarState.supported ? 'DPAPI 加密（仅本机可解）' : 'DPAPI 加密（当前平台不支持）';
+        }
+        sel.value = envVarState.encrypted && envVarState.supported ? 'encrypted' : 'plain';
+    }
+    if (hint) {
+        hint.textContent = envVarState.supported
+            ? (envVarState.encrypted
+                ? '当前：DPAPI 加密，绑定本机与当前用户，配置文件拷到别的机器也解不开。'
+                : '当前：明文 JSON，可手动备份编辑；文件位于应用数据目录 env-vars.json。')
+            : '当前：明文 JSON（本平台不支持 DPAPI 加密）。';
+    }
+    listEl.textContent = '';
+    if (!envVarState.vars.length) {
+        const empty = document.createElement('div');
+        empty.className = 'envvar-empty';
+        empty.textContent = '还没有环境变量。点「新增变量」添加 API key 等私密值；之后新开的终端会话与命令桥命令都会注入它们。';
+        listEl.appendChild(empty);
+        return;
+    }
+    for (const v of envVarState.vars) {
+        listEl.appendChild(buildEnvVarRow(v));
+    }
+}
+
+function buildEnvVarRow(v) {
+    const row = document.createElement('div');
+    row.className = 'envvar-row';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'envvar-name';
+    nameEl.textContent = v.name;
+    const descEl = document.createElement('span');
+    descEl.className = 'envvar-desc';
+    descEl.textContent = v.description || '（无描述）';
+    descEl.title = v.description || '';
+    const enabledLabel = document.createElement('label');
+    enabledLabel.className = 'popover-label envvar-enabled';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!v.enabled;
+    cb.addEventListener('change', async () => {
+        try {
+            await saveEnvVarsAll(envVarState.vars.map((item) => (
+                item.name === v.name ? {...item, enabled: cb.checked} : item
+            )));
+        } catch (e) {
+            flash('切换失败：' + e, true);
+            renderEnvVarsPane();
+        }
+    });
+    enabledLabel.append(cb, document.createTextNode('注入'));
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'dlg-btn';
+    editBtn.textContent = '编辑';
+    editBtn.addEventListener('click', () => openEnvVarEditor(v.name));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'dlg-btn envvar-del';
+    del.textContent = '删除';
+    del.addEventListener('click', async () => {
+        if (!del.dataset.armed) {
+            del.dataset.armed = '1';
+            del.textContent = '确认删除？';
+            del.classList.add('danger');
+            setTimeout(() => {
+                if (del.isConnected) {
+                    del.dataset.armed = '';
+                    del.textContent = '删除';
+                    del.classList.remove('danger');
+                }
+            }, 3000);
+            return;
+        }
+        try {
+            await saveEnvVarsAll(envVarState.vars.filter((item) => item.name !== v.name));
+            flash('已删除环境变量：' + v.name);
+        } catch (e) {
+            flash('删除失败：' + e, true);
+        }
+    });
+    row.append(nameEl, descEl, enabledLabel, editBtn, del);
+    return row;
+}
+
+async function saveEnvVarsAll(vars) {
+    await backend.SetEnvVars((vars || []).map((v) => ({
+        name: v.name,
+        value: v.value,
+        description: v.description || '',
+        enabled: !!v.enabled,
+    })));
+    await renderEnvVarsPane();
+}
+
+function showEnvEditorError(message) {
+    const errorEl = document.getElementById('env-opt-error');
+    if (!errorEl) return;
+    errorEl.textContent = message;
+    errorEl.classList.toggle('hidden', !message);
+}
+
+function closeEnvVarEditor() {
+    const dlg = document.getElementById('dlg-env-editor');
+    const mask = document.getElementById('dlg-env-editor-mask');
+    if (dlg) dlg.classList.add('hidden');
+    if (mask) mask.classList.add('hidden');
+    envEditorEditing = '';
+    showEnvEditorError('');
+    const input = document.getElementById('env-opt-value');
+    const toggle = document.getElementById('env-opt-value-toggle');
+    if (input) input.type = 'password';
+    if (toggle) toggle.textContent = '显示';
+}
+
+function openEnvVarEditor(name) {
+    const dlg = document.getElementById('dlg-env-editor');
+    if (!dlg) return;
+    const mask = document.getElementById('dlg-env-editor-mask');
+    envEditorEditing = envVarState.vars.some((v) => v.name === name) ? name : '';
+    const existing = envEditorEditing
+        ? envVarState.vars.find((v) => v.name === envEditorEditing)
+        : null;
+    const title = document.getElementById('dlg-env-title');
+    const nameInput = document.getElementById('env-opt-name');
+    const descInput = document.getElementById('env-opt-desc');
+    const valueInput = document.getElementById('env-opt-value');
+    const enabledInput = document.getElementById('env-opt-enabled');
+    const warn = document.getElementById('env-opt-name-warn');
+    if (title) title.textContent = existing ? '编辑变量：' + existing.name : '新增变量';
+    if (nameInput) nameInput.value = existing ? existing.name : '';
+    if (descInput) descInput.value = existing ? (existing.description || '') : '';
+    if (valueInput) valueInput.value = existing ? (existing.value || '') : '';
+    if (enabledInput) enabledInput.checked = existing ? !!existing.enabled : true;
+    if (warn) warn.classList.toggle('hidden', !existing || existing.name.toUpperCase() !== 'PATH');
+    showEnvEditorError('');
+    if (valueInput) valueInput.type = 'password';
+    const toggle = document.getElementById('env-opt-value-toggle');
+    if (toggle) toggle.textContent = '显示';
+    if (mask) mask.classList.remove('hidden');
+    dlg.classList.remove('hidden');
+    setTimeout(() => {
+        if (nameInput) {
+            nameInput.focus();
+            nameInput.select();
+        }
+    }, 50);
+}
+
+async function saveEnvVarEditor() {
+    const nameInput = document.getElementById('env-opt-name');
+    const descInput = document.getElementById('env-opt-desc');
+    const valueInput = document.getElementById('env-opt-value');
+    const enabledInput = document.getElementById('env-opt-enabled');
+    if (!nameInput || !valueInput) return;
+    const name = String(nameInput.value || '').trim();
+    if (!ENVVAR_NAME_RULE.test(name)) {
+        showEnvEditorError('名称无效：字母/数字/下划线，字母或下划线开头，最长 128 字符');
+        nameInput.focus();
+        return;
+    }
+    const dup = envVarState.vars.some((v) => v.name === name && v.name !== envEditorEditing);
+    if (dup) {
+        showEnvEditorError('已存在同名变量：' + name);
+        nameInput.focus();
+        return;
+    }
+    const entry = {
+        name,
+        value: String(valueInput.value || ''),
+        description: String((descInput && descInput.value) || '').trim(),
+        enabled: !!(enabledInput && enabledInput.checked),
+    };
+    const list = envEditorEditing
+        ? envVarState.vars.map((v) => (v.name === envEditorEditing ? entry : v))
+        : envVarState.vars.concat([entry]);
+    const wasEditing = envEditorEditing;
+    try {
+        await backend.SetEnvVars(list);
+        closeEnvVarEditor();
+        flash((wasEditing ? '已保存环境变量：' : '已新增环境变量：') + name);
+        await renderEnvVarsPane();
+    } catch (e) {
+        showEnvEditorError(String(e));
+    }
+}
+
+function setupEnvVarsSettings() {
+    const addBtn = document.getElementById('envvar-add');
+    if (!addBtn) return;
+    addBtn.addEventListener('click', () => openEnvVarEditor(''));
+    const saveBtn = document.getElementById('dlg-env-save');
+    if (saveBtn) saveBtn.addEventListener('click', saveEnvVarEditor);
+    const cancelBtn = document.getElementById('dlg-env-cancel');
+    if (cancelBtn) cancelBtn.addEventListener('click', closeEnvVarEditor);
+    const closeBtn = document.getElementById('dlg-env-editor-close');
+    if (closeBtn) closeBtn.addEventListener('click', closeEnvVarEditor);
+    const mask = document.getElementById('dlg-env-editor-mask');
+    if (mask) mask.addEventListener('click', closeEnvVarEditor);
+    // 捕获阶段拦截 Esc：编辑器开着时只关编辑器，不动背后的设置窗口
+    // （main.js 的全局 Esc 走 window capture，这里必须同样挂 window capture 且先注册才能拦住）
+    window.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        const dlg = document.getElementById('dlg-env-editor');
+        if (!dlg || dlg.classList.contains('hidden')) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        closeEnvVarEditor();
+    }, true);
+    const valueToggle = document.getElementById('env-opt-value-toggle');
+    if (valueToggle) {
+        valueToggle.addEventListener('click', () => {
+            const input = document.getElementById('env-opt-value');
+            if (!input) return;
+            const show = input.type === 'password';
+            input.type = show ? 'text' : 'password';
+            valueToggle.textContent = show ? '隐藏' : '显示';
+        });
+    }
+    const nameInput = document.getElementById('env-opt-name');
+    if (nameInput) {
+        nameInput.addEventListener('input', () => {
+            const warn = document.getElementById('env-opt-name-warn');
+            if (warn) warn.classList.toggle('hidden', nameInput.value.trim().toUpperCase() !== 'PATH');
+        });
+    }
+    const sel = document.getElementById('envvar-encrypted');
+    if (sel) {
+        sel.addEventListener('change', async () => {
+            try {
+                await backend.SetEnvVarEncrypted(sel.value === 'encrypted');
+                flash(sel.value === 'encrypted' ? '已切换为 DPAPI 加密存储' : '已切换为明文存储');
+            } catch (e) {
+                flash('切换存储方式失败：' + e, true);
+            }
+            renderEnvVarsPane();
+        });
+    }
+}
+
+setupEnvVarsSettings();
+
 const ENCODINGS = [['auto', '自动'], ['utf-8', 'UTF-8'], ['gbk', 'GBK'], ['gb18030', 'GB18030'], ['iso-8859-1', 'ISO-8859-1'], ['us-ascii', 'US-ASCII']];
 const CONVERT_ENCODINGS = [['utf-8', 'UTF-8'], ['gbk', 'GBK'], ['gb18030', 'GB18030'], ['iso-8859-1', 'ISO-8859-1'], ['us-ascii', 'US-ASCII']];
 const INDENTS = [['2', '2 空格'], ['4', '4 空格'], ['tab', 'Tab']];
@@ -3494,6 +4237,7 @@ const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
 
 function viewOptionsFor(fmt, doc) {
+    if (doc && doc.browser) return [];
     if (fmt && fmt.image) return IMAGE_VIEWS;
     if (fmt && fmt.id === 'bytes') return BINARY_VIEWS;
     if (isHtmlDoc(doc)) return HTML_VIEWS;
@@ -3520,6 +4264,7 @@ function viewDisabledTitle(mode) {
 }
 
 function viewLabel(mode) {
+    if (mode === 'browser') return '网页视图';
     if (mode === 'split') return '分屏';
     if (mode === 'image') return '图片视图';
     if (mode === 'binary') return '二进制视图';
@@ -3559,6 +4304,22 @@ const markdownRenderer = new MarkdownIt({
     breaks: false,
 });
 markdownRenderer.use(markdownItKatex, {throwOnError: false, errorColor: '#f75464'});
+// validateLink 默认把 C:/ 开头的本地图片/链接路径当未知协议丢掉 src；
+// 放行后危险协议（javascript:/vbscript:/data:）仍由 DOMPurify 的 URI 白名单兜底过滤。
+// 注意必须走 md.set() 写进 options——直接给实例赋 validateLink 属性不生效。
+markdownRenderer.set({validateLink: function () { return true; }});
+// 本地路径的图片 src 可能被 DOMPurify 的 URI 白名单拦掉（如 C:/ 盘符路径），
+// 渲染时同步写一份到 data-ai-src（data-* 属性默认放行且不做 URI 校验），
+// AI 面板/MD 预览的图片解析器优先读它恢复本地图片。
+const defaultImageRule = markdownRenderer.renderer.rules.image;
+markdownRenderer.renderer.rules.image = function (tokens, idx, options, env, self) {
+    const token = tokens[idx];
+    const src = token.attrGet('src') || '';
+    if (src && !/^(https?:|data:|blob:)/i.test(src)) token.attrSet('data-ai-src', src);
+    return defaultImageRule
+        ? defaultImageRule(tokens, idx, options, env, self)
+        : self.renderToken(tokens, idx, options);
+};
 
 // renderMermaidPlaceholder mermaid 图表占位：渲染后异步替换为 SVG
 function renderMermaidPlaceholder(text) {
@@ -3664,7 +4425,7 @@ function resolveMarkdownImages(doc) {
     const cut = Math.max(raw0.lastIndexOf('/'), raw0.lastIndexOf(BS));
     const base = cut >= 0 ? raw0.slice(0, cut) : '';
     for (const img of doc.previewBody.querySelectorAll('img')) {
-        const raw = img.getAttribute('src') || '';
+        const raw = img.getAttribute('data-ai-src') || img.getAttribute('src') || '';
         if (!raw || /^(https?:|data:|blob:)/i.test(raw)) continue;
         let p = raw;
         if (/^file:/i.test(p)) p = p.slice(7);
@@ -3692,6 +4453,8 @@ function renderMarkdownHtml(text) {
     return DOMPurify.sanitize(html, {
         USE_PROFILES: {html: true, mathMl: true, svg: true},
         ADD_ATTR: ['target', 'rel'],
+        // 放行 Windows 盘符路径（C:/...）供本地图片解析；javascript:/data: 等危险协议仍被默认白名单拦截
+        ADD_URI_PROTOCOL: ['c'],
     });
 }
 
@@ -4765,6 +5528,9 @@ function renderEditorLayout() {
         if (fd) {
             file = fd;
             dirty = !!fd.dirty;
+            // file 对齐到新活动 doc 时必须同步 currentMode，否则残留上一个 doc 的
+            // 视图模式（browser doc 关闭后状态栏/工具条会卡在「网页视图」）
+            currentMode = fd.mode || 'tree';
         }
     }
     if (file) {
@@ -4938,6 +5704,7 @@ function showTabbarToolsMenu(x, y) {
     if (!ctxMenu) return;
     const clean = docs.filter((d) => !d.dirty);
     ctxMenu.open([
+        {label: '新建浏览器标签页', icon: 'E721', action: () => openBrowserTab('about:blank')},
         {label: '转到文件…', shortcut: 'Ctrl+Shift+N', icon: 'E721', action: () => {}},
         {sep: true},
         {label: '关闭所有标签页', action: () => closeDocsWithConfirm(docs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
@@ -5116,6 +5883,7 @@ function ensureSplitMask() {
 }
 
 function showSplitMask() {
+    syncAllBrowserTabs();
     if (!dropZone) return;
     const area = els.editorArea.getBoundingClientRect();
     const r = dropZone.rect;
@@ -5135,6 +5903,7 @@ function showSplitMask() {
 function hideSplitMask() {
     const m = document.getElementById('split-mask');
     if (m) m.style.display = 'none';
+    syncAllBrowserTabs();
 }
 
 function performDrop(dz, srcId) {
@@ -5293,6 +6062,19 @@ function updateStatus() {
     const fmt = file.format;
     const view = file.splitActive ? viewLabel('split') : viewLabel(currentMode);
     els.stMode.textContent = fmt.name + ' · ' + view + (file.large || file.binary || settings.readOnlyMode ? ' · 只读' : '');
+    if (file.browser) {
+        const url = String(file.browserUrl || '');
+        els.stMode.textContent = '网页 · ' + (url === 'about:blank' ? '空白页' : (url.length > 60 ? url.slice(0, 60) + '…' : url));
+        els.stSize.textContent = '';
+        els.stZoom.textContent = '';
+        els.stMdWidth.style.display = 'none';
+        els.stEol.textContent = '';
+        els.stEnc.textContent = '';
+        const stCount = document.getElementById('st-count');
+        if (stCount) stCount.textContent = '';
+        els.stPos.textContent = '';
+        return;
+    }
     els.stSize.textContent = fmtSize(file.size);
     els.stSize.title = file.image && file.imageWidth ? file.imageWidth + ' × ' + file.imageHeight : '';
     const tableZoom = currentMode === 'table' && file.format && file.format.table;
@@ -6128,8 +6910,131 @@ function markDocDirty(doc) {
     scheduleGitGutter(doc);
 }
 
+// ---- 浏览器使用标签页：内容区内嵌 WebView2（browser-use） ----
+
+function createBrowserView(doc) {
+    const pane = document.createElement('div');
+    pane.className = 'jsoneditor-pane active browser-pane';
+    els.editor.appendChild(pane);
+    const view = document.createElement('div');
+    view.className = 'browser-view';
+    const toolbar = document.createElement('div');
+    toolbar.className = 'browser-toolbar';
+    const mkBtn = (icon, title, action) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'browser-btn';
+        b.title = title;
+        b.innerHTML = iconSvg(icon, 14);
+        b.addEventListener('click', action);
+        return b;
+    };
+    const backBtn = mkBtn('back', '后退', () => backend.BrowserGoBack(doc.id).catch(() => {}));
+    const fwdBtn = mkBtn('forward', '前进', () => backend.BrowserGoForward(doc.id).catch(() => {}));
+    const reloadBtn = mkBtn('refresh', '刷新', () => backend.BrowserReload(doc.id).catch(() => {}));
+    const addr = document.createElement('input');
+    addr.className = 'browser-addr';
+    addr.type = 'text';
+    addr.spellcheck = false;
+    addr.placeholder = '输入网址后回车（默认 https://）';
+    addr.value = doc.browserUrl && doc.browserUrl !== 'about:blank' ? doc.browserUrl : '';
+    addr.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const target = addr.value.trim();
+        if (!target) return;
+        const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(target) || /^(about|data|mailto):/i.test(target);
+        const url = hasScheme ? target : 'https://' + target;
+        doc.browserUrl = url;
+        backend.BrowserNavigate(doc.id, url).catch((err) => flash('导航失败：' + err, true));
+    });
+    toolbar.append(backBtn, fwdBtn, reloadBtn, addr);
+    const surface = document.createElement('div');
+    surface.className = 'browser-surface';
+    const empty = document.createElement('div');
+    empty.className = 'browser-empty';
+    empty.textContent = '网页区域加载中…';
+    surface.appendChild(empty);
+    view.append(toolbar, surface);
+    pane.appendChild(view);
+    doc.pane = pane;
+    doc.browserEl = surface;
+    doc.browserAddr = addr;
+    doc.browserBackBtn = backBtn;
+    doc.browserFwdBtn = fwdBtn;
+    if (typeof ResizeObserver === 'function') {
+        doc.browserRO = new ResizeObserver(() => syncBrowserTab(doc));
+        doc.browserRO.observe(surface);
+        doc.browserRO.observe(pane);
+    }
+    syncBrowserTab(doc);
+}
+
+function browserSurfaceRect(doc) {
+    if (!doc.browserEl || !doc.browserEl.isConnected) return null;
+    const rect = doc.browserEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const dpr = window.devicePixelRatio || 1;
+    return {
+        x: Math.round(rect.left * dpr),
+        y: Math.round(rect.top * dpr),
+        w: Math.round(rect.width * dpr),
+        h: Math.round(rect.height * dpr),
+    };
+}
+
+// WebView2 是原生窗口，永远盖在主 WebView 之上：对话框/分栏蒙版/非活动标签都必须隐藏它
+function browserVisibleFor(doc) {
+    if (doc !== file) return false;
+    for (const dlg of document.querySelectorAll('.dialog, .ai-model-editor-mask')) {
+        if (!dlg.classList.contains('hidden')) return false;
+    }
+    const mask = document.getElementById('split-mask');
+    if (mask && !mask.classList.contains('hidden')) return false;
+    return true;
+}
+
+let browserSyncPending = false;
+function syncBrowserTab(doc) {
+    if (!doc.browser || browserSyncPending || !backend.BrowserSetBounds) return;
+    browserSyncPending = true;
+    // setTimeout 而非 rAF：后台标签页 rAF 冻结会让 bounds/可见性同步永久卡住
+    setTimeout(() => {
+        browserSyncPending = false;
+        if (!docs.includes(doc) || !doc.browserEl) return;
+        const rect = browserSurfaceRect(doc);
+        if (!rect || !browserVisibleFor(doc)) {
+            backend.BrowserSetVisible(doc.id, false).catch(() => {});
+            return;
+        }
+        backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h).catch(() => {});
+    }, 0);
+}
+
+function syncAllBrowserTabs() {
+    for (const d of docs) {
+        if (d.browser) syncBrowserTab(d);
+    }
+}
+
+function updateBrowserTitle(doc, title) {
+    if (!title || title === 'about:blank') return;
+    if (doc.name !== title) {
+        doc.name = title;
+        renderTabs();
+    }
+    if (doc === file) {
+        setFilename(doc.name, '');
+        updateWindowTitle();
+    }
+}
+
 function createDocEditor(doc) {
     if (doc.editor) return;
+    if (doc.browser) {
+        createBrowserView(doc);
+        return;
+    }
     const fmt = doc.format;
     const fs = getFormatSettings(fmt.id);
     const showJsonErrors = fmt.id === 'json' && /\.json$/i.test(doc.name || '');
@@ -7588,9 +8493,11 @@ function updateDocChrome() {
     updateSearchState();
     renderTabs();
     if (aiPanel) aiPanel.refreshDockFill();
+    syncAllBrowserTabs();
 }
 
 function showWelcome() {
+    syncAllBrowserTabs();
     if (!docs.length) {
         editorGroups = [];
         splitRoot = null;
@@ -7718,6 +8625,9 @@ function closeDocNow(doc, remember = true) {
     if (doc.path && remember) {
         closedTabs.push({path: doc.path, name: doc.name});
         if (closedTabs.length > 12) closedTabs.shift();
+    }
+    if (doc.browser && backend.BrowserClose) {
+        backend.BrowserClose(doc.id).catch(() => {});
     }
     docs.splice(idx, 1);
     if (doc.editor) {
@@ -8952,27 +9862,40 @@ function waitUntil(check, timeout = 1200) {
 }
 
 async function selectLineInDoc(doc, line, column = 0) {
-    if (!doc || doc.binary || !doc.editor) return;
+    if (!doc || doc.binary || !doc.editor) return null;
     if (doc !== file) await activateDoc(doc);
     const mode = doc.format && doc.format.table ? 'text' : 'code';
     if (currentMode !== mode) switchMode(mode);
     if (mode === 'code') {
         const ready = await waitUntil(() => doc.editor && doc.editor.aceEditor);
-        if (!ready) return;
+        if (!ready) return null;
         const ace = doc.editor.aceEditor;
         const lineCount = ace.session.getLength();
-        const lineNo = Math.max(1, Math.min(Number(line) || 1, lineCount));
-        ace.gotoLine(lineNo, Math.max(0, (Number(column) || 1) - 1), false);
+        const requestedLine = Math.max(1, Math.round(Number(line) || 1));
+        const lineNo = Math.min(requestedLine, lineCount);
+        const lineText = ace.session.getLine(lineNo - 1) || '';
+        const requestedColumn = Math.max(1, Math.round(Number(column) || 1));
+        const columnNo = Math.min(requestedColumn, lineText.length + 1);
+        ace.gotoLine(lineNo, columnNo - 1, false);
         ace.selection.selectLine();
         ace.scrollToLine(lineNo, true, true, () => {});
         ace.focus();
-        return;
+        return {
+            mode: 'code',
+            line: lineNo,
+            column: columnNo,
+            lineCount,
+            requestedLine,
+            requestedColumn,
+            clamped: lineNo !== requestedLine || columnNo !== requestedColumn,
+        };
     }
     const ready = await waitUntil(() => doc.pane && doc.pane.querySelector('textarea.jsoneditor-text'));
-    if (!ready) return;
+    if (!ready) return null;
     const textarea = doc.pane.querySelector('textarea.jsoneditor-text');
     const lines = textarea.value.split('\n');
-    const index = Math.max(0, Math.min((Number(line) || 1) - 1, lines.length - 1));
+    const requestedLine = Math.max(1, Math.round(Number(line) || 1));
+    const index = Math.min(requestedLine - 1, lines.length - 1);
     let start = 0;
     for (let i = 0; i < index; i++) start += lines[i].length + 1;
     const end = start + lines[index].length;
@@ -8980,6 +9903,15 @@ async function selectLineInDoc(doc, line, column = 0) {
     textarea.setSelectionRange(start, end);
     const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
     textarea.scrollTop = Math.max(0, index * lineHeight - textarea.clientHeight / 2);
+    return {
+        mode: 'text',
+        line: index + 1,
+        column: 0,
+        lineCount: lines.length,
+        requestedLine,
+        requestedColumn: 0,
+        clamped: index + 1 !== requestedLine,
+    };
 }
 
 // 结构视图读取的源文本：树视图用打开时的原文（行号与源文件一致），
@@ -10107,6 +11039,26 @@ function initAIPanel() {
         settings,
         fonts: {latin: uiFonts, cjk: cjkFonts, mono: editorFonts},
         saveSettings: applySettings,
+        runAppAction,
+        hostAppActions: () => APP_ACTIONS,
+        browserHost: {
+            ensureTab: async (id, url, profileKey) => {
+                const existed = docs.find((d) => d.id === id);
+                if (existed && backend.BrowserState) {
+                    try {
+                        const st = await backend.BrowserState(id);
+                        if (st) return {id, url: st.url, title: st.title};
+                    } catch (e) {}
+                }
+                const doc = openBrowserTab(url || 'about:blank', profileKey || '');
+                return {id: doc.id, url: doc.browserUrl, title: doc.name};
+            },
+            closeTab: async (id) => {
+                const doc = docs.find((d) => d.id === id);
+                if (doc) closeDocNow(doc, false);
+                return {closed: true};
+            },
+        },
         flash,
         copyText,
         renderMarkdown: renderMarkdownHtml,
@@ -10535,7 +11487,7 @@ async function reloadActive(opts = {}) {
 }
 
 async function saveDoc(doc, opts = {}) {
-    if (!doc || doc.large || doc.binary || !doc.editor) return false;
+    if (!doc || doc.browser || doc.large || doc.binary || !doc.editor) return false;
     if (settings.readOnlyMode) {
         if (!opts.auto && !opts.silent) flash('只读锁定中，解锁后才能保存', true);
         return false;
@@ -13415,6 +14367,27 @@ if (rt) {
         flushCsvCellEditor();
         openCloseConfirm();
     });
+    rt.EventsOn('browser-nav', (data) => {
+        const doc = docs.find((d) => d.id === (data && data.id));
+        if (!doc) return;
+        doc.loading = !!data.loading;
+        if (data.url) doc.browserUrl = data.url;
+        if (doc.browserAddr && document.activeElement !== doc.browserAddr) {
+            doc.browserAddr.value = data.url && data.url !== 'about:blank' ? data.url : '';
+        }
+        if (doc.browserBackBtn) doc.browserBackBtn.disabled = !data.canGoBack;
+        if (doc.browserFwdBtn) doc.browserFwdBtn.disabled = !data.canGoForward;
+        if (data.title) updateBrowserTitle(doc, data.title);
+    });
+    rt.EventsOn('browser-title', (data) => {
+        const doc = docs.find((d) => d.id === (data && data.id));
+        if (doc && data && data.title) updateBrowserTitle(doc, data.title);
+    });
+    rt.EventsOn('browser-error', (data) => {
+        const doc = docs.find((d) => d.id === (data && data.id));
+        if (doc) flash('浏览器进程异常，标签页可能需要重新打开', true);
+    });
+    window.addEventListener('resize', syncAllBrowserTabs);
     rt.EventsOn('term-out', (data) => {
         const s = terminalUI.sessions.get(data.id);
         if (s) s.term.write(data.data);
@@ -14284,6 +15257,51 @@ function openVirtualDoc(name, content) {
     doc.untitled = true;
     docs.push(doc);
     activateDoc(doc);
+    return doc;
+}
+
+// ===== 浏览器使用标签页 =====
+let browserSeq = 0;
+
+function openBrowserTab(url, profileKey) {
+    browserSeq += 1;
+    const target = (url || '').trim() || 'about:blank';
+    const doc = {
+        id: 'browser-' + Date.now().toString(36) + '-' + browserSeq,
+        path: null,
+        name: target !== 'about:blank' ? target : '新标签页',
+        content: '',
+        size: 0,
+        eol: 'lf',
+        hasBom: false,
+        large: false,
+        enc: 'utf-8',
+        format: {id: 'browser', name: '网页', extensions: [], aceMode: 'text', rawOnly: true},
+        browser: true,
+        mode: 'browser',
+        browserUrl: target,
+        browserProfile: profileKey || '',
+        treeAvailable: false,
+        dirty: false,
+        untitled: false,
+        bases: {},
+        savedText: '',
+    };
+    docs.push(doc);
+    addDocToFocusedGroup(doc);
+    activateDoc(doc);
+    if (backend.BrowserOpen) {
+        backend.BrowserOpen(doc.id, target, doc.browserProfile || 'tab-' + doc.id).then((info) => {
+            if (info && info.title) updateBrowserTitle(doc, info.title);
+            syncBrowserTab(doc);
+        }).catch((e) => {
+            const stack = String((e && e.stack) || '').split(String.fromCharCode(10)).slice(0, 4).join(' | ');
+            flash('浏览器标签页打开失败：' + ((e && e.message) || e) + ' @ ' + stack, true);
+            closeDocNow(doc, false);
+        });
+    } else {
+        flash('当前环境不支持内嵌浏览器', true);
+    }
     return doc;
 }
 

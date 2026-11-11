@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -85,6 +86,7 @@ func (a *App) RunCommandSync(exe string, args []string, cwd string, timeoutMs in
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = dir
+	cmd.Env = mergeEnv(os.Environ())
 	hideConsoleWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, limit: commandOutputCap}
@@ -147,6 +149,7 @@ func (a *App) StartCommand(id, exe string, args []string, cwd string) error {
 
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = dir
+	cmd.Env = mergeEnv(os.Environ())
 	hideConsoleWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

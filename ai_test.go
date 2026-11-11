@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -28,13 +29,17 @@ type aiCapturedRequest struct {
 }
 
 func runAIStreamForTest(cfg AIConfig, messages []AIMessage, tools []AIToolDef) ([]aiEventRecord, error) {
+	return runAIStreamForTestRetry(cfg, messages, tools, 0)
+}
+
+func runAIStreamForTestRetry(cfg AIConfig, messages []AIMessage, tools []AIToolDef, retryMax int) ([]aiEventRecord, error) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(context.Canceled)
 	var events []aiEventRecord
 	emit := func(name string, payload any) {
 		events = append(events, aiEventRecord{Name: name, Payload: payload})
 	}
-	err := aiStreamResponse(ctx, cancel, "sess#0", cfg, messages, tools, emit)
+	err := aiStreamResponse(ctx, cancel, "sess#0", cfg, messages, tools, emit, retryMax)
 	return events, err
 }
 
@@ -776,7 +781,7 @@ func TestAISendChatStopCancels(t *testing.T) {
 
 	app := &App{}
 	cfg := AIConfig{BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
-	if err := app.AISendChat("stop-session#0", cfg, []AIMessage{{Role: "user", Content: "hi"}}, nil); err != nil {
+	if err := app.AISendChat("stop-session#0", cfg, []AIMessage{{Role: "user", Content: "hi"}}, nil, 0); err != nil {
 		t.Fatalf("AISendChat: %v", err)
 	}
 	select {
@@ -835,5 +840,124 @@ func TestAIStreamOpenAIReasoningKeepsWhitespace(t *testing.T) {
 	}
 	if got := aiJoinedDelta(events, aiEventChunk); got != "done" {
 		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestAIStreamRetry429Backoff(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		if n <= 2 {
+			// 前两次限流：Retry-After: 0（测试提速），第三次成功
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSEJSON(w, map[string]any{"choices": []any{map[string]any{
+			"delta":         map[string]any{"content": "重试成功"},
+			"finish_reason": nil,
+		}}})
+		writeSSEJSON(w, map[string]any{"choices": []any{}, "usage": map[string]any{
+			"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5,
+		}})
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := AIConfig{BaseURL: server.URL + "/v1", APIKey: "k", Model: "m", Proxy: "direct"}
+	events, err := runAIStreamForTestRetry(cfg, []AIMessage{{Role: "user", Content: "hi"}}, nil, 5)
+	if err != nil {
+		t.Fatalf("aiStreamResponse: %v", err)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 3 {
+		t.Fatalf("请求数 = %d，想要 3（两次 429 + 一次成功）", got)
+	}
+	retries := aiEventsNamed(events, aiEventRetry)
+	if len(retries) != 2 {
+		t.Fatalf("ai-retry 事件数 = %d，想要 2", len(retries))
+	}
+	first, _ := retries[0].(aiRetryPayload)
+	if first.Attempt != 1 || first.Max != 5 || first.Reason != "HTTP 429" {
+		t.Fatalf("首个重试事件 = %#v", first)
+	}
+	if first.DelayMs != 0 {
+		t.Fatalf("Retry-After: 0 应生效，DelayMs = %d", first.DelayMs)
+	}
+	chunks := aiJoinedDelta(events, aiEventChunk)
+	if !strings.Contains(chunks, "重试成功") {
+		t.Fatalf("重试后的内容缺失：%q", chunks)
+	}
+	done := aiEventsNamed(events, aiEventDone)
+	if len(done) != 1 {
+		t.Fatalf("ai-done 事件数 = %d", len(done))
+	}
+}
+
+func TestAIStreamRetryExhausted(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited"}}`)
+	}))
+	defer server.Close()
+
+	cfg := AIConfig{BaseURL: server.URL + "/v1", APIKey: "k", Model: "m", Proxy: "direct"}
+	events, err := runAIStreamForTestRetry(cfg, []AIMessage{{Role: "user", Content: "hi"}}, nil, 2)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 429") || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("error = %v", err)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 3 {
+		t.Fatalf("请求数 = %d，想要 3（首次 + 2 次重试）", got)
+	}
+	if retries := aiEventsNamed(events, aiEventRetry); len(retries) != 2 {
+		t.Fatalf("ai-retry 事件数 = %d，想要 2", len(retries))
+	}
+}
+
+func TestAIStreamNoRetryOn400(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"bad request"}}`)
+	}))
+	defer server.Close()
+
+	cfg := AIConfig{BaseURL: server.URL + "/v1", APIKey: "k", Model: "m", Proxy: "direct"}
+	events, err := runAIStreamForTestRetry(cfg, []AIMessage{{Role: "user", Content: "hi"}}, nil, 5)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 400") {
+		t.Fatalf("error = %v", err)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 1 {
+		t.Fatalf("400 不应重试，请求数 = %d", got)
+	}
+	if retries := aiEventsNamed(events, aiEventRetry); len(retries) != 0 {
+		t.Fatalf("400 不应有 ai-retry 事件，实际 %d 个", len(retries))
+	}
+}
+
+func TestAIRetryDelayExponential(t *testing.T) {
+	cases := map[int]time.Duration{
+		0: 1 * time.Second,
+		1: 2 * time.Second,
+		2: 4 * time.Second,
+		5: 30 * time.Second, // 32s 被上限压到 30s
+		9: 30 * time.Second,
+	}
+	for attempt, want := range cases {
+		got := aiRetryDelay(attempt, "")
+		if got < want*85/100 || got > want*115/100 {
+			t.Fatalf("attempt %d：delay = %v，期望 %v ±15%%", attempt, got, want)
+		}
+	}
+	if d := aiRetryDelay(3, "7"); d != 7*time.Second {
+		t.Fatalf("Retry-After 7 应生效，实际 %v", d)
 	}
 }

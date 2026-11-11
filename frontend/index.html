@@ -229,6 +229,7 @@
                 </div>
                     <button type="button" class="snav-item" data-pane="shortcuts">快捷键</button>
                     <button type="button" class="snav-item" data-pane="integration">系统集成</button>
+                    <button type="button" class="snav-item" data-pane="envvars">环境变量</button>
                     <button type="button" class="snav-item" data-pane="plugins">插件</button>
                     <button type="button" class="snav-item" data-pane="developer">开发者</button>
                     <button type="button" class="snav-item" data-pane="about">关于我们</button>
@@ -453,6 +454,13 @@
                             <span class="popover-value">占比</span>
                         </div>
                         <div class="popover-row">
+                            <span class="popover-label">自动压缩</span>
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-autocompact">
+                                达到阈值时自动压缩上下文
+                            </label>
+                        </div>
+                        <div class="popover-row">
                             <span class="popover-label">管理</span>
                             <div class="ai-settings-key">
                                 <button type="button" id="ai-opt-open-memory" class="dlg-btn">记忆管理…</button>
@@ -469,6 +477,12 @@
                             <label class="popover-label">
                                 <input type="checkbox" id="ai-opt-inject-agents">
                                 注入 AGENTS.md
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inject-envvars">
+                                注入环境变量名列表（不含值）
                             </label>
                         </div>
                         <div class="settings-section-title">写操作审批</div>
@@ -544,6 +558,14 @@
                             </div>
                         </div>
                         <div class="fmt-hint hint-indent">不含 API Key；粘贴的图片保存在 ai-logs/images/ 子目录并在日志中引用。</div>
+                        <div class="settings-section-title">应用操作</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-app-control">
+                                允许 AI 使用应用操作（app_control）
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">关闭后 AI 无法查看或调用该工具（标签页 / 视图 / 主题 / 设置 / 模拟键盘输入等），cadt-ui 技能同时隐藏。</div>
                         <div class="settings-section-title">通知</div>
                         <div class="popover-row">
                             <label class="popover-label">
@@ -603,6 +625,24 @@
                             </select>
                         </div>
                         <div class="fmt-hint hint-indent">仅对 ask_user 提问生效；选择“不超时”或“继续阻塞等待”时不会自动继续。</div>
+                        <div class="settings-section-title">失败重试</div>
+                        <div class="popover-row">
+                            <span class="popover-label">重试次数</span>
+                            <select id="ai-opt-retry-max" class="opt-select">
+                                <option value="0">不重试</option>
+                                <option value="1">1 次</option>
+                                <option value="2">2 次</option>
+                                <option value="3">3 次</option>
+                                <option value="4">4 次</option>
+                                <option value="5">5 次（默认）</option>
+                                <option value="6">6 次</option>
+                                <option value="7">7 次</option>
+                                <option value="8">8 次</option>
+                                <option value="9">9 次</option>
+                                <option value="10">10 次</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent">请求失败（429 限流 / 5xx / 网络错误）时按指数退避自动重试：1s → 2s → 4s → … 上限 30s；接口返回 Retry-After 时优先遵循。4xx 参数/鉴权错误不重试。</div>
                         <div class="settings-section-title">提示词模板</div>
                         <div class="popover-row">
                             <span class="popover-label">模板</span>
@@ -725,6 +765,26 @@
                             <button type="button" id="opt-refresh-integration" class="dlg-btn">刷新状态</button>
                         </div>
                         <div class="fmt-hint">只写入 HKCU，无需管理员权限；程序移动位置后重新勾选即可更新路径。</div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="envvars">
+                        <div class="fmt-pane-title">环境变量</div>
+                        <div class="fmt-pane-sub">私密变量的本机配置：值只注入终端与命令，AI 永远拿不到</div>
+                        <div class="envvar-toolbar">
+                            <button type="button" id="envvar-add" class="dlg-btn primary">新增变量…</button>
+                        </div>
+                        <div class="envvar-list-box">
+                            <div class="envvar-list" id="envvar-list"></div>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">存储方式</span>
+                            <select id="envvar-encrypted" class="opt-select">
+                                <option value="plain">明文 JSON（可手动备份编辑）</option>
+                                <option value="encrypted">DPAPI 加密（仅本机可解）</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent" id="envvar-storage-hint">—</div>
+                        <div class="fmt-hint">变量注入到之后新开的内置终端会话与命令桥子进程（AI 命令、插件命令），写在继承环境之后、同名时覆盖系统值；已打开的终端不受影响。</div>
+                        <div class="fmt-hint">AI 助手只看得到变量名与描述：env_list 列出名称，env_create 由 AI 提供名称与描述、值由你在弹窗中亲自填写。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="plugins">
                         <div class="fmt-pane-title">插件</div>
@@ -923,6 +983,44 @@
             <div class="dialog-footer">
                 <button type="button" id="ai-model-editor-cancel" class="dlg-btn">取消</button>
                 <button type="button" id="ai-model-editor-save" class="dlg-btn primary">保存</button>
+            </div>
+        </div>
+        <div id="dlg-env-editor-mask" class="ai-model-editor-mask hidden"></div>
+        <div id="dlg-env-editor" class="dialog ai-model-editor hidden" role="dialog" aria-label="环境变量">
+            <div class="dialog-head">
+                <span class="dialog-title" id="dlg-env-title">新增变量</span>
+                <button type="button" id="dlg-env-editor-close" class="ai-icon-btn" title="关闭">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
+            </div>
+            <div class="dialog-body ai-model-editor-body">
+                <div class="popover-row">
+                    <span class="popover-label">名称</span>
+                    <input id="env-opt-name" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="MY_API_KEY">
+                </div>
+                <div class="popover-row">
+                    <span class="popover-label">描述</span>
+                    <input id="env-opt-desc" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="这个变量是什么、用在哪里（AI 可见）">
+                </div>
+                <div class="popover-row">
+                    <span class="popover-label">值</span>
+                    <div class="ai-settings-key">
+                        <input id="env-opt-value" class="ai-settings-input" type="password" spellcheck="false" autocomplete="off" placeholder="仅保存在本机，不进入 AI 对话">
+                        <button type="button" id="env-opt-value-toggle" class="dlg-btn" title="显示 / 隐藏">显示</button>
+                    </div>
+                </div>
+                <div class="popover-row">
+                    <label class="popover-label">
+                        <input type="checkbox" id="env-opt-enabled" checked>
+                        注入终端与命令
+                    </label>
+                </div>
+                <div class="fmt-hint hint-indent hidden" id="env-opt-name-warn">变量名为 PATH 时会覆盖系统 PATH，子进程可能找不到命令；建议换一个名字。</div>
+                <div class="fmt-hint hint-indent hidden" id="env-opt-error"></div>
+            </div>
+            <div class="dialog-footer">
+                <button type="button" id="dlg-env-cancel" class="dlg-btn">取消</button>
+                <button type="button" id="dlg-env-save" class="dlg-btn primary">保存</button>
             </div>
         </div>
         <div id="dlg-confirm" class="dialog hidden" role="dialog" aria-label="关闭">
@@ -1172,7 +1270,6 @@
                 </div>
             </div>
             <div id="ai-changes-pop" class="ai-popover hidden"></div>
-            <div id="ai-todos" class="ai-todos hidden"></div>
             <div id="ai-messages" class="ai-messages" role="log" aria-live="polite"></div>
             <button type="button" id="ai-scroll-btn" class="ai-scroll-btn hidden" title="回到底部">
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.6v8M4.6 8.4L8 11.8l3.4-3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1182,6 +1279,7 @@
                 <span id="ai-ctx-banner-text">上下文接近窗口上限</span>
                 <button type="button" id="ai-ctx-compact" class="dlg-btn">压缩上下文</button>
             </div>
+            <div id="ai-todos" class="ai-todos hidden"></div>
             <div class="ai-composer">
                 <div id="ai-queue" class="ai-queue hidden"></div>
                 <div id="ai-takeover" class="ai-takeover hidden"></div>
