@@ -6,7 +6,7 @@ import hljs from 'highlight.js/lib/common';
 import markdownItKatex from '@vscode/markdown-it-katex';
 import {aceModeFor, detectFormat, formats, isSupportedFile, pluginFormats} from './formats.js';
 import {createExplorer} from './explorer.js';
-import {createStructurePanel} from './structure.js';
+import {createStructurePanel, parseStructure} from './structure.js';
 import {createContextMenu} from './contextmenu.js';
 import {createDebugConsole} from './debugconsole.js';
 import {iconSvg, renderMenuIcon} from './icons.js';
@@ -14,6 +14,9 @@ import {createPalette} from './palette.js';
 import {createAIPanel} from './ai-panel.js';
 import {repairJson} from './jsonrepair.js';
 import {createFileIcon, fileIconSpec} from './fileicons.js';
+import {buildJsonLineMap, queryJsonPath} from './jsonpath.js';
+import {semanticDiff, semanticEntryText, unifiedDiff} from './diff.js';
+import {validateJsonSchema} from './jsonschema.js';
 import {getPluginCommands, initPluginRuntime, loadPlugins} from './plugins.js';
 import changelogText from '../../CHANGELOG.md?raw';
 import termsText from '../../docs/legal/terms.md?raw';
@@ -482,6 +485,7 @@ const mockBackend = {
         if (mockScenario.has('image')) return [mockDir + 'sample.png'];
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
         if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
+        if (mockScenario.has('bigcsv')) return [mockDir + 'big.csv'];
         for (const key of ['yaml', 'xml', 'svg', 'brokensvg', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak', 'py', 'md', 'html', 'js', 'go', 'machine']) {
             if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
         }
@@ -503,6 +507,15 @@ const mockBackend = {
             return {path: dirKey, name: dirKey.split('/').pop(), isDir: true};
         }
         const base = path.split('/').pop();
+        if (base === 'big.csv') {
+            if (!window.__mockBigCsv) {
+                const rows = ['id,name,count'];
+                for (let i = 1; i <= 5000; i++) rows.push(i + ',name-' + i + ',' + (i % 97));
+                window.__mockBigCsv = rows.join('\n');
+            }
+            const content = window.__mockBigCsv;
+            return {path, name: base, content, size: content.length, eol: 'lf', hasBom: false, large: false, enc: 'utf-8'};
+        }
         if (window.__mockWrites && Object.prototype.hasOwnProperty.call(window.__mockWrites, path)) {
             const content = String(window.__mockWrites[path] || '');
             return {path, name: base, content, size: content.length, eol: 'lf', hasBom: false, large: false, enc: 'utf-8'};
@@ -601,7 +614,12 @@ const mockBackend = {
             entries = entries.concat(many);
         }
         const cap = limit > 0 ? limit : 1000;
-        return {entries: entries.slice(0, cap), truncated: entries.length > cap};
+        return {entries: entries.slice(0, cap), truncated: entries.length > cap, mtime: 0};
+    },
+    async DirMtime(path) {
+        const key = String(path || '').replace(/\/+$/, '');
+        if (!mockTree[key]) throw new Error('目录不存在');
+        return 0;
     },
     async CreateEntry(dir, name, isDir) {
         const key = String(dir || '').replace(/\/+$/, '');
@@ -859,6 +877,7 @@ const mockBackend = {
         return null;
     },
     async AIRunShellCommand(command, cwd, timeoutMs) {
+        (window.__mockShellLog || (window.__mockShellLog = [])).push({command, cwd, timeoutMs});
         await new Promise((resolve) => setTimeout(resolve, 200));
         return {
             shell: 'Git Bash',
@@ -1487,6 +1506,70 @@ const mockBackend = {
             }
             const lastTool = toolMessages[toolMessages.length - 1];
             const finalText = '命令输出：\n\n```\n' + String(lastTool.content || '').slice(0, 400) + '\n```\n\n（mock run_command 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('airunseq')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            const steps = ['git status --short', 'git status --porcelain'];
+            if (toolMessages.length < steps.length) {
+                const index = toolMessages.length;
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: index ? '再执行一条同类命令。\n\n' : '先执行一条命令。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_runcmd_seq_' + index,
+                    name: 'run_command',
+                    argsDelta: JSON.stringify({command: steps[index]}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '两条命令都已执行：\n\n```\n' + String(lastTool.content || '').slice(0, 400) + '\n```\n\n（mock 命令放行链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('airunpower')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            const steps = [
+                'powershell -NoProfile -Command "Get-Process"',
+                'powershell -NoProfile -Command "Get-Date"',
+                'powershell -NoProfile -Command "Get-Process"',
+            ];
+            if (toolMessages.length < steps.length) {
+                const index = toolMessages.length;
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '执行第 ' + (index + 1) + ' 条 PowerShell 命令。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_runcmd_power_' + index,
+                    name: 'run_command',
+                    argsDelta: JSON.stringify({command: steps[index]}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = 'PowerShell 命令已执行：\n\n```\n' + String(lastTool.content || '').slice(0, 400) + '\n```\n\n（mock 精确命令放行链路结束）';
             const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
             let finalDelay = 30;
             finalChunks.forEach((chunk, i) => {
@@ -2149,7 +2232,14 @@ let autoSaveTimer = 0;
 let explorer = null;
 let structurePanel = null;
 let structureRefreshTimer = 0;
+let structureWorker = null;
+let structureWorkerSeq = 0;
+let structureWorkerBroken = false;
+const structureWorkerPending = new Map();
+const structureCache = new Map();
+const STRUCTURE_CACHE_LIMIT = 12;
 let workspaceFolder = null;
+let watchedWorkspaceRoot = '';
 let fileClipboard = null;
 let ctxMenu = null;
 let palette = null;
@@ -4722,7 +4812,6 @@ function splitKindFor(doc) {
 function canSplitDoc(doc) {
     return !!doc && !doc.binary && !doc.large && !!splitKindFor(doc);
 }
-const CSV_TABLE_ROW_LIMIT = 5000;
 const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
 
@@ -7087,6 +7176,85 @@ function jumpBookmark(delta) {
     jumpToPosition(target + 1, 1);
 }
 
+// ---- 视图状态：光标/滚动/折叠/书签随会话保存 ----
+
+function captureDocView(doc) {
+    const ace = doc && doc.editor && doc.editor.aceEditor;
+    if (!ace) return null;
+    const view = {};
+    try {
+        const pos = ace.getCursorPosition();
+        view.cursor = [pos.row, pos.column];
+    } catch (e) {}
+    try { view.scrollTop = Math.max(0, Math.round(ace.session.getScrollTop() || 0)); } catch (e) {}
+    try {
+        const folds = typeof ace.session.getAllFolds === 'function' ? ace.session.getAllFolds() : [];
+        const ranges = [];
+        for (const fold of folds || []) {
+            const start = fold && fold.start ? fold.start.row : -1;
+            const end = fold && fold.end ? fold.end.row : -1;
+            if (start >= 0 && end > start) ranges.push([start, end]);
+            if (ranges.length >= 500) break;
+        }
+        if (ranges.length) view.folds = ranges;
+    } catch (e) {}
+    const marks = bookmarkRowsForDoc(doc);
+    if (marks.length) view.bookmarks = marks.slice(0, 500);
+    if (!view.cursor && !view.scrollTop && !view.folds && !view.bookmarks) return null;
+    return view;
+}
+
+function applyDocView(doc, view) {
+    if (!doc || !view) return false;
+    if (Array.isArray(view.bookmarks)) {
+        doc.bookmarks = new Set(view.bookmarks.filter((n) => Number.isInteger(n) && n >= 0));
+    }
+    const ace = doc.editor && doc.editor.aceEditor;
+    if (!ace) return false;
+    renderBookmarks(doc);
+    try {
+        const Range = ace.Range || (ace.require && ace.require('ace/range').Range);
+        if (Range && Array.isArray(view.folds)) {
+            const lineCount = ace.session.getLength();
+            for (const pair of view.folds) {
+                const start = Number(pair && pair[0]);
+                const end = Number(pair && pair[1]);
+                if (!(start >= 0) || !(end > start) || start >= lineCount) continue;
+                try { ace.session.addFold('', new Range(start, 0, Math.min(end, lineCount - 1), Infinity)); } catch (e) {}
+            }
+        }
+    } catch (e) {}
+    try {
+        if (Array.isArray(view.cursor)) {
+            const lineCount = Math.max(1, ace.session.getLength());
+            const row = Math.max(0, Math.min(lineCount - 1, Number(view.cursor[0]) || 0));
+            const col = Math.max(0, Number(view.cursor[1]) || 0);
+            ace.clearSelection();
+            ace.moveCursorTo(row, col);
+        }
+    } catch (e) {}
+    try {
+        if (Number.isFinite(view.scrollTop)) ace.session.setScrollTop(view.scrollTop);
+    } catch (e) {}
+    return true;
+}
+
+function applyPendingDocView(doc) {
+    if (!doc || !doc.path) return;
+    const key = sessionPathKey(doc.path);
+    const view = pendingDocViews.get(key);
+    if (!view) return;
+    pendingDocViews.delete(key);
+    applyDocView(doc, view);
+}
+
+function rememberDocView(doc) {
+    if (!doc || !doc.path) return;
+    const key = sessionPathKey(doc.path);
+    const view = captureDocView(doc) || knownDocViews.get(key);
+    if (view) knownDocViews.set(key, view);
+}
+
 // ---- Git 行级标记：代码视图行号左侧色条（JetBrains 风格） ----
 // 绿=新增、蓝=修改、灰点=此处上方有删除的行。数据来自 git diff HEAD（未保存内容不参与）。
 
@@ -7404,7 +7572,10 @@ function markDocDirty(doc) {
         updateTabDirty(doc);
         updateBackendDirty();
     }
-    if (typeof scheduleStructureRefresh === 'function') scheduleStructureRefresh(doc);
+    if (typeof scheduleStructureRefresh === 'function') {
+        doc.structureRev = (doc.structureRev || 0) + 1;
+        scheduleStructureRefresh(doc);
+    }
     if (doc.splitActive) scheduleSplitPreview(doc);
     scheduleGitGutter(doc);
 }
@@ -7671,12 +7842,30 @@ function createCsvTableView(doc) {
     bar.className = 'csv-table-bar';
     const meta = document.createElement('span');
     meta.className = 'csv-table-meta';
+    const filterWrap = document.createElement('label');
+    filterWrap.className = 'csv-table-filter';
+    const filterInput = document.createElement('input');
+    filterInput.type = 'search';
+    filterInput.placeholder = '筛选所有列…';
+    filterInput.title = '对所有列做子串筛选；只影响表格显示，不改文件内容';
+    filterInput.spellcheck = false;
+    const filterClear = document.createElement('button');
+    filterClear.type = 'button';
+    filterClear.className = 'csv-filter-clear';
+    filterClear.textContent = '×';
+    filterClear.title = '清除筛选';
+    filterWrap.append(filterInput, filterClear);
     const hint = document.createElement('span');
     hint.className = 'csv-table-hint';
     hint.textContent = doc.large
         ? '文件超过 10 MB，表格只读；可拖表头边缘调列宽；Ctrl+滚轮缩放'
-        : '点击单元格编辑；拖表头边缘调列宽；Ctrl+滚轮缩放；Enter 确认，Esc 取消';
-    bar.append(meta, hint);
+        : '点击表头排序；点击单元格编辑；右键表头看列统计；拖表头边缘调列宽；Ctrl+滚轮缩放';
+    const statsBtn = document.createElement('button');
+    statsBtn.type = 'button';
+    statsBtn.className = 'csv-stats-btn';
+    statsBtn.textContent = '列统计';
+    statsBtn.title = '查看当前列统计（也可右键表头指定列）';
+    bar.append(meta, filterWrap, statsBtn, hint);
     const scroll = document.createElement('div');
     scroll.className = 'csv-table-scroll';
     wrap.append(bar, scroll);
@@ -7684,13 +7873,267 @@ function createCsvTableView(doc) {
     doc.tableEl = wrap;
     doc.tableMeta = meta;
     doc.tableScroll = scroll;
+    doc.tableFilterInput = filterInput;
+    doc.tableFilterClear = filterClear;
     if (!doc.tableZoom) doc.tableZoom = 1;
+    let filterTimer = 0;
+    filterInput.addEventListener('input', () => {
+        clearTimeout(filterTimer);
+        filterTimer = setTimeout(() => {
+            filterTimer = 0;
+            const view = ensureCsvView(doc);
+            const next = filterInput.value;
+            if (view.filter === next) return;
+            view.filter = next;
+            renderCsvTableView(doc, {resetScroll: true});
+        }, 120);
+    });
+    filterClear.addEventListener('click', () => {
+        filterInput.value = '';
+        const view = ensureCsvView(doc);
+        if (!view.filter) return;
+        view.filter = '';
+        renderCsvTableView(doc, {resetScroll: true});
+    });
+    statsBtn.addEventListener('pointerdown', () => {
+        const active = document.activeElement;
+        if (active && active.classList && active.classList.contains('csv-cell') && active.dataset.col != null) {
+            doc.csvActiveCol = Number(active.dataset.col);
+        }
+    });
+    statsBtn.addEventListener('click', () => {
+        if (doc !== file) return;
+        const view = ensureCsvView(doc);
+        let col = doc.csvActiveCol;
+        if (!Number.isInteger(col)) col = view.sortCol >= 0 ? view.sortCol : 0;
+        openCsvColumnStats(doc, col);
+    });
+    scroll.addEventListener('scroll', () => {
+        if (doc.csvVirtual) scheduleCsvVirtualRender(doc);
+    }, {passive: true});
     applyCsvTableZoom(doc);
+}
+
+function ensureCsvView(doc) {
+    if (!doc.csvView) doc.csvView = {sortCol: -1, sortDir: 0, filter: ''};
+    return doc.csvView;
+}
+
+const csvCollator = new Intl.Collator('zh-CN', {numeric: true, sensitivity: 'base'});
+
+function csvSortKey(value) {
+    const text = value == null ? '' : String(value);
+    const trimmed = text.trim();
+    if (!trimmed) return {empty: true, kind: 3, num: 0, str: ''};
+    const num = Number(trimmed.replace(/,/g, ''));
+    if (trimmed !== '' && Number.isFinite(num)) return {empty: false, kind: 0, num, str: trimmed};
+    if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(trimmed)) {
+        const time = Date.parse(trimmed);
+        if (Number.isFinite(time)) return {empty: false, kind: 1, num: time, str: trimmed};
+    }
+    return {empty: false, kind: 2, num: 0, str: trimmed};
+}
+
+// 排序/筛选只产生视图索引，绝不改动 doc.tableRows 的原始顺序
+function csvViewIndices(doc) {
+    const view = ensureCsvView(doc);
+    const rows = doc.tableRows || [];
+    const headers = doc.tableHeaders || [];
+    const filter = String(view.filter || '').trim().toLowerCase();
+    const sortable = view.sortDir !== 0 && view.sortCol >= 0 && view.sortCol < headers.length;
+    if (!filter && !sortable) return null;
+    const indices = [];
+    for (let i = 0; i < rows.length; i++) {
+        if (filter) {
+            const row = rows[i] || [];
+            let hit = false;
+            for (let c = 0; c < row.length; c++) {
+                const cell = row[c] == null ? '' : String(row[c]);
+                if (cell.toLowerCase().includes(filter)) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit) continue;
+        }
+        indices.push(i);
+    }
+    if (sortable) {
+        const col = view.sortCol;
+        const dir = view.sortDir;
+        indices.sort((a, b) => {
+            const ka = csvSortKey((rows[a] || [])[col]);
+            const kb = csvSortKey((rows[b] || [])[col]);
+            if (ka.empty || kb.empty) {
+                if (ka.empty === kb.empty) return a - b;
+                return ka.empty ? 1 : -1;
+            }
+            let cmp;
+            if (ka.kind === kb.kind && ka.kind !== 2) cmp = ka.num - kb.num;
+            else cmp = csvCollator.compare(ka.str, kb.str);
+            if (cmp === 0) cmp = a - b;
+            return cmp * dir;
+        });
+    }
+    return indices;
+}
+
+function computeCsvColumnStats(doc, col) {
+    const rows = doc.tableRows || [];
+    const values = [];
+    let empty = 0;
+    for (const row of rows) {
+        const raw = (row || [])[col];
+        const text = raw == null ? '' : String(raw);
+        if (!text.trim()) empty++;
+        else values.push(text);
+    }
+    const counts = new Map();
+    for (const value of values) counts.set(value, (counts.get(value) || 0) + 1);
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+    let numericCount = 0;
+    let dateCount = 0;
+    let emailCount = 0;
+    let urlCount = 0;
+    let boolCount = 0;
+    let maxLen = 0;
+    const numbers = [];
+    for (const text of values) {
+        const trimmed = text.trim();
+        maxLen = Math.max(maxLen, text.length);
+        const num = Number(trimmed.replace(/,/g, ''));
+        if (trimmed && Number.isFinite(num)) {
+            numericCount++;
+            numbers.push(num);
+        }
+        if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(trimmed) && Number.isFinite(Date.parse(trimmed))) dateCount++;
+        if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(trimmed)) emailCount++;
+        if (/^https?:\/\//i.test(trimmed)) urlCount++;
+        if (/^(true|false|yes|no|是|否)$/i.test(trimmed)) boolCount++;
+    }
+    let type = '文本';
+    if (values.length && numericCount === values.length) type = '数字';
+    else if (values.length && dateCount === values.length) type = '日期';
+    else if (values.length && emailCount === values.length) type = '邮箱';
+    else if (values.length && urlCount === values.length) type = 'URL';
+    else if (values.length && boolCount === values.length) type = '布尔';
+    else if (counts.size && counts.size <= Math.min(20, Math.max(2, Math.round(values.length * 0.2)))) type = '枚举';
+    const stats = {
+        total: rows.length,
+        nonEmpty: values.length,
+        empty,
+        unique: counts.size,
+        maxLen,
+        type,
+        top,
+        numeric: null,
+    };
+    if (values.length && numericCount === values.length) {
+        let min = numbers[0];
+        let max = numbers[0];
+        let sum = 0;
+        for (const n of numbers) {
+            if (n < min) min = n;
+            if (n > max) max = n;
+            sum += n;
+        }
+        stats.numeric = {min, max, avg: sum / numbers.length};
+    }
+    return stats;
+}
+
+function closeCsvColumnStats(doc) {
+    if (!doc) return;
+    if (doc.csvStatsPanel) doc.csvStatsPanel.classList.add('hidden');
+    doc.csvStatsOpen = false;
+    if (doc.csvStatsEscHandler) {
+        document.removeEventListener('keydown', doc.csvStatsEscHandler, true);
+        doc.csvStatsEscHandler = null;
+    }
+}
+
+function ensureCsvStatsPanel(doc) {
+    if (doc.csvStatsPanel) return doc.csvStatsPanel;
+    const panel = document.createElement('div');
+    panel.className = 'csv-stats-panel hidden';
+    panel.setAttribute('role', 'dialog');
+    doc.tableEl.appendChild(panel);
+    doc.csvStatsPanel = panel;
+    return panel;
+}
+
+function openCsvColumnStats(doc, col) {
+    const headers = doc.tableHeaders || [];
+    if (!headers.length) return;
+    const index = Math.max(0, Math.min(headers.length - 1, Number(col) || 0));
+    doc.csvActiveCol = index;
+    const panel = ensureCsvStatsPanel(doc);
+    panel.textContent = '';
+    const head = document.createElement('div');
+    head.className = 'csv-stats-head';
+    const title = document.createElement('span');
+    title.className = 'csv-stats-title';
+    title.textContent = '列统计 · ' + (headers[index] || '(空列名)');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'csv-stats-close';
+    close.textContent = '×';
+    close.title = '关闭（Esc）';
+    close.addEventListener('click', () => closeCsvColumnStats(doc));
+    head.append(title, close);
+    panel.appendChild(head);
+    const sub = document.createElement('div');
+    sub.className = 'csv-stats-sub';
+    sub.textContent = '第 ' + (index + 1) + ' 列';
+    panel.appendChild(sub);
+    const stats = computeCsvColumnStats(doc, index);
+    const addRow = (label, value) => {
+        const row = document.createElement('div');
+        row.className = 'csv-stats-row';
+        const key = document.createElement('span');
+        key.className = 'csv-stats-label';
+        key.textContent = label;
+        const val = document.createElement('span');
+        val.className = 'csv-stats-value';
+        val.textContent = value;
+        row.append(key, val);
+        panel.appendChild(row);
+    };
+    addRow('行数', String(stats.total));
+    addRow('非空 / 空', stats.nonEmpty + ' / ' + stats.empty);
+    addRow('唯一值', String(stats.unique));
+    if (stats.numeric) {
+        const fmt = (n) => (Number.isInteger(n) ? String(n) : String(Number(n.toFixed(3))));
+        addRow('最小 / 最大', fmt(stats.numeric.min) + ' / ' + fmt(stats.numeric.max));
+        addRow('平均值', fmt(stats.numeric.avg));
+    }
+    addRow('最长值', stats.maxLen + ' 字符');
+    addRow('疑似类型', stats.type);
+    if (stats.top.length) {
+        addRow('出现最多', stats.top.map(([value, count]) => value + '（' + count + '）').join('、'));
+    }
+    panel.classList.remove('hidden');
+    doc.csvStatsOpen = true;
+    if (!doc.csvStatsEscHandler) {
+        doc.csvStatsEscHandler = (e) => {
+            if (e.key !== 'Escape' || !doc.csvStatsOpen) return;
+            e.preventDefault();
+            e.stopPropagation();
+            closeCsvColumnStats(doc);
+        };
+        document.addEventListener('keydown', doc.csvStatsEscHandler, true);
+    }
 }
 
 function applyCsvTableZoom(doc) {
     if (!doc || !doc.tableEl) return;
     doc.tableEl.style.setProperty('--csv-zoom', String(doc.tableZoom || 1));
+    if (doc.csvVirtual) {
+        doc.csvRowScreenH = (doc.csvRowLayoutH || CSV_DEFAULT_ROW_LAYOUT_H) * (doc.tableZoom || 1);
+        doc.csvVisibleStart = -1;
+        doc.csvVisibleEnd = -1;
+        scheduleCsvVirtualRender(doc);
+    }
 }
 
 function zoomCsvTable(doc, deltaY) {
@@ -7699,15 +8142,160 @@ function zoomCsvTable(doc, deltaY) {
     const current = doc.tableZoom || 1;
     const next = Math.min(8, Math.max(0.25, Math.round((current + dir * 0.1) * 10) / 10));
     if (next === current) return;
+    const scroll = doc.tableScroll;
+    const oldRowH = doc.csvRowScreenH || (doc.csvRowLayoutH || CSV_DEFAULT_ROW_LAYOUT_H) * current;
+    const topRow = oldRowH > 0 ? scroll.scrollTop / oldRowH : 0;
     doc.tableZoom = next;
     applyCsvTableZoom(doc);
+    if (doc.csvVirtual && scroll) {
+        scroll.scrollTop = Math.max(0, topRow * (doc.csvRowLayoutH || CSV_DEFAULT_ROW_LAYOUT_H) * next);
+        doc.csvVisibleStart = -1;
+        doc.csvVisibleEnd = -1;
+        renderCsvVirtualRows(doc, true);
+    }
     updateStatus();
 }
 
-function renderCsvTableView(doc) {
+const CSV_VIRTUAL_THRESHOLD = 300;
+const CSV_VIRTUAL_OVERSCAN = 10;
+const CSV_DEFAULT_ROW_LAYOUT_H = 24;
+
+function estimateCsvColumnWidths(doc) {
+    const headers = doc.tableHeaders || [];
+    const rows = doc.tableRows || [];
+    const widths = headers.map((header) => Math.max(CSV_COL_MIN_WIDTH, Math.min(420, 24 + String(header || '').length * 8)));
+    const sample = Math.min(rows.length, 300);
+    for (let i = 0; i < sample; i++) {
+        const row = rows[i] || [];
+        for (let c = 0; c < headers.length; c++) {
+            const len = row[c] == null ? 0 : String(row[c]).length;
+            const width = Math.min(420, 24 + Math.min(len, 48) * 8);
+            if (width > widths[c]) widths[c] = width;
+        }
+    }
+    return widths;
+}
+
+function createCsvVirtualRow(doc, editable, headerCount) {
+    const tr = document.createElement('tr');
+    tr.className = 'csv-row';
+    const num = document.createElement('td');
+    num.className = 'csv-rownum';
+    tr.appendChild(num);
+    const cells = [];
+    for (let col = 0; col < headerCount; col++) {
+        const td = document.createElement('td');
+        td.className = 'csv-cell';
+        if (editable) {
+            td.contentEditable = 'plaintext-only';
+            td.spellcheck = false;
+            td.dataset.col = String(col);
+            td.addEventListener('focus', () => { doc.csvActiveCol = col; });
+            td.addEventListener('keydown', (e) => onCsvCellKeyDown(doc, e));
+            td.addEventListener('input', () => markCsvCellTyping(doc));
+            td.addEventListener('blur', () => commitCsvCell(doc, td));
+        }
+        tr.appendChild(td);
+        cells.push(td);
+    }
+    return {tr, num, cells};
+}
+
+function scheduleCsvVirtualRender(doc) {
+    if (!doc || !doc.csvVirtual || doc.csvRenderScheduled) return;
+    doc.csvRenderScheduled = true;
+    requestAnimationFrame(() => {
+        doc.csvRenderScheduled = false;
+        renderCsvVirtualRows(doc);
+    });
+}
+
+// 只更新视口附近的真实行，滚动时复用同一批 tr/td
+function renderCsvVirtualRows(doc, force) {
+    if (!doc || !doc.csvVirtual || !doc.csvTBody || !doc.csvTopSpacer || !doc.csvBottomSpacer) return;
+    const scroll = doc.tableScroll;
+    const tbody = doc.csvTBody;
+    const total = doc.csvViewTotal || 0;
+    const zoom = doc.tableZoom || 1;
+    if (!doc.csvRowLayoutH) doc.csvRowLayoutH = CSV_DEFAULT_ROW_LAYOUT_H;
+    let rowH = doc.csvRowScreenH || doc.csvRowLayoutH * zoom;
+    if (!rowH || rowH < 6) rowH = CSV_DEFAULT_ROW_LAYOUT_H * zoom;
+    const viewH = scroll.clientHeight || 480;
+    const maxTop = Math.max(0, total * rowH - viewH);
+    if (scroll.scrollTop > maxTop) scroll.scrollTop = maxTop;
+    let start = Math.floor(scroll.scrollTop / rowH) - CSV_VIRTUAL_OVERSCAN;
+    if (start < 0) start = 0;
+    let count = Math.ceil(viewH / rowH) + CSV_VIRTUAL_OVERSCAN * 2;
+    let end = Math.min(total, start + count);
+    if (start >= total && total > 0) {
+        start = Math.max(0, total - count);
+        end = total;
+    }
+    if (!force && start === doc.csvVisibleStart && end === doc.csvVisibleEnd &&
+        doc.csvPool && doc.csvPool.length && doc.csvPool[0].cells.length === doc.tableHeaders.length) {
+        return;
+    }
+    if (start !== doc.csvVisibleStart || end !== doc.csvVisibleEnd) {
+        const active = document.activeElement;
+        if (active && active.classList && active.classList.contains('csv-cell') && tbody.contains(active)) {
+            active.blur();
+        }
+    }
+    doc.csvVisibleStart = start;
+    doc.csvVisibleEnd = end;
+    const layoutH = doc.csvRowLayoutH;
+    doc.csvTopSpacer.firstChild.style.height = Math.max(0, start * layoutH) + 'px';
+    doc.csvBottomSpacer.firstChild.style.height = Math.max(0, (total - end) * layoutH) + 'px';
+    const needed = Math.max(0, end - start);
+    const headers = doc.tableHeaders || [];
+    const rows = doc.tableRows || [];
+    const indices = doc.csvViewIndices;
+    const editable = !doc.large && !doc.binary && !settings.readOnlyMode;
+    if (!doc.csvPool || (doc.csvPool.length && doc.csvPool[0].cells.length !== headers.length)) {
+        for (const row of doc.csvPool || []) row.tr.remove();
+        doc.csvPool = [];
+    }
+    while (doc.csvPool.length < needed) {
+        const row = createCsvVirtualRow(doc, editable, headers.length);
+        tbody.insertBefore(row.tr, doc.csvBottomSpacer);
+        doc.csvPool.push(row);
+    }
+    for (let i = 0; i < doc.csvPool.length; i++) {
+        const slot = doc.csvPool[i];
+        if (i >= needed) {
+            slot.tr.hidden = true;
+            continue;
+        }
+        slot.tr.hidden = false;
+        const viewPos = start + i;
+        const rowIndex = indices ? indices[viewPos] : viewPos;
+        const row = rows[rowIndex] || [];
+        slot.num.textContent = String(rowIndex + 1);
+        for (let col = 0; col < headers.length; col++) {
+            const td = slot.cells[col];
+            const display = row[col] == null ? '' : String(row[col]);
+            if (td.textContent !== display) td.textContent = display;
+            td.title = display;
+            td.dataset.row = String(rowIndex);
+            td.dataset.vpos = String(viewPos);
+        }
+    }
+    const first = doc.csvPool.find((slot) => !slot.tr.hidden);
+    if (first) {
+        const measured = first.tr.getBoundingClientRect().height;
+        if (measured > 4 && Math.abs(measured - (doc.csvRowScreenH || 0)) > 0.6) {
+            doc.csvRowScreenH = measured;
+            doc.csvRowLayoutH = measured / zoom;
+            doc.csvTopSpacer.firstChild.style.height = Math.max(0, start * doc.csvRowLayoutH) + 'px';
+            doc.csvBottomSpacer.firstChild.style.height = Math.max(0, (total - end) * doc.csvRowLayoutH) + 'px';
+        }
+    }
+}
+
+function renderCsvTableView(doc, opts = {}) {
     if (!doc || !doc.tableEl || !doc.editor) return;
     const scroll = doc.tableScroll;
-    const keepTop = scroll.scrollTop;
+    const keepTop = opts.resetScroll ? 0 : scroll.scrollTop;
     const keepLeft = scroll.scrollLeft;
     scroll.textContent = '';
     const text = doc.editor.getText();
@@ -7725,20 +8313,41 @@ function renderCsvTableView(doc) {
     }
     const headers = parsed.headers || [];
     const rows = parsed.rows || [];
-    const shown = Math.min(rows.length, CSV_TABLE_ROW_LIMIT);
     doc.tableHeaders = headers;
     doc.tableRows = rows;
+    const view = ensureCsvView(doc);
+    if (view.sortCol >= headers.length) {
+        view.sortCol = -1;
+        view.sortDir = 0;
+    }
+    if (doc.tableFilterInput && doc.tableFilterInput.value !== (view.filter || '')) {
+        doc.tableFilterInput.value = view.filter || '';
+    }
+    const viewIndices = csvViewIndices(doc);
+    const shown = viewIndices ? viewIndices.length : rows.length;
+    doc.csvViewIndices = viewIndices;
+    doc.csvViewTotal = shown;
+    const virtual = shown > CSV_VIRTUAL_THRESHOLD;
+    doc.csvVirtual = virtual;
+    doc.csvVisibleStart = -1;
+    doc.csvVisibleEnd = -1;
+    doc.csvRenderScheduled = false;
+    doc.csvPool = [];
     if (!Array.isArray(doc.tableColWidths) || doc.tableColWidths.length !== headers.length) {
         doc.tableColWidths = null;
     }
+    if (virtual && !doc.tableColWidths) {
+        doc.tableColWidths = estimateCsvColumnWidths(doc);
+    }
     if (!doc.tableUndo) doc.tableUndo = [];
     if (!doc.tableRedo) doc.tableRedo = [];
+    const filtered = !!String(view.filter || '').trim();
     doc.tableMeta.textContent = rows.length + ' 行 × ' + headers.length + ' 列' +
-        (shown < rows.length ? ' · 仅显示前 ' + shown + ' 行' : '');
+        (filtered ? ' · 匹配 ' + shown + ' 行' : '');
     if (!headers.length) {
         const empty = document.createElement('div');
         empty.className = 'csv-table-empty';
-        empty.textContent = '没有可显示的表格内容';
+        empty.textContent = filtered ? '没有匹配的行' : '没有可显示的表格内容';
         scroll.appendChild(empty);
         return;
     }
@@ -7759,7 +8368,10 @@ function renderCsvTableView(doc) {
         const header = headers[col];
         const th = document.createElement('th');
         th.className = 'csv-col-head';
-        th.title = header;
+        th.title = header + (doc.large ? '' : '（点击排序）');
+        if (view.sortCol === col && view.sortDir !== 0) {
+            th.dataset.sort = view.sortDir > 0 ? 'asc' : 'desc';
+        }
         const label = document.createElement('span');
         label.className = 'csv-head-text';
         label.textContent = header === '' ? '(空列名)' : header;
@@ -7768,46 +8380,136 @@ function renderCsvTableView(doc) {
         handle.title = '拖动调整列宽';
         handle.dataset.col = String(col);
         handle.addEventListener('pointerdown', (e) => startCsvColumnResize(doc, col, e));
+        handle.addEventListener('click', (e) => e.stopPropagation());
+        th.addEventListener('click', (e) => {
+            if (e.target && e.target.closest && e.target.closest('.csv-col-resize')) return;
+            if (doc !== file) return;
+            doc.csvActiveCol = col;
+            const csvView = ensureCsvView(doc);
+            if (csvView.sortCol === col) {
+                csvView.sortDir = csvView.sortDir === 1 ? -1 : (csvView.sortDir === -1 ? 0 : 1);
+                if (csvView.sortDir === 0) csvView.sortCol = -1;
+            } else {
+                csvView.sortCol = col;
+                csvView.sortDir = 1;
+            }
+            renderCsvTableView(doc, {resetScroll: true});
+        });
+        th.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            doc.csvActiveCol = col;
+            if (!ctxMenu) return;
+            const csvView = ensureCsvView(doc);
+            ctxMenu.open([
+                {
+                    label: '升序排序',
+                    icon: 'E70D',
+                    action: () => {
+                        csvView.sortCol = col;
+                        csvView.sortDir = 1;
+                        renderCsvTableView(doc, {resetScroll: true});
+                    },
+                },
+                {
+                    label: '降序排序',
+                    icon: 'E70E',
+                    action: () => {
+                        csvView.sortCol = col;
+                        csvView.sortDir = -1;
+                        renderCsvTableView(doc, {resetScroll: true});
+                    },
+                },
+                {
+                    label: '清除排序',
+                    disabled: csvView.sortDir === 0,
+                    action: () => {
+                        csvView.sortCol = -1;
+                        csvView.sortDir = 0;
+                        renderCsvTableView(doc, {resetScroll: true});
+                    },
+                },
+                {sep: true},
+                {label: '列统计…', icon: 'E9D2', action: () => openCsvColumnStats(doc, col)},
+            ], e.clientX, e.clientY);
+        });
         th.append(label, handle);
         headRow.appendChild(th);
     }
     thead.appendChild(headRow);
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
+    if (virtual) {
+        const topSpacer = document.createElement('tr');
+        topSpacer.className = 'csv-spacer';
+        topSpacer.appendChild(document.createElement('td'));
+        const bottomSpacer = document.createElement('tr');
+        bottomSpacer.className = 'csv-spacer';
+        bottomSpacer.appendChild(document.createElement('td'));
+        const colspanCell = (row) => {
+            const cell = row.firstChild;
+            cell.colSpan = headers.length + 1;
+            cell.style.padding = '0';
+            cell.style.border = '0';
+            return cell;
+        };
+        colspanCell(topSpacer);
+        colspanCell(bottomSpacer);
+        tbody.append(topSpacer, bottomSpacer);
+        doc.csvTBody = tbody;
+        doc.csvTopSpacer = topSpacer;
+        doc.csvBottomSpacer = bottomSpacer;
+    } else {
+        doc.csvTBody = tbody;
+        doc.csvTopSpacer = null;
+        doc.csvBottomSpacer = null;
+    }
     const fragment = document.createDocumentFragment();
     const editable = !doc.large && !doc.binary && !settings.readOnlyMode;
-    for (let i = 0; i < shown; i++) {
-        const row = rows[i] || [];
-        const tr = document.createElement('tr');
-        const num = document.createElement('td');
-        num.className = 'csv-rownum';
-        num.textContent = String(i + 1);
-        tr.appendChild(num);
-        for (let col = 0; col < headers.length; col++) {
-            const td = document.createElement('td');
-            td.className = 'csv-cell';
-            const value = row[col];
-            const display = value == null ? '' : String(value);
-            td.textContent = display;
-            td.title = display;
-            if (editable) {
-                td.contentEditable = 'plaintext-only';
-                td.spellcheck = false;
-                td.dataset.row = String(i);
-                td.dataset.col = String(col);
-                td.addEventListener('keydown', (e) => onCsvCellKeyDown(doc, e));
-                td.addEventListener('input', () => markCsvCellTyping(doc));
-                td.addEventListener('blur', () => commitCsvCell(doc, td));
+    if (!virtual) {
+        for (let viewRow = 0; viewRow < shown; viewRow++) {
+            const rowIndex = viewIndices ? viewIndices[viewRow] : viewRow;
+            const row = rows[rowIndex] || [];
+            const tr = document.createElement('tr');
+            const num = document.createElement('td');
+            num.className = 'csv-rownum';
+            num.textContent = String(rowIndex + 1);
+            tr.appendChild(num);
+            for (let col = 0; col < headers.length; col++) {
+                const td = document.createElement('td');
+                td.className = 'csv-cell';
+                const value = row[col];
+                const display = value == null ? '' : String(value);
+                td.textContent = display;
+                td.title = display;
+                if (editable) {
+                    td.contentEditable = 'plaintext-only';
+                    td.spellcheck = false;
+                    td.dataset.row = String(rowIndex);
+                    td.dataset.col = String(col);
+                    td.dataset.vpos = String(viewRow);
+                    td.addEventListener('focus', () => { doc.csvActiveCol = col; });
+                    td.addEventListener('keydown', (e) => onCsvCellKeyDown(doc, e));
+                    td.addEventListener('input', () => markCsvCellTyping(doc));
+                    td.addEventListener('blur', () => commitCsvCell(doc, td));
+                }
+                tr.appendChild(td);
             }
-            tr.appendChild(td);
+            fragment.appendChild(tr);
         }
-        fragment.appendChild(tr);
     }
     tbody.appendChild(fragment);
     table.appendChild(tbody);
     scroll.appendChild(table);
     scroll.scrollTop = keepTop;
     scroll.scrollLeft = keepLeft;
+    if (virtual) {
+        renderCsvVirtualRows(doc, true);
+        if (scroll.scrollTop !== keepTop) {
+            scroll.scrollTop = keepTop;
+            renderCsvVirtualRows(doc, true);
+        }
+    }
 }
 
 function buildCsvColgroup(widths) {
@@ -7914,6 +8616,29 @@ function onCsvCellKeyDown(doc, e) {
 
 function focusAdjacentCsvCell(doc, td, offset) {
     if (!doc.tableScroll) return;
+    if (doc.csvVirtual && td.dataset.vpos != null) {
+        const targetPos = Number(td.dataset.vpos) + offset;
+        const total = doc.csvViewTotal || 0;
+        if (!(targetPos >= 0) || targetPos >= total) {
+            td.blur();
+            return;
+        }
+        const selector = 'td.csv-cell[data-vpos="' + targetPos + '"]';
+        let target = doc.tableScroll.querySelector(selector);
+        if (!target) {
+            const rowH = doc.csvRowScreenH || (doc.csvRowLayoutH || CSV_DEFAULT_ROW_LAYOUT_H) * (doc.tableZoom || 1);
+            doc.tableScroll.scrollTop = Math.max(0, targetPos * rowH - doc.tableScroll.clientHeight / 2);
+            renderCsvVirtualRows(doc, true);
+            target = doc.tableScroll.querySelector(selector);
+        }
+        if (!target) {
+            td.blur();
+            return;
+        }
+        target.focus();
+        target.scrollIntoView({block: 'nearest', inline: 'nearest'});
+        return;
+    }
     const cells = doc.tableScroll.querySelectorAll('td.csv-cell');
     const index = Array.prototype.indexOf.call(cells, td);
     if (index < 0) return;
@@ -8039,11 +8764,12 @@ function createMarkdownPreview(doc) {
     });
 }
 
-function renderMarkdownPreview(doc) {
+function renderMarkdownPreview(doc, opts = {}) {
     if (!doc || !doc.editor || !doc.previewBody) return;
     const scrollTop = doc.previewScroll ? doc.previewScroll.scrollTop : 0;
     try {
-        doc.previewBody.innerHTML = renderMarkdownBlocksHtml(doc.editor.getText());
+        const patched = !!(opts.incremental && patchMarkdownPreview(doc));
+        if (!patched) doc.previewBody.innerHTML = renderMarkdownBlocksHtml(doc.editor.getText());
         resolveMarkdownImages(doc);
     } catch (e) {
         doc.previewBody.textContent = 'Markdown 渲染失败：' + e.message;
@@ -8404,7 +9130,7 @@ function renderSplitSvg(doc) {
 
 function renderSplitPreview(doc) {
     if (!doc || !doc.splitActive) return;
-    if (doc.splitKind === 'markdown') renderMarkdownPreview(doc);
+    if (doc.splitKind === 'markdown') renderMarkdownPreview(doc, {incremental: true});
     else if (doc.splitKind === 'svg') renderSplitSvg(doc);
     else if (doc.splitKind === 'html') renderHtmlPreview(doc);
 }
@@ -9276,6 +10002,7 @@ function createDoc(data) {
         binary: false,
         bases: {tree: null, code: null, text: null, table: null, preview: null},
         savedText: data.content,
+        bookmarks: new Set(),
     };
 }
 
@@ -9381,6 +10108,7 @@ async function activateDoc(doc) {
         if (d.pane) d.pane.classList.remove('active');
     }
     if (!doc.editor) createDocEditor(doc);
+    renderBookmarks(doc);
     const host = els.editor.querySelector('.egroup[data-gid="' + g.id + '"] .ehost');
     if (host && doc.pane && doc.pane.parentElement !== host) host.appendChild(doc.pane);
     doc.pane.classList.add('active');
@@ -9392,7 +10120,10 @@ async function activateDoc(doc) {
     humanizeCounts();
     if (editor && editor.aceEditor) {
         setTimeout(() => {
-            if (editor === doc.editor && editor && editor.aceEditor) editor.aceEditor.resize();
+            if (editor === doc.editor && editor && editor.aceEditor) {
+                editor.aceEditor.resize();
+                if (file === doc) applyPendingDocView(doc);
+            }
         }, 0);
     }
     syncExplorerActive();
@@ -9513,39 +10244,107 @@ function reopenClosedTab() {
     openPath(entry.path);
 }
 
-// renderMarkdownBlocksHtml 按顶层块渲染 Markdown，并用 data-md-start/end
+// renderMarkdownBlocks 按顶层块渲染 Markdown，并用 data-md-start/end
 // 标注每块对应的源码行区间（0 基，含头不含尾），供预览选区反向取 md 源码。
+function renderMarkdownBlocks(text) {
+    const env = {};
+    const tokens = markdownRenderer.parse(text || '', env);
+    const blocks = [];
+    let i = 0;
+    while (i < tokens.length) {
+        const start = i;
+        let level = 0;
+        do {
+            const t = tokens[i];
+            if (t.nesting === 1) level++;
+            else if (t.nesting === -1) level--;
+            i++;
+        } while (i < tokens.length && level > 0);
+        const group = tokens.slice(start, i);
+        const html = markdownRenderer.renderer.render(group, markdownRenderer.options, env);
+        const map = group[0] && group[0].map;
+        blocks.push({
+            start: map && map.length === 2 ? map[0] : null,
+            end: map && map.length === 2 ? map[1] : null,
+            html,
+        });
+    }
+    return blocks;
+}
+
+function markdownBlockHash(html) {
+    let hash = 2166136261 >>> 0;
+    for (let i = 0; i < html.length; i++) {
+        hash ^= html.charCodeAt(i);
+        hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return hash.toString(36) + ':' + html.length.toString(36);
+}
+
+function sanitizeMarkdownSegment(html) {
+    return DOMPurify.sanitize(html, {
+        USE_PROFILES: {html: true, mathMl: true, svg: true},
+        ADD_ATTR: ['target', 'rel'],
+    });
+}
+
 function renderMarkdownBlocksHtml(text) {
-    let html = '';
+    let blocks;
     try {
-        const env = {};
-        const tokens = markdownRenderer.parse(text || '', env);
-        let i = 0;
-        while (i < tokens.length) {
-            const start = i;
-            let level = 0;
-            do {
-                const t = tokens[i];
-                if (t.nesting === 1) level++;
-                else if (t.nesting === -1) level--;
-                i++;
-            } while (i < tokens.length && level > 0);
-            const group = tokens.slice(start, i);
-            const seg = DOMPurify.sanitize(markdownRenderer.renderer.render(group, markdownRenderer.options, env), {
-                USE_PROFILES: {html: true, mathMl: true, svg: true},
-                ADD_ATTR: ['target', 'rel'],
-            });
-            const map = group[0] && group[0].map;
-            if (map && map.length === 2) {
-                html += '<div class="md-block" style="display:contents" data-md-start="' + map[0] + '" data-md-end="' + map[1] + '">' + seg + '</div>';
-            } else {
-                html += seg;
-            }
-        }
+        blocks = renderMarkdownBlocks(text);
     } catch (e) {
         return renderMarkdownHtml(text);
     }
-    return html;
+    let html = '';
+    for (const block of blocks) {
+        if (block.start != null && block.end != null) {
+            html += '<div class="md-block" style="display:contents" data-md-start="' + block.start +
+                '" data-md-end="' + block.end + '" data-md-hash="' + markdownBlockHash(block.html) + '">' +
+                block.html + '</div>';
+        } else {
+            html += block.html;
+        }
+    }
+    // 整页只净化一次：逐块 sanitize 会为每个顶层块各建一个 document 并全量遍历
+    return DOMPurify.sanitize(html, {
+        USE_PROFILES: {html: true, mathMl: true, svg: true},
+        ADD_ATTR: ['target', 'rel', 'data-md-start', 'data-md-end', 'data-md-hash'],
+    });
+}
+
+// patchMarkdownPreview 复用未变化块的 DOM，只更新行区间或替换变化块；
+// 任一块缺少源码行区间（无法安全对齐）时返回 false，调用方回退整页渲染。
+function patchMarkdownPreview(doc) {
+    const body = doc && doc.previewBody;
+    if (!body) return false;
+    let blocks;
+    try {
+        blocks = renderMarkdownBlocks(doc.editor.getText());
+    } catch (e) {
+        return false;
+    }
+    if (blocks.some((block) => block.start == null || block.end == null)) return false;
+    const oldEls = Array.from(body.children);
+    if (oldEls.some((el) => !el.classList || !el.classList.contains('md-block'))) return false;
+    for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        let el = oldEls[i];
+        if (!el) {
+            el = document.createElement('div');
+            el.className = 'md-block';
+            el.style.display = 'contents';
+            body.appendChild(el);
+        }
+        el.dataset.mdStart = String(block.start);
+        el.dataset.mdEnd = String(block.end);
+        const hash = markdownBlockHash(block.html);
+        if (el.dataset.mdHash !== hash) {
+            el.innerHTML = sanitizeMarkdownSegment(block.html);
+            el.dataset.mdHash = hash;
+        }
+    }
+    for (let i = blocks.length; i < oldEls.length; i++) oldEls[i].remove();
+    return true;
 }
 
 // rangeIntersectsNode 判断选区 range 是否与节点内容相交。
@@ -9816,6 +10615,7 @@ function showTabMenu(doc, x, y) {
         {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => copyText(doc.path, '路径')},
         {label: '复制文件名', icon: 'E8C8', action: () => copyText(doc.name, '文件名')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: () => showPathInFolder(doc.path)},
+        {label: '与另一个标签页比较…', icon: 'E8A5', disabled: gdocs.filter((d) => d.path && !d.binary).length < 2, action: () => openDiffDialog(doc.path)},
         ...aiReferenceFileMenuItems(doc),
         {label: '在 AI 中询问此文件', iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>', disabled: !hasPath, action: () => askAIAboutPath(doc.path)},
         {sep: true},
@@ -10364,6 +11164,14 @@ function showExplorerMenu(info, x, y, node) {
         if (gitStateCache.map.get(info.path.replace(/\\/g, '/'))) {
             items.push({label: 'Git：查看差异', icon: 'E8D3', action: () => showGitDiff(info.path)});
         }
+        const compareTargets = selected.filter((item) => item && item.path && !item.isDir);
+        if (compareTargets.length === 2) {
+            items.push({
+                label: '比较这两个文件…',
+                icon: 'E8A5',
+                action: () => openDiffDialog(compareTargets[0].path, compareTargets[1].path),
+            });
+        }
     }
     items.push({sep: true});
     items.push({label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', action: () => setFileClipboard(targets, false)});
@@ -10761,6 +11569,70 @@ async function jumpToStructureNode(node) {
     const column = Math.max(1, Number(node.column) || 1);
     await selectLineInDoc(file, line, column);
     if (structurePanel) structurePanel.setCursor(line);
+}
+
+function getStructureWorker() {
+    if (structureWorkerBroken) return null;
+    if (structureWorker) return structureWorker;
+    try {
+        structureWorker = new Worker(new URL('./structure-worker.js', import.meta.url), {type: 'module'});
+        structureWorker.onmessage = (event) => {
+            const data = event.data || {};
+            const pending = structureWorkerPending.get(data.id);
+            if (!pending) return;
+            structureWorkerPending.delete(data.id);
+            if (data.ok) {
+                pending.resolve(data.result);
+            } else {
+                pending.reject(new Error(data.error || '结构解析失败'));
+            }
+        };
+        structureWorker.onerror = () => {
+            structureWorkerBroken = true;
+            structureWorker = null;
+            for (const pending of structureWorkerPending.values()) {
+                pending.reject(new Error('结构解析 Worker 不可用'));
+            }
+            structureWorkerPending.clear();
+        };
+    } catch (e) {
+        structureWorkerBroken = true;
+        structureWorker = null;
+    }
+    return structureWorker;
+}
+
+function rememberStructureResult(key, parsed) {
+    structureCache.set(key, parsed);
+    while (structureCache.size > STRUCTURE_CACHE_LIMIT) {
+        structureCache.delete(structureCache.keys().next().value);
+    }
+    return parsed;
+}
+
+// 同一文档同一修订只解析一次；解析在 Worker 里做，切标签命中缓存
+function parseStructureCached(name, text, doc) {
+    const key = (doc && doc.id ? doc.id : '') + ':' + ((doc && doc.structureRev) || 0) + ':' + text.length;
+    const cached = structureCache.get(key);
+    if (cached) return Promise.resolve(cached);
+    const worker = getStructureWorker();
+    if (!worker) return Promise.resolve(rememberStructureResult(key, parseStructure(name, text)));
+    return new Promise((resolve) => {
+        const id = ++structureWorkerSeq;
+        structureWorkerPending.set(id, {
+            resolve: (parsed) => resolve(rememberStructureResult(key, parsed)),
+            reject: () => {
+                const workerNow = structureWorker;
+                structureWorkerBroken = true;
+                structureWorker = null;
+                try {
+                    if (workerNow) workerNow.terminate();
+                } catch (e) {}
+                resolve(rememberStructureResult(key, parseStructure(name, text)));
+            },
+        });
+        worker.postMessage({id, name, text});
+    });
 }
 
 function scheduleStructureRefresh(doc) {
@@ -11711,6 +12583,7 @@ function openFolderWorkspace(dir) {
         explorer.setMode('tree', false);
         explorer.setRoot(dir);
     }
+    syncWorkspaceWatcher();
     applySidebarUI();
     renderWorkspaceCrumbs();
     refreshGitStatus();
@@ -11745,6 +12618,7 @@ function closeFolder() {
     saveSessionNow();
     workspaceFolder = null;
     if (explorer) explorer.setRoot(null);
+    syncWorkspaceWatcher();
     gitStateCache.available = false;
     gitStateCache.branch = '';
     renderWorkspaceCrumbs();
@@ -11811,6 +12685,19 @@ function setSidebarMode(mode) {
 
 function syncExplorerActive() {
     if (explorer) explorer.setActive(file && file.path ? file.path : null);
+    syncWorkspaceWatcher();
+}
+
+// 文件监听跟随当前树根/工作区；失败时静默降级到轮询
+function syncWorkspaceWatcher() {
+    if (!backend) return;
+    const root = (explorer && explorer.getRoot ? explorer.getRoot() : workspaceFolder) || '';
+    if (root === watchedWorkspaceRoot) return;
+    watchedWorkspaceRoot = root;
+    try {
+        if (root && typeof backend.WatchWorkspace === 'function') backend.WatchWorkspace(root).catch(() => {});
+        else if (!root && typeof backend.UnwatchWorkspace === 'function') backend.UnwatchWorkspace().catch(() => {});
+    } catch (e) {}
 }
 
 function initActivityBar() {
@@ -12073,6 +12960,7 @@ function initExplorer() {
         listBtn: els.sbModeList,
         treeBtn: els.sbModeTree,
         readDir: (path, limit) => backend.ReadDir(path, limit),
+        dirMtime: (path) => (typeof backend.DirMtime === 'function' ? backend.DirMtime(path) : Promise.resolve(0)),
         openPath: (path) => openPath(path),
         openFolder: () => openFolderDialog(),
         openFileDialog: () => openDialog(),
@@ -12138,6 +13026,7 @@ function initStructurePanel() {
             }
         },
         onJump: (node) => jumpToStructureNode(node),
+        parseAsync: (name, text, doc) => parseStructureCached(name, text, doc),
     });
     if (els.structureExport) {
         els.structureExport.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14M5.5 8.5h11.5M8 12.5h9M10.5 16.5h6.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
@@ -12367,7 +13256,7 @@ async function reloadActive(opts = {}) {
         doc.imagePan = null;
         doc.loading = false;
         doc.bannerDismissed = false;
-        Object.assign(doc, fresh, {id: doc.id, dirty: false, untitled: false, text: null, content: data.content});
+        Object.assign(doc, fresh, {id: doc.id, dirty: false, untitled: false, text: null, content: data.content, bookmarks: doc.bookmarks || new Set()});
         let nextMode = keepMode;
         if (doc.binary) {
             nextMode = doc.image && keepMode === 'image' ? 'image' : 'binary';
@@ -12383,6 +13272,7 @@ async function reloadActive(opts = {}) {
         doc.mode = nextMode;
         editor = null;
         createDocEditor(doc);
+        renderBookmarks(doc);
         doc.pane.classList.add('active');
         editor = doc.editor;
         currentMode = doc.mode;
@@ -13647,6 +14537,560 @@ function bindGlobalSearch() {
 }
 bindGlobalSearch();
 
+// ---- JSONPath 查询栏 ----
+const JSON_QUERY_FORMATS = new Set(['json', 'jsonl', 'yaml', 'toml', 'ini']);
+const JSON_QUERY_LIMIT = 500;
+const jsonQuery = {
+    open: false,
+    doc: null,
+    rootValue: null,
+    lineMap: new Map(),
+    results: [],
+    index: -1,
+    seq: 0,
+    timer: 0,
+    previousFocus: null,
+};
+
+function jpEls() {
+    return {
+        mask: document.getElementById('jp-mask'),
+        input: document.getElementById('jp-input'),
+        list: document.getElementById('jp-list'),
+        count: document.getElementById('jp-count'),
+        root: document.getElementById('jp-root'),
+    };
+}
+
+function jsonQuerySupported(doc) {
+    return !!doc && !doc.binary && !doc.large && !!doc.format && JSON_QUERY_FORMATS.has(doc.format.id);
+}
+
+function jsonQueryValuePreview(value) {
+    if (typeof value === 'string') {
+        const quoted = JSON.stringify(value);
+        return quoted.length > 220 ? quoted.slice(0, 220) + '…"' : quoted;
+    }
+    try {
+        const text = JSON.stringify(value);
+        return text.length > 220 ? text.slice(0, 220) + '…' : text;
+    } catch (e) {
+        return String(value);
+    }
+}
+
+function showJsonQueryEmpty(text) {
+    const {list} = jpEls();
+    if (!list) return;
+    list.textContent = '';
+    const empty = document.createElement('div');
+    empty.className = 'gs-empty';
+    empty.textContent = text;
+    list.appendChild(empty);
+}
+
+function openJsonQuery() {
+    const doc = file;
+    if (!jsonQuerySupported(doc)) {
+        flash('当前文件不支持 JSONPath 查询（JSON/JSONL/YAML/TOML/INI）', true);
+        return;
+    }
+    const elsJp = jpEls();
+    if (!elsJp.mask || !elsJp.input) return;
+    const text = structureTextForDoc(doc);
+    let rootValue;
+    try {
+        rootValue = doc.format.parse(text);
+    } catch (e) {
+        flash('解析失败：' + ((e && e.message) || e), true);
+        return;
+    }
+    jsonQuery.open = true;
+    jsonQuery.doc = doc;
+    jsonQuery.rootValue = rootValue;
+    jsonQuery.lineMap = doc.format.id === 'json' ? buildJsonLineMap(text) : new Map();
+    jsonQuery.results = [];
+    jsonQuery.index = -1;
+    jsonQuery.seq++;
+    jsonQuery.previousFocus = document.activeElement;
+    elsJp.mask.classList.remove('hidden');
+    elsJp.input.value = '';
+    elsJp.count.textContent = '';
+    const kind = Array.isArray(rootValue) ? '数组' : (rootValue && typeof rootValue === 'object' ? '对象' : typeof rootValue);
+    elsJp.root.textContent = (doc.name || '') + ' · $ · ' + kind;
+    showJsonQueryEmpty('输入 JSONPath 后按 Enter 查看结果');
+    elsJp.input.focus();
+}
+
+function closeJsonQuery() {
+    if (!jsonQuery.open) return;
+    jsonQuery.open = false;
+    clearTimeout(jsonQuery.timer);
+    jsonQuery.seq++;
+    const {mask} = jpEls();
+    if (mask) mask.classList.add('hidden');
+    const prev = jsonQuery.previousFocus;
+    jsonQuery.previousFocus = null;
+    if (prev && prev.isConnected && typeof prev.focus === 'function') {
+        try { prev.focus(); } catch (e) {}
+    }
+}
+
+function scheduleJsonQuery() {
+    clearTimeout(jsonQuery.timer);
+    jsonQuery.timer = setTimeout(runJsonQuery, 160);
+}
+
+function renderJsonQueryResults(matches, truncated) {
+    const {list, count} = jpEls();
+    if (!list) return;
+    jsonQuery.results = matches;
+    jsonQuery.index = matches.length ? 0 : -1;
+    list.textContent = '';
+    count.textContent = matches.length + ' 项' + (truncated ? '（仅显示前 ' + JSON_QUERY_LIMIT + '）' : '');
+    if (!matches.length) {
+        showJsonQueryEmpty('没有匹配结果');
+        return;
+    }
+    matches.forEach((match, index) => {
+        const row = document.createElement('div');
+        row.className = 'gs-row jp-row' + (index === 0 ? ' selected' : '');
+        row.dataset.i = String(index);
+        row.setAttribute('role', 'option');
+        const main = document.createElement('div');
+        main.className = 'jp-main';
+        const path = document.createElement('div');
+        path.className = 'jp-path';
+        path.textContent = match.path;
+        const value = document.createElement('div');
+        value.className = 'jp-value';
+        value.textContent = jsonQueryValuePreview(match.value);
+        main.append(path, value);
+        const loc = jsonQuery.lineMap.get(match.path);
+        const meta = document.createElement('span');
+        meta.className = 'jp-meta';
+        meta.textContent = loc ? '第 ' + loc.line + ' 行' : '';
+        row.append(main, meta);
+        row.addEventListener('click', () => openJsonQueryHit(index));
+        row.addEventListener('mouseenter', () => setJsonQuerySelection(index));
+        list.appendChild(row);
+    });
+}
+
+function setJsonQuerySelection(index) {
+    const {list} = jpEls();
+    if (!list) return;
+    const rows = list.querySelectorAll('.jp-row');
+    jsonQuery.index = Math.max(0, Math.min(rows.length - 1, index));
+    rows.forEach((row, i) => row.classList.toggle('selected', i === jsonQuery.index));
+    const current = rows[jsonQuery.index];
+    if (current && current.scrollIntoView) current.scrollIntoView({block: 'nearest'});
+}
+
+function runJsonQuery() {
+    if (!jsonQuery.open) return;
+    const {input, count} = jpEls();
+    const expr = input ? input.value : '';
+    const seq = ++jsonQuery.seq;
+    if (!expr.trim()) {
+        count.textContent = '';
+        showJsonQueryEmpty('输入 JSONPath 后按 Enter 查看结果');
+        return;
+    }
+    let matches;
+    try {
+        matches = queryJsonPath(jsonQuery.rootValue, expr);
+    } catch (e) {
+        count.textContent = '语法错误';
+        showJsonQueryEmpty('JSONPath 无效：' + ((e && e.message) || e));
+        return;
+    }
+    if (!jsonQuery.open || seq !== jsonQuery.seq) return;
+    const truncated = matches.length > JSON_QUERY_LIMIT;
+    renderJsonQueryResults(matches.slice(0, JSON_QUERY_LIMIT), truncated);
+}
+
+async function openJsonQueryHit(index) {
+    const match = jsonQuery.results[index];
+    if (!match) return;
+    const doc = jsonQuery.doc;
+    const loc = jsonQuery.lineMap.get(match.path);
+    if (loc && doc && docs.includes(doc)) {
+        closeJsonQuery();
+        await selectLineInDoc(doc, loc.line, loc.column);
+        return;
+    }
+    await copyText(match.path, 'JSONPath 路径');
+}
+
+function handleJsonQueryKey(e) {
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeJsonQuery();
+        return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        e.stopPropagation();
+        setJsonQuerySelection(jsonQuery.index + (e.key === 'ArrowDown' ? 1 : -1));
+        return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        openJsonQueryHit(jsonQuery.index);
+    }
+}
+
+function bindJsonQuery() {
+    const {input, mask} = jpEls();
+    if (!input || !mask) return;
+    input.addEventListener('input', scheduleJsonQuery);
+    input.addEventListener('keydown', handleJsonQueryKey);
+    mask.addEventListener('mousedown', (e) => {
+        if (e.target === mask) closeJsonQuery();
+    });
+}
+bindJsonQuery();
+
+// ---- 两个文件 Diff ----
+const diffState = {open: false, previousFocus: null, running: false};
+
+function diffEls() {
+    return {
+        mask: document.getElementById('diff-mask'),
+        a: document.getElementById('diff-a'),
+        b: document.getElementById('diff-b'),
+        run: document.getElementById('diff-run'),
+        close: document.getElementById('diff-close'),
+        semantic: document.getElementById('diff-semantic'),
+        summary: document.getElementById('diff-summary'),
+        semanticList: document.getElementById('diff-semantic-list'),
+        output: document.getElementById('diff-output'),
+    };
+}
+
+function fillDiffSelect(select, entries) {
+    select.textContent = '';
+    for (const [path, name] of entries) {
+        const option = document.createElement('option');
+        option.value = path;
+        option.textContent = name + ' — ' + path;
+        select.appendChild(option);
+    }
+}
+
+function openDiffDialog(pathA, pathB) {
+    const elsD = diffEls();
+    if (!elsD.mask) return;
+    const candidates = docs.filter((d) => d.path && !d.binary);
+    const map = new Map(candidates.map((d) => [d.path, d.name]));
+    if (pathA && !map.has(pathA)) map.set(pathA, baseNameOf(pathA) || pathA);
+    if (pathB && !map.has(pathB)) map.set(pathB, baseNameOf(pathB) || pathB);
+    if (map.size < 2) {
+        flash('至少打开两个文本文件才能比较', true);
+        return;
+    }
+    const entries = [...map.entries()].sort((x, y) => x[1].localeCompare(y[1], 'zh-CN'));
+    fillDiffSelect(elsD.a, entries);
+    fillDiffSelect(elsD.b, entries);
+    if (pathA && map.has(pathA)) elsD.a.value = pathA;
+    if (pathB && map.has(pathB)) elsD.b.value = pathB;
+    if (elsD.b.value === elsD.a.value) {
+        const other = entries.find(([path]) => path !== elsD.a.value);
+        if (other) elsD.b.value = other[0];
+    }
+    diffState.open = true;
+    diffState.previousFocus = document.activeElement;
+    elsD.mask.classList.remove('hidden');
+    elsD.semanticList.classList.add('hidden');
+    elsD.semanticList.textContent = '';
+    elsD.output.textContent = '';
+    elsD.summary.textContent = pathA || pathB ? '正在比较…' : '选择两个文件后点击“比较”';
+    if (pathA || pathB) runDiffCompare();
+}
+
+function closeDiffDialog() {
+    if (!diffState.open) return;
+    diffState.open = false;
+    const {mask} = diffEls();
+    if (mask) mask.classList.add('hidden');
+    const prev = diffState.previousFocus;
+    diffState.previousFocus = null;
+    if (prev && prev.isConnected && typeof prev.focus === 'function') {
+        try { prev.focus(); } catch (e) {}
+    }
+}
+
+async function diffReadText(path) {
+    const doc = findDocByPath(path);
+    if (doc) {
+        if (doc.editor) return doc.editor.getText();
+        if (doc.text != null) return doc.text;
+    }
+    const data = await backend.OpenFile(path, 'auto');
+    if (!data || data.binary) throw new Error('二进制文件不支持比较');
+    return String(data.content == null ? '' : data.content);
+}
+
+function renderDiffText(text) {
+    const {output} = diffEls();
+    if (!output) return;
+    output.textContent = '';
+    if (!text) {
+        output.textContent = '两个文件内容相同。';
+        return;
+    }
+    const lines = text.split('\n');
+    const limit = 8000;
+    const shown = lines.slice(0, limit);
+    const fragment = document.createDocumentFragment();
+    for (const line of shown) {
+        const row = document.createElement('span');
+        row.className = 'diff-line' + (line.startsWith('@@') ? ' diff-hunk' :
+            line.startsWith('+') ? ' diff-add' :
+                line.startsWith('-') ? ' diff-del' : ' diff-ctx');
+        row.textContent = line || ' ';
+        fragment.appendChild(row);
+    }
+    if (lines.length > limit) {
+        const more = document.createElement('span');
+        more.className = 'diff-line diff-hunk';
+        more.textContent = '… 仅显示前 ' + limit + ' 行';
+        fragment.appendChild(more);
+    }
+    output.appendChild(fragment);
+}
+
+function parseForDiff(path, text) {
+    const driver = detectFormat(path, text);
+    if (!driver || typeof driver.parse !== 'function') return null;
+    try {
+        return {driver, value: driver.parse(text)};
+    } catch (e) {
+        return null;
+    }
+}
+
+async function runDiffCompare() {
+    const elsD = diffEls();
+    if (!elsD.a || !elsD.b || diffState.running) return;
+    const pathA = elsD.a.value;
+    const pathB = elsD.b.value;
+    if (!pathA || !pathB) {
+        elsD.summary.textContent = '请选择两个文件';
+        return;
+    }
+    if (samePathValue(pathA, pathB)) {
+        elsD.summary.textContent = '两个文件相同，请选择不同的文件';
+        return;
+    }
+    diffState.running = true;
+    if (elsD.run) elsD.run.disabled = true;
+    elsD.summary.textContent = '正在读取并比较…';
+    try {
+        const [textA, textB] = await Promise.all([diffReadText(pathA), diffReadText(pathB)]);
+        const result = unifiedDiff(textA, textB);
+        renderDiffText(result.text);
+        let summary = (result.added || result.removed)
+            ? '文本差异：+' + result.added + ' 行 / -' + result.removed + ' 行'
+            : '文本内容相同';
+        elsD.semanticList.textContent = '';
+        elsD.semanticList.classList.add('hidden');
+        if (elsD.semantic && elsD.semantic.checked) {
+            const a = parseForDiff(pathA, textA);
+            const b = parseForDiff(pathB, textB);
+            if (a && b) {
+                const entries = semanticDiff(a.value, b.value);
+                summary += ' · 语义差异 ' + entries.length + ' 处';
+                if (entries.length) {
+                    const fragment = document.createDocumentFragment();
+                    for (const entry of entries) {
+                        const row = document.createElement('div');
+                        row.className = 'diff-sem-row diff-sem-' + entry.kind;
+                        const kind = document.createElement('span');
+                        kind.className = 'diff-sem-kind';
+                        kind.textContent = entry.kind === 'add' ? '新增' : (entry.kind === 'remove' ? '删除' : '修改');
+                        const path = document.createElement('span');
+                        path.className = 'diff-sem-path';
+                        path.textContent = entry.path;
+                        const value = document.createElement('span');
+                        value.className = 'diff-sem-value';
+                        value.textContent = semanticEntryText(entry);
+                        row.append(kind, path, value);
+                        row.addEventListener('click', () => copyText(entry.path, '路径'));
+                        fragment.appendChild(row);
+                    }
+                    elsD.semanticList.appendChild(fragment);
+                    elsD.semanticList.classList.remove('hidden');
+                }
+            } else {
+                summary += ' · 当前格式无可用的数据感知比较';
+            }
+        }
+        elsD.summary.textContent = summary;
+    } catch (e) {
+        elsD.summary.textContent = '比较失败：' + ((e && e.message) || e);
+        renderDiffText('');
+    } finally {
+        diffState.running = false;
+        if (elsD.run) elsD.run.disabled = false;
+    }
+}
+
+function bindDiffDialog() {
+    const elsD = diffEls();
+    if (!elsD.mask) return;
+    if (elsD.run) elsD.run.addEventListener('click', runDiffCompare);
+    if (elsD.close) elsD.close.addEventListener('click', closeDiffDialog);
+    if (elsD.semantic) elsD.semantic.addEventListener('change', runDiffCompare);
+    elsD.mask.addEventListener('mousedown', (e) => {
+        if (e.target === elsD.mask) closeDiffDialog();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (!diffState.open || e.key !== 'Escape') return;
+        e.preventDefault();
+        e.stopPropagation();
+        closeDiffDialog();
+    }, true);
+}
+bindDiffDialog();
+
+// ---- JSON Schema 校验 ----
+const schemaState = {open: false, doc: null, lineMap: new Map(), errors: [], previousFocus: null};
+
+function schemaEls() {
+    return {
+        mask: document.getElementById('js-mask'),
+        summary: document.getElementById('js-summary'),
+        list: document.getElementById('js-list'),
+        schema: document.getElementById('js-schema'),
+        close: document.getElementById('js-close'),
+        reselect: document.getElementById('js-reselect'),
+    };
+}
+
+function closeSchemaPanel() {
+    if (!schemaState.open) return;
+    schemaState.open = false;
+    const {mask} = schemaEls();
+    if (mask) mask.classList.add('hidden');
+    const prev = schemaState.previousFocus;
+    schemaState.previousFocus = null;
+    if (prev && prev.isConnected && typeof prev.focus === 'function') {
+        try { prev.focus(); } catch (e) {}
+    }
+}
+
+function renderSchemaErrors(errors) {
+    const {list} = schemaEls();
+    if (!list) return;
+    list.textContent = '';
+    if (!errors.length) {
+        const ok = document.createElement('div');
+        ok.className = 'js-ok';
+        ok.textContent = '校验通过，没有发现不符合 Schema 的数据。';
+        list.appendChild(ok);
+        return;
+    }
+    const fragment = document.createDocumentFragment();
+    for (const error of errors) {
+        const row = document.createElement('div');
+        row.className = 'js-row';
+        const path = document.createElement('span');
+        path.className = 'js-path';
+        path.textContent = error.path;
+        const keyword = document.createElement('span');
+        keyword.className = 'js-keyword';
+        keyword.textContent = error.keyword || '';
+        const message = document.createElement('span');
+        message.className = 'js-message';
+        message.textContent = error.message;
+        row.append(path, keyword, message);
+        row.addEventListener('click', async () => {
+            const loc = schemaState.lineMap.get(error.path);
+            if (loc && schemaState.doc && docs.includes(schemaState.doc)) {
+                closeSchemaPanel();
+                await selectLineInDoc(schemaState.doc, loc.line, loc.column);
+            } else {
+                await copyText(error.path, '路径');
+            }
+        });
+        fragment.appendChild(row);
+    }
+    list.appendChild(fragment);
+}
+
+async function openSchemaValidation() {
+    const doc = file;
+    if (!doc || doc.binary || doc.large || !doc.format || (doc.format.id !== 'json' && doc.format.id !== 'jsonl')) {
+        flash('JSON Schema 校验仅支持 JSON/JSONL 文件', true);
+        return;
+    }
+    if (!backend.OpenFilesDialog) {
+        flash('当前环境不支持选择 Schema 文件', true);
+        return;
+    }
+    let paths = [];
+    try {
+        paths = await backend.OpenFilesDialog();
+    } catch (e) {
+        flash('选择 Schema 文件失败：' + e, true);
+        return;
+    }
+    const schemaPath = (paths || [])[0];
+    if (!schemaPath) return;
+    let schema;
+    try {
+        const data = await backend.OpenFile(schemaPath, 'auto');
+        if (!data || data.binary) throw new Error('Schema 是二进制文件');
+        schema = JSON.parse(String(data.content == null ? '' : data.content));
+    } catch (e) {
+        flash('读取 Schema 失败：' + ((e && e.message) || e), true);
+        return;
+    }
+    const text = structureTextForDoc(doc);
+    let value;
+    try {
+        value = doc.format.parse(text);
+    } catch (e) {
+        flash('当前文件解析失败：' + ((e && e.message) || e), true);
+        return;
+    }
+    const errors = validateJsonSchema(value, schema);
+    if (!schemaState.open) schemaState.previousFocus = document.activeElement;
+    schemaState.open = true;
+    schemaState.doc = doc;
+    schemaState.errors = errors;
+    schemaState.lineMap = doc.format.id === 'json' ? buildJsonLineMap(text) : new Map();
+    const elsS = schemaEls();
+    elsS.mask.classList.remove('hidden');
+    elsS.summary.textContent = errors.length
+        ? (doc.name + ' · ' + errors.length + ' 个错误')
+        : (doc.name + ' · 校验通过');
+    elsS.schema.textContent = 'Schema：' + (baseNameOf(schemaPath) || schemaPath);
+    renderSchemaErrors(errors);
+    if (elsS.list) elsS.list.scrollTop = 0;
+}
+
+function bindSchemaPanel() {
+    const elsS = schemaEls();
+    if (!elsS.mask) return;
+    if (elsS.close) elsS.close.addEventListener('click', closeSchemaPanel);
+    if (elsS.reselect) elsS.reselect.addEventListener('click', () => openSchemaValidation());
+    elsS.mask.addEventListener('mousedown', (e) => {
+        if (e.target === elsS.mask) closeSchemaPanel();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (!schemaState.open || e.key !== 'Escape') return;
+        e.preventDefault();
+        e.stopPropagation();
+        closeSchemaPanel();
+    }, true);
+}
+bindSchemaPanel();
+
 const quickSwitch = {
     open: false,
     level: 'main',
@@ -14066,6 +15510,9 @@ const sessionKey = 'cadt.session.v1';
 const workspaceSessionsKey = 'cadt.workspace-sessions.v1';
 const WORKSPACE_SESSION_LIMIT = 30;
 let sessionTimer = 0;
+// 每个文件的光标/滚动/折叠/书签：随会话保存，未激活的文档沿用上次读到的视图
+let knownDocViews = new Map();
+let pendingDocViews = new Map();
 
 function sessionPathKey(path) {
     return String(path || '').replace(/\\/g, '/').replace(/[\\/]+$/, '').toLowerCase();
@@ -14115,6 +15562,10 @@ function writeWorkspaceSession(sess) {
     for (const [path, mode] of Object.entries(sess.modes || {})) {
         if (inside(path)) modes[path] = mode;
     }
+    const views = {};
+    for (const [path, view] of Object.entries(sess.views || {})) {
+        if (inside(path)) views[path] = view;
+    }
     const map = readWorkspaceSessions();
     map[key] = {
         workspace: sess.workspace,
@@ -14122,6 +15573,7 @@ function writeWorkspaceSession(sess) {
         current: sess.current && inside(sess.current) ? sess.current : '',
         split: filtered ? null : (sess.split || null),
         modes,
+        views,
         savedAt: Date.now(),
     };
     const keys = Object.keys(map);
@@ -14162,12 +15614,26 @@ function serializeSession() {
     for (const d of docs) {
         if (d.path && d.mode) modes[d.path] = d.mode === 'sql' ? (d.sqlPrevMode || 'text') : d.mode;
     }
+    const views = {};
+    const liveKeys = new Set();
+    for (const d of docs) {
+        if (!d.path) continue;
+        rememberDocView(d);
+        const key = sessionPathKey(d.path);
+        liveKeys.add(key);
+        const view = knownDocViews.get(key);
+        if (view) views[key] = view;
+    }
+    for (const key of [...knownDocViews.keys()]) {
+        if (!liveKeys.has(key)) knownDocViews.delete(key);
+    }
     return {
         workspace: workspaceFolder || '',
         groups,
         current: file && file.path ? file.path : '',
         split: splitRoot ? serializeSplitSession(splitRoot, gidToIdx) : null,
         modes,
+        views,
     };
 }
 
@@ -14219,6 +15685,14 @@ function deserializeSplitSession(node, idxToGid) {
 async function restoreSession(sess) {
     try {
         if (sess.workspace && !workspaceFolder) openFolderWorkspace(sess.workspace);
+        knownDocViews = new Map();
+        pendingDocViews = new Map();
+        for (const [path, view] of Object.entries(sess.views || {})) {
+            if (!path || !view || typeof view !== 'object') continue;
+            const key = sessionPathKey(path);
+            knownDocViews.set(key, view);
+            pendingDocViews.set(key, view);
+        }
         const idxToGid = new Map();
         for (const gspec of (sess.groups || [])) {
             const g = createGroup();
@@ -14737,6 +16211,9 @@ function paletteActions() {
     actions.push({label: '书签： 切换当前行书签', shortcut: 'F11', action: toggleBookmark});
     actions.push({label: '书签： 跳到下一个书签', shortcut: 'F2', action: () => jumpBookmark(1)});
     actions.push({label: '书签： 跳到上一个书签', shortcut: 'Shift+F2', action: () => jumpBookmark(-1)});
+    actions.push({label: '数据： JSONPath 查询…', shortcut: 'Ctrl+Shift+J', action: openJsonQuery});
+    actions.push({label: '数据： 比较两个已打开的文件…', action: () => openDiffDialog()});
+    actions.push({label: '数据： JSON Schema 校验…', action: openSchemaValidation});
     for (const [value, label] of [['720', '720px'], ['860', '860px'], ['920', '920px'], ['1100', '1100px'], ['1300', '1300px'], ['0', '自适应']]) {
         actions.push({label: '设置： Markdown 预览宽度 ' + label, action: () => {
             settings.mdPreviewWidth = value;
@@ -14885,11 +16362,30 @@ function menuItems(kind) {
             return items;
         }
         case 'tools': {
+            const items = [{
+                label: 'JSONPath 查询…',
+                shortcut: 'Ctrl+Shift+J',
+                icon: 'E721',
+                disabled: !jsonQuerySupported(file),
+                action: openJsonQuery,
+            }, {
+                label: '比较两个文件…',
+                icon: 'E8A5',
+                disabled: docs.filter((d) => d.path && !d.binary).length < 2,
+                action: () => openDiffDialog(),
+            }, {
+                label: 'JSON Schema 校验…',
+                icon: 'E73E',
+                disabled: !file || file.binary || !file.format || (file.format.id !== 'json' && file.format.id !== 'jsonl'),
+                action: openSchemaValidation,
+            }];
             const cmds = getPluginCommands();
             if (!cmds.length) {
-                return [{label: '（暂无插件命令）', disabled: true}];
+                items.push({sep: true}, {label: '（暂无插件命令）', disabled: true});
+            } else {
+                items.push({sep: true}, ...cmds.map((cmd) => ({label: cmd.label, action: () => cmd.run()})));
             }
-            return cmds.map((cmd) => ({label: cmd.label, action: () => cmd.run()}));
+            return items;
         }
         case 'help': {
             const items = [
@@ -15239,6 +16735,10 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         reopenClosedTab();
+    } else if (e.ctrlKey && e.shiftKey && !e.altKey && key === 'j') {
+        e.preventDefault();
+        e.stopPropagation();
+        openJsonQuery();
     } else if (e.ctrlKey && !e.shiftKey && key === 'n') {
         e.preventDefault();
         e.stopPropagation();
@@ -15350,6 +16850,9 @@ if (rt) {
     });
     rt.EventsOn('open-targets', (targets) => openTargets(targets));
     rt.EventsOn('open-files', (paths) => openPaths(paths));
+    rt.EventsOn('workspace-changed', (payload) => {
+        if (explorer && typeof explorer.handleExternalChanges === 'function') explorer.handleExternalChanges(payload);
+    });
     // Wails 文件拖放：注册窗口级 dragover/drop 监听（不注册就收不到任何外部拖放），
     // useDropTarget=false 让整个窗口都接受；回调拿到的路径已由 Go 侧解析好
     if (rt.OnFileDrop) {
@@ -16467,7 +17970,76 @@ try {
 }
 initCodeFoldHover();
 
+// ---- CLI 转换模式：隐藏窗口加载前端格式层，转换完立即退出 ----
+function convertTargetDriver(to) {
+    const id = String(to || '').toLowerCase().replace(/^\./, '');
+    const aliases = {yml: 'yaml', ndjson: 'jsonl'};
+    const targetID = aliases[id] || id;
+    const driver = formats[targetID] ||
+        pluginFormats.find((f) => f.id === targetID) ||
+        Object.values(formats).find((f) => f.extensions.includes(targetID));
+    if (!driver || typeof driver.parse !== 'function' || typeof driver.stringify !== 'function') {
+        throw new Error('不支持的目标格式：' + to);
+    }
+    return driver;
+}
+
+async function maybeRunConvertJob() {
+    if (!hasWails || !backend.GetConvertRequest) return false;
+    let raw = '';
+    try {
+        raw = await backend.GetConvertRequest();
+    } catch (e) {
+        return false;
+    }
+    if (!raw) return false;
+    let req;
+    try {
+        req = JSON.parse(raw);
+    } catch (e) {
+        return false;
+    }
+    let target = null;
+    let targetError = '';
+    try {
+        target = convertTargetDriver(req.to);
+    } catch (e) {
+        targetError = String((e && e.message) || e);
+    }
+    const results = [];
+    for (const job of req.jobs || []) {
+        try {
+            if (targetError) throw new Error(targetError);
+            const data = await backend.OpenFile(job.input, 'auto');
+            if (!data || data.binary) throw new Error('二进制文件不支持转换');
+            const content = String(data.content == null ? '' : data.content);
+            const source = detectFormat(job.input, content);
+            if (typeof source.parse !== 'function' || typeof source.stringify !== 'function') {
+                throw new Error('不支持读取该格式：' + (source.name || ''));
+            }
+            const value = source.parse(content);
+            const output = target.stringify(value);
+            results.push({
+                input: job.input,
+                output: job.output || '',
+                content: output == null ? '' : String(output),
+            });
+        } catch (e) {
+            results.push({
+                input: job.input,
+                output: job.output || '',
+                error: String((e && e.message) || e),
+            });
+        }
+    }
+    try {
+        await backend.FinishConvert(JSON.stringify({stdout: !!req.stdout, results}));
+    } catch (e) {}
+    return true;
+}
+
 (async () => {
+    if (await maybeRunConvertJob()) return;
     // 独立调试控制台窗口：只渲染控制台面板，跳过正常的应用启动流程
     if (await consoleWindowMode) {
         startConsoleWindowMode();

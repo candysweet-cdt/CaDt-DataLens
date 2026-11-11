@@ -187,6 +187,52 @@
             </div>
         </div>
     </div>
+    <div id="jp-mask" class="gs-mask hidden">
+        <div id="jp-panel" class="gs-panel jp-panel" role="dialog" aria-label="JSONPath 查询">
+            <div class="gs-search">
+                <span class="gs-search-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="3.9"/><path d="M9.7 9.7l3.4 3.4"/></svg></span>
+                <input id="jp-input" type="text" placeholder="JSONPath，例如 $.items[?(@.price > 100)].name" autocomplete="off" spellcheck="false" aria-label="JSONPath 查询">
+                <span id="jp-count" class="gs-count"></span>
+            </div>
+            <div id="jp-list" class="gs-list" role="listbox" aria-label="查询结果"></div>
+            <div class="gs-foot">
+                <span id="jp-root" class="gs-root"></span>
+                <span class="gs-hint">&#x2191;&#x2193; 选择 &middot; Enter 定位/复制路径 &middot; Esc 关闭</span>
+            </div>
+        </div>
+    </div>
+    <div id="diff-mask" class="gs-mask hidden">
+        <div id="diff-panel" class="diff-panel" role="dialog" aria-label="文件比较">
+            <div class="diff-head">
+                <span class="diff-title">文件比较</span>
+                <button type="button" id="diff-close" class="diff-close" title="关闭（Esc）">×</button>
+            </div>
+            <div class="diff-controls">
+                <select id="diff-a" aria-label="左侧文件"></select>
+                <span class="diff-vs">vs</span>
+                <select id="diff-b" aria-label="右侧文件"></select>
+                <label class="diff-check"><input type="checkbox" id="diff-semantic" checked> 数据感知</label>
+                <button type="button" id="diff-run" class="diff-run">比较</button>
+            </div>
+            <div id="diff-summary" class="diff-summary"></div>
+            <div id="diff-semantic-list" class="diff-semantic-list hidden"></div>
+            <pre id="diff-output" class="diff-output"></pre>
+        </div>
+    </div>
+    <div id="js-mask" class="gs-mask hidden">
+        <div id="js-panel" class="js-panel" role="dialog" aria-label="JSON Schema 校验">
+            <div class="diff-head">
+                <span class="diff-title">JSON Schema 校验</span>
+                <button type="button" id="js-close" class="diff-close" title="关闭（Esc）">×</button>
+            </div>
+            <div id="js-summary" class="diff-summary"></div>
+            <div id="js-list" class="js-list"></div>
+            <div class="js-foot">
+                <span id="js-schema" class="js-schema"></span>
+                <button type="button" id="js-reselect" class="diff-run">重新选择 Schema…</button>
+            </div>
+        </div>
+    </div>
     <div id="dialog-mask" class="hidden">
         <div id="dlg-settings" class="dialog dialog-settings hidden" role="dialog" aria-label="设置">
             <div class="dialog-head">
@@ -1380,7 +1426,7 @@
                 <textarea id="ai-input" class="ai-input" rows="2" placeholder="发消息或粘贴图片；/ 调用指令，@ 提及文件" spellcheck="false" autocomplete="off"></textarea>
                 <div class="ai-composer-bottom">
                     <button type="button" id="ai-attach-btn" class="ai-plus-btn" title="添加附件或指令">+</button>
-                    <button type="button" id="ai-permission" class="ai-pill" title="权限：仅可查看">仅可查看</button>
+                    <button type="button" id="ai-permission" class="ai-pill" title="权限：只读访问">只读访问</button>
                     <button type="button" id="ai-plan" class="ai-pill" title="计划模式：先只读探索并给出计划，批准后执行" aria-pressed="false">计划</button>
                     <span id="ai-hint" class="ai-hint"></span>
                     <button type="button" id="ai-model-chip" class="ai-pill ai-model-pill" title="切换模型与推理等级">选择模型</button>

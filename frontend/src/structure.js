@@ -5,7 +5,7 @@ import {createFileIcon} from './fileicons.js';
 // 类、方法、函数、变量，以及 JSON/YAML/TOML/INI 的键层级。
 // 节点统一形状：{kind, label, detail, line, column, endLine, children}
 
-const MAX_TEXT = 4 * 1024 * 1024;
+const MAX_TEXT = 8 * 1024 * 1024;
 const MAX_NODES = 6000;
 const MAX_LABEL = 140;
 const SUPPORT_HINT = '支持 Markdown、HTML/XML、Python、JS/TS、Go、Java/Kotlin/C#、C/C++、Rust、PHP、Ruby、Lua、JSON、YAML、TOML/INI';
@@ -244,7 +244,7 @@ function parseStructure(fileName, text) {
         return {root, supported: true, language: '', empty: true, message: '文件为空'};
     }
     if (source.length > MAX_TEXT) {
-        return {root, supported: false, reason: '文件过大（超过 4 MB），已跳过结构解析', language: '', hint: ''};
+        return {root, supported: false, reason: '文件过大（超过 8 MB），已跳过结构解析', language: '', hint: ''};
     }
     const lang = detectLanguage(fileName);
     if (!lang) {
@@ -1410,7 +1410,7 @@ function walkNodes(children, fn) {
 }
 
 export function createStructurePanel(options) {
-    const {body, refreshBtn, collapseBtn, getText, getCursorLine, onJump} = options || {};
+    const {body, refreshBtn, collapseBtn, getText, getCursorLine, onJump, parseAsync} = options || {};
     let doc = null;
     let result = null;
     let visible = false;
@@ -1464,22 +1464,36 @@ export function createStructurePanel(options) {
         const text = documentText();
         const name = doc.name || doc.path || '';
         const seq = ++parseSeq;
-        let parsed;
-        try {
-            parsed = parseStructure(name, text);
-        } catch (e) {
-            parsed = {supported: false, reason: '结构解析失败：' + ((e && e.message) || e), root: {children: []}};
-        }
-        if (seq !== parseSeq) return;
-        result = parsed;
-        if (!parsed.supported) {
-            renderMessage(parsed.reason || '无法解析结构', parsed.hint || '');
+        const safeParse = () => {
+            try {
+                return parseStructure(name, text);
+            } catch (e) {
+                return {supported: false, reason: '结构解析失败：' + ((e && e.message) || e), root: {children: []}};
+            }
+        };
+        const applyParsed = (parsed) => {
+            if (seq !== parseSeq) return;
+            result = parsed;
+            if (!parsed.supported) {
+                renderMessage(parsed.reason || '无法解析结构', parsed.hint || '');
+                updateCollapseButton();
+                return;
+            }
+            render();
+            syncCursorFromSource();
             updateCollapseButton();
+        };
+        if (typeof parseAsync === 'function') {
+            parseAsync(name, text, doc).then(applyParsed).catch((e) => {
+                applyParsed({
+                    supported: false,
+                    reason: '结构解析失败：' + ((e && e.message) || e),
+                    root: {children: []},
+                });
+            });
             return;
         }
-        render();
-        syncCursorFromSource();
-        updateCollapseButton();
+        applyParsed(safeParse());
     }
 
     function syncCursorFromSource() {

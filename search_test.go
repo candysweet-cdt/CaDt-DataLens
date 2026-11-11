@@ -127,3 +127,65 @@ func TestSearchWorkspaceLongPreview(t *testing.T) {
 		t.Fatalf("expected clipped preview with ellipsis, got %q", hit.Preview)
 	}
 }
+
+func TestSearchWorkspaceParallelDeterministic(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 40; i++ {
+		name := filepath.Join(dir, "f"+string(rune('a'+i%26))+string(rune('0'+i/26))+".txt")
+		writeSearchFile(t, name, "tick\nTick\ntick\n")
+	}
+	app := NewApp()
+	res, err := app.SearchWorkspace(dir, "tick", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 120 {
+		t.Fatalf("expected 120 hits, got %d", len(res.Hits))
+	}
+	if res.Files != 40 {
+		t.Fatalf("expected 40 scanned files, got %d", res.Files)
+	}
+	for i := 1; i < len(res.Hits); i++ {
+		prev, cur := res.Hits[i-1], res.Hits[i]
+		if cur.Path < prev.Path || (cur.Path == prev.Path && cur.Line < prev.Line) {
+			t.Fatalf("hits not ordered at %d: %+v then %+v", i, prev, cur)
+		}
+	}
+}
+
+func TestIndexFoldASCII(t *testing.T) {
+	cases := []struct {
+		haystack string
+		needle   string
+		want     int
+	}{
+		{"Hello World", "hello", 0},
+		{"xxHELLOyy", "hello", 2},
+		{"abc", "abd", -1},
+		{"中文TrimSpace", "trimspace", 6},
+	}
+	for _, tc := range cases {
+		if got := indexFoldASCII(tc.haystack, tc.needle); got != tc.want {
+			t.Fatalf("indexFoldASCII(%q, %q) = %d, want %d", tc.haystack, tc.needle, got, tc.want)
+		}
+	}
+}
+
+func TestSearchWorkspaceBuiltinFallback(t *testing.T) {
+	t.Setenv("DATALENS_NO_RG", "1")
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "fallback.txt"), "alphaNeedle\nbetaNeedle\n")
+	app := NewApp()
+	res, err := app.SearchWorkspace(dir, "needle", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("expected 2 builtin hits, got %d", len(res.Hits))
+	}
+	for _, hit := range res.Hits {
+		if hit.Name != "fallback.txt" || previewMatch(hit) != "Needle" {
+			t.Fatalf("unexpected hit: %+v", hit)
+		}
+	}
+}

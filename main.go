@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"os"
 
 	"github.com/wailsapp/wails/v2"
@@ -17,6 +18,14 @@ func main() {
 	if runInstallerCommand(os.Args[1:]) {
 		return
 	}
+	convertOpts, isConvert, convertErr := parseConvertArgs(os.Args[1:])
+	if isConvert {
+		attachParentConsole()
+		if convertErr != nil {
+			fmt.Fprintln(os.Stderr, convertErr)
+			os.Exit(2)
+		}
+	}
 
 	ensureAppDataDir()
 	startAppLog()
@@ -28,10 +37,18 @@ func main() {
 	writeAppLog("info", "启动参数：%q", os.Args[1:])
 
 	app := NewApp()
+	app.convert = convertOpts
 
 	width, height, minWidth, minHeight := 1280, 800, 720, 480
 	if hasArg("--ai-float") {
 		width, height, minWidth, minHeight = 560, 760, 360, 480
+	}
+	var instanceLock *options.SingleInstanceLock
+	if !isConvert {
+		instanceLock = &options.SingleInstanceLock{
+			UniqueId:               uniqueIDForLaunch(),
+			OnSecondInstanceLaunch: app.secondInstance,
+		}
 	}
 
 	err := wails.Run(&options.App{
@@ -61,13 +78,13 @@ func main() {
 			EnableFileDrop:     true,
 			DisableWebViewDrop: false,
 		},
-		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               uniqueIDForLaunch(),
-			OnSecondInstanceLaunch: app.secondInstance,
-		},
-		Bind: []interface{}{app},
+		SingleInstanceLock: instanceLock,
+		Bind:               []interface{}{app},
 	})
 	if err != nil {
 		writeAppLog("error", "wails.Run 退出：%v", err)
+	}
+	if isConvert {
+		os.Exit(app.convertExitCode)
 	}
 }

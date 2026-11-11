@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -39,6 +41,13 @@ type App struct {
 	startupAISession    string
 	dirty               bool
 	forceClose          bool
+	watchMu             sync.Mutex
+	watchRoot           string
+	watchStop           chan struct{}
+	watchDone           chan struct{}
+	convert             *convertOptions
+	convertExitCode     int
+	convertDone         atomic.Bool
 }
 
 type OpenTarget struct {
@@ -68,6 +77,10 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	if a.convert != nil {
+		a.waitConvertTimeout()
+		return
+	}
 	applyTaskbarIcon()
 	ensureWindowShown(ctx)
 	cleanupSQLTempFiles()
@@ -89,6 +102,9 @@ func (a *App) startup(ctx context.Context) {
 
 // domReady 页面就绪后再显示窗口，避开 WebView2 初始化占住 UI 线程的那段时间。
 func (a *App) domReady(ctx context.Context) {
+	if a.convert != nil {
+		return
+	}
 	showWindowWhenReady(ctx)
 }
 
@@ -660,11 +676,30 @@ type DirEntry struct {
 	Name  string `json:"name"`
 	Path  string `json:"path"`
 	IsDir bool   `json:"isDir"`
+	Mtime int64  `json:"mtime,omitempty"`
+	Size  int64  `json:"size,omitempty"`
 }
 
 type DirListing struct {
 	Entries   []DirEntry `json:"entries"`
 	Truncated bool       `json:"truncated"`
+	Mtime     int64      `json:"mtime"`
+}
+
+// DirMtime 只读取目录自身的修改时间，供文件树在整目录重读前做廉价变更判断。
+func (a *App) DirMtime(path string) (int64, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return 0, fmt.Errorf("没有目录路径")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("不是目录：%s", path)
+	}
+	return info.ModTime().UnixMilli(), nil
 }
 
 func (a *App) ReadDir(path string, limit int) (*DirListing, error) {
@@ -693,13 +728,20 @@ func (a *App) ReadDir(path string, limit int) (*DirListing, error) {
 	}
 	out := make([]DirEntry, 0, len(entries))
 	for _, entry := range entries {
-		out = append(out, DirEntry{
+		item := DirEntry{
 			Name:  entry.Name(),
 			Path:  filepath.Join(path, entry.Name()),
 			IsDir: entry.IsDir(),
-		})
+		}
+		if info, err := entry.Info(); err == nil {
+			item.Mtime = info.ModTime().UnixMilli()
+			if !item.IsDir {
+				item.Size = info.Size()
+			}
+		}
+		out = append(out, item)
 	}
-	return &DirListing{Entries: out, Truncated: truncated}, nil
+	return &DirListing{Entries: out, Truncated: truncated, Mtime: info.ModTime().UnixMilli()}, nil
 }
 
 var reservedEntryNames = map[string]bool{
@@ -1276,6 +1318,7 @@ func (a *App) SetWindowBg(r, g, b int) {
 
 func (a *App) beforeClose(ctx context.Context) bool {
 	if !a.dirty || a.forceClose {
+		a.stopWorkspaceWatch()
 		return false
 	}
 	runtime.EventsEmit(ctx, "confirm-close")
@@ -1285,5 +1328,6 @@ func (a *App) beforeClose(ctx context.Context) bool {
 func (a *App) ForceClose() {
 	a.forceClose = true
 	a.dirty = false
+	a.stopWorkspaceWatch()
 	runtime.Quit(a.ctx)
 }

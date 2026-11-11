@@ -54,7 +54,7 @@ function el(tag, className, text) {
 export function createExplorer(options) {
     const {
         body, titleEl, refreshBtn, listBtn, treeBtn, filterBtn, onToggleFilter,
-        readDir, openPath, openFolder, openFileDialog, isSupported,
+        readDir, dirMtime, openPath, openFolder, openFileDialog, isSupported,
         onModeChange, onContextMenu, onMove, onExternalDrop, canDrag,
         listLimit = 200, readLimit = 1000, listReadLimit = 5000,
     } = options;
@@ -69,10 +69,13 @@ export function createExplorer(options) {
     let tree = null;
     let treeSeq = 0;
     let revealSeq = 0;
-    let listState = {root: null, entries: [], tooMany: false, error: '', loading: false, loaded: false, token: 0};
+    let listState = {root: null, entries: [], tooMany: false, error: '', loading: false, loaded: false, token: 0, dirMtime: 0};
     let autoRefreshSeconds = -1;
     let autoRefreshTimer = 0;
     let autoRefreshBusy = false;
+    let externalTimer = 0;
+    let externalOverflow = false;
+    const externalDirs = new Set();
     let dragState = null;
 
     const canList = (name) => (typeof isSupported === 'function' ? isSupported(name) : true);
@@ -374,11 +377,14 @@ export function createExplorer(options) {
                     loading: false,
                     error: '',
                     truncated: false,
+                    mtime: entry.mtime || 0,
+                    size: entry.size || 0,
                     children: [],
                     loadPromise: null,
                     refreshing: false,
                 })).sort(compareEntries);
                 node.truncated = !!(result && result.truncated);
+                node.dirMtime = (result && result.mtime) || 0;
                 node.loaded = true;
                 node.error = '';
                 if (!node.children.length) node.expanded = false;
@@ -419,6 +425,7 @@ export function createExplorer(options) {
             loading: false,
             error: '',
             truncated: false,
+            dirMtime: 0,
             children: [],
             loadPromise: null,
             refreshing: false,
@@ -598,7 +605,7 @@ export function createExplorer(options) {
     async function loadList(force) {
         const root = listRootPath();
         if (!root) {
-            listState = {root: null, entries: [], tooMany: false, error: '', loading: false, loaded: true, token: listState.token};
+            listState = {root: null, entries: [], tooMany: false, error: '', loading: false, loaded: true, token: listState.token, dirMtime: 0};
             renderList();
             return;
         }
@@ -607,7 +614,7 @@ export function createExplorer(options) {
             return;
         }
         const token = ++listState.token;
-        listState = {root, entries: [], tooMany: false, error: '', loading: true, loaded: false, token};
+        listState = {root, entries: [], tooMany: false, error: '', loading: true, loaded: false, token, dirMtime: 0};
         renderList();
         try {
             if (typeof readDir !== 'function') throw new Error('后端不支持目录读取');
@@ -618,6 +625,7 @@ export function createExplorer(options) {
                 .sort(compareEntries);
             listState.entries = files;
             listState.tooMany = !!(result && result.truncated) || files.length > listLimit;
+            listState.dirMtime = (result && result.mtime) || 0;
             listState.error = '';
         } catch (e) {
             if (token !== listState.token) return;
@@ -813,7 +821,7 @@ export function createExplorer(options) {
         for (const child of node.children || []) collectExpanded(child, out);
     }
 
-    function mergeChildren(node, entries, truncated) {
+    function mergeChildren(node, entries, truncated, dirMtimeValue) {
         const previous = new Map((node.children || []).map((child) => [normalizePath(child.path), child]));
         let changed = false;
         const next = entries.map((entry) => {
@@ -825,6 +833,8 @@ export function createExplorer(options) {
                     child.name = entry.name;
                     changed = true;
                 }
+                child.mtime = entry.mtime || 0;
+                child.size = entry.size || 0;
                 if (!!child.isDir !== !!entry.isDir) {
                     child.isDir = !!entry.isDir;
                     child.expanded = false;
@@ -835,6 +845,7 @@ export function createExplorer(options) {
                     child.truncated = false;
                     child.loadPromise = null;
                     child.refreshing = false;
+                    child.dirMtime = 0;
                     changed = true;
                 }
                 return child;
@@ -850,6 +861,9 @@ export function createExplorer(options) {
                 loading: false,
                 error: '',
                 truncated: false,
+                mtime: entry.mtime || 0,
+                size: entry.size || 0,
+                dirMtime: 0,
                 children: [],
                 loadPromise: null,
                 refreshing: false,
@@ -864,6 +878,7 @@ export function createExplorer(options) {
         if (node.error) changed = true;
         node.children = next;
         node.truncated = !!truncated;
+        node.dirMtime = dirMtimeValue || 0;
         node.loaded = true;
         node.error = '';
         if (!next.length && node.expanded) {
@@ -873,15 +888,22 @@ export function createExplorer(options) {
         return changed;
     }
 
-    async function refreshNodeChildren(node) {
+    async function refreshNodeChildren(node, force) {
         if (!node || !node.isDir || node.loading || node.loadPromise || node.refreshing) return false;
         node.refreshing = true;
         const path = node.path;
         try {
             if (typeof readDir !== 'function') return false;
+            if (!force && node.dirMtime && typeof dirMtime === 'function') {
+                try {
+                    const current = await dirMtime(path);
+                    if (current && Number(current) === node.dirMtime) return false;
+                } catch (e) {}
+                if (!isNodeAttached(node) || node.loading || node.loadPromise || !samePath(node.path, path)) return false;
+            }
             const result = await readDir(path, readLimit);
             if (!isNodeAttached(node) || node.loading || node.loadPromise || !samePath(node.path, path)) return false;
-            return mergeChildren(node, (result && result.entries) || [], !!(result && result.truncated));
+            return mergeChildren(node, (result && result.entries) || [], !!(result && result.truncated), result && result.mtime);
         } catch (e) {
             if (!isNodeAttached(node) || (node.children && node.children.length && !node.root)) return false;
             const message = String((e && e.message) || e);
@@ -899,9 +921,15 @@ export function createExplorer(options) {
         if (!tree) return;
         const targets = [];
         collectExpanded(tree, targets);
+        const visiblePaths = new Set();
+        for (const row of body.querySelectorAll('.sb-row[data-path][data-dir="1"]')) {
+            visiblePaths.add(normalizePath(row.dataset.path));
+        }
         let changed = false;
         for (const node of targets) {
             if (!isNodeAttached(node) || !node.expanded) continue;
+            // 视野外的展开目录无需每轮校验：用户的注意力与可见性一致，IDE 通行做法
+            if (visiblePaths.size && !visiblePaths.has(normalizePath(node.path))) continue;
             if (await refreshNodeChildren(node)) changed = true;
         }
         if (changed && visible && mode === 'tree') renderTree();
@@ -911,6 +939,13 @@ export function createExplorer(options) {
         if (!visible || mode !== 'list' || listState.loading) return;
         const root = listRootPath();
         if (!root) return;
+        if (listState.dirMtime && typeof dirMtime === 'function') {
+            try {
+                const current = await dirMtime(root);
+                if (current && Number(current) === listState.dirMtime) return;
+            } catch (e) {}
+            if (mode !== 'list' || !samePath(root, listRootPath()) || listState.loading) return;
+        }
         const token = listState.token;
         let result;
         try {
@@ -937,6 +972,7 @@ export function createExplorer(options) {
         listState.root = root;
         listState.entries = files;
         listState.tooMany = tooMany;
+        listState.dirMtime = (result && result.mtime) || 0;
         listState.error = '';
         listState.loaded = true;
         if (changed) {
@@ -956,6 +992,80 @@ export function createExplorer(options) {
         if (!(autoRefreshSeconds > 0) || !visible) return;
         const wait = typeof delay === 'number' ? delay : autoRefreshSeconds * 1000;
         autoRefreshTimer = setTimeout(runAutoRefresh, Math.max(0, wait));
+    }
+
+    // ---- 文件系统通知：按变化目录局部刷新，溢出时全量重建 ----
+    function scheduleExternalRefresh() {
+        if (externalTimer) return;
+        externalTimer = setTimeout(flushExternalChanges, 120);
+    }
+
+    async function flushExternalChanges() {
+        externalTimer = 0;
+        if (!tree) {
+            const hasChanges = externalDirs.size || externalOverflow;
+            externalDirs.clear();
+            externalOverflow = false;
+            if (hasChanges && mode === 'list' && visible && listState.root) await loadList(true);
+            return;
+        }
+        if (externalOverflow) {
+            externalOverflow = false;
+            externalDirs.clear();
+            tree = null;
+            treeSeq++;
+            revealSeq++;
+            if (visible && mode === 'tree') {
+                ensureTree();
+                renderTree();
+            }
+            return;
+        }
+        const nodes = [];
+        for (const dir of externalDirs) {
+            const node = findLoadedNode(tree, dir);
+            if (node && node.isDir) nodes.push(node);
+        }
+        const listRoot = mode === 'list' ? listRootPath() : null;
+        const listHit = !!listRoot && [...externalDirs].some((dir) => isWithin(dir, listRoot) || isWithin(listRoot, dir));
+        externalDirs.clear();
+        let changed = false;
+        await Promise.all(nodes.map(async (node) => {
+            if (!isNodeAttached(node)) return;
+            if (node.expanded || node.root) {
+                if (await refreshNodeChildren(node, true)) changed = true;
+            } else {
+                // 收起状态下不读盘，等下次展开时重新加载
+                node.loaded = false;
+                node.children = [];
+                node.dirMtime = 0;
+            }
+        }));
+        if (listHit && visible && mode === 'list') {
+            await loadList(true);
+        }
+        if (changed && visible && mode === 'tree') renderTree();
+    }
+
+    function handleExternalChanges(payload) {
+        if (!payload) return;
+        const current = tree ? tree.path : listRootPath();
+        if (!current) return;
+        const root = String(payload.root || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        const currentRoot = String(current).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        if (!root) return;
+        if (currentRoot !== root && !currentRoot.startsWith(root + '/')) return;
+        if (payload.overflow) {
+            externalOverflow = true;
+            scheduleExternalRefresh();
+            return;
+        }
+        const base = String(payload.root || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        for (const rel of payload.paths || []) {
+            const full = base + '/' + String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '');
+            externalDirs.add(parentPath(full));
+        }
+        if (externalDirs.size) scheduleExternalRefresh();
     }
 
     async function runAutoRefresh() {
@@ -1004,12 +1114,8 @@ export function createExplorer(options) {
             loadNode(node, treeSeq);
             return;
         }
+        // 已缓存目录展开只做渲染；新鲜度交给 mtime 比对/文件通知，避免与定时器重复扫描
         renderTree();
-        if (autoRefreshSeconds > 0) {
-            refreshNodeChildren(node).then((changed) => {
-                if (changed && visible && mode === 'tree' && node.expanded) renderTree();
-            });
-        }
     }
 
     function findLoadedNode(node, path) {
@@ -1163,6 +1269,7 @@ export function createExplorer(options) {
         toggleNode,
         refreshDir,
         pathRenamed,
+        handleExternalChanges,
         removePath,
         getSelection: () => selection.map((item) => ({...item})),
         getAnchor: () => {
