@@ -889,6 +889,67 @@ const mockBackend = {
             durationMs: 200,
         };
     },
+    async AICommandStart(command, cwd) {
+        const jobs = window.__mockBgJobs || (window.__mockBgJobs = new Map());
+        const id = 'bg-mock-' + (++mockBgSeq);
+        const job = {id, state: 'running', code: null, output: [], startedAtMs: Date.now()};
+        jobs.set(id, job);
+        const emit = (name, data) => {
+            if (rt && rt.EventsEmit) rt.EventsEmit(name, data);
+        };
+        setTimeout(() => {
+            const line = '[mock] $ ' + command + (cwd ? '  (cwd ' + cwd + ')' : '');
+            job.output.push(line);
+            emit('cmd-out', {id, stream: 'out', data: line});
+        }, 60);
+        for (let i = 1; i <= 3; i++) {
+            setTimeout(() => {
+                if (job.state !== 'running') return;
+                const line = '[mock] line ' + i + ' / ' + command;
+                job.output.push(line);
+                emit('cmd-out', {id, stream: 'out', data: line});
+            }, 60 + i * 220);
+        }
+        setTimeout(() => {
+            if (job.state !== 'running') return;
+            job.state = 'exited';
+            job.code = 0;
+            emit('cmd-exit', {id, code: '0'});
+        }, 950);
+        return {jobId: id, shell: 'Git Bash'};
+    },
+    async AICommandStatus(jobId, since) {
+        const jobs = window.__mockBgJobs || (window.__mockBgJobs = new Map());
+        const job = jobs.get(jobId);
+        if (!job) {
+            return {jobId, state: 'notfound', code: -1, durationMs: 0, output: '', cursor: 0, truncated: false, startedAtMs: 0};
+        }
+        const text = job.output.length ? job.output.join('\n') + '\n' : '';
+        const cursor = text.length;
+        return {
+            jobId,
+            state: job.state,
+            code: job.code == null ? -1 : job.code,
+            durationMs: Math.max(0, Date.now() - job.startedAtMs),
+            output: since < cursor ? text.slice(since) : '',
+            cursor,
+            truncated: false,
+            startedAtMs: job.startedAtMs,
+        };
+    },
+    async AICommandStop(jobId) {
+        const jobs = window.__mockBgJobs || (window.__mockBgJobs = new Map());
+        const job = jobs.get(jobId);
+        if (!job) {
+            return {jobId, state: 'notfound', code: -1, durationMs: 0, output: '', cursor: 0, truncated: false, startedAtMs: 0};
+        }
+        if (job.state === 'running') {
+            job.state = 'exited';
+            job.code = -1;
+            if (rt && rt.EventsEmit) rt.EventsEmit('cmd-exit', {id: jobId, code: '-1'});
+        }
+        return this.AICommandStatus(jobId, 0);
+    },
     async StartCommand(id, exe, args) {
         setTimeout(() => {
             if (rt && rt.EventsEmit) {
@@ -1506,6 +1567,46 @@ const mockBackend = {
             }
             const lastTool = toolMessages[toolMessages.length - 1];
             const finalText = '命令输出：\n\n```\n' + String(lastTool.content || '').slice(0, 400) + '\n```\n\n（mock run_command 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aibg')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我在后台启动一个耗时命令。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_bgcmd',
+                    name: 'background_command',
+                    argsDelta: JSON.stringify({command: 'npm run build'}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            if (toolMessages.length === 1) {
+                const jobId = (String(toolMessages[toolMessages.length - 1].content || '').match(/jobId=([\w-]+)/) || [])[1] || 'bg-mock-1';
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_bgcheck',
+                    name: 'check_command',
+                    argsDelta: JSON.stringify({jobId}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '后台命令已结束：\n\n```\n' + String(lastTool.content || '').slice(0, 400) + '\n```\n\n（mock background_command 链路结束）';
             const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
             let finalDelay = 30;
             finalChunks.forEach((chunk, i) => {
@@ -12830,6 +12931,29 @@ function initAIPanel() {
             openSettings(pane);
         },
         setDragCursor,
+        commandOutput: (id, handlers) => {
+            const off = () => {
+                cmdOutHandlers.delete(id);
+                cmdExitHandlers.delete(id);
+            };
+            if (!id || !handlers) return {cancel: off};
+            if (handlers.onOut || handlers.onErr) {
+                cmdOutHandlers.set(id, (stream, data) => {
+                    if (stream === 'err') {
+                        if (handlers.onErr) handlers.onErr(data);
+                    } else if (handlers.onOut) {
+                        handlers.onOut(data);
+                    }
+                });
+            }
+            if (handlers.onExit) {
+                cmdExitHandlers.set(id, (code) => {
+                    off();
+                    handlers.onExit(code);
+                });
+            }
+            return {cancel: off};
+        },
         activityButton: els.abAi,
         toolbarButton: els.tbAi,
         isMock: !hasWails,
@@ -17140,6 +17264,7 @@ const TERM_SHELL_LABELS = {pwsh: 'PowerShell 7', powershell: 'Windows PowerShell
 const cmdOutHandlers = new Map();
 const cmdExitHandlers = new Map();
 let cmdSeq = 0;
+let mockBgSeq = 0; // mock 后台作业编号
 
 
 

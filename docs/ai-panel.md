@@ -282,12 +282,17 @@ runTurn(session, userMsg):
 | `edit_file(path, oldString, newString)` | `OpenFile` → 唯一性校验（多处命中=错误回给模型）→ 替换 → `SaveFile` **保留原 eol/bom/enc** | 编辑 | **是** |
 | `todo_write(todos[])` | 纯前端状态 → §11 | 编辑 | 免 |
 | `run_command(command, cwd?, timeoutMs?)` | 后端 `AIRunShellCommand`：shell 优先级 **Git Bash → PowerShell 7 → Windows PowerShell → cmd**；默认 30s、上限 120s；stdout/stderr 各截断 16KB | 每次询问 / 自动审批 / 完全权限（计划模式不可用） | 每次询问**是**（逐条，命令 + cwd；可勾选本会话相同/同类命令放行）；自动审批仅风险命令**是**；完全权限免 |
+| `background_command(command, cwd?)` | 后端 `AICommandStart`：后台启动长驻/耗时命令，立即返回 `jobId`（`bg-<序号>`）；输出按行缓冲（每作业 256 KB 环形，超限丢弃最早）并照常广播 `cmd-out` | 每次询问 / 自动审批 / 完全权限（计划模式不可用） | 每次询问**是**（与 run_command 同一审批卡，启动时审一次）；自动审批白名单命令免；完全权限免 |
+| `check_command(jobId)` | 后端 `AICommandStatus`：返回 running / exited / notfound、退出码、时长与自上次查询的**增量输出**（单次 ≤64KB，结果截断 16KB） | 同上 | 免 |
+| `stop_command(jobId)` | 后端 `AICommandStop`：终止作业（taskkill 杀整棵进程树），返回最终退出码与已捕获全部输出 | 同上 | 免 |
 
 > AI 改写不再按目标文件的 512KB 设硬限制：`edit_file` / `write_file` 可处理到应用读取上限（>10MB 视为大文件，仍不可读写）；超过 4000 行时 diff 自动降级为公共前缀 / 后缀 + 中间变更块，审批预览最多 40 行。单次写入内容仍上限 256KB，大文件用 `edit_file` 做局部替换。
 >
 > `web_search` / `web_fetch` 由 Go 后端 `webtools.go` 执行（跟随系统代理、25s 超时、响应上限 4MB）；只允许 http/https 公网地址（解析到回环 / 内网 / 链路本地 / 保留地址即拒绝），抓取内容按不可信外部数据处理、不执行页面脚本，也不需要额外 API Key。
 >
 > memory 工具在**只读访问即可用**（记忆是 AI 的工作笔记而非用户数据）；写入免审批但每次显示卡片，可追溯。`skill_use` 四档通用（只读知识加载零副作用），是只读档工具集的唯一例外。`preference_*` 操作设置页的「用户偏好」列表（存于 AI 配置），同样只读访问可用、免审批，删除即时生效。
+>
+> **后台终端**：`background_command` 启动的作业独立于对话轮生命周期（对话结束作业继续跑，应用退出全部终止）；查状态 / 停止免审批。工具卡片在 `cmd-out` 广播到达时实时追加输出行（面板关闭时只更新缓冲数据，切回可见即恢复），卡片头部显示作业状态（后台运行中 / 已结束 / 已停止 + 退出码）。Go 侧为 `commands.go` 的作业缓冲 + `ai_command_windows.go` 的 `AICommandStart`；同时共享进程桥 16 并发上限与 8 MB 捕获上限。Git Bash 的 `bin/bash.exe` 是 wrapper（真实 bash 是其子进程），因此取消一律走 `taskkill /F /T` 杀整棵进程树并配合 `WaitDelay=3s` 兜底——这也修复了 `run_command` 超时在 wrapper shell 下可能永不返回的隐患；被终止的作业退出码统一记 -1。
 
 **范围安全**（工作区工具执行前）：路径相对 scopeRoot 解析，归一后校验仍在 scopeRoot 内；越界直接返回工具结果「路径超出工作区范围」由模型自行调整。memory/skills 目录独立于范围检查（专用目录 + 文件名白名单兜底）。symlink 逃逸风险见 §21。
 
@@ -297,7 +302,7 @@ runTurn(session, userMsg):
 
 ## 9. 审批流（工作区写操作）
 
-0. AI 发起 `run_command`（每次询问 / 自动审批档）→ 插入命令审批卡片：显示完整命令与工作目录，按钮 **执行 / 放弃**；自动审批档白名单命令直接执行，完全权限档直接执行。工具结果返回 shell 名称、退出码、stdout/stderr、耗时；超时标记「已终止」并保留已捕获输出。命令卡默认收起为一行「run_command + 命令 + 状态」，点击展开完整输出，输出区带独立背景色。
+0. AI 发起 `run_command` / `background_command`（每次询问 / 自动审批档）→ 插入命令审批卡片：显示完整命令与工作目录，按钮 **执行 / 放弃**；自动审批档白名单命令直接执行，完全权限档直接执行。后台命令启动时审批一次，之后查状态 / 停止不再审批。工具结果返回 shell 名称、退出码、stdout/stderr、耗时；超时标记「已终止」并保留已捕获输出。命令卡默认收起为一行「run_command + 命令 + 状态」，点击展开完整输出，输出区带独立背景色。
    - **本会话允许相同命令**：完整命令字符串 + cwd（规范化后）完全一致才自动执行。
    - **本会话允许同类命令**：仅对白名单开发命令显示，签名 = 可执行文件 + 子命令（如 `git status`、`go test`、`npm run build`）；要求同 cwd、单条简单命令（无管道、重定向、命令串联、`$()`/反引号），并排除危险参数（`-exec`、`--output`、`-o`、`--prefix`、`-C` 等）。
    - 授权只存内存 `Map<sessionId, rules>`，不写会话 JSONL/meta；重启应用、重新加载对话或清空会话即失效。解释器（`powershell`/`pwsh`/`cmd`/`bash`/`python`/`node` 等）与 `rm`/`cat` 等无同类放行，只能相同命令或逐条审批。
@@ -319,7 +324,7 @@ runTurn(session, userMsg):
 | 档位 | 工具 | 说明 |
 |---|---|---|
 | **只读访问**（默认） | list_dir / read_file / search_text / web_search / web_fetch / memory_* / preference_*（写删计划模式不可用）+ `skill_use` | 范围根 = `workspaceFolder`，无工作区时 = 当前文件所在目录；免审批但每次调用显示卡片 |
-| **每次询问** | 只读工具 + write_file / edit_file / todo_write / run_command + 页面点击/输入 | 工作区写操作全部审批、终端命令逐条审批；首次切换 flash 规则说明 |
+| **每次询问** | 只读工具 + write_file / edit_file / todo_write / run_command / background_command（+ check_command / stop_command）+ 页面点击/输入 | 工作区写操作全部审批、终端命令逐条审批；首次切换 flash 规则说明 |
 | **自动审批** | 与「每次询问」相同 | 工作区写操作自动应用（目标文件有未保存修改，或路径属于 `AGENTS.md` / `.cadt/` / `.agents/` / `.git/` 时仍审批）；白名单内的低风险命令自动执行，其余命令逐条审批；不允许工作区外路径 |
 | **完全权限** | 每次询问全部工具 + 工作区外路径 + 命令免审批 + browser_evaluate | 启用前有二次确认（风险说明弹窗）；破坏性操作需自行向用户说明 |
 

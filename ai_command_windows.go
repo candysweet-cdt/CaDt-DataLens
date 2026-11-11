@@ -47,6 +47,38 @@ func aiShellInvocation(command string) (shellName, exe string, args []string) {
 	return "Command Prompt", "cmd.exe", []string{"/d", "/s", "/c", command}
 }
 
+type AICommandJobStart struct {
+	JobId string `json:"jobId"`
+	Shell string `json:"shell"`
+}
+
+// AICommandStart 把一条 AI 发起的 shell 命令放到后台执行：立即返回 jobId，不闪窗口、
+// 不阻塞对话。输出按行缓冲（每作业 256 KB，超限丢弃最早内容），用 AICommandStatus
+// 增量查询，AICommandStop 终止；同时照常广播 cmd-out / cmd-exit 供前端卡片实时显示。
+func (a *App) AICommandStart(command, cwd string) (*AICommandJobStart, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil, fmt.Errorf("命令不能为空")
+	}
+	if strings.TrimSpace(cwd) != "" {
+		info, err := os.Stat(cwd)
+		if err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("工作目录不存在：%s", cwd)
+		}
+	}
+	shellName, exe, args := aiShellInvocation(command)
+	commandJobsMu.Lock()
+	commandJobSeq++
+	jobId := fmt.Sprintf("bg-%d", commandJobSeq)
+	commandJobsMu.Unlock()
+	registerCommandJob(jobId, shellName, command)
+	if err := a.StartCommand(jobId, exe, args, cwd); err != nil {
+		unregisterCommandJob(jobId)
+		return nil, err
+	}
+	return &AICommandJobStart{JobId: jobId, Shell: shellName}, nil
+}
+
 // AIRunShellCommand 执行一条 AI 发起的 shell 命令；超时不算错误（TimedOut=true + 已捕获输出）。
 func (a *App) AIRunShellCommand(command, cwd string, timeoutMs int) (*AIShellCommandResult, error) {
 	command = strings.TrimSpace(command)

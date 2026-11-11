@@ -1,6 +1,6 @@
 # AI 助手 v2 方案（子代理团队 · 后台终端 · 定时任务 · 计划，待批准后实施）
 
-> 状态：**拟定（2026-11-11，基于已完成 v1 的只读调查）** · 前置：`docs/ai-panel.md`（v1 已全部实施，批次 1–6 + 应用操作桥 + Todolist 重构）
+> 状态：**拟定（2026-11-11，基于已完成 v1 的只读调查）· 功能 A（后台终端）已实施（2026-11-12）** · 前置：`docs/ai-panel.md`（v1 已全部实施，批次 1–6 + 应用操作桥 + Todolist 重构）
 > 定位：三个 v2 方向——**子代理调用（智能体团队）**、**后台终端（AI 长驻/后台作业）**、**定时任务（schedule / 循环唤醒 / 单点唤醒）**。
 > 本文所有行号以 2026-11-11 工作区快照为准（ai-panel.js 9109 行、ai.go 1446 行），实施时可能漂移，以符号名为准。
 
@@ -60,7 +60,9 @@ v2 补齐三类「harness 级」能力：
 
 ---
 
-## 2. 功能 A：后台终端（建议第一批，改动最小）
+## 2. 功能 A：后台终端（✅ 已实施，2026-11-12）
+
+> 实施记录：按方案 A 落地——`commands.go` 增加作业缓冲（256 KB 环形 + 游标增量读取，单次 ≤64 KB）与 `AICommandStatus / AICommandStop` 绑定，`ai_command_windows.go` 增加 `AICommandStart`；前端三工具与审批策略与 run_command 完全共用（抽取 `approveCommandForRun`）。实施中发现的关键点（原方案未预见）：Git for Windows 的 `bin/bash.exe` 是 wrapper、真实 bash 是其子进程，仅 Kill wrapper 会让输出管道永不关闭——Go 侧取消统一改为 `taskkill /F /T` 杀整棵进程树 + `cmd.WaitDelay=3s` 兜底，顺带修复了既有 `RunCommandSync`（run_command）超时可能永不返回的隐患；被终止作业退出码统一记 -1，前端映射为「已停止」。已结束作业保留最近 32 个供查询。`cmd-out` 实时追加走 main.js 既有的 `cmdOutHandlers` 分发（`commandOutput` 选项注入 ai-panel），与插件 `runCommand` 同一机制。
 
 ### 2.1 方案 A（推荐）：后台命令作业 = StartCommand + 输出缓冲 + 状态查询
 

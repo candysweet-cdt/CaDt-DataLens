@@ -483,6 +483,7 @@ export function createAIPanel(options) {
     const showNameDialog = typeof opts.nameDialog === 'function' ? opts.nameDialog : null;
     const openSettings = typeof opts.openSettings === 'function' ? opts.openSettings : () => {};
     const setDragCursor = typeof opts.setDragCursor === 'function' ? opts.setDragCursor : () => {};
+    const commandOutput = typeof opts.commandOutput === 'function' ? opts.commandOutput : null;
     const onLayout = typeof opts.onLayout === 'function' ? opts.onLayout : () => {};
     const getWorkspaceContext = typeof opts.getWorkspaceContext === 'function' ? opts.getWorkspaceContext : () => ({workspaceFolder: '', activeFile: null, openFiles: []});
     const openWorkspaceFolder = typeof opts.openWorkspaceFolder === 'function' ? opts.openWorkspaceFolder : null;
@@ -722,6 +723,13 @@ export function createAIPanel(options) {
     const pendingEnvCreations = new Map();
     const askDrafts = new Map();
     const todoStates = new Map();
+    // 后台命令作业的实时输出状态：jobId -> {session, message, lines, text, timer}
+    // cmd-out 广播驱动追加；面板不可见时只更新 message.bgLog，切回后由重渲恢复。
+    const bgJobLive = new Map();
+    // check_command 的增量读取游标：jobId -> 上次读到的逻辑字节偏移
+    const bgJobCursors = new Map();
+    const AI_BG_LIVE_MAX_LINES = 200;
+    const AI_BG_LIVE_MAX_CHARS = 8192;
     let archivedExpanded = false;
     const collapsedWorkspaceGroups = new Set();
     let dismissedPlanApproval = '';
@@ -1027,7 +1035,7 @@ export function createAIPanel(options) {
             error: aiTextOf(raw.error),
             command: aiTextOf(raw.command).slice(0, 8000),
             cwd: aiTextOf(raw.cwd),
-            tool: kind === 'command' ? 'run_command' : (raw.tool === 'edit_file' ? 'edit_file' : 'write_file'),
+            tool: kind === 'command' ? (raw.tool === 'background_command' ? 'background_command' : 'run_command') : (raw.tool === 'edit_file' ? 'edit_file' : 'write_file'),
             path: aiTextOf(raw.path),
             relPath: aiTextOf(raw.relPath),
             added: Math.max(0, Number(raw.added) || 0),
@@ -3122,6 +3130,11 @@ export function createAIPanel(options) {
     }
 
     function toolStateText(message) {
+        if (message.name === 'background_command' && message.bg) {
+            if (message.bg.state === 'running') return '后台运行中…';
+            if (message.bg.state === 'stopped') return '已停止（退出码 ' + message.bg.code + '）';
+            if (message.bg.state === 'exited') return '已结束（退出码 ' + message.bg.code + '）';
+        }
         const approval = message.approval;
         if (approval) {
             const command = approval.kind === 'command';
@@ -3464,6 +3477,9 @@ export function createAIPanel(options) {
             case 'write_file': return {verb: (approval && approval.newFile) ? '新建' : '写入', icon: 'save'};
             case 'edit_file': return {verb: '编辑', icon: 'rename'};
             case 'run_command': return {verb: '终端', icon: 'terminal'};
+            case 'background_command': return {verb: '后台命令', icon: 'terminal'};
+            case 'check_command': return {verb: '查询作业', icon: 'refresh'};
+            case 'stop_command': return {verb: '停止作业', icon: 'close'};
             case 'memory_list': return {verb: '记忆目录', icon: 'book'};
             case 'memory_read': return {verb: '读取记忆', icon: 'book-open'};
             case 'memory_write': return {verb: '写入记忆', icon: 'book-plus'};
@@ -3526,6 +3542,10 @@ export function createAIPanel(options) {
                 return {primary: args.enabled === false ? '退出' : '进入', dir: ''};
             case 'run_command':
                 return {primary: aiTextOf(args.command).trim().replace(/\s+/g, ' '), dir: ''};
+            case 'background_command':
+                return {primary: aiTextOf(args.command).trim().replace(/\s+/g, ' '), dir: ''};
+            case 'check_command': case 'stop_command':
+                return {primary: aiTextOf(args.jobId).trim() || '—', dir: ''};
             case 'memory_read': case 'memory_write':
                 return {primary: aiTextOf(args.name).trim() || '—', dir: ''};
             case 'memory_list':
@@ -3591,8 +3611,9 @@ export function createAIPanel(options) {
         const card = document.createElement('div');
         const approval = message.approval;
         const envAsk = message.envAsk;
-        const isCommand = message.name === 'run_command';
-        card.className = 'ai-tool-card ' + (message.status || 'done') + (approval ? ' has-approval' : '') + (envAsk ? ' has-approval' : '') + (isCommand ? ' command' : '');
+        const isCommand = message.name === 'run_command' || message.name === 'background_command';
+        const bgRunning = message.name === 'background_command' && message.bg && message.bg.state === 'running';
+        card.className = 'ai-tool-card ' + (bgRunning ? 'running' : (message.status || 'done')) + (approval ? ' has-approval' : '') + (envAsk ? ' has-approval' : '') + (isCommand ? ' command' : '');
         if ((approval && approval.state === 'pending') || (envAsk && envAsk.state === 'pending')) card.classList.add('approval-pending');
         wrap.appendChild(card);
         const head = document.createElement('button');
@@ -3698,6 +3719,13 @@ export function createAIPanel(options) {
             output.className = 'ai-cmd-output';
             output.textContent = message.content || (message.status === 'running' ? '执行中…' : '（无输出）');
             body.appendChild(output);
+            // 后台命令：命令下方实时追加输出（cmd-out 广播驱动；重新渲染时从 bgLog 恢复）
+            if (message.name === 'background_command') {
+                const live = document.createElement('div');
+                live.className = 'ai-cmd-output ai-bg-live';
+                live.textContent = message.bgLog || '（等待输出…）';
+                body.appendChild(live);
+            }
         } else {
             body.textContent = message.content || (message.status === 'running' ? '执行中…' : '（无输出）');
         }
@@ -5012,7 +5040,7 @@ export function createAIPanel(options) {
         },
         run_command: {
             name: 'run_command',
-            description: '在终端执行一条命令并返回退出码、stdout、stderr。shell 优先级：Git Bash → PowerShell 7 → Windows PowerShell → cmd。用于测试、构建、git 查看等；不要运行交互式或长驻命令。「每次询问」档每条命令需审批；「自动审批」档白名单内的低风险命令自动执行、其余仍审批；完全权限免审批。',
+            description: '在终端执行一条命令并返回退出码、stdout、stderr。shell 优先级：Git Bash → PowerShell 7 → Windows PowerShell → cmd。用于测试、构建、git 查看等；不要运行交互式或长驻命令（改用 background_command）。「每次询问」档每条命令需审批；「自动审批」档白名单内的低风险命令自动执行、其余仍审批；完全权限免审批。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -5021,6 +5049,40 @@ export function createAIPanel(options) {
                     timeoutMs: {type: 'integer', description: '超时毫秒，默认 30000，最大 120000'},
                 },
                 required: ['command'],
+            },
+        },
+        background_command: {
+            name: 'background_command',
+            description: '在后台启动一条耗时或长驻命令（构建、watch、本地服务器、长测试），立即返回 jobId，不阻塞对话。启动后用 check_command 轮询状态与增量输出，结束后向用户汇报结果；需要提前终止用 stop_command。会很快结束的短命令请改用 run_command。审批策略与 run_command 一致（启动时审批一次，查状态/停止不再审批）。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    command: {type: 'string', description: '要执行的完整命令'},
+                    cwd: {type: 'string', description: '工作目录，默认范围根；完全权限下可为绝对路径'},
+                },
+                required: ['command'],
+            },
+        },
+        check_command: {
+            name: 'check_command',
+            description: '查询后台命令作业：返回状态（running / exited / notfound）、退出码、已运行时长与自上次查询以来的新增输出（每作业最多保留 256 KB，超出丢弃最早内容）。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    jobId: {type: 'string', description: 'background_command 返回的作业 ID'},
+                },
+                required: ['jobId'],
+            },
+        },
+        stop_command: {
+            name: 'stop_command',
+            description: '终止一个后台命令作业，返回最终退出码与已捕获的全部输出。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    jobId: {type: 'string', description: 'background_command 返回的作业 ID'},
+                },
+                required: ['jobId'],
             },
         },
         env_list: {
@@ -5174,7 +5236,8 @@ export function createAIPanel(options) {
         );
         if (AI_WRITE_SCOPES.includes(scope)) {
             list.push(AI_TOOL_DEFS.todo_write);
-            if (!planMode) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file, AI_TOOL_DEFS.run_command);
+            if (!planMode) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file, AI_TOOL_DEFS.run_command,
+                AI_TOOL_DEFS.background_command, AI_TOOL_DEFS.check_command, AI_TOOL_DEFS.stop_command);
             if (!planMode) list.push(AI_TOOL_DEFS.browser_click, AI_TOOL_DEFS.browser_type, AI_TOOL_DEFS.browser_press_key);
         }
         if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
@@ -5490,11 +5553,89 @@ export function createAIPanel(options) {
         });
     }
 
+    // ---- 后台命令（background_command）----
+    // 实时输出：cmd-out 广播 → bgLog（限长）→ 节流重渲卡片；面板关闭时只更新数据。
+
+    function bgLiveAppend(session, message, stream, data) {
+        if (!message || !message.bg) return;
+        let live = bgJobLive.get(message.bg.jobId);
+        if (!live) {
+            live = {session, message, lines: [], text: '', timer: 0};
+            bgJobLive.set(message.bg.jobId, live);
+        }
+        live.session = session;
+        live.message = message;
+        live.lines.push((stream === 'err' ? '[stderr] ' : '') + data);
+        if (live.lines.length > AI_BG_LIVE_MAX_LINES) live.lines.splice(0, live.lines.length - AI_BG_LIVE_MAX_LINES);
+        live.text = live.lines.join('\n');
+        if (live.text.length > AI_BG_LIVE_MAX_CHARS) live.text = '…（早期输出已省略）\n' + live.text.slice(-AI_BG_LIVE_MAX_CHARS);
+        message.bgLog = live.text;
+        if (!live.timer) {
+            live.timer = setTimeout(() => {
+                live.timer = 0;
+                refreshToolWrap(session, message);
+            }, 250);
+        }
+    }
+
+    function bgLiveFinish(jobId, code) {
+        const live = bgJobLive.get(jobId);
+        if (!live || !live.message || !live.message.bg) return;
+        const bg = live.message.bg;
+        if (bg.state === 'running') {
+            bg.state = code === -1 ? 'stopped' : 'exited';
+            bg.code = code;
+        } else {
+            bg.code = code;
+        }
+        if (live.timer) {
+            clearTimeout(live.timer);
+            live.timer = 0;
+        }
+        refreshToolWrap(live.session, live.message);
+    }
+
+    // check_command / stop_command 的结果同步回作业卡片状态
+    function syncBgCardState(jobId, st) {
+        if (!st || st.state !== 'exited') return;
+        bgLiveFinish(jobId, st.code);
+    }
+
+    // run_command / background_command 共用的命令审批：full 档直接放行，
+    // 会话规则或自动审批白名单命中则记「已放行」，否则弹审批卡。返回 {approved, cancelled?}。
+    async function approveCommandForRun(session, toolMessage, command, cwd, toolName) {
+        const scope = currentScopeOf(session);
+        if (scope === 'full') return {approved: true};
+        const sessionRule = matchCommandApproval(session, command, cwd);
+        const autoSafe = !sessionRule && scope === 'auto' && commandFamilySignature(command);
+        const rule = sessionRule || (autoSafe ? {mode: 'auto'} : null);
+        if (rule) {
+            toolMessage.approval = {
+                state: 'approved',
+                kind: 'command',
+                tool: toolName || 'run_command',
+                command,
+                cwd,
+                remember: 'pre',
+                autoRule: rule.mode,
+            };
+            toolMessage.status = 'running';
+            toolMessage.content = rule.mode === 'family'
+                ? '已按本会话同类命令授权，正在执行…'
+                : (rule.mode === 'auto'
+                    ? '自动审批已放行，正在执行…'
+                    : '已按本会话相同命令授权，正在执行…');
+            refreshToolWrap(session, toolMessage);
+            return {approved: true};
+        }
+        return await requestCommandApproval(session, toolMessage, {command, cwd, tool: toolName || 'run_command'});
+    }
+
     function requestCommandApproval(session, toolMessage, info) {
         const approval = {
             state: 'pending',
             kind: 'command',
-            tool: 'run_command',
+            tool: info.tool || 'run_command',
             command: info.command,
             cwd: info.cwd,
             remember: '',
@@ -6454,37 +6595,11 @@ export function createAIPanel(options) {
                 if (!backend.AIRunShellCommand) throw new Error('当前版本不支持执行命令');
                 const cwd = aiResolveScopePath(aiTextOf(input.cwd).trim() || '.', ctx.session);
                 const timeoutMs = aiClampInt(input.timeoutMs, 1000, 120000, 30000);
-                const scope = currentScopeOf(ctx.session);
-                const preApproved = scope === 'full';
-                if (!preApproved) {
-                    const sessionRule = matchCommandApproval(ctx.session, command, cwd);
-                    const autoSafe = !sessionRule && scope === 'auto' && commandFamilySignature(command);
-                    const rule = sessionRule || (autoSafe ? {mode: 'auto'} : null);
-                    if (rule) {
-                        ctx.toolMessage.approval = {
-                            state: 'approved',
-                            kind: 'command',
-                            tool: 'run_command',
-                            command,
-                            cwd,
-                            remember: 'pre',
-                            autoRule: rule.mode,
-                        };
-                        ctx.toolMessage.status = 'running';
-                        ctx.toolMessage.content = rule.mode === 'family'
-                            ? '已按本会话同类命令授权，正在执行…'
-                            : (rule.mode === 'auto'
-                                ? '自动审批已放行，正在执行…'
-                                : '已按本会话相同命令授权，正在执行…');
-                        refreshToolWrap(ctx.session, ctx.toolMessage);
-                    } else {
-                        const decision = await requestCommandApproval(ctx.session, ctx.toolMessage, {command, cwd});
-                        if (!decision.approved) {
-                            return decision.cancelled
-                                ? '用户已停止生成，命令未执行。'
-                                : '用户取消了本次命令，未执行。';
-                        }
-                    }
+                const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'run_command');
+                if (!decision.approved) {
+                    return decision.cancelled
+                        ? '用户已停止生成，命令未执行。'
+                        : '用户取消了本次命令，未执行。';
                 }
                 ctx.toolMessage.status = 'running';
                 ctx.toolMessage.content = '执行中…';
@@ -6516,6 +6631,99 @@ export function createAIPanel(options) {
                 if (stdout) lines.push('stdout：\n' + stdout);
                 if (stderr) lines.push('stderr：\n' + stderr);
                 if (!stdout && !stderr) lines.push('（无输出）');
+                return lines.join('\n');
+            }
+            case 'background_command': {
+                if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('后台命令缺少会话上下文');
+                const command = aiTextOf(input.command).trim();
+                if (!command) throw new Error('命令不能为空');
+                if (!backend.AICommandStart) throw new Error('当前版本不支持后台命令');
+                const cwd = aiResolveScopePath(aiTextOf(input.cwd).trim() || '.', ctx.session);
+                const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'background_command');
+                if (!decision.approved) {
+                    return decision.cancelled
+                        ? '用户已停止生成，命令未启动。'
+                        : '用户取消了本次后台命令，未启动。';
+                }
+                ctx.toolMessage.status = 'running';
+                ctx.toolMessage.content = '正在启动…';
+                refreshToolWrap(ctx.session, ctx.toolMessage);
+                let job;
+                try {
+                    job = await backend.AICommandStart(command, cwd);
+                } catch (e) {
+                    const approval = ctx.toolMessage.approval;
+                    if (approval && approval.kind === 'command') {
+                        approval.state = 'failed';
+                        approval.error = String((e && e.message) || e);
+                    }
+                    throw e;
+                }
+                ctx.toolMessage.bg = {jobId: job.jobId, state: 'running', code: null};
+                ctx.toolMessage.bgLog = '';
+                bgJobCursors.set(job.jobId, 0);
+                // 实时输出：cmd-out 广播 → 卡片；面板关闭时只更新 bgLog，切回可见即恢复
+                if (commandOutput) {
+                    commandOutput(job.jobId, {
+                        onOut: (data) => bgLiveAppend(ctx.session, ctx.toolMessage, 'out', data),
+                        onErr: (data) => bgLiveAppend(ctx.session, ctx.toolMessage, 'err', data),
+                        onExit: (code) => bgLiveFinish(job.jobId, code),
+                    });
+                }
+                refreshToolWrap(ctx.session, ctx.toolMessage);
+                return '已在后台启动：jobId=' + job.jobId + '（Shell：' + (job.shell || '未知') + '）\n' +
+                    '不要用 run_command 重复执行它。用 check_command 轮询进度，作业结束后向用户汇报结果；需提前终止用 stop_command（jobId 传 ' + job.jobId + '）。';
+            }
+            case 'check_command': {
+                const jobId = aiTextOf(input.jobId).trim();
+                if (!jobId) throw new Error('jobId 不能为空');
+                if (!backend.AICommandStatus) throw new Error('当前版本不支持查询后台命令');
+                const since = bgJobCursors.get(jobId) || 0;
+                const st = await backend.AICommandStatus(jobId, since);
+                bgJobCursors.set(jobId, Number(st.cursor) || since);
+                syncBgCardState(jobId, st);
+                const stateText = st.state === 'running' ? '运行中' : (st.state === 'exited' ? '已退出' : '不存在');
+                const lines = [
+                    '作业：' + jobId + (st.command ? '（' + st.command + '）' : ''),
+                    '状态：' + stateText +
+                        (st.state === 'exited' ? ' · 退出码：' + st.code : '') +
+                        ' · ' + (Number(st.durationMs) || 0) + ' ms',
+                ];
+                if (st.truncated) lines.push('（最早的部分输出因超出缓冲已被丢弃）');
+                const clip = (text) => {
+                    const value = aiTextOf(text).replace(/\r\n/g, '\n').trimEnd();
+                    return value.length > 16000 ? value.slice(0, 16000) + '\n…（输出已截断）' : value;
+                };
+                const out = clip(st.output);
+                if (st.state === 'notfound') {
+                    lines.push('（作业不存在：可能编号无效，或应用重启后作业已丢失）');
+                } else if (out) {
+                    lines.push('新增输出：\n' + out);
+                } else {
+                    lines.push('（无新增输出）');
+                }
+                return lines.join('\n');
+            }
+            case 'stop_command': {
+                const jobId = aiTextOf(input.jobId).trim();
+                if (!jobId) throw new Error('jobId 不能为空');
+                if (!backend.AICommandStop) throw new Error('当前版本不支持停止后台命令');
+                const st = await backend.AICommandStop(jobId);
+                bgJobCursors.set(jobId, Number(st.cursor) || 0);
+                syncBgCardState(jobId, st);
+                const lines = ['作业：' + jobId + (st.command ? '（' + st.command + '）' : '')];
+                if (st.state === 'notfound') {
+                    lines.push('状态：不存在（可能已经结束并被清理，或编号无效）');
+                    return lines.join('\n');
+                }
+                lines.push('状态：' + (st.code === -1 ? '已终止' : '已退出') + ' · 退出码：' + st.code + ' · ' + (Number(st.durationMs) || 0) + ' ms');
+                const clip = (text) => {
+                    const value = aiTextOf(text).replace(/\r\n/g, '\n').trimEnd();
+                    return value.length > 16000 ? value.slice(0, 16000) + '\n…（输出已截断）' : value;
+                };
+                const out = clip(st.output);
+                if (out) lines.push('已捕获输出：\n' + out);
+                else lines.push('（无已捕获输出）');
                 return lines.join('\n');
             }
             default:
@@ -6570,6 +6778,7 @@ export function createAIPanel(options) {
                     '- edit_file 的 oldString 必须逐字复制且只出现一次；多处命中时请扩大上下文使其唯一，未命中时重新读取文件。',
                     '- write_file 用于新建文件或整体覆盖；不要修改 .git 等版本库内部文件。',
                     '- run_command 用于测试、构建、git 查看等一次性命令；不要运行交互式或长驻命令，必要时用 timeoutMs 控制超时。',
+                    '- 长驻 / 耗时命令（构建、watch、本地服务器、长测试）用 background_command 启动并立即返回，之后用 check_command 轮询增量输出、结束或汇报结果；不要用 run_command 跑长任务，也不要反复 check_command 空等。',
                 ]),
                 '- 多步任务先用 todo_write 规划，并在每完成一步后更新任务状态。',
                 ...(full && !planMode ? ['- 完全权限下没有审批兜底（含终端命令）：破坏性操作前先向用户说明。'] : []),
