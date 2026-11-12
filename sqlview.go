@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,6 +77,57 @@ func nextSQLSessionID() string {
 
 func quoteSQLIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// sqlWritesOutsideSession 拦截会把数据写到临时副本之外文件的语句（ATTACH / DETACH / VACUUM）。
+// 临时副本上的 INSERT/UPDATE/DELETE 本来就允许（SQL 视图是可编辑的临时副本，见 TestSQLDML）。
+var sqlExternalWriteRe = regexp.MustCompile(`(?i)\b(?:attach|detach|vacuum)\b`)
+
+// stripSQLLiterals 去掉注释与字符串字面量，避免 `SELECT 'ATTACH'` 之类的误判。
+func stripSQLLiterals(q string) string {
+	var b strings.Builder
+	b.Grow(len(q))
+	for i := 0; i < len(q); i++ {
+		c := q[i]
+		switch {
+		case c == '-' && i+1 < len(q) && q[i+1] == '-':
+			for i < len(q) && q[i] != '\n' {
+				i++
+			}
+			b.WriteByte('\n')
+		case c == '/' && i+1 < len(q) && q[i+1] == '*':
+			i += 2
+			for i+1 < len(q) && !(q[i] == '*' && q[i+1] == '/') {
+				i++
+			}
+			i++
+			b.WriteByte(' ')
+		case c == '\'' || c == '"' || c == '`' || c == '[':
+			closer := c
+			if c == '[' {
+				closer = ']'
+			}
+			i++
+			for i < len(q) {
+				if q[i] == closer {
+					if i+1 < len(q) && q[i+1] == closer && closer != ']' {
+						i += 2
+						continue
+					}
+					break
+				}
+				i++
+			}
+			b.WriteByte(' ')
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+func sqlWritesOutsideSession(q string) bool {
+	return sqlExternalWriteRe.MatchString(stripSQLLiterals(q))
 }
 
 func createSQLTempDB() (*sqlSession, error) {
@@ -597,6 +649,9 @@ func (a *App) SQLQuery(id, query string, limit int) (SQLResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return SQLResult{}, errors.New("SQL 不能为空")
+	}
+	if sqlWritesOutsideSession(query) {
+		return SQLResult{}, errors.New("SQL 视图只操作临时副本，不支持 ATTACH / DETACH / VACUUM")
 	}
 	if limit <= 0 {
 		limit = sqlQueryRowDefault

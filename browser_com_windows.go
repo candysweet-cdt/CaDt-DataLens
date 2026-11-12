@@ -9,6 +9,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"runtime"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -233,6 +234,8 @@ func wvCallExecScriptStart(wv *edge.ICoreWebView2, script string) (*browserCDPHa
 
 // waitPump 在宿主任务内泵消息并等待完成（WebView2 回调依赖宿主线程泵，同步语义走这里）。
 func (h *browserCDPHandler) waitPump(timeout time.Duration) (string, error) {
+	// handler 的地址已交给原生 COM 对象；等待期间必须让 GC 认为它还活着
+	defer runtime.KeepAlive(h)
 	deadline := time.Now().Add(timeout)
 	var msg browserMsg
 	for time.Now().Before(deadline) {
@@ -259,6 +262,7 @@ func (h *browserCDPHandler) waitPump(timeout time.Duration) (string, error) {
 
 // wait 在任意 goroutine 等待 CDP 完成（回调经宿主线程泵派发后填充 resultCh）。
 func (h *browserCDPHandler) wait(timeout time.Duration) (string, error) {
+	defer runtime.KeepAlive(h)
 	select {
 	case result := <-h.resultCh:
 		if result.errCode != 0 {
@@ -380,6 +384,8 @@ func wvCaptureScreenshot(wv *edge.ICoreWebView2, timeout time.Duration) (string,
 	hr, _, _ := syscall.SyscallN(wvProc(wv, wvSlotCapturePreview),
 		uintptr(unsafe.Pointer(wv)), 0 /* COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG */, stream,
 		uintptr(unsafe.Pointer(handler)))
+	// handler 地址已交给原生回调，函数返回前保持存活
+	defer runtime.KeepAlive(handler)
 	if hr != 0 {
 		streamRelease(stream)
 		return "", fmt.Errorf("CapturePreview 0x%08x", hr)

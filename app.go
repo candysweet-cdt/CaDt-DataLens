@@ -84,14 +84,15 @@ func (a *App) startup(ctx context.Context) {
 	applyTaskbarIcon()
 	ensureWindowShown(ctx)
 	cleanupSQLTempFiles()
-	// AI 定时任务调度器：主窗口与 AI 悬浮窗进程各自扫描，执行去重由前端裁决
-	a.startAISchedule()
+	cleanupReadingCacheOnStartup()
 	if a.IsDebugConsoleWindow() {
 		// 独立调试控制台窗口：小尺寸独立窗，不处理启动文件/目录
 		runtime.WindowSetTitle(ctx, "调试控制台 · CaDt-DataLens")
 		runtime.WindowSetSize(ctx, 780, 460)
 		return
 	}
+	// AI 定时任务调度器：主窗口与 AI 悬浮窗进程各自扫描，执行去重由前端裁决
+	a.startAISchedule()
 	if a.IsAIFloatWindow() {
 		runtime.WindowSetTitle(ctx, "AI 助手 · CaDt-DataLens")
 	}

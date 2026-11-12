@@ -595,7 +595,6 @@ export function createAIPanel(options) {
     const sessionSearchEl = document.getElementById('ai-session-search');
 
     const opt = {
-        profile: document.getElementById('ai-opt-profile'),
         modelList: document.getElementById('ai-model-list'),
         modelCreate: document.getElementById('ai-model-create'),
         modelEditorMask: document.getElementById('dlg-model-editor-mask'),
@@ -606,9 +605,6 @@ export function createAIPanel(options) {
         modelEditorSave: document.getElementById('ai-model-editor-save'),
         preset: document.getElementById('ai-opt-preset'),
         presetAdd: document.getElementById('ai-opt-preset-add'),
-        add: document.getElementById('ai-opt-add'),
-        dup: document.getElementById('ai-opt-dup'),
-        del: document.getElementById('ai-opt-del'),
         name: document.getElementById('ai-opt-name'),
         provider: document.getElementById('ai-opt-provider'),
         baseURL: document.getElementById('ai-opt-baseurl'),
@@ -1796,30 +1792,9 @@ export function createAIPanel(options) {
         }
     }
 
+    // 配置切换走「模型列表」卡片；旧的 <select id="ai-opt-profile"> 已从 HTML 移除
     function renderProfileSelect() {
         renderModelChip();
-        const active = activeProfile();
-        if (opt.profile) {
-            opt.profile.innerHTML = '';
-            if (!config.profiles.length) {
-                const option = document.createElement('option');
-                option.value = '';
-                option.textContent = '（未配置）';
-                opt.profile.appendChild(option);
-            } else {
-                for (const profile of config.profiles) {
-                    const option = document.createElement('option');
-                    option.value = profile.id;
-                    option.textContent = profile.name;
-                    optSelect(opt.profile, option);
-                }
-            }
-            opt.profile.value = active ? active.id : '';
-        }
-    }
-
-    function optSelect(select, option) {
-        select.appendChild(option);
     }
 
     function sessionActivity(session) {
@@ -10663,10 +10638,9 @@ export function createAIPanel(options) {
     }
 
     function settingsFormDisabled(disabled) {
-        for (const node of [opt.profile, opt.name, opt.provider, opt.baseURL, opt.apiKey, opt.model, opt.temp, opt.maxTokens, opt.reasoning, opt.thinking, opt.budget, opt.contextWindow, opt.proxy, opt.proxyURL, opt.headers, opt.test, opt.models, opt.dup, opt.del]) {
+        for (const node of [opt.name, opt.provider, opt.baseURL, opt.apiKey, opt.model, opt.temp, opt.maxTokens, opt.reasoning, opt.thinking, opt.budget, opt.contextWindow, opt.proxy, opt.proxyURL, opt.headers, opt.test, opt.models]) {
             if (node) node.disabled = !!disabled;
         }
-        if (opt.profile) opt.profile.disabled = false;
     }
 
     function refreshThinkingVisibility() {
@@ -10696,7 +10670,6 @@ export function createAIPanel(options) {
         const profile = activeProfile();
         renderProfileSelect();
         refreshThinkingVisibility();
-        if (opt.profile) opt.profile.value = profile ? profile.id : '';
         settingsFormDisabled(!profile);
         if (!profile) {
             if (opt.name) opt.name.value = '';
@@ -11217,68 +11190,8 @@ export function createAIPanel(options) {
         updateComposerState();
     }
 
-    function addProfile() {
-        const profile = defaultProfile();
-        profile.name = '配置 ' + (config.profiles.length + 1);
-        config.profiles.push(profile);
-        config.activeProfileId = profile.id;
-        saveAIConfig();
-        refreshSettingsPane();
-        renderProfileSelect();
-        updateComposerState();
-        if (isOpen()) renderMessages(true);
-        if (opt.name) {
-            opt.name.focus();
-            opt.name.select();
-        }
-    }
-
-    function duplicateProfile() {
-        const profile = activeProfile();
-        if (!profile) return;
-        const copy = JSON.parse(JSON.stringify(profile));
-        copy.id = aiNowId('profile-');
-        copy.name = profile.name + ' 副本';
-        config.profiles.push(copy);
-        config.activeProfileId = copy.id;
-        saveAIConfig();
-        refreshSettingsPane();
-        renderProfileSelect();
-        updateComposerState();
-        if (isOpen()) renderMessages(true);
-    }
-
-    function deleteProfile() {
-        const profile = activeProfile();
-        if (!profile) return;
-        askConfirm('删除配置「' + profile.name + '」？', () => {
-            config.profiles = config.profiles.filter((p) => p.id !== profile.id);
-            if (!config.profiles.some((p) => p.id === config.activeProfileId)) {
-                config.activeProfileId = config.profiles.length ? config.profiles[0].id : '';
-            }
-            saveAIConfig();
-            refreshSettingsPane();
-            renderProfileSelect();
-            updateComposerState();
-            renderMessages(true);
-        }, '删除', '删除配置');
-    }
-
     function bindSettingsPane() {
         if (!opt.name && !opt.modelList) return;
-        if (opt.profile) opt.profile.addEventListener('change', () => {
-            if (!opt.profile.value || !config.profiles.some((p) => p.id === opt.profile.value)) return;
-            config.activeProfileId = opt.profile.value;
-            saveAIConfig();
-            refreshSettingsPane();
-            renderProfileSelect();
-            updateComposerState();
-            if (isOpen()) renderMessages(true);
-            setSettingsStatus('已切换配置', 'ok');
-        });
-        if (opt.add) opt.add.addEventListener('click', addProfile);
-        if (opt.dup) opt.dup.addEventListener('click', duplicateProfile);
-        if (opt.del) opt.del.addEventListener('click', deleteProfile);
         if (opt.name) opt.name.addEventListener('change', () => {
             const profile = activeProfile();
             if (!profile) return;

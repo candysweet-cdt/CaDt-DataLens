@@ -1,34 +1,34 @@
 @font-face {
     font-family: "Inter";
-    src: url("/fonts/Inter-Regular.otf") format("opentype");
+    src: url("/fonts/Inter-Regular.woff2") format("woff2");
     font-weight: 400;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
     font-family: "Inter";
-    src: url("/fonts/Inter-SemiBold.otf") format("opentype");
+    src: url("/fonts/Inter-SemiBold.woff2") format("woff2");
     font-weight: 600;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
     font-family: "JetBrains Mono";
-    src: url("/fonts/JetBrainsMono-Regular.ttf") format("truetype");
+    src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
     font-weight: 400;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
     font-family: "JetBrains Mono";
-    src: url("/fonts/JetBrainsMono-Bold.ttf") format("truetype");
+    src: url("/fonts/JetBrainsMono-Bold.woff2") format("woff2");
     font-weight: 700;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
     font-family: "Fira Code";
-    src: url("/fonts/FiraCode-Regular.ttf") format("truetype");
+    src: url("/fonts/FiraCode-Regular.woff2") format("woff2");
     font-weight: 400;
     font-style: normal;
     font-display: swap;
@@ -4193,6 +4193,8 @@ a.jsoneditor-poweredBy { display: none !important; }
 .settings-content option { background: var(--bg); color: var(--text); }
 .settings-pane .popover-row select { width: 200px; flex: none; }
 .plugin-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+.plugin-trust-hint { display: flex; align-items: flex-start; gap: 6px; }
+.plugin-trust-icon { display: inline-flex; flex: none; margin-top: 1px; color: var(--warn, #d9a441); }
 .plugin-list { display: flex; flex-direction: column; gap: 8px; }
 .plugin-item {
     display: flex;
@@ -7305,3 +7307,76 @@ body.ai-float-window .ai-resize { display: none !important; }
 .sql-result-table tr:hover td { background: var(--hover); }
 .sql-null { color: var(--muted); font-style: italic; }
 .sql-empty { padding: 18px 12px; color: var(--muted); font-size: 12px; }
+
+/* ===== 写作模式（html[data-writing]，由 main.js applyWritingMode 切换） ===== */
+/* 中文排版：行高与缩进；字号走 --editor-font 变量（Ace 内联样式优先级更高，由 JS 设置） */
+html[data-writing="on"] .jsoneditor .ace_editor,
+html[data-writing="on"] .jsoneditor textarea.jsoneditor-text {
+    line-height: 1.9;
+}
+/* 纸色滤镜：只作用于编辑区（.ace_editor 含行号栏），不碰 md 预览与菜单栏；主题无关 */
+html[data-writing="on"][data-writing-paper="sepia"] .jsoneditor .ace_editor,
+html[data-writing="on"][data-writing-paper="sepia"] .jsoneditor textarea.jsoneditor-text {
+    filter: sepia(0.22) saturate(0.92);
+}
+html[data-writing="on"][data-writing-paper="dim"] .jsoneditor .ace_editor,
+html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsoneditor-text {
+    filter: brightness(0.88);
+}
+/* 段落聚焦遮罩：两个全行 inFront marker，用主题底色半透明盖住非当前段落 */
+.ace_layer.ace_marker-layer .writing-dim {
+    background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+/* 状态栏写作统计（复用 st-zoom 外观，仅写作模式生效时显示） */
+#st-writing { color: var(--accent); }
+/* 通用设置的每日目标输入 */
+.opt-goal-input {
+    width: 96px;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+}
+/* 码字统计对话框 */
+.dialog-writing { width: 340px; }
+.writing-stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 18px;
+    padding: 6px 2px 2px;
+}
+.writing-stat .ws-num {
+    display: block;
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+.writing-stat .ws-label { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.writing-goalbar {
+    height: 6px;
+    margin: 12px 2px 4px;
+    overflow: hidden;
+    border-radius: 3px;
+    background: var(--panel2);
+}
+.writing-goalbar > div {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+    transition: width 0.2s;
+}
+.writing-goal-row { margin-top: 8px; }
+.writing-goal-input { width: 110px; flex: none; }
+/* 起名器对话框 */
+.dialog-writing-name { width: 300px; }
+.writing-name-text {
+    padding: 20px 0 14px;
+    font-size: 34px;
+    letter-spacing: 2px;
+    text-align: center;
+    color: var(--text);
+    font-family: var(--editor-font-family);
+}
+.writing-name-actions { flex-wrap: wrap; }

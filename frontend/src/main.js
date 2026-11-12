@@ -1,9 +1,8 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
-import MarkdownIt from 'markdown-it';
+import './reading.css';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
-import markdownItKatex from '@vscode/markdown-it-katex';
 import {aceModeFor, detectFormat, formats, isSupportedFile, pluginFormats} from './formats.js';
 import {createExplorer} from './explorer.js';
 import {createStructurePanel, parseStructure} from './structure.js';
@@ -12,12 +11,15 @@ import {createDebugConsole} from './debugconsole.js';
 import {iconSvg, renderMenuIcon} from './icons.js';
 import {createPalette} from './palette.js';
 import {createAIPanel} from './ai-panel.js';
+import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './jsonrepair.js';
 import {createFileIcon, fileIconSpec} from './fileicons.js';
 import {buildJsonLineMap, queryJsonPath} from './jsonpath.js';
 import {semanticDiff, semanticEntryText, unifiedDiff} from './diff.js';
 import {validateJsonSchema} from './jsonschema.js';
 import {getPluginCommands, initPluginRuntime, loadPlugins} from './plugins.js';
+import {createMarkdownRenderer} from './markdown.js';
+import {WRITING_FONTS, WRITING_PAPERS, formatWritingText, genName, SCENE_SEPARATOR} from './writing.js';
 import changelogText from '../../CHANGELOG.md?raw';
 import termsText from '../../docs/legal/terms.md?raw';
 import privacyText from '../../docs/legal/privacy.md?raw';
@@ -72,6 +74,18 @@ const sampleText = `# 时空纪元 开发笔记
 
 - 电缆：每格每日 4 件
 - 机器：2.10+ 运行时配方
+`;
+
+// 写作模式主场景是纯文本（默认落在 text 视图），mock 里单独给一个 .txt
+const sampleNovelTxt = `第一章 山雨欲来
+
+少年推开柴门，山风扑面而来。
+
+他望着远处的群山，忽然想起师父说过的话。
+
+第二章 夜行
+
+月色如水，照在青石板上。
 `;
 
 const sampleToml = `title = "时空纪元"
@@ -279,6 +293,7 @@ const mockFiles = {
     svg: {name: 'diagram.svg', content: '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" rx="10" fill="#4f8cff"/><circle cx="52" cy="60" r="26" fill="#ffb648"/><text x="96" y="68" fill="#fff" font-family="sans-serif" font-size="20">SVG OK</text></svg>'},
     csv: {name: 'sample.csv', content: sampleCsv},
     text: {name: 'notes.md', content: sampleText},
+    txt: {name: 'novel.txt', content: sampleNovelTxt},
     json: {name: 'sample.json', content: sampleJson},
     jsonl: {name: 'sample.jsonl', content: sampleJsonl},
     toml: {name: 'sample.toml', content: sampleToml},
@@ -486,7 +501,7 @@ const mockBackend = {
         if (mockScenario.has('large')) return [mockDir + 'large.json'];
         if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
         if (mockScenario.has('bigcsv')) return [mockDir + 'big.csv'];
-        for (const key of ['yaml', 'xml', 'svg', 'brokensvg', 'csv', 'text', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak', 'py', 'md', 'html', 'js', 'go', 'machine']) {
+        for (const key of ['yaml', 'xml', 'svg', 'brokensvg', 'csv', 'text', 'txt', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak', 'py', 'md', 'html', 'js', 'go', 'machine']) {
             if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
         }
         return [mockDir + 'sample.json'];
@@ -553,6 +568,96 @@ const mockBackend = {
             size: content.length, eol: 'lf', hasBom: false, large, enc: fileEnc,
         };
     },
+    // ---- 阅读模式（浏览器 mock：内存里造一本书，字段名与 Go 的 json tag 一致） ----
+    async ScanReadingRoot(root) {
+        const base = String(root || 'mock://books').replace(/[\\/]+$/, '');
+        const file = (name, words, title) => ({
+            rel: name, name, ext: name.split('.').pop().toLowerCase(), size: words * 3,
+            modTime: 0, encoding: 'utf-8', words,
+            headings: title ? [{offset: 1, level: 1, title, words}] : [],
+        });
+        return {
+            root: base, title: '演示书籍', author: '甜澄', intro: '', profile: 'file',
+            confidence: 1, warnings: [], scanMs: 1,
+            files: [
+                file('01-山雨欲来.txt', 800, '第一章 山雨欲来'),
+                file('02-夜行.txt', 600, '第二章 夜行'),
+                file('03-番外篇.txt', 300, '番外篇 旧梦'),
+            ],
+        };
+    },
+    async PrepareReadingEpub(path) {
+        return {
+            id: 'mock-epub', path, title: '演示 EPUB', author: '甜澄',
+            cacheDir: '', token: '', modTime: 0,
+            chapters: [
+                {index: 0, href: 'ch1.xhtml', title: '第一章 山雨欲来', words: 800},
+                {index: 1, href: 'ch2.xhtml', title: '第二章 夜行', words: 600},
+            ],
+        };
+    },
+    async ReadReadingEpubChapter(id, index) {
+        return {index: Number(index) || 0, title: '演示章节', html: '<p>这是 EPUB 演示章节的正文。</p>', words: 12};
+    },
+    async ParseReadingDocx() {
+        return {
+            title: '演示 DOCX',
+            author: '甜澄',
+            blocks: [
+                {kind: 'heading', level: 1, text: '第一章 山雨欲来'},
+                {kind: 'p', text: '少年推开柴门，山风扑面而来。'},
+                {kind: 'heading', level: 1, text: '第二章 夜行'},
+                {kind: 'p', text: '月色如水，照在青石板上。'},
+            ],
+        };
+    },
+    async SearchReadingBook(requestID, root, query) {
+        const q = String(query || '');
+        const hits = q ? [
+            {rel: '01-山雨欲来.txt', offset: 3, before: '少年推开', match: q, after: '，山风扑面而来。', unitOffset: 1, unitTitle: '第一章 山雨欲来'},
+            {rel: '02-夜行.txt', offset: 3, before: '月色如水，照在', match: q, after: '上。', unitOffset: 1, unitTitle: '第二章 夜行'},
+        ] : [];
+        return {hits, filesScanned: 3, filesTotal: 3, truncated: false, elapsedMs: 1};
+    },
+    async CancelReadingSearch() { return null; },
+    async SuggestReadingBooks() {
+        return [{root: 'mock://books/demo', name: '演示书籍', bookFiles: 3, namedFiles: 3, bytes: 5100, estWords: 1700, score: 1}];
+    },
+    // ---- 其余后端能力：给中性返回，避免浏览器 dev 下调用到 undefined ----
+    async SQLImport(path, kind, enc, text) {
+        return {id: 'mock-sql', kind, rows: 2, columns: ['id', 'name'], bytes: String(text || '').length, elapsedMs: 1, truncated: false};
+    },
+    async SQLQuery() {
+        return {
+            columns: ['id', 'name'],
+            rows: [['1', 'alpha'], ['2', 'beta']],
+            nulls: [[false, false], [false, false]],
+            truncated: false, elapsedMs: 1, message: '',
+        };
+    },
+    async SQLClose() { return null; },
+    async TermShells() { return [{id: 'bash', name: 'Git Bash'}]; },
+    async DetectToolchain() { return {envs: []}; },
+    async ListLangPackages() { return {packages: [], exists: true}; },
+    async GitLineMarksFor() { return []; },
+    async GetSystemCursors() { return {}; },
+    async RegisterPreviewRoot() { return null; },
+    async ExportStructureText() { return null; },
+    async DebugConsoleRead(offset) {
+        const all = window.__mockDebugEntries || [];
+        return all.slice(Number(offset) || 0);
+    },
+    async WatchWorkspace() { return null; },
+    async UnwatchWorkspace() { return null; },
+    async GetConvertRequest() { return null; },
+    async FinishConvert() { return null; },
+    async IsAIFloatWindow() { return false; },
+    async IsDebugConsoleWindow() { return false; },
+    async OpenDebugConsoleWindow() { return null; },
+    async AITouchStream() { return null; },
+    async AISessionSearch() { return []; },
+    async AISessionIndexStats() { return {exists: true, sessions: 0, messages: 0, dirty: 0, bytes: 0, trigram: false}; },
+    async AISessionReindex() { return 0; },
     async GetPathInfo(path) {
         const base = String(path || '').split('/').pop();
         const isDir = !!mockTree[String(path || '').replace(/\/+$/, '')];
@@ -2350,11 +2455,13 @@ const els = {
     stMdWidth: document.getElementById('st-md-width'),
     stAiWidth: document.getElementById('st-ai-width'),
     stUpdate: document.getElementById('st-update'),
+    stWriting: document.getElementById('st-writing'),
     stPos: document.getElementById('st-pos'),
     stEol: document.getElementById('st-eol'),
     stEnc: document.getElementById('st-enc'),
     stMessage: document.getElementById('st-message'),
     stDirty: document.getElementById('st-dirty'),
+    stCount: document.getElementById('st-count'),
     breadcrumb: document.getElementById('breadcrumb'),
     findBar: document.getElementById('find-bar'),
     findInput: document.getElementById('find-input'),
@@ -3001,6 +3108,7 @@ window.__lens = {
 let dirty = false;
 let currentMode = 'tree';
 let flashTimer = 0;
+let readingMode = null;
 
 const settingsKey = 'datalens-settings';
 const themes = [
@@ -3128,7 +3236,30 @@ const defaultSettings = {
     aiInjectSkills: true,
     aiInjectPreferences: true,
     aiInjectEnvVars: true,
+    writingMode: false,
+    writingFont: 'kaiti',
+    writingFontSize: 16,
+    writingPaper: 'off',
+    writingLineNumbers: false,
+    writingTypewriter: true,
+    writingFocus: true,
+    writingDailyGoal: 0,
     formatSettings: defaultFormatSettings(),
+    // 阅读模式（docs/reading-mode.md §14.1）
+    readingFont: 'songti',
+    readingFontSize: 19,
+    readingLineHeight: 1.9,
+    readingPageWidth: 42,
+    readingParagraphGap: 0.6,
+    readingIndent: false,
+    readingTheme: 'auto',
+    readingJoinSoftLines: true,
+    readingContinuous: false,
+    readingPaged: false,
+    readingTocDepth: 2,
+    readingRestoreSession: true,
+    readingTtsRate: 1,
+    readingTtsAutoNext: true,
 };
 let settings = JSON.parse(JSON.stringify(defaultSettings));
 try {
@@ -3165,6 +3296,14 @@ settings.sidebarWidth = Math.min(500, Math.max(160, Number(settings.sidebarWidth
 settings.codeWrap = !!settings.codeWrap;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
 settings.mdScrollSync = settings.mdScrollSync !== false;
+settings.writingMode = !!settings.writingMode;
+if (!WRITING_FONTS.some((f) => f.id === settings.writingFont)) settings.writingFont = 'kaiti';
+settings.writingFontSize = Math.min(22, Math.max(12, Number(settings.writingFontSize) || 16));
+if (!WRITING_PAPERS.some((p) => p.id === settings.writingPaper)) settings.writingPaper = 'off';
+settings.writingLineNumbers = !!settings.writingLineNumbers;
+settings.writingTypewriter = settings.writingTypewriter !== false;
+settings.writingFocus = settings.writingFocus !== false;
+settings.writingDailyGoal = Math.max(0, Number(settings.writingDailyGoal) || 0);
 if (!['0', '720', '860', '920', '1100', '1300'].includes(String(settings.mdPreviewWidth))) settings.mdPreviewWidth = '0';
 if (!['auto', '0', '720', '860', '920', '1100', '1300'].includes(String(settings.aiFullscreenWidth))) settings.aiFullscreenWidth = 'auto';
 if (settings.aiWidthAutoDefaultMigrated !== true) {
@@ -3209,6 +3348,21 @@ for (const key of ['aiInjectRoot', 'aiInjectActiveFile', 'aiInjectCaret', 'aiInj
     'aiInjectAgentsMd', 'aiInjectMemory', 'aiInjectSkills', 'aiInjectPreferences', 'aiInjectEnvVars']) {
     settings[key] = settings[key] !== false;
 }
+// 阅读模式设置归一化（§14.1）
+if (!['songti', 'kaiti', 'yahei', 'dengxian', 'system'].includes(settings.readingFont)) settings.readingFont = 'songti';
+settings.readingFontSize = Math.min(28, Math.max(16, Number(settings.readingFontSize) || 19));
+settings.readingLineHeight = Math.min(2.2, Math.max(1.6, Number(settings.readingLineHeight) || 1.9));
+settings.readingPageWidth = Math.min(56, Math.max(32, Number(settings.readingPageWidth) || 42));
+settings.readingParagraphGap = Math.min(1.2, Math.max(0, Number(settings.readingParagraphGap) || 0.6));
+settings.readingIndent = !!settings.readingIndent;
+if (!['auto', 'paper', 'sepia', 'light', 'dark'].includes(settings.readingTheme)) settings.readingTheme = 'auto';
+settings.readingJoinSoftLines = settings.readingJoinSoftLines !== false;
+settings.readingContinuous = !!settings.readingContinuous;
+settings.readingPaged = !!settings.readingPaged;
+settings.readingTocDepth = Math.min(4, Math.max(1, Number(settings.readingTocDepth) || 2));
+settings.readingRestoreSession = settings.readingRestoreSession !== false;
+settings.readingTtsRate = Math.min(2, Math.max(0.5, Number(settings.readingTtsRate) || 1));
+settings.readingTtsAutoNext = settings.readingTtsAutoNext !== false;
 if (!settings.csvTableMigrated) {
     settings.formatSettings.csv.view = 'table';
     settings.csvTableMigrated = true;
@@ -3255,6 +3409,15 @@ const elsSettings = {
     uiCjkFont: document.getElementById('opt-ui-cjk-font'),
     editorFontFamily: document.getElementById('opt-editor-font'),
     editorCjkFont: document.getElementById('opt-editor-cjk-font'),
+    writingMode: document.getElementById('opt-writing-mode'),
+    writingFont: document.getElementById('opt-writing-font'),
+    writingFontSize: document.getElementById('opt-writing-size'),
+    writingFontSizeVal: document.getElementById('opt-writing-size-val'),
+    writingPaper: document.getElementById('opt-writing-paper'),
+    writingLineNumbers: document.getElementById('opt-writing-line-numbers'),
+    writingTypewriter: document.getElementById('opt-writing-typewriter'),
+    writingFocus: document.getElementById('opt-writing-focus'),
+    writingDailyGoal: document.getElementById('opt-writing-goal'),
     aiChatFontEn: document.getElementById('ai-opt-chatfont-en'),
     aiChatFontCjk: document.getElementById('ai-opt-chatfont-cjk'),
     aiChatCodeFont: document.getElementById('ai-opt-chatfont-code'),
@@ -3318,6 +3481,17 @@ const elsDialogs = {
     updateNotes: document.getElementById('dlg-update-notes'),
     updateDownload: document.getElementById('btn-update-download'),
     updatePage: document.getElementById('btn-update-page'),
+    writing: document.getElementById('dlg-writing'),
+    writingToday: document.getElementById('dlg-writing-today'),
+    writingSession: document.getElementById('dlg-writing-session'),
+    writingSpeed: document.getElementById('dlg-writing-speed'),
+    writingTotal: document.getElementById('dlg-writing-total'),
+    writingGoalBar: document.getElementById('dlg-writing-goalbar'),
+    writingGoalFill: document.getElementById('dlg-writing-goalfill'),
+    writingGoalInput: document.getElementById('dlg-writing-goal-input'),
+    writingName: document.getElementById('dlg-writing-name'),
+    writingNameText: document.getElementById('dlg-writing-name-text'),
+    writingNameGender: document.getElementById('opt-writing-name-gender'),
 };
 
 let syncedOpenMode = null;
@@ -3587,6 +3761,15 @@ function applySettings() {
     elsSettings.uiCjkFont.value = uiCjk.id;
     elsSettings.editorFontFamily.value = editorFace.id;
     elsSettings.editorCjkFont.value = editorCjk.id;
+    elsSettings.writingMode.checked = !!settings.writingMode;
+    elsSettings.writingFont.value = settings.writingFont;
+    elsSettings.writingFontSize.value = String(settings.writingFontSize);
+    elsSettings.writingFontSizeVal.textContent = String(settings.writingFontSize);
+    elsSettings.writingPaper.value = settings.writingPaper;
+    elsSettings.writingLineNumbers.checked = !!settings.writingLineNumbers;
+    elsSettings.writingTypewriter.checked = settings.writingTypewriter !== false;
+    elsSettings.writingFocus.checked = settings.writingFocus !== false;
+    elsSettings.writingDailyGoal.value = String(settings.writingDailyGoal || 0);
     if (editor && editor.aceEditor) {
         try {
             editor.aceEditor.setFontSize(settings.editorFont);
@@ -3596,8 +3779,12 @@ function applySettings() {
     applyCodeGuides();
     applyAlwaysOnTop();
     applyReadOnlyMode();
+    applyWritingMode();
     if (aiPanel && aiPanel.applySettings) {
         try { aiPanel.applySettings(); } catch (e) {}
+    }
+    if (readingMode) {
+        try { readingMode.applyReadingSettings(); } catch (e) {}
     }
     try {
         localStorage.setItem(settingsKey, JSON.stringify(settings));
@@ -3612,7 +3799,7 @@ function openDialogEl(dlg, options) {
         !elsDialogs.settings.classList.contains('hidden');
     elsDialogs.mask.classList.remove('hidden');
     if (!keepSettings) elsDialogs.settings.classList.add('hidden');
-    for (const other of [elsDialogs.confirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update]) {
+    for (const other of [elsDialogs.confirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
         if (other !== dlg) other.classList.add('hidden');
     }
     dlg.dataset.parentSettings = keepSettings ? '1' : '';
@@ -3625,7 +3812,7 @@ function openDialogEl(dlg, options) {
 
 function closeTopDialog() {
     if (!elsDialogs.settings.classList.contains('hidden')) {
-        for (const dlg of [elsDialogs.confirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update]) {
+            for (const dlg of [elsDialogs.confirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
             if (dlg.classList.contains('hidden') || dlg.dataset.parentSettings !== '1') continue;
             dlg.classList.add('hidden');
             if (dlg === elsDialogs.confirm) confirmAction = null;
@@ -3651,6 +3838,8 @@ function closeDialogs() {
     elsDialogs.goto.classList.add('hidden');
     elsDialogs.props.classList.add('hidden');
     elsDialogs.update.classList.add('hidden');
+    elsDialogs.writing.classList.add('hidden');
+    elsDialogs.writingName.classList.add('hidden');
     confirmAction = null;
     syncAllBrowserTabs();
     nameSubmit = null;
@@ -3681,7 +3870,7 @@ function selectSettingsPane(pane) {
     }
     const aiGroup = document.getElementById('snav-ai');
     if (aiGroup) {
-        const inAI = pane === 'models' || pane === 'ai' || pane === 'context' || pane === 'preferences';
+        const inAI = pane === 'models' || pane === 'ai' || pane === 'context' || pane === 'preferences' || pane === 'schedules';
         if (inAI && !aiGroup.classList.contains('expanded')) {
             aiGroup.classList.add('expanded');
             const parent = aiGroup.querySelector('.snav-parent');
@@ -3964,12 +4153,18 @@ function cursorPositionForDoc() {
 }
 
 // countWords 字数统计：CJK 字符逐个计 + 拉丁单词计 1（IDEA 风格)
+// 对最近一次输入做备忘：updateWordCount 与写作统计同 tick 各调一次，大文本免二次正则
+let countWordsCacheText = null;
+let countWordsCacheTotal = 0;
 function countWords(text) {
     const s = String(text || '');
     if (!s) return 0;
+    if (s === countWordsCacheText) return countWordsCacheTotal;
     const cjk = (s.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
     const latin = (s.match(/[A-Za-z0-9]+(?:[''-][A-Za-z0-9]+)*/g) || []).length;
-    return cjk + latin;
+    countWordsCacheText = s;
+    countWordsCacheTotal = cjk + latin;
+    return countWordsCacheTotal;
 }
 
 let wordCountTimer = 0;
@@ -3979,7 +4174,6 @@ function updateWordCount() {
     const show = !!(file && file.editor && !file.binary && !file.large);
     els.stCount.style.display = show ? '' : 'none';
     if (!show) return;
-    const total = countWords(file.editor.getText());
     let sel = 0;
     const ace = file.editor.aceEditor;
     if (ace && !ace.selection.isEmpty()) {
@@ -3987,13 +4181,423 @@ function updateWordCount() {
     } else if (currentMode === 'preview') {
         sel = countWords(String(window.getSelection ? window.getSelection().toString() : ''));
     }
+    const total = countWords(file.editor.getText());
     els.stCount.textContent = sel > 0 ? ('选中 ' + sel + ' · 全文 ' + total + ' 字') : ('全文 ' + total + ' 字');
     els.stCount.title = '字数统计（CJK 字符数 + 英文单词数）';
 }
 
 function scheduleWordCount() {
     clearTimeout(wordCountTimer);
-    wordCountTimer = setTimeout(updateWordCount, 150);
+    wordCountTimer = setTimeout(() => {
+        updateWordCount();
+        updateWritingStats();
+    }, 150);
+}
+
+// ===== 写作模式 =====
+
+let writingLastSig = '';
+let writingPrevFamily = '';
+let writingSwitchWasOn = !!settings.writingMode; // 跟踪总开关本身；视图/文档临时切换不重置「本次」基线
+let writingCaretRaf = 0;
+let writingCaretTimer = 0;
+
+// 生效条件：总开关开启 + 当前文档为 text/markdown + 处于源码/分屏视图（不满足时样式行为自动退避）
+function writingActive() {
+    return !!settings.writingMode && !!file && !file.binary && !file.large
+        && !!file.format && (file.format.id === 'text' || file.format.id === 'markdown')
+        && (currentMode === 'code' || currentMode === 'text' || currentMode === 'split');
+}
+
+function editorFontFamilyVar() {
+    const editorFace = editorFonts.find((f) => f.id === settings.editorFontFamily) || editorFonts[0];
+    const editorCjk = cjkFonts.find((f) => f.id === settings.editorCjkFont) || cjkFonts[0];
+    return editorFace.family + ', ' + editorCjk.family + ', monospace';
+}
+
+// applyWritingMode：data-writing 属性 + 字体/字号 CSS 变量 + 逐 doc 的 Ace 字号/行号/边距
+// 由 applySettings 尾部与 updateStatus（模式/文档切换）调用；签名未变时跳过
+function applyWritingMode() {
+    // 总开关切换才重置基线（本次/今日从开启时刻起算）；必须放在签名早返回之前，
+    // 否则在非生效文档/视图上关→开时 sig 不变，重置被跳过，切回正文仍累计上一轮。
+    if (!!settings.writingMode !== writingSwitchWasOn) {
+        writingSwitchWasOn = !!settings.writingMode;
+        for (const d of docs) {
+            delete d._writingBase;
+            delete d._writingLast;
+        }
+    }
+    const on = writingActive();
+    const paper = on ? (settings.writingPaper || 'off') : 'off';
+    const face = on ? (WRITING_FONTS.find((f) => f.id === settings.writingFont) || WRITING_FONTS[0]) : null;
+    const size = on ? settings.writingFontSize : settings.editorFont;
+    const showLines = on ? !!settings.writingLineNumbers : true;
+    const sig = [on ? '1' : '0', paper, face ? face.id : 'follow', size, showLines ? '1' : '0',
+        settings.writingFocus ? '1' : '0', settings.writingTypewriter ? '1' : '0',
+        file ? (file.path || file.name) : '', currentMode].join('|');
+    if (sig === writingLastSig) return;
+    writingLastSig = sig;
+
+    const root = document.documentElement;
+    if (on) {
+        root.dataset.writing = 'on';
+        if (paper !== 'off') root.dataset.writingPaper = paper;
+        else delete root.dataset.writingPaper;
+    } else {
+        root.dataset.writing = 'off';
+        delete root.dataset.writingPaper;
+    }
+    // 字体族：只替换 CJK 部分，拉丁保持编辑器主字体；follow = 不改族
+    const family = on && face && face.family
+        ? (editorFonts.find((f) => f.id === settings.editorFontFamily) || editorFonts[0]).family + ', ' + face.family + ', monospace'
+        : editorFontFamilyVar();
+    document.documentElement.style.setProperty('--editor-font', size + 'px');
+    document.documentElement.style.setProperty('--editor-font-family', family);
+    if (!on || !settings.writingFocus) {
+        for (const d of docs) clearWritingMarkers(d);
+    }
+
+    // 逐 doc 应用 Ace：字号、行号；族/字号变化后必须 resize 重排版，否则光标错位
+    const familyChanged = family !== writingPrevFamily;
+    writingPrevFamily = family;
+    let sizeChanged = false;
+    for (const d of docs) {
+        const ace = d.editor && d.editor.aceEditor;
+        if (!ace) continue;
+        try {
+            if (ace.getFontSize() !== size) {
+                ace.setFontSize(size);
+                sizeChanged = true;
+            }
+            ace.setOption('showLineNumbers', showLines);
+        } catch (e) {}
+    }
+    if (familyChanged || sizeChanged) {
+        for (const d of docs) {
+            const ace = d.editor && d.editor.aceEditor;
+            if (ace) {
+                try {
+                    ace.renderer.setPadding(on ? 40 : 0);
+                    ace.resize();
+                } catch (e) {}
+            }
+        }
+    } else {
+        for (const d of docs) {
+            const ace = d.editor && d.editor.aceEditor;
+            if (ace) {
+                try { ace.renderer.setPadding(on ? 40 : 0); } catch (e) {}
+            }
+        }
+    }
+    if (on) {
+        // 开关/视图切换后立即建立统计基线并显示状态栏，不等第一次输入
+        updateWritingStats();
+        scheduleWritingCaret();
+    } else if (els.stWriting) els.stWriting.style.display = 'none';
+}
+
+// ---- 专注模式：打字机滚动 + 段落聚焦 ----
+
+// 仅 Ace（code/split 左栏）；text 视图为 textarea，v1 不做打字机/聚焦
+function scheduleWritingCaret(aceArg) {
+    const doc = file;
+    if (!doc || !doc.editor || !writingActive()) return;
+    const ace = doc.editor.aceEditor;
+    if (!ace) return;
+    if (aceArg && aceArg !== ace) return; // 背景文档的事件不作用到当前编辑器
+    if (currentMode === 'text' && !doc.splitActive) return;
+    if (settings.writingTypewriter) {
+        if (writingCaretRaf) cancelAnimationFrame(writingCaretRaf);
+        writingCaretRaf = requestAnimationFrame(() => {
+            writingCaretRaf = 0;
+            writingTypewriterScroll(ace);
+        });
+    }
+    clearTimeout(writingCaretTimer);
+    writingCaretTimer = setTimeout(() => writingFocusParagraph(ace), 150);
+}
+
+function writingTypewriterScroll(ace) {
+    if (!settings.writingTypewriter || !writingActive()) return;
+    try {
+        const session = ace.session;
+        const pos = ace.getCursorPosition();
+        const screenRow = session.documentToScreenRow(pos.row, pos.column);
+        const lineHeight = Number(ace.renderer.lineHeight) || (() => {
+            const el = ace.container.querySelector('.ace_line');
+            return el ? parseFloat(getComputedStyle(el).lineHeight) || 20 : 20;
+        })();
+        const pad = Number(ace.renderer.$padding) || 0;
+        const scroller = ace.renderer.scroller;
+        const target = pad + screenRow * lineHeight + lineHeight / 2 - (scroller ? scroller.clientHeight : 0) / 2;
+        if (Math.abs(session.getScrollTop() - target) > 2) session.setScrollTop(Math.max(0, target));
+    } catch (e) {}
+}
+
+function writingRangeClass(editor) {
+    // vendored Ace 暴露在 window.ace；编辑器实例本身没有 Range/require
+    if (editor.Range) return editor.Range;
+    const g = window.ace;
+    if (g && g.require) {
+        try { return g.require('ace/range').Range; } catch (e) {}
+    }
+    try { return editor.require && editor.require('ace/range').Range || null; } catch (e) { return null; }
+}
+
+function clearWritingMarkers(doc) {
+    const marks = doc && doc._writingMarkers;
+    if (!marks) return;
+    doc._writingMarkers = null;
+    const ace = doc.editor && doc.editor.aceEditor;
+    if (!ace) return;
+    try {
+        if (marks.top) ace.session.removeMarker(marks.top);
+        if (marks.bottom) ace.session.removeMarker(marks.bottom);
+    } catch (e) {}
+}
+
+// 段落聚焦：当前段落外上下两个全行遮罩 marker（inFront，用主题底色半透明盖住实现淡出）
+function writingFocusParagraph(ace) {
+    const doc = file;
+    if (!doc || !doc.editor || doc.editor.aceEditor !== ace) return;
+    if (!writingActive() || !settings.writingFocus) {
+        clearWritingMarkers(doc);
+        return;
+    }
+    try {
+        const session = ace.session;
+        const total = session.getLength();
+        const row = ace.getCursorPosition().row;
+        const emptyLine = (r) => !String(session.getLine(r) || '').trim();
+        let paraStart = row;
+        while (paraStart > 0 && !emptyLine(paraStart - 1)) paraStart--;
+        let paraEnd = row;
+        while (paraEnd < total - 1 && !emptyLine(paraEnd + 1)) paraEnd++;
+        const marks = doc._writingMarkers;
+        if (marks && marks.session === session && marks.paraStart === paraStart && marks.paraEnd === paraEnd) return;
+        clearWritingMarkers(doc);
+        const Range = writingRangeClass(ace);
+        if (!Range) return;
+        const top = paraStart > 0
+            ? session.addMarker(new Range(0, 0, paraStart - 1, 0), 'writing-dim', 'fullLine', true) : 0;
+        const bottom = paraEnd < total - 1
+            ? session.addMarker(new Range(paraEnd + 1, 0, total - 1, 0), 'writing-dim', 'fullLine', true) : 0;
+        doc._writingMarkers = {top, bottom, paraStart, paraEnd, session};
+    } catch (e) {}
+}
+
+// ---- 码字统计 ----
+
+const WRITING_DAILY_KEY = 'datalens-writing-daily';
+let writingSpeedSamples = []; // {t, chars} 正增量采样
+
+function writingTodayStr() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function loadWritingDaily() {
+    let store = null;
+    try {
+        store = JSON.parse(localStorage.getItem(WRITING_DAILY_KEY) || 'null');
+    } catch (e) {}
+    const today = writingTodayStr();
+    if (!store || store.date !== today || typeof store.count !== 'number') {
+        store = {date: today, count: 0, goalHit: false};
+    }
+    return store;
+}
+
+function saveWritingDaily(store) {
+    try {
+        localStorage.setItem(WRITING_DAILY_KEY, JSON.stringify(store));
+    } catch (e) {}
+}
+
+// 挂在字数防抖管线与 updateStatus 上；写作模式生效时累计今日/本次增量
+function updateWritingStats() {
+    const doc = file;
+    const active = writingActive();
+    if (!doc || !doc.editor || doc.binary || doc.large) {
+        updateWritingStatusBar(0, false);
+        return;
+    }
+    // doc.text 由 markDocDirty 随每次编辑维护，避免再拉一次全文；缺失时兜底 getText
+    const total = countWords(doc.text != null ? doc.text : doc.editor.getText());
+    if (!active) {
+        // 仅清观察基线；_writingBase 保留，切回写作视图时「本次」继续累计
+        if (doc._writingLast != null) delete doc._writingLast;
+        updateWritingStatusBar(total, false);
+        return;
+    }
+    // 首次观察：只记基线不计增量；其后 delta = 当前全文 − 上次观察
+    if (typeof doc._writingLast !== 'number') {
+        doc._writingLast = total;
+        if (typeof doc._writingBase !== 'number') doc._writingBase = total;
+    } else {
+        const delta = total - doc._writingLast;
+        doc._writingLast = total;
+        if (delta !== 0) {
+            const store = loadWritingDaily();
+            store.count = Math.max(0, store.count + delta);
+            const goal = Number(settings.writingDailyGoal) || 0;
+            if (goal > 0 && !store.goalHit && store.count >= goal) {
+                store.goalHit = true;
+                flash('今日目标达成 🎉');
+            }
+            saveWritingDaily(store);
+            if (delta > 0) {
+                writingSpeedSamples.push({t: Date.now(), chars: delta});
+                if (writingSpeedSamples.length > 600) writingSpeedSamples.splice(0, writingSpeedSamples.length - 600);
+            }
+        }
+    }
+    updateWritingStatusBar(total, true);
+}
+
+function writingSpeedPerMin() {
+    const now = Date.now();
+    writingSpeedSamples = writingSpeedSamples.filter((s) => now - s.t <= 5 * 60 * 1000);
+    let sum = 0;
+    for (const s of writingSpeedSamples) sum += s.chars;
+    return Math.round(sum / 5);
+}
+
+function writingSessionSum(total) {
+    return file && typeof file._writingBase === 'number' ? Math.max(0, total - file._writingBase) : 0;
+}
+
+function updateWritingStatusBar(total, active) {
+    const el = els.stWriting;
+    if (!el) return;
+    if (!active) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+    }
+    const store = loadWritingDaily();
+    const goal = Number(settings.writingDailyGoal) || 0;
+    const text = '今日 ' + Math.max(0, store.count) + (goal > 0 ? '/' + goal : '') + ' · 本次 +' + writingSessionSum(total);
+    if (el.textContent !== text) el.textContent = text;
+    el.style.display = '';
+}
+
+function openWritingStatsDialog() {
+    if (!writingActive() || !file || !file.editor) return;
+    const total = countWords(file.editor.getText());
+    const store = loadWritingDaily();
+    const goal = Number(settings.writingDailyGoal) || 0;
+    elsDialogs.writingToday.textContent = String(Math.max(0, store.count));
+    elsDialogs.writingSession.textContent = '+' + writingSessionSum(total);
+    elsDialogs.writingSpeed.textContent = String(writingSpeedPerMin());
+    elsDialogs.writingTotal.textContent = String(total);
+    elsDialogs.writingGoalBar.style.display = goal > 0 ? '' : 'none';
+    elsDialogs.writingGoalFill.style.width = goal > 0 ? Math.min(100, Math.round(store.count / goal * 100)) + '%' : '0';
+    elsDialogs.writingGoalInput.value = goal > 0 ? String(goal) : '';
+    openDialogEl(elsDialogs.writing);
+}
+
+function saveWritingGoal() {
+    const goal = Math.max(0, Number(elsDialogs.writingGoalInput.value) || 0);
+    settings.writingDailyGoal = goal;
+    const store = loadWritingDaily();
+    store.goalHit = goal > 0 && store.count >= goal;
+    saveWritingDaily(store);
+    applySettings();
+    updateWritingStats();
+    flash(goal > 0 ? '每日目标已保存：' + goal + ' 字' : '每日目标已关闭');
+    openWritingStatsDialog();
+}
+
+// ---- 动作：开关 / 一键排版 / 起名器 / 场景分隔符 ----
+
+function toggleWritingMode() {
+    settings.writingMode = !settings.writingMode;
+    applySettings();
+    flash(settings.writingMode ? '写作模式已开启' : '写作模式已关闭');
+}
+
+function writingFormatable() {
+    return !!file && !!file.editor && !file.binary && !file.large
+        && !!file.format && (file.format.id === 'text' || file.format.id === 'markdown');
+}
+
+// 一键排版：writing.js 纯函数 transform → setText + markDocDirty
+function applyWritingFormat(indent) {
+    if (!writingFormatable()) return;
+    if (indent && file.format.id !== 'text') return;
+    const doc = file;
+    const isMd = doc.format.id === 'markdown';
+    const res = formatWritingText(doc.editor.getText(), {markdown: isMd, indent: !!indent});
+    const parts = [];
+    if (res.trailing) parts.push('去 ' + res.trailing + ' 处行尾空白');
+    if (res.leading) parts.push('清 ' + res.leading + ' 处行首空白');
+    if (res.collapsed) parts.push('收敛 ' + res.collapsed + ' 处空行');
+    if (res.indented) parts.push('缩进 ' + res.indented + ' 段');
+    if (!parts.length) {
+        flash('未发现需要整理的内容');
+        return;
+    }
+    const loading = doc.loading;
+    doc.loading = true;
+    try {
+        doc.editor.setText(res.text);
+        doc.text = res.text;
+    } catch (e) {
+        flash('排版失败：' + e.message, true);
+        return;
+    } finally {
+        doc.loading = loading;
+    }
+    markDocDirty(doc);
+    // 整页预览模式下底层编辑器仍存活但预览不随 setText 自动刷新，手动重渲染
+    if (currentMode === 'preview' && doc.format && doc.format.preview) renderMarkdownPreview(doc);
+    // jsoneditor setText 会清空撤销历史（vendor 已确认 history.clear()）
+    flash('已整理：' + parts.join('、') + '（撤销历史已重置，可从 Git 历史找回）');
+}
+
+function openWritingNameDialog() {
+    rollWritingName();
+    openDialogEl(elsDialogs.writingName);
+}
+
+function rollWritingName() {
+    const gender = elsDialogs.writingNameGender.value || 'random';
+    elsDialogs.writingNameText.textContent = genName(gender);
+}
+
+// code 视图走 ace.insert，text 视图走 textarea setRangeText（同 jumpToPosition 的双路处理）
+function insertTextAtCursor(text) {
+    if (!file || file.binary || file.large) return false;
+    if (file.editor && file.editor.aceEditor && (currentMode === 'code' || (file.splitActive && currentMode === 'split'))) {
+        file.editor.aceEditor.insert(text);
+        file.editor.aceEditor.focus();
+        return true;
+    }
+    if (currentMode === 'text' && file.pane) {
+        const ta = file.pane.querySelector('textarea.jsoneditor-text');
+        if (ta) {
+            const start = ta.selectionStart != null ? ta.selectionStart : ta.value.length;
+            const end = ta.selectionEnd != null ? ta.selectionEnd : start;
+            ta.setRangeText(text, start, end, 'end');
+            ta.focus();
+            ta.dispatchEvent(new Event('input', {bubbles: true}));
+            markDocDirty(file);
+            return true;
+        }
+    }
+    return false;
+}
+
+function insertWritingName() {
+    const name = elsDialogs.writingNameText.textContent || '';
+    if (!insertTextAtCursor(name)) flash('当前视图不支持插入，请切换到源码或纯文本视图', true);
+    else closeTopDialog();
+}
+
+function insertSceneSeparator() {
+    if (!insertTextAtCursor(SCENE_SEPARATOR)) flash('当前视图不支持插入，请切换到源码或纯文本视图', true);
 }
 
 function updateCursorPosition() {
@@ -4100,9 +4704,28 @@ if (els.stPos) {
     });
 }
 
+// 写作模式：状态栏入口与对话框按钮
+if (els.stWriting) els.stWriting.addEventListener('click', openWritingStatsDialog);
+document.getElementById('btn-writing-goal-save').addEventListener('click', saveWritingGoal);
+document.getElementById('btn-writing-close').addEventListener('click', closeDialogs);
+document.getElementById('btn-writing-name-roll').addEventListener('click', rollWritingName);
+document.getElementById('btn-writing-name-copy').addEventListener('click', () => copyText(elsDialogs.writingNameText.textContent, '名字'));
+document.getElementById('btn-writing-name-insert').addEventListener('click', insertWritingName);
+document.getElementById('btn-writing-name-close').addEventListener('click', closeDialogs);
+elsDialogs.writingNameGender.addEventListener('change', rollWritingName);
+elsDialogs.writingGoalInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        saveWritingGoal();
+    }
+});
+
 for (const type of ['keyup', 'click', 'input', 'focusin']) {
     els.editor.addEventListener(type, (e) => {
-        if (e.target && e.target.matches && e.target.matches('textarea.jsoneditor-text')) updateCursorPosition();
+        if (!e.target || !e.target.matches || !e.target.matches('textarea.jsoneditor-text')) return;
+        updateCursorPosition();
+        // 文本视图是 textarea：字数与码字统计要和 Ace 走同一条防抖管线，否则打字时数字冻结
+        if (type === 'input') scheduleWordCount();
     });
 }
 document.addEventListener('selectionchange', () => {
@@ -4155,7 +4778,9 @@ document.querySelectorAll('.dialog-close').forEach((btn) => btn.addEventListener
 elsDialogs.mask.addEventListener('click', (e) => {
     if (e.target !== elsDialogs.mask) return;
     if (!elsDialogs.confirm.classList.contains('hidden') || !elsDialogs.name.classList.contains('hidden') ||
-        !elsDialogs.props.classList.contains('hidden') || !elsDialogs.update.classList.contains('hidden')) closeTopDialog();
+        !elsDialogs.props.classList.contains('hidden') || !elsDialogs.update.classList.contains('hidden') ||
+        !elsDialogs.writing.classList.contains('hidden') ||
+        !elsDialogs.writingName.classList.contains('hidden')) closeTopDialog();
 });
 
 document.querySelector('.settings-nav').addEventListener('click', (e) => {
@@ -4315,13 +4940,20 @@ function setupPluginsSettings() {
             placeholder: 'https://gitee.com/cadt-datalens-plugins/git-flow',
             okLabel: '安装',
             onSubmit: async (url) => {
-                const installed = await backend.InstallPluginFromUrl(url);
-                if (!installed) {
-                    throw new Error('仓库地址为空');
-                }
-                await reloadPluginErrors('');
-                renderPluginsPane();
-                flash('已安装插件：' + installed.name);
+                if (!url || !url.trim()) throw new Error('仓库地址为空');
+                // 安装插件 = 执行第三方代码：先明示权限范围，确认后再装
+                openCloseConfirm('插件代码以与应用相同的权限运行，可读写本机文件、执行命令。仅安装你信任的来源：' + url, () => {
+                    (async () => {
+                        try {
+                            const installed = await backend.InstallPluginFromUrl(url);
+                            await reloadPluginErrors('');
+                            renderPluginsPane();
+                            flash('已安装插件：' + installed.name);
+                        } catch (e) {
+                            flash('安装失败：' + e, true);
+                        }
+                    })();
+                }, '继续安装', '安装第三方插件');
             },
         });
     });
@@ -4332,6 +4964,8 @@ function setupPluginsSettings() {
             flash('打开插件目录失败：' + e, true);
         }
     });
+    const trustIcon = document.querySelector('.plugin-trust-icon');
+    if (trustIcon) trustIcon.innerHTML = iconSvg('warn', 12);
     modeSel.addEventListener('change', async () => {
         try {
             await backend.SetPluginsPathMode(modeSel.value);
@@ -4635,21 +5269,23 @@ function renderPluginMarketList(listEl, items) {
             install.type = 'button';
             install.className = 'dlg-btn plugin-market-action';
             install.textContent = '安装';
-            install.addEventListener('click', async () => {
-                install.disabled = true;
-                install.textContent = '安装中…';
-                try {
-                    const installed = await backend.InstallPluginFromUrl(m.url);
-                    if (!installed) throw new Error('仓库地址为空');
-                    m.installed = true;
-                    await reloadPluginErrors('');
-                    renderPluginsPane();
-                    flash('已安装插件：' + (installed.name || m.name));
-                } catch (e) {
-                    install.disabled = false;
-                    install.textContent = '安装';
-                    flash('安装失败：' + e, true);
-                }
+            install.addEventListener('click', () => {
+                openCloseConfirm('插件代码以与应用相同的权限运行，可读写本机文件、执行命令。仅安装你信任的来源：' + (m.name || m.url), async () => {
+                    install.disabled = true;
+                    install.textContent = '安装中…';
+                    try {
+                        const installed = await backend.InstallPluginFromUrl(m.url);
+                        if (!installed) throw new Error('仓库地址为空');
+                        m.installed = true;
+                        await reloadPluginErrors('');
+                        renderPluginsPane();
+                        flash('已安装插件：' + (installed.name || m.name));
+                    } catch (e) {
+                        install.disabled = false;
+                        install.textContent = '安装';
+                        flash('安装失败：' + e, true);
+                    }
+                }, '继续安装', '安装第三方插件');
             });
             head.appendChild(install);
         }
@@ -5099,28 +5735,15 @@ const readonlyTipObserver = new MutationObserver((muts) => {
 });
 readonlyTipObserver.observe(document.body, {childList: true, subtree: true});
 
-const markdownRenderer = new MarkdownIt({
-    html: false,
-    linkify: true,
-    breaks: false,
+// 共享 Markdown 渲染层（frontend/src/markdown.js）：主界面与阅读模式共用，
+// sanitize 规则单一来源（docs/reading-mode.md §10.2）。mermaid 脚本加载仍在 main.js。
+let markdownRenderer;
+const sharedMarkdown = createMarkdownRenderer({
+    mdLineNumbers: () => settings.mdLineNumbers,
+    mermaidPlaceholder: (text) => renderMermaidPlaceholder(text),
 });
-markdownRenderer.use(markdownItKatex, {throwOnError: false, errorColor: '#f75464'});
-// validateLink 默认把 C:/ 开头的本地图片/链接路径当未知协议丢掉 src；
-// 放行后危险协议（javascript:/vbscript:/data:）仍由 DOMPurify 的 URI 白名单兜底过滤。
-// 注意必须走 md.set() 写进 options——直接给实例赋 validateLink 属性不生效。
-markdownRenderer.set({validateLink: function () { return true; }});
-// 本地路径的图片 src 可能被 DOMPurify 的 URI 白名单拦掉（如 C:/ 盘符路径），
-// 渲染时同步写一份到 data-ai-src（data-* 属性默认放行且不做 URI 校验），
-// AI 面板/MD 预览的图片解析器优先读它恢复本地图片。
-const defaultImageRule = markdownRenderer.renderer.rules.image;
-markdownRenderer.renderer.rules.image = function (tokens, idx, options, env, self) {
-    const token = tokens[idx];
-    const src = token.attrGet('src') || '';
-    if (src && !/^(https?:|data:|blob:)/i.test(src)) token.attrSet('data-ai-src', src);
-    return defaultImageRule
-        ? defaultImageRule(tokens, idx, options, env, self)
-        : self.renderToken(tokens, idx, options);
-};
+markdownRenderer = sharedMarkdown.markdownRenderer;
+const renderMarkdownHtml = sharedMarkdown.renderMarkdownHtml;
 
 // renderMermaidPlaceholder mermaid 图表占位：渲染后异步替换为 SVG
 function renderMermaidPlaceholder(text) {
@@ -5171,7 +5794,12 @@ async function renderMermaidBlocks(root) {
         block.dataset.rendered = '1';
         try {
             const {svg} = await window.mermaid.render('mmd-' + Math.random().toString(36).slice(2), msrc);
-            block.innerHTML = svg;
+            // mermaid strict 已自净化，这里再过一遍 DOMPurify（SVG 档）兜底；
+            // style/foreignObject 是 mermaid 自带样式与 HTML 标签所需，保留但内容仍被消毒。
+            block.innerHTML = DOMPurify.sanitize(svg, {
+                USE_PROFILES: {svg: true, svgFilters: true},
+                ADD_TAGS: ['style', 'foreignObject'],
+            });
         } catch (e) {
             block.classList.add('md-mermaid-error');
             block.textContent = 'mermaid 图表渲染失败：' + (e && e.message || e);
@@ -5179,44 +5807,7 @@ async function renderMermaidBlocks(root) {
     }
 }
 
-function renderMarkdownCodeBlock(text, info) {
-    const code = String(text || '').replace(/\n$/, '');
-    if (String(info || '').trim().toLowerCase() === 'mermaid') {
-        return renderMermaidPlaceholder(code);
-    }
-    const language = String(info || '').trim().split(/\s+/)[0];
-    let highlighted = '';
-    if (language && hljs.getLanguage(language)) {
-        try {
-            highlighted = hljs.highlight(code, {language, ignoreIllegals: true}).value;
-        } catch (e) {}
-    }
-    if (!highlighted) highlighted = markdownRenderer.utils.escapeHtml(code);
-    const langClass = language ? ' language-' + language.replace(/[^A-Za-z0-9_+.-]/g, '') : '';
-    if (!settings.mdLineNumbers) {
-        return '<pre><code class="hljs' + langClass + '">' + highlighted + '</code></pre>\n';
-    }
-    const lineCount = Math.max(1, code.split('\n').length);
-    const numbers = Array.from({length: lineCount}, (_, i) => String(i + 1)).join('\n');
-    return '<div class="md-code-frame">' +
-        '<pre class="md-code-gutter" aria-hidden="true">' + numbers + '</pre>' +
-        '<pre class="md-code-pre"><code class="hljs' + langClass + '">' + highlighted + '</code></pre>' +
-        '</div>\n';
-}
-
-markdownRenderer.renderer.rules.fence = (tokens, idx) => renderMarkdownCodeBlock(tokens[idx].content, tokens[idx].info);
-markdownRenderer.renderer.rules.code_block = (tokens, idx) => renderMarkdownCodeBlock(tokens[idx].content, '');
-const defaultLinkOpen = markdownRenderer.renderer.rules.link_open ||
-    ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
-markdownRenderer.renderer.rules.link_open = (tokens, idx, options, env, self) => {
-    const token = tokens[idx];
-    const href = token.attrGet('href') || '';
-    if (href && !href.startsWith('#')) {
-        token.attrSet('target', '_blank');
-        token.attrSet('rel', 'noopener noreferrer');
-    }
-    return defaultLinkOpen(tokens, idx, options, env, self);
-};
+// renderMarkdownCodeBlock / fence / link_open 规则已随渲染器抽到 markdown.js。
 
 // resolveMarkdownImages 把 Markdown 预览里相对路径/本地绝对路径的图片换成后端读取的 data URL。
 function resolveMarkdownImages(doc) {
@@ -5249,15 +5840,7 @@ function resolveMarkdownImages(doc) {
     }
 }
 
-function renderMarkdownHtml(text) {
-    const html = markdownRenderer.render(text || '');
-    return DOMPurify.sanitize(html, {
-        USE_PROFILES: {html: true, mathMl: true, svg: true},
-        ADD_ATTR: ['target', 'rel'],
-        // 放行 Windows 盘符路径（C:/...）供本地图片解析；javascript:/data: 等危险协议仍被默认白名单拦截
-        ADD_URI_PROTOCOL: ['c'],
-    });
-}
+// renderMarkdownHtml 已抽到 markdown.js（共享 sanitize 配置）。
 
 function makeSelect(options, value, onChange) {
     const sel = document.createElement('select');
@@ -6873,6 +7456,7 @@ function updateStatus() {
         els.stEnc.textContent = '';
         const stCount = document.getElementById('st-count');
         if (stCount) stCount.textContent = '';
+        if (els.stWriting) els.stWriting.style.display = 'none';
         els.stPos.textContent = '';
         return;
     }
@@ -6892,6 +7476,8 @@ function updateStatus() {
     els.stMdWidth.style.display = showMdWidth ? '' : 'none';
     els.stMdWidth.textContent = showMdWidth ? '宽度 · ' + mdPreviewWidthLabel(settings.mdPreviewWidth) : '';
     updateWordCount();
+    updateWritingStats();
+    applyWritingMode();
     if (file.binary) {
         els.stEol.textContent = '';
         els.stEnc.textContent = '';
@@ -7426,7 +8012,8 @@ function applyDocView(doc, view) {
     if (!ace) return false;
     renderBookmarks(doc);
     try {
-        const Range = ace.Range || (ace.require && ace.require('ace/range').Range);
+        const Range = ace.Range || (ace.require && ace.require('ace/range').Range) ||
+            (window.ace && window.ace.require ? window.ace.require('ace/range').Range : null);
         if (Range && Array.isArray(view.folds)) {
             const lineCount = ace.session.getLength();
             for (const pair of view.folds) {
@@ -8011,6 +8598,9 @@ function createDocEditor(doc) {
         hookMultiCursor(ed.aceEditor);
         ed.aceEditor.on('changeSelection', scheduleWordCount);
         ed.aceEditor.on('input', scheduleWordCount);
+        // 写作模式：光标变化驱动打字机滚动与段落聚焦（内部自判生效条件）
+        ed.aceEditor.on('changeSelection', () => scheduleWritingCaret(ed.aceEditor));
+        ed.aceEditor.on('input', () => scheduleWritingCaret(ed.aceEditor));
     }
     if (settings.treeExpandDefault === 'collapse' && startMode === 'tree' && doc.treeAvailable && !doc.large) {
         setTimeout(() => {
@@ -8034,6 +8624,9 @@ function createDocEditor(doc) {
     }
     doc.mode = splitRequested ? 'split' : previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : binaryMode ? 'binary' : startMode;
     doc.text = ed.getText();
+    // 打开/恢复/重载属于程序化全文替换：清掉码字观察基线，下一次观察以当前内容重新起算
+    delete doc._writingLast;
+    delete doc._writingBase;
     if (fmt.table) createCsvTableView(doc);
     if (fmt.preview) createMarkdownPreview(doc);
     if (fmt.image) createImageView(doc);
@@ -10279,6 +10872,8 @@ function showWelcome() {
     els.banner.classList.add('hidden');
     closeFootPopover();
     closeDialogs();
+    if (els.stWriting) els.stWriting.style.display = 'none';
+    applyWritingMode();
     updateSearchState();
     renderTabs();
     updateBackendDirty();
@@ -11365,9 +11960,13 @@ function showExplorerMenu(info, x, y, node) {
             disabled: !!settings.readOnlyMode,
             submenu: newFileMenuItems(info.path),
         });
+        items.push({label: '作为书籍阅读', icon: 'E8A5', action: () => readingMode && readingMode.openBook(info.path)});
     } else {
         items.push({label: '打开', icon: 'E8E5', action: () => openPath(info.path)});
         items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => openInNewWindows([info.path])});
+        if (readingMode && /\.(md|markdown|mdx|txt|docx|epub)$/i.test(info.name || '')) {
+            items.push({label: '阅读此文件', icon: 'E8A5', action: () => readingMode.openSingleFile(info.path)});
+        }
         items.push({
             label: '在 AI 中询问此文件',
             iconHtml: AI_REFERENCE_ICON_HTML,
@@ -11580,9 +12179,55 @@ function showBlankMenu(x, y) {
     ctxMenu.open(items, x, y);
 }
 
+// closeReadingForEditor 退出阅读模式再打开编辑器（阅读模式不进标签页）
+function closeReadingForEditor() {
+    if (readingMode && readingMode.isActive()) readingMode.close();
+}
+
 function initContextMenus() {
     ctxMenu = createContextMenu();
     palette = createPalette({mask: els.paletteMask, input: els.paletteInput, list: els.paletteList, getActions: paletteActions});
+    // ---- 阅读模式（docs/reading-mode.md）：视图容器 + 控制器，只读 ----
+    const readingContainer = document.getElementById('reading-view');
+    if (readingContainer) {
+        readingMode = createReadingMode({
+            container: readingContainer,
+            getBackend: () => backend,
+            getSetting: (key, dflt) => {
+                const v = settings[key];
+                return v === undefined ? dflt : v;
+            },
+            setSetting: (key, value) => {
+                settings[key] = value;
+                applySettings();
+            },
+            getWorkspace: () => workspaceFolder || '',
+            isDarkTheme: () => /dark|darcula|night/i.test(String(settings.theme)),
+            isDialogOpen,
+            openInEditor: (path, line) => {
+                closeReadingForEditor();
+                openPath(path);
+                if (line && line > 0) {
+                    setTimeout(() => {
+                        try {
+                            jumpToPosition(line, 1);
+                        } catch (e) {}
+                    }, 250);
+                }
+            },
+            showFlash: (msg) => flash(msg),
+            chooseDirectory: async () => {
+                try {
+                    return await backend.OpenFolderDialog(defaultFolderDir());
+                } catch (e) {
+                    return '';
+                }
+            },
+            showInFolder: (path) => backend.ShowInFolder(path).catch(() => {}),
+        });
+        const welcomeRead = document.getElementById('btn-welcome-read');
+        if (welcomeRead) welcomeRead.addEventListener('click', () => readingMode.openBookshelf());
+    }
     if (!els.mainPane) return;
     els.mainPane.addEventListener('contextmenu', (e) => {
         if (e.target.closest && e.target.closest('.ctx-menu')) return;
@@ -13782,6 +14427,39 @@ elsSettings.editorFontFamily.addEventListener('change', () => {
 });
 elsSettings.editorCjkFont.addEventListener('change', () => {
     settings.editorCjkFont = elsSettings.editorCjkFont.value;
+    applySettings();
+});
+elsSettings.writingMode.addEventListener('change', () => {
+    settings.writingMode = elsSettings.writingMode.checked;
+    applySettings();
+    flash(settings.writingMode ? '写作模式已开启' : '写作模式已关闭');
+});
+elsSettings.writingFont.addEventListener('change', () => {
+    settings.writingFont = elsSettings.writingFont.value;
+    applySettings();
+});
+elsSettings.writingFontSize.addEventListener('input', () => {
+    settings.writingFontSize = Number(elsSettings.writingFontSize.value);
+    applySettings();
+});
+elsSettings.writingPaper.addEventListener('change', () => {
+    settings.writingPaper = elsSettings.writingPaper.value;
+    applySettings();
+});
+elsSettings.writingLineNumbers.addEventListener('change', () => {
+    settings.writingLineNumbers = elsSettings.writingLineNumbers.checked;
+    applySettings();
+});
+elsSettings.writingTypewriter.addEventListener('change', () => {
+    settings.writingTypewriter = elsSettings.writingTypewriter.checked;
+    applySettings();
+});
+elsSettings.writingFocus.addEventListener('change', () => {
+    settings.writingFocus = elsSettings.writingFocus.checked;
+    applySettings();
+});
+elsSettings.writingDailyGoal.addEventListener('change', () => {
+    settings.writingDailyGoal = Math.max(0, Number(elsSettings.writingDailyGoal.value) || 0);
     applySettings();
 });
 
@@ -16459,6 +17137,14 @@ function paletteActions() {
         } catch (e) {}
     }
     actions.push({label: '书签： 切换当前行书签', shortcut: 'F11', action: toggleBookmark});
+    if (readingMode) {
+        actions.push(
+            {label: '阅读： 打开书籍…', action: () => readingMode.openBookshelf()},
+            {label: '阅读： 添加书签', shortcut: 'Ctrl+D', action: () => readingMode.addBookmark()},
+            {label: '阅读： 阅读统计', action: () => readingMode.openStatsDialog()},
+            {label: '阅读： 专注模式', action: () => readingMode.toggleFocus()},
+        );
+    }
     actions.push({label: '书签： 跳到下一个书签', shortcut: 'F2', action: () => jumpBookmark(1)});
     actions.push({label: '书签： 跳到上一个书签', shortcut: 'Shift+F2', action: () => jumpBookmark(-1)});
     actions.push({label: '数据： JSONPath 查询…', shortcut: 'Ctrl+Shift+J', action: openJsonQuery});
@@ -16490,6 +17176,7 @@ function menuItems(kind) {
                 {sep: true},
                 {label: '打开…', shortcut: 'Ctrl+O', icon: 'E8E5', action: openDialog},
                 {label: '打开文件夹…', icon: 'E8B7', action: openFolderDialog},
+                {label: '打开书籍…', icon: 'E8A5', action: () => readingMode && readingMode.openBookshelf()},
                 {label: '最近打开', icon: 'E81C', submenu: recentOpenMenuItems()},
                 {label: '关闭文件夹', icon: 'E8BB', disabled: !workspaceFolder, action: closeFolder},
                 {sep: true},
@@ -16548,6 +17235,15 @@ function menuItems(kind) {
                 {label: '修复 JSON', disabled: !file || !file.format || file.format.id !== 'json' || !!file.binary, action: repairJsonAction},
                 {label: '转换为…', disabled: !file || !file.format || !!file.binary || !!file.large, submenu: convertMenuItems()},
                 {sep: true},
+                {
+                    label: '小说排版',
+                    disabled: !writingFormatable(),
+                    submenu: [
+                        {label: '整理段落', action: () => applyWritingFormat(false)},
+                        {label: '段首缩进两格', disabled: !file || !file.format || file.format.id !== 'text', action: () => applyWritingFormat(true)},
+                    ],
+                },
+                {sep: true},
                 {label: '排序', disabled: !tree, action: () => clickEditorButton('.jsoneditor-sort')},
                 {label: '变换…', disabled: !tree, action: () => clickEditorButton('.jsoneditor-transform')},
             ];
@@ -16572,6 +17268,8 @@ function menuItems(kind) {
                 {label: 'AI 会话', shortcut: 'Alt+8', checked: !!settings.showSidebar && currentSidebarView() === 'chats', action: () => toggleSidebarView('chats')},
                 {sep: true},
                 {label: '自动换行', checked: !!settings.codeWrap, action: toggleCodeWrap},
+                {label: '写作模式', checked: !!settings.writingMode, action: toggleWritingMode},
+                {label: '阅读模式', checked: !!(readingMode && readingMode.isActive()), action: () => readingMode && readingMode.toggle()},
                 {label: '展开全部', shortcut: 'Ctrl+Shift+=', disabled: !tree, action: () => editor && editor.expandAll()},
                 {label: '收起全部', shortcut: 'Ctrl+Shift+-', disabled: !tree, action: () => editor && editor.collapseAll()},
                 {sep: true},
@@ -16629,6 +17327,9 @@ function menuItems(kind) {
                 disabled: !file || file.binary || !file.format || (file.format.id !== 'json' && file.format.id !== 'jsonl'),
                 action: openSchemaValidation,
             }];
+            items.push({sep: true},
+                {label: '起名器…', icon: 'E716', action: openWritingNameDialog},
+                {label: '插入： 场景分隔符', icon: 'E710', disabled: !file || !!file.binary || !!file.large, action: insertSceneSeparator});
             const cmds = getPluginCommands();
             if (!cmds.length) {
                 items.push({sep: true}, {label: '（暂无插件命令）', disabled: true});

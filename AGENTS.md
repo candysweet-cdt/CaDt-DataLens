@@ -35,7 +35,9 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `src/explorer.js`：文件树（惰性加载 + 内存缓存 + 自动刷新）
 - `src/ai-panel.js`、`src/palette.js`、`src/contextmenu.js`、`src/icons.js`、`src/fileicons*.js`、`src/plugins.js`、`src/jsonrepair.js`、`src/debugconsole.js`
 - `src/ai-session-store.js`：AI 会话 JSONL 编解码/重放 + 磁盘适配（图片外置、增量持久化）
-- `src/style.css`：布局、主题、Ace/jsoneditor 样式
+- `src/markdown.js`：共享 Markdown 渲染/sanitize（main.js 与阅读模式共用，规则单一来源）
+- `src/reading/`：阅读模式（`reading.js` 控制器、`reading-model.js` 纯函数 TOC/排序/进度/joinSoftLines、`reading-state.js` localStorage 进度/书签/统计、`reading-view.js` 书架/详情/目录 DOM、`reading-render.js` md/txt/docx/epub 渲染 + LRU、`reading-search.js` 章内/全书查找、`reading-tts.js` 朗读）；Go 侧对应 `reading*.go`；方案见 `docs/reading-mode.md`；**只读，禁止调用写接口**
+- `src/style.css`：布局、主题、Ace/jsoneditor 样式；`src/reading.css`：阅读模式样式（`.rd-` 前缀）
 - `index.html`：窗口结构、菜单、设置对话框
 - `public/vendor/`：jsoneditor、mermaid 等第三方资源；`public/fonts/`：Inter / JetBrains Mono / Fira Code（OFL）
 - `wailsjs/`：Wails 自动生成的绑定，**不要手改**

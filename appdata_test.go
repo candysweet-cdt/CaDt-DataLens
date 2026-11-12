@@ -26,8 +26,14 @@ func TestAppDataPathsUnderCandySweet(t *testing.T) {
 	}
 
 	app := NewApp()
+	if got := app.GetPluginsPathMode(); got != "portable" {
+		t.Fatalf("默认插件目录模式 = %q, want portable", got)
+	}
 	if err := app.SetPluginsPathMode("appdata"); err != nil {
 		t.Fatalf("SetPluginsPathMode: %v", err)
+	}
+	if got := app.GetPluginsPathMode(); got != "appdata" {
+		t.Fatalf("GetPluginsPathMode = %q, want appdata", got)
 	}
 	pluginsDir, err := app.GetPluginsDir()
 	if err != nil {

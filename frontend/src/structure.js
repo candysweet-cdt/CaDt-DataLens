@@ -8,7 +8,7 @@ import {createFileIcon} from './fileicons.js';
 const MAX_TEXT = 8 * 1024 * 1024;
 const MAX_NODES = 6000;
 const MAX_LABEL = 140;
-const SUPPORT_HINT = '支持 Markdown、HTML/XML、Python、JS/TS、Go、Java/Kotlin/C#、C/C++、Rust、PHP、Ruby、Lua、JSON、YAML、TOML/INI';
+const SUPPORT_HINT = '支持 Markdown、HTML/XML、Python、JS/TS、Go、Java/Kotlin/C#、C/C++、Rust、PHP、Ruby、Lua、JSON、YAML、TOML/INI、纯文本（章节）';
 
 const ICONS = {
     chevron: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -31,6 +31,7 @@ const KIND_GLYPH = {
     module: 'M',
     type: 'T',
     heading: '#',
+    chapter: '章',
     file: '',
     index: '#',
 };
@@ -49,6 +50,7 @@ const KIND_NAME = {
     module: '模块',
     type: '类型',
     heading: '标题',
+    chapter: '章节',
     file: '文件',
     index: '条目',
 };
@@ -77,6 +79,7 @@ const EXTENSIONS = {
     yaml: ['yaml', 'YAML'], yml: ['yaml', 'YAML'],
     toml: ['toml', 'TOML'],
     ini: ['ini', 'INI/Properties'], properties: ['ini', 'INI/Properties'], cfg: ['ini', 'Properties'], conf: ['ini', 'Properties'],
+    txt: ['novel', '纯文本'],
 };
 
 const RESERVED = new Set([
@@ -269,6 +272,7 @@ function parseStructure(fileName, text) {
             language: lang.name,
             truncated: capped.truncated || !!parsed.truncated,
             empty: !capped.children.length,
+            message: parsed.message || '',
         };
     } catch (e) {
         return {root, supported: false, reason: '结构解析失败：' + ((e && e.message) || e), language: lang.name, hint: ''};
@@ -1369,10 +1373,74 @@ function parseTomlLike(source, iniMode) {
     return {children};
 }
 
+// ===== 纯文本章节（写作模式）=====
+
+// 章节标题：行首（≤8 空格容错）「第X章/回/节/卷/部/篇/话」或 序章/楔子/引子/尾声/终章/番外/后记
+const CHAPTER_LINE = /^\s{0,8}(第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*[章回节卷部篇话]|序章|楔子|引子|尾声|终章|番外[篇中之外]?|后记)\s*[:：、.．\s]*(.*)$/;
+
+// 与 main.js countWords 同口径：CJK 字符逐个计 + 拉丁词计 1（structure.js 不 import main.js，本地同款小函数）
+function countWordsLite(s) {
+    const cjk = (s.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+    const latin = (s.match(/[A-Za-z0-9]+(?:[''-][A-Za-z0-9]+)*/g) || []).length;
+    return cjk + latin;
+}
+
+function parseNovelChapters(source, totalLines) {
+    const lines = splitLines(source);
+    const matches = [];
+    let truncated = false;
+    for (let i = 0; i < lines.length; i++) {
+        const m = CHAPTER_LINE.exec(lines[i]);
+        if (!m) continue;
+        if (matches.length >= MAX_NODES) {
+            truncated = true;
+            break;
+        }
+        const unit = m[1].replace(/\s+/g, '');
+        const indent = /^\s{0,8}/.exec(lines[i])[0].length;
+        matches.push({
+            line: i + 1,
+            column: indent + 1,
+            label: clampLabel(lines[i].trim(), MAX_LABEL),
+            // 卷级只认「第X卷/部/篇」；「番外篇」等固定章名虽以「篇」结尾，仍属章级
+            isVolume: /^第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*[卷部篇]$/.test(unit),
+        });
+    }
+    if (!matches.length) return {children: [], message: '未找到章节标题'};
+    // endLine：章 → 下一个章节匹配（任意层级）前；卷 → 下一个卷前；用倒序单遍 O(n)
+    let nextAny = totalLines + 1;
+    let nextVolume = totalLines + 1;
+    for (let i = matches.length - 1; i >= 0; i--) {
+        const match = matches[i];
+        match.endLine = Math.max(match.line, (match.isVolume ? nextVolume : nextAny) - 1);
+        nextAny = match.line;
+        if (match.isVolume) nextVolume = match.line;
+    }
+    // 层级：卷/部/篇作父节点，章/回/节/话挂其下；无卷则平铺
+    const children = [];
+    let currentVolume = null;
+    for (const match of matches) {
+        const node = makeNode('chapter', match.label, match.line, match.column);
+        node.endLine = match.endLine;
+        // 章节字数：line..endLine 原文切片，与 countWords 同口径
+        node.detail = countWordsLite(lines.slice(match.line - 1, match.endLine).join('\n')) + ' 字';
+        if (match.isVolume) {
+            children.push(node);
+            currentVolume = node;
+        } else if (currentVolume) {
+            currentVolume.children.push(node);
+        } else {
+            children.push(node);
+        }
+    }
+    return truncated ? {children, truncated: true} : {children};
+}
+
 // ===== 调度 =====
 
 const PARSERS = {
     markdown: parseMarkdown,
+    novel: parseNovelChapters,
     html: parseHtml,
     xml: parseHtml,
     python: parsePython,

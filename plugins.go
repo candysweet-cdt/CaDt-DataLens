@@ -130,6 +130,15 @@ func (a *App) OpenPluginsDir() error {
 	return a.ShowInFolder(dir)
 }
 
+// GetPluginsPathMode 返回当前插件目录模式（portable / appdata），供设置面板回显。
+func (a *App) GetPluginsPathMode() string {
+	mode := readAppConfig().PluginsPathMode
+	if mode != "appdata" {
+		return "portable"
+	}
+	return mode
+}
+
 func (a *App) SetPluginsPathMode(mode string) error {
 	if mode != "appdata" {
 		mode = "portable"

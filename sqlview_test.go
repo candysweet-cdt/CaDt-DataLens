@@ -191,3 +191,25 @@ func TestSQLJSONLFallbackCountsAllRows(t *testing.T) {
 		t.Fatalf("count(*) = %q, want 3（回退模式不能只统计到出错行）", result.Rows[0][0])
 	}
 }
+
+func TestSQLRejectsStatementsWritingOutsideSession(t *testing.T) {
+	app, info := importSQLText(t, "csv", "a\n1\n")
+	for _, q := range []string{
+		"ATTACH DATABASE 'C:/tmp/cadt-escape.db' AS x",
+		"detach database x",
+		"VACUUM INTO 'C:/tmp/cadt-escape.db'",
+		"SELECT 1; /* c */ VACUUM INTO 'x.db'",
+	} {
+		if _, err := app.SQLQuery(info.ID, q, 10); err == nil {
+			t.Fatalf("%q 应被拒绝（能把文件写到临时副本之外）", q)
+		}
+	}
+	// 注释与字符串字面量里的关键词不误判
+	if _, err := app.SQLQuery(info.ID, "SELECT 'ATTACH' AS k -- VACUUM", 10); err != nil {
+		t.Fatalf("字面量误判：%v", err)
+	}
+	// 临时副本上的 DML 仍然允许（见 TestSQLDML）
+	if _, err := app.SQLQuery(info.ID, "UPDATE t SET a=9", 10); err != nil {
+		t.Fatalf("临时副本 DML 不应被误拦：%v", err)
+	}
+}

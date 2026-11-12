@@ -1,6 +1,16 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+    <script>
+    window.__early = [];
+    window.addEventListener("error", function (e) {
+        var stack = e.error && e.error.stack ? String(e.error.stack) : "";
+        window.__early.push(e.message + " @ " + (e.filename || "").split("/").pop() + ":" + e.lineno + " :: " + stack.slice(0, 500));
+    });
+    window.addEventListener("unhandledrejection", function (e) {
+        window.__early.push("REJ " + String(e.reason && e.reason.message || e.reason).slice(0, 400));
+    });
+    </script>
 
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
@@ -441,6 +451,60 @@
                             </select>
                         </div>
                         <div class="fmt-hint hint-indent">仅影响完整预览视图的阅读列宽；分屏预览的右栏始终占满可用宽度。</div>
+                        <div class="settings-section-title">写作模式</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-writing-mode">
+                                写作模式（中文排版 · 专注 · 码字统计）
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">仅对纯文本与 Markdown 的源码视图生效：楷体排版、隐藏行号、打字机滚动、段落聚焦；打开其他类型文件自动退避。</div>
+                        <div class="popover-row">
+                            <span class="popover-label">写作字体</span>
+                            <select id="opt-writing-font" class="opt-select">
+                                <option value="kaiti">楷体</option>
+                                <option value="simsun">宋体</option>
+                                <option value="fangsong">仿宋</option>
+                                <option value="follow">跟随编辑器字体</option>
+                            </select>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">写作字号</span>
+                            <input type="range" id="opt-writing-size" min="12" max="22" step="1" value="16">
+                            <span id="opt-writing-size-val" class="popover-value">16</span>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">纸色滤镜</span>
+                            <select id="opt-writing-paper" class="opt-select">
+                                <option value="off">无</option>
+                                <option value="sepia">暖黄护眼</option>
+                                <option value="dim">调暗</option>
+                            </select>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-writing-line-numbers">
+                                写作模式显示行号
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">默认隐藏行号；书签与 Git 行标始终保留在行号栏。</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-writing-typewriter" checked>
+                                打字机滚动（光标行保持垂直居中）
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-writing-focus" checked>
+                                段落聚焦（非当前段落淡出）
+                            </label>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">每日目标（字）</span>
+                            <input type="number" id="opt-writing-goal" class="opt-goal-input" min="0" step="100" value="0">
+                        </div>
+                        <div class="fmt-hint hint-indent">0 表示关闭。达标后在状态栏统计中提示；点击状态栏「今日/本次」可查看码字统计详情。</div>
                         <div class="font-preview" aria-hidden="true">
                             <span class="fp-ui">界面：糖果超甜@CandySweet · CaDt-DataLens 2026</span>
                             <span class="fp-editor">编辑器：{"name": "糖果超甜", "count": 42, "ok": true}</span>
@@ -952,6 +1016,10 @@
                             </select>
                         </div>
                         <div class="fmt-hint hint-indent" id="plugin-dir-line">插件目录：—</div>
+                        <div class="fmt-hint hint-indent plugin-trust-hint">
+                            <span class="plugin-trust-icon" aria-hidden="true"></span>
+                            <span>插件代码以与应用相同的权限运行（可读写本机文件、执行命令），仅安装你信任的来源。</span>
+                        </div>
                         <div class="plugin-list-box">
                             <div class="plugin-list" id="plugin-list"></div>
                         </div>
@@ -1236,13 +1304,71 @@
                 <span class="dialog-title">检查更新</span>
                 <button type="button" class="dialog-close" data-close="1" title="关闭"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
             </div>
+                <div class="dialog-body">
+                    <div id="dlg-update-status" class="update-status">正在检查更新…</div>
+                    <div id="dlg-update-notes" class="update-notes hidden"></div>
+                    <div class="dialog-footer">
+                        <button type="button" id="btn-update-download" class="dlg-btn primary hidden">下载安装包</button>
+                        <button type="button" id="btn-update-page" class="dlg-btn hidden">打开发布页</button>
+                        <button type="button" id="btn-update-close" class="dlg-btn">关闭</button>
+                    </div>
+                </div>
+        </div>
+        <div id="dlg-writing" class="dialog dialog-writing hidden" role="dialog" aria-label="码字统计">
+            <div class="dialog-head">
+                <span class="dialog-title">码字统计</span>
+                <button type="button" class="dialog-close" data-close="1" title="关闭"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+            </div>
             <div class="dialog-body">
-                <div id="dlg-update-status" class="update-status">正在检查更新…</div>
-                <div id="dlg-update-notes" class="update-notes hidden"></div>
+                <div class="writing-stats-grid">
+                    <div class="writing-stat">
+                        <span class="ws-num" id="dlg-writing-today">0</span>
+                        <span class="ws-label">今日新增</span>
+                    </div>
+                    <div class="writing-stat">
+                        <span class="ws-num" id="dlg-writing-session">+0</span>
+                        <span class="ws-label">本次新增</span>
+                    </div>
+                    <div class="writing-stat">
+                        <span class="ws-num" id="dlg-writing-speed">0</span>
+                        <span class="ws-label">码字速度（字/分）</span>
+                    </div>
+                    <div class="writing-stat">
+                        <span class="ws-num" id="dlg-writing-total">0</span>
+                        <span class="ws-label">全文字数</span>
+                    </div>
+                </div>
+                <div id="dlg-writing-goalbar" class="writing-goalbar"><div id="dlg-writing-goalfill"></div></div>
+                <div class="popover-row writing-goal-row">
+                    <span class="popover-label">每日目标（字）</span>
+                    <input type="number" id="dlg-writing-goal-input" class="dlg-input writing-goal-input" min="0" step="100" placeholder="0 表示关闭">
+                    <button type="button" id="btn-writing-goal-save" class="dlg-btn primary">保存</button>
+                </div>
                 <div class="dialog-footer">
-                    <button type="button" id="btn-update-download" class="dlg-btn primary hidden">下载安装包</button>
-                    <button type="button" id="btn-update-page" class="dlg-btn hidden">打开发布页</button>
-                    <button type="button" id="btn-update-close" class="dlg-btn">关闭</button>
+                    <button type="button" id="btn-writing-close" class="dlg-btn">关闭</button>
+                </div>
+            </div>
+        </div>
+        <div id="dlg-writing-name" class="dialog dialog-writing-name hidden" role="dialog" aria-label="起名器">
+            <div class="dialog-head">
+                <span class="dialog-title">起名器</span>
+                <button type="button" class="dialog-close" data-close="1" title="关闭"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+            </div>
+            <div class="dialog-body">
+                <div id="dlg-writing-name-text" class="writing-name-text">李文轩</div>
+                <div class="popover-row">
+                    <span class="popover-label">性别</span>
+                    <select id="opt-writing-name-gender" class="opt-select">
+                        <option value="male">男</option>
+                        <option value="female">女</option>
+                        <option value="random" selected>随机</option>
+                    </select>
+                </div>
+                <div class="dialog-footer writing-name-actions">
+                    <button type="button" id="btn-writing-name-roll" class="dlg-btn primary">换一个</button>
+                    <button type="button" id="btn-writing-name-copy" class="dlg-btn">复制</button>
+                    <button type="button" id="btn-writing-name-insert" class="dlg-btn">插入到光标</button>
+                    <button type="button" id="btn-writing-name-close" class="dlg-btn">关闭</button>
                 </div>
             </div>
         </div>
@@ -1383,7 +1509,9 @@
                         <div class="ws-drag">将文件拖放到此处以打开</div>
                     </div>
                     <button id="btn-welcome-open" class="tb-btn primary">打开文件 (Ctrl+O)</button>
+                    <button id="btn-welcome-read" class="tb-btn">阅读书籍…</button>
                 </div>
+                <div id="reading-view" class="hidden"></div>
             </div>
         </div>
         <aside id="ai-panel" class="hidden" aria-label="AI 助手">
@@ -1576,6 +1704,7 @@
             <span id="st-enc"></span>
             <span id="st-update" class="st-update" style="display:none"></span>
             <span id="st-count" class="st-count"></span>
+            <button type="button" id="st-writing" class="st-zoom" title="码字统计（点击查看详情）" style="display:none"></button>
             <button type="button" id="st-md-width" class="st-zoom" title="Markdown 预览宽度"></button>
             <button type="button" id="st-ai-width" class="st-zoom" title="AI 全屏内容宽度" style="display:none"></button>
             <button type="button" id="st-zoom" class="st-zoom" title="缩放比例"></button>

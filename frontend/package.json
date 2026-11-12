@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/ai-session-store.test.mjs src/ai-command-rules.test.mjs"
+    "test": "node --test src/ai-session-store.test.mjs src/ai-command-rules.test.mjs src/writing.test.mjs src/reading/reading-model.test.mjs src/reading/reading-state.test.mjs"
   },
   "devDependencies": {
     "vite": "^7.0.0"

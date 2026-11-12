@@ -1,6 +1,6 @@
-# 写作模式 v1 方案（计划，未实施）
+# 写作模式 v1 方案（已实施）
 
-> 状态：**设计定稿，待实施** · 拟定日期：2026-11-10 · 更名日期：2026-11-11
+> 状态：**已实施（v1 全量 6 批）** · 拟定日期：2026-11-10 · 更名日期：2026-11-11 · 实施日期：2026-11-12
 > 更名说明：原「小说模式」更名为「写作模式」，与新增的「阅读模式」（`docs/reading-mode.md`）区分。
 > 范围：用户已确认 **全套 v1**（模式开关+中文排版、专注模式、码字统计、章节大纲、一键排版、起名器）。
 > 适用文档类型：`text`（txt）与 `markdown`（md）。
@@ -68,14 +68,16 @@ CaDt-DataLens 目前已有的写作红利：Markdown 分屏（源码+实时预�
 2. 生效 → `document.documentElement.dataset.writing = 'on'`（含 `data-writing-paper`）；否则 `off`。CSS 按属性开关，不影响其他文档。
 3. 字体/字号：直接改写 `--editor-font-family` / `--editor-font` 两个内联 CSS 变量（`applySettings` 现在就是在这两个变量上写字体，写作模式开启时改写为 writingFont/writingFontSize，关闭时还原为常规值），然后对所有打开的 Ace：`ace.setFontSize(...)` + `ace.resize()`（**必须 resize 重排版，否则光标错位**）。
 4. 行号：逐 doc `ace.setOption('showLineNumbers', settings.writingLineNumbers)`；关闭模式时恢复 `true`。gutter 装饰（书签紫标/git 蓝绿标）不受影响。
-5. 纸色滤镜（编辑器窗格，不碰 md 预览）：
+5. 纸色滤镜（编辑器窗格，不碰 md 预览）。实现落在 Ace 容器与文本视图 textarea 上（不是 `.jsoneditor-pane`：整窗格 filter 会生成 containing block，把浮层/弹窗定位带偏）：
    ```css
-   html[data-writing="on"][data-writing-paper="sepia"] .jsoneditor-pane { filter: sepia(0.22) saturate(0.92); }
-   html[data-writing="on"][data-writing-paper="dim"]   .jsoneditor-pane { filter: brightness(0.88); }
+   html[data-writing="on"][data-writing-paper="sepia"] .jsoneditor .ace_editor,
+   html[data-writing="on"][data-writing-paper="sepia"] textarea.jsoneditor-text { filter: sepia(0.22) saturate(0.92); }
+   html[data-writing="on"][data-writing-paper="dim"] .jsoneditor .ace_editor,
+   html[data-writing="on"][data-writing-paper="dim"] textarea.jsoneditor-text { filter: brightness(0.88); }
    ```
    用 CSS filter 而非改底色：**主题无关**（深浅主题都成立），不与 Ace 语法配色冲突。
 
-**排版 CSS**（`style.css`）：`html[data-writing="on"]` 下 `.ace_editor` 行高 1.9、字距 0.02em、编辑区左右 padding 加宽（40px+），营造"稿纸"感。
+**排版 CSS**（`style.css`）：`html[data-writing="on"]` 下 `.ace_editor` 行高 1.9、编辑区左右 padding 加宽（40px+），营造"稿纸"感。（字距 0.02em 未实现：等宽字体下会破坏 Ace 光标列宽计算，暂不加。）
 
 **入口**：视图菜单「写作模式」（checked 项，放在"自动换行"附近）+ 设置页 + 命令面板（`视图： 写作模式`）。开启/关闭 flash 提示。
 
@@ -141,10 +143,10 @@ formatWritingText(text, {markdown, indent}) → {text, trailing, collapsed, inde
 规则（按序）：
 
 1. `\r\n` → `\n` 统一处理（保存走现有 EOL 策略，还原 CRLF）。
-2. 删行尾空白。
-3. ≥3 连续空行收敛为 1 个空行（段间统一）。
-4. 行首尾空白清除——**md 语法行保护**：`#{1,6} `、`>`、`-`/`*`/`+ `、`N. `、`|`、``` ``` ``/`~~~`、4 空格缩进代码块行不动行首。
-5. `indent=true`（仅 txt 或用户明确选择）：空行后的首个非空行首加两个全角空格「　　」，md 语法行除外。
+2. 删行尾空白。**例外**：markdown 围栏代码块内保留代码原样；markdown 行尾 2 个以上空格是硬换行（`<br>`），保留。
+3. ≥3 连续空行收敛为 1 个空行。按「连续空行数」计数，文首/文末与段间同口径；文末多余空行去掉，只保留结尾换行本身。
+4. 行首空白清除——**md 保护**：`#{1,6} `、`>`、`-`/`*`/`+ `、`N. `、`|`、``` ``` ``/`~~~`、4 空格缩进代码块行不动行首；**列表续段保护**：列表标记行之后、缩进大于该标记缩进的行（含跨空行的续段/子块）保留行首，避免被顶格拆出列表。
+5. `indent=true`（仅 txt）：空行后的首个非空行首加两个全角空格「　　」；已有 ASCII 缩进的行与已全角缩进的行不处理。md 语法行豁免只在 markdown 模式下生效（txt 里的 `1. `/`- ` 开头正文照常缩进）。
 
 返回 stats 用于 flash：`已整理：去 N 处行尾空白、收敛 M 处空行、缩进 K 段`。
 
