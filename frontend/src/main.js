@@ -1690,6 +1690,41 @@ const mockBackend = {
             }, finalDelay + 40);
             return null;
         }
+        if (mockScenario.has('aispawn')) {
+            const isSub = String(sessionId).startsWith('sub-');
+            if (isSub) {
+                // 子代理第一轮直接给结论（不发起工具调用）
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '探索完成：工作区包含 sample.json（时空纪元 v1.0.0，2 个数据项），结构完好，无异常字段。'}), 40);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'stop'}), 160);
+                return null;
+            }
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我派一个子代理去做只读探索。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_spawn',
+                    name: 'spawn_agent',
+                    argsDelta: JSON.stringify({name: '探索员', task: '查看工作区数据文件并总结内容', maxRounds: 5}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '子代理返回：\n\n' + String(lastTool.content || '').slice(0, 400) + '\n\n（mock spawn_agent 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
         if (mockScenario.has('airunseq')) {
             const toolMessages = (messages || []).filter((message) => message.role === 'tool');
             const steps = ['git status --short', 'git status --porcelain'];

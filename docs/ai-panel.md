@@ -288,6 +288,7 @@ runTurn(session, userMsg):
 | `schedule_create(name?, kind, at?/delayMinutes?/intervalMinutes?/cron?, prompt, sessionId?, scope?, maxRuns?)` | 后端 `AIScheduleCreate`：创建定时任务（once / interval / cron，prompt ≤8KB；scope 仅对「每次新建会话」生效） | 读取+（计划模式不可用） | 免 |
 | `schedule_list()` | 后端 `AIScheduleList`：全部任务（名称、id、类型、下次触发、启停、最近结果） | 读取+ | 免 |
 | `schedule_delete(id)` / `schedule_toggle(id, enabled?)` | 后端 `AIScheduleDelete` / `AIScheduleToggle` | 读取+（计划模式不可用） | 免 |
+| `spawn_agent(name, task, maxRounds?)` | 前端子代理运行器：独立流对象 + 只读工具子集（列目录/读文件/搜索/联网/记忆读取/技能/环境变量列表），阻塞等待完成后返回结论摘要（≤8KB） | 每次询问 / 自动审批 / 完全权限 + 计划模式 | 免 |
 
 > AI 改写不再按目标文件的 512KB 设硬限制：`edit_file` / `write_file` 可处理到应用读取上限（>10MB 视为大文件，仍不可读写）；超过 4000 行时 diff 自动降级为公共前缀 / 后缀 + 中间变更块，审批预览最多 40 行。单次写入内容仍上限 256KB，大文件用 `edit_file` 做局部替换。
 >
@@ -296,6 +297,8 @@ runTurn(session, userMsg):
 > memory 工具在**只读访问即可用**（记忆是 AI 的工作笔记而非用户数据）；写入免审批但每次显示卡片，可追溯。`skill_use` 四档通用（只读知识加载零副作用），是只读档工具集的唯一例外。`preference_*` 操作设置页的「用户偏好」列表（存于 AI 配置），同样只读访问可用、免审批，删除即时生效。
 >
 > **后台终端**：`background_command` 启动的作业独立于对话轮生命周期（对话结束作业继续跑，应用退出全部终止）；查状态 / 停止免审批。工具卡片在 `cmd-out` 广播到达时实时追加输出行（面板关闭时只更新缓冲数据，切回可见即恢复），卡片头部显示作业状态（后台运行中 / 已结束 / 已停止 + 退出码）。Go 侧为 `commands.go` 的作业缓冲 + `ai_command_windows.go` 的 `AICommandStart`；同时共享进程桥 16 并发上限与 8 MB 捕获上限。Git Bash 的 `bin/bash.exe` 是 wrapper（真实 bash 是其子进程），因此取消一律走 `taskkill /F /T` 杀整棵进程树并配合 `WaitDelay=3s` 兜底——这也修复了 `run_command` 超时在 wrapper shell 下可能永不返回的隐患；被终止的作业退出码统一记 -1。
+>
+> **子代理**：子代理运行器挂 `subAgents` 注册表，handleEvent 按轮次 id 前缀路由到 `handleSubEvent`（主 stream 单例与 /compact oneShot 分支零改动）；子会话为独立 id（`sub-<随机>`，不依赖 AIStop 前缀语义），主会话停止时逐个 AIStop + 卡片标已停止。子代理工具集不含 ask_user / 写工具 / 命令 / 浏览器操作 / env_create / plan_mode，因此 executeTool 的审批分支在子代理内天然不可达。转录存内存 `subAgentTranscripts`（按主会话 toolCallId 键，≤200 条），卡片元数据（state/rounds/ms/tokens/summary ≤8KB）随会话持久化；会话重载时归一化：running → stopped +「应用重启，子对话已丢失」。同时最多 4 个子代理，超出在 spawn 工具内排队；轮次上限默认 15（spawn 可传 3–15）、消息上限 60。`agents_status` 工具暂未实现（schedule_list 已覆盖同类需求，且卡片即状态）。
 >
 > **定时任务**：调度器在 Go 侧（`ai_schedule.go`，单 ticker 每秒扫描），任务定义与运行状态存派生 SQLite `ai-schedule.db`（modernc pure Go，可随时删除重建，JSON/SQLite 边界与 `ai-index.db` 同一策略）。触发发 `sched-fire` 事件 → 前端注入 `[定时任务 · 名称]` 指令走 `submitText`（复用审批/流式/通知管线），执行结果经 `AIScheduleSetResult` 回写任务卡片。多窗口（独立进程）各自扫描并广播，执行去重在前端：指定会话的任务由持有该会话的窗口执行、无人认领 700ms 后报告失败；新建会话类任务优先聚焦窗口（localStorage 标记先到先得）。任务仅在应用运行期间有效：once 错过标记「已错过」停用不补跑，interval 顺延到下一个整周期，cron 取下一个匹配时刻。设置 → AI 新增「定时任务」页（列表 + 新建/编辑对话框 + 启停/删除），`/schedule` 斜杠命令直达。cron 自写 5 字段解析（约 200 行，支持 `* , - /`，周日 0/7 双写），未引入 robfig/cron。edit 档任务触发时若无人在场处理写审批会一直挂起（守则与设置页均提示）。
 

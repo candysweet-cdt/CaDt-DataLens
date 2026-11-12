@@ -1248,6 +1248,38 @@ export function createAIPanel(options) {
                     message.content = '执行被中断（应用已关闭或崩溃），结果未知；如需重试，请先确认是否产生了副作用。';
                 }
             }
+            // 子代理元数据：转录不落盘（内存态），恢复后只保留小元数据；
+            // 上次退出时仍在运行的子代理按「已停止」收敛（子代理不跨进程存活）。
+            if (raw.agent && typeof raw.agent === 'object') {
+                const agentState = ['done', 'error', 'stopped'].includes(raw.agent.state) ? raw.agent.state : 'stopped';
+                message.agent = {
+                    name: aiTextOf(raw.agent.name).slice(0, 16),
+                    task: aiTextOf(raw.agent.task),
+                    state: agentState,
+                    rounds: Math.max(0, Number(raw.agent.rounds) || 0),
+                    ms: Math.max(0, Number(raw.agent.ms) || 0),
+                    tokens: Math.max(0, Number(raw.agent.tokens) || 0),
+                    summary: aiTextOf(raw.agent.summary),
+                    note: aiTextOf(raw.agent.note),
+                };
+                if (raw.agent.state === 'running') {
+                    message._recovered = true;
+                    message.agent.summary = message.agent.summary || '（应用重启，子对话已丢失）';
+                }
+            }
+            // 后台命令作业：应用重启后作业已丢失，运行中的作业收敛为已停止。
+            if (raw.bg && typeof raw.bg === 'object') {
+                message.bg = {
+                    jobId: aiTextOf(raw.bg.jobId),
+                    state: ['exited', 'stopped'].includes(raw.bg.state) ? raw.bg.state : 'stopped',
+                    code: raw.bg.code == null ? null : Number(raw.bg.code),
+                };
+                if (raw.bg.state === 'running') {
+                    message._recovered = true;
+                    if (!message.bg.state || message.bg.state === 'stopped') message.bg.code = -1;
+                }
+            }
+            if (raw.bgLog) message.bgLog = aiTextOf(raw.bgLog).slice(0, AI_BG_LIVE_MAX_CHARS);
             return message;
         }
         if (role === 'assistant') {
@@ -3361,6 +3393,12 @@ export function createAIPanel(options) {
     }
 
     function toolStateText(message) {
+        if (message.name === 'spawn_agent' && message.agent) {
+            if (message.agent.state === 'running') return '运行中…';
+            if (message.agent.state === 'stopped') return '已停止';
+            if (message.agent.state === 'error') return '失败';
+            if (message.agent.state === 'done') return '完成';
+        }
         if (message.name === 'background_command' && message.bg) {
             if (message.bg.state === 'running') return '后台运行中…';
             if (message.bg.state === 'stopped') return '已停止（退出码 ' + message.bg.code + '）';
@@ -3715,6 +3753,7 @@ export function createAIPanel(options) {
             case 'schedule_list': return {verb: '定时任务列表', icon: 'clock'};
             case 'schedule_delete': return {verb: '删除定时任务', icon: 'trash'};
             case 'schedule_toggle': return {verb: '启停定时任务', icon: 'refresh'};
+            case 'spawn_agent': return {verb: '子代理', icon: 'agents'};
             case 'memory_list': return {verb: '记忆目录', icon: 'book'};
             case 'memory_read': return {verb: '读取记忆', icon: 'book-open'};
             case 'memory_write': return {verb: '写入记忆', icon: 'book-plus'};
@@ -3787,6 +3826,8 @@ export function createAIPanel(options) {
                 return {primary: '定时任务', dir: ''};
             case 'schedule_delete': case 'schedule_toggle':
                 return {primary: aiTextOf(args.id).trim() || '—', dir: ''};
+            case 'spawn_agent':
+                return {primary: aiTextOf(args.name).trim() || '—', dir: ''};
             case 'memory_read': case 'memory_write':
                 return {primary: aiTextOf(args.name).trim() || '—', dir: ''};
             case 'memory_list':
@@ -3853,8 +3894,9 @@ export function createAIPanel(options) {
         const approval = message.approval;
         const envAsk = message.envAsk;
         const isCommand = message.name === 'run_command' || message.name === 'background_command';
+        const agentRunning = message.name === 'spawn_agent' && message.agent && message.agent.state === 'running';
         const bgRunning = message.name === 'background_command' && message.bg && message.bg.state === 'running';
-        card.className = 'ai-tool-card ' + (bgRunning ? 'running' : (message.status || 'done')) + (approval ? ' has-approval' : '') + (envAsk ? ' has-approval' : '') + (isCommand ? ' command' : '');
+        card.className = 'ai-tool-card ' + (agentRunning || bgRunning ? 'running' : (message.status || 'done')) + (approval ? ' has-approval' : '') + (envAsk ? ' has-approval' : '') + (isCommand ? ' command' : '') + (message.name === 'spawn_agent' ? ' agent' : '');
         if ((approval && approval.state === 'pending') || (envAsk && envAsk.state === 'pending')) card.classList.add('approval-pending');
         wrap.appendChild(card);
         const head = document.createElement('button');
@@ -3916,7 +3958,49 @@ export function createAIPanel(options) {
         });
         const body = document.createElement('div');
         body.className = 'ai-tool-body';
-        if (approval) {
+        if (message.name === 'spawn_agent' && message.agent) {
+            // 子代理卡片：任务 + 轮次用时 + 实时转录（内存态）/ 最终摘要
+            const agent = message.agent;
+            const task = document.createElement('div');
+            task.className = 'ai-agent-task';
+            task.textContent = agent.task || '';
+            task.title = agent.task || '';
+            body.appendChild(task);
+            const transcript = subAgentTranscripts.get(message.toolCallId);
+            if (transcript && transcript.length) {
+                const list = document.createElement('div');
+                list.className = 'ai-agent-transcript';
+                for (const entry of transcript.slice(-40)) {
+                    const item = document.createElement('div');
+                    item.className = 'ai-agent-entry ' + entry.role;
+                    const tag = document.createElement('span');
+                    tag.className = 'ai-agent-entry-tag';
+                    tag.textContent = entry.role === 'tool' ? (entry.name || '工具') : '子代理';
+                    const text = document.createElement('span');
+                    text.className = 'ai-agent-entry-text';
+                    text.textContent = entry.text || '';
+                    item.append(tag, text);
+                    list.appendChild(item);
+                }
+                body.appendChild(list);
+            } else if (agent.state !== 'running') {
+                const archived = document.createElement('div');
+                archived.className = 'ai-agent-archived';
+                archived.textContent = '子对话已归档（不随会话持久化）';
+                body.appendChild(archived);
+            }
+            if (agent.state !== 'running' && agent.summary) {
+                const meta = document.createElement('div');
+                meta.className = 'ai-agent-meta';
+                meta.textContent = '轮次 ' + (agent.rounds || 0) + ' · 用时 ' + Math.round((agent.ms || 0) / 1000) + 's' +
+                    (agent.tokens ? ' · ' + agent.tokens + ' tokens' : '') +
+                    (agent.state === 'error' ? ' · 失败' : (agent.state === 'stopped' ? ' · 已停止' : ''));
+                const summary = document.createElement('div');
+                summary.className = 'ai-agent-summary';
+                summary.textContent = agent.summary;
+                body.append(meta, summary);
+            }
+        } else if (approval) {
             body.classList.add('ai-tool-approval-body');
             // 已执行的写文件/编辑：头部已带路径与 diff 统计，正文只渲染 diff 视图
             renderApprovalBody(body, message, approval, {skipMeta: message.name === 'write_file' || message.name === 'edit_file'});
@@ -5372,6 +5456,19 @@ export function createAIPanel(options) {
                 required: ['id'],
             },
         },
+        spawn_agent: {
+            name: 'spawn_agent',
+            description: '派出一个只读子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离），阻塞等待其完成后返回最终结论摘要。子代理只能只读探索（列目录 / 读文件 / 搜索 / 联网 / 记忆读取 / 技能），不能写文件或执行命令，不能与用户交互。适合「先并行调查几个方向再汇总」；简单问题直接自己做。同时最多 4 个子代理，超出自动排队。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    name: {type: 'string', description: '子代理名称（2–16 字，如「依赖调查」「方案 B 审查」）'},
+                    task: {type: 'string', description: '交给子代理的完整任务说明（目标 + 关注点 + 期望的结论形式）'},
+                    maxRounds: {type: 'integer', description: '轮次上限 3–15，默认 15；轻量调查建议 5'},
+                },
+                required: ['name', 'task'],
+            },
+        },
         env_list: {
             name: 'env_list',
             description: '列出用户在本应用中配置的环境变量（只返回名称、描述与启用状态；值永远不会提供）。终端与 run_command 已注入这些变量，命令里可直接引用。',
@@ -5529,6 +5626,8 @@ export function createAIPanel(options) {
                 AI_TOOL_DEFS.background_command, AI_TOOL_DEFS.check_command, AI_TOOL_DEFS.stop_command);
             if (!planMode) list.push(AI_TOOL_DEFS.browser_click, AI_TOOL_DEFS.browser_type, AI_TOOL_DEFS.browser_press_key);
         }
+        // 子代理：写权限档与计划模式可用（子代理只读探索正是计划模式的刚需）
+        if (AI_WRITE_SCOPES.includes(scope) || planMode) list.push(AI_TOOL_DEFS.spawn_agent);
         if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
         return list;
     }
@@ -7061,6 +7160,16 @@ export function createAIPanel(options) {
                 return '已' + (enabled ? '启用' : '停用') + '定时任务「' + s.name + '」（id=' + s.id + '）' +
                     (enabled ? '\n' + describeAISchedule(s) : '');
             }
+            case 'spawn_agent': {
+                if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('子代理缺少会话上下文 v2');
+                const outcome = await runSubAgent(ctx, input);
+                const meta = ctx.toolMessage.agent || {};
+                const head = '子代理「' + (meta.name || '') + '」' +
+                    ({done: '已完成', stopped: '已被用户停止', error: '失败'}[meta.state] || meta.state) +
+                    '（轮次 ' + (meta.rounds || 0) + ' · 用时 ' + Math.round((meta.ms || 0) / 1000) + 's' +
+                    (meta.tokens ? ' · ' + meta.tokens + ' tokens' : '') + '）';
+                return head + '\n' + (outcome || '（无结论）');
+            }
             default:
                 throw new Error('未知工具：' + name);
         }
@@ -7096,6 +7205,7 @@ export function createAIPanel(options) {
             '- env_list 只返回环境变量的名称与描述，值永远不可见；需要用某个变量时，直接在命令中引用它（$名称 / %名称%）。',
             '- env_create 由你提供变量名与描述，值由用户在弹窗中亲自填写；不要用 ask_user 或对话索取变量值（用户填进弹窗的值你看不到）。',
             '- skill_use 返回技能全文；加载后遵循其中指令。',
+            '- spawn_agent 派出只读子代理独立完成子任务并阻塞等待结论：仅用于值得并行/隔离的调查与多视角审查（同时最多 4 个），简单问题直接自己做；task 要写清目标、关注点与期望的结论形式；计划模式下可用它做只读探索。',
             '- schedule_* 管理定时任务：仅当用户明确要求「定时 / 每 N 分钟 / 明早 X 点 / 循环执行」时创建，创建前先与用户确认触发内容与频率；scope 默认 chat；任务需要写文件或执行命令时（scope=edit）提醒用户触发时段需在场处理审批。用户说「看看我有哪些定时任务」时用 schedule_list。',
             ...(appControlOn() ? [
                 '- app_control 操作当前应用窗口（标签/视图/主题/设置/面板/AI 会话）；先 skill_use 加载 cadt-ui 拿动作表，再调用；它不改工作区文件，所有权限档可用。',
@@ -7863,6 +7973,10 @@ export function createAIPanel(options) {
                 if (stream === s) {
                     toolMessage.status = 'error';
                     toolMessage.content = '工具执行失败：' + ((e && e.message) || e);
+                    if (call.name === 'spawn_agent' && toolMessage.agent && toolMessage.agent.state === 'running') {
+                        toolMessage.agent.state = 'error';
+                        toolMessage.agent.summary = '子代理启动失败：' + ((e && e.message) || e);
+                    }
                 }
             }
             if (stream !== s || s.stopped) {
@@ -7948,6 +8062,14 @@ export function createAIPanel(options) {
                 showNote('压缩失败：' + message, true);
             }
             return;
+        }
+        // 子代理事件按轮次 id 前缀路由（子会话 id 独立，不查主 stream）
+        if (payload && payload.id) {
+            const sub = subAgents.get(String(payload.id).split('#')[0]);
+            if (sub) {
+                handleSubEvent(name, payload, sub);
+                return;
+            }
         }
         if (!stream || !payload || payload.id !== stream.roundId) return;
         const current = stream;
@@ -8064,6 +8186,7 @@ export function createAIPanel(options) {
         const current = stream;
         const sessionId = current.sessionId;
         current.stopped = true;
+        stopSubAgentsOf(sessionId);
         cancelPendingApprovals('用户已停止生成，写操作已取消');
         cancelPendingAsks('用户已停止生成，问题未回答');
         cancelPendingEnvCreations('用户已停止生成，变量创建已取消');
@@ -9107,6 +9230,7 @@ export function createAIPanel(options) {
         askConfirm('删除会话「' + (session.title || '新会话') + '」及其全部消息？', () => {
             sessions = sessions.filter((s) => s.id !== session.id);
             commandApprovalRules.delete(session.id);
+            stopSubAgentsOf(session.id);
             clearQueueForSession(session.id);
             if (!sessions.length) sessions.push(createSessionData());
             const next = sessions[Math.max(0, Math.min(sessions.length - 1, 0))];
@@ -12767,6 +12891,350 @@ export function createAIPanel(options) {
     init();
     whenConfigReady();
     whenSessionsReady();
+
+    // ---- 子代理（spawn_agent）----
+    // 主流零回归：主 stream 单例语义不动；子代理用独立流对象挂在 subAgents 注册表，
+    // handleEvent 按轮次 id 前缀路由（不查主 stream）。子对话不持久化：
+    // 转录存内存 subAgentTranscripts（按主会话 toolCallId 键），卡片只留小元数据 + 摘要。
+
+    const AI_SUB_MAX_CONCURRENT = 4;
+    const AI_SUB_ROUNDS_DEFAULT = 15;
+    const AI_SUB_MESSAGES_MAX = 60;
+    const AI_SUB_SUMMARY_MAX = 8000;
+    const AI_SUB_SYSTEM_PROMPT = [
+        '你是主代理派出的只读子代理：独立完成任务后输出最终结论，不与用户直接交互。',
+        '约束：只做只读探索（列目录 / 读文件 / 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要反问用户（你没有提问渠道）。',
+        '完成后输出一段结构化最终结论（要点 + 证据 path:line），它是你返回给主代理的唯一结果。',
+    ].join('\n');
+
+    const subAgents = new Map();      // subId -> 子代理运行态
+    const subAgentTranscripts = new Map(); // toolCallId -> [{role, name?, text}]
+    const subAgentQueue = [];
+
+    function subToolsForScope() {
+        return [
+            AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.search_text,
+            AI_TOOL_DEFS.web_search, AI_TOOL_DEFS.web_fetch,
+            AI_TOOL_DEFS.memory_list, AI_TOOL_DEFS.memory_read,
+            AI_TOOL_DEFS.skill_use, AI_TOOL_DEFS.env_list,
+        ];
+    }
+
+    function activeSubCount() {
+        let n = 0;
+        for (const sub of subAgents.values()) if (sub.state === 'running') n++;
+        return n;
+    }
+
+    function subTranscriptPush(sub, entry) {
+        let list = subAgentTranscripts.get(sub.toolCallId);
+        if (!list) {
+            list = [];
+            subAgentTranscripts.set(sub.toolCallId, list);
+        }
+        list.push(entry);
+        while (list.length > 200) list.shift();
+    }
+
+    function subThrottleRender(sub) {
+        if (sub.renderTimer) return;
+        sub.renderTimer = setTimeout(() => {
+            sub.renderTimer = 0;
+            const session = sessionById(sub.parentSessionId);
+            if (session) refreshToolWrap(session, sub.parentToolMessage);
+        }, 350);
+    }
+
+    async function runSubAgent(ctx, input) {
+        if (!backend.AISendChat) throw new Error('当前版本不支持子代理');
+        const name = aiTextOf(input.name).trim() || '子代理';
+        const task = aiTextOf(input.task).trim();
+        if (!task) throw new Error('task 不能为空');
+        const maxRounds = aiClampInt(input.maxRounds, 3, 15, AI_SUB_ROUNDS_DEFAULT);
+        // 并发上限：超出排队（阻塞等待空位）
+        while (activeSubCount() >= AI_SUB_MAX_CONCURRENT) await aiDelay(300);
+        const parentSession = ctx.session;
+        const profile = activeProfile();
+        if (!profile) throw new Error('无可用 AI 配置');
+        const toolMessage = ctx.toolMessage;
+        const sub = {
+            id: aiNowId('sub-'),
+            toolCallId: toolMessage.toolCallId || aiNowId('agent-'),
+            parentSessionId: parentSession.id,
+            parentToolMessage: toolMessage,
+            name: name.slice(0, 16),
+            task,
+            maxRounds,
+            state: 'running',
+            startedAt: Date.now(),
+            renderTimer: 0,
+            heartbeat: 0,
+            resolve: null,
+            session: null,
+            flow: null,
+        };
+        toolMessage.agent = {
+            name: sub.name,
+            task,
+            state: 'running',
+            rounds: 0,
+            ms: 0,
+            tokens: 0,
+            summary: '',
+            note: '',
+        };
+        sub.session = {
+            id: sub.id,
+            title: '',
+            workspace: parentSession.workspace || '',
+            profileId: parentSession.profileId,
+            systemPrompt: parentSession.systemPrompt || '',
+            promptTemplateId: parentSession.promptTemplateId || '',
+            scope: 'read',
+            planMode: false,
+            messages: [{role: 'user', content: task, ts: Date.now(), turnStartedAt: Date.now()}],
+            todos: [],
+            changes: [],
+            approvedPaths: [],
+            summary: null,
+            archived: [],
+            round: 0,
+        };
+        const assistant = newAssistantMessage(profile);
+        sub.session.messages.push(assistant);
+        sub.flow = {
+            sessionId: sub.id,
+            baseRound: 1,
+            roundNo: 0,
+            roundId: sub.id + '#1-0',
+            assistant,
+            startedAt: Date.now(),
+            thinkStartedAt: 0,
+            roundStartedAt: 0,
+            firstTokenAt: 0,
+            renderTimer: 0,
+            finished: false,
+            stopped: false,
+            toolCalls: new Map(),
+            profileCfg: configForProfile(profile),
+            systemPrompt: AI_SUB_SYSTEM_PROMPT,
+            usage: null,
+        };
+        subAgents.set(sub.id, sub);
+        persistSessions();
+        refreshToolWrap(parentSession, toolMessage);
+        runSubRound(sub);
+        const outcome = await new Promise((resolve) => { sub.resolve = resolve; });
+        return outcome.text;
+    }
+
+    function runSubRound(sub) {
+        const s = sub.flow;
+        if (sub.state !== 'running' || s.stopped) {
+            finalizeSubAgent(sub, s.stopped ? 'stopped' : sub.state);
+            return;
+        }
+        if (s.roundNo >= sub.maxRounds) {
+            finalizeSubAgent(sub, 'done', '达到轮次上限 ' + sub.maxRounds + '，按当前探索结果收尾');
+            return;
+        }
+        if (sub.session.messages.length > AI_SUB_MESSAGES_MAX) {
+            finalizeSubAgent(sub, 'done', '达到消息上限，按当前探索结果收尾');
+            return;
+        }
+        s.roundNo += 1;
+        s.roundId = sub.id + '#' + s.baseRound + '-' + s.roundNo;
+        s.toolCalls.clear();
+        s.thinkStartedAt = 0;
+        s.roundStartedAt = Date.now();
+        s.firstTokenAt = 0;
+        const index = sub.session.messages.indexOf(s.assistant);
+        if (index < 0) {
+            finalizeSubAgent(sub, 'error', '内部错误：子代理消息索引丢失');
+            return;
+        }
+        const apiMessages = buildApiMessages(sub.session, index, s.systemPrompt);
+        try {
+            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, subToolsForScope(), config.retryMax);
+            if (request && typeof request.then === 'function') {
+                request.catch((e) => finalizeSubAgent(sub, 'error', (e && e.message) || String(e || '请求失败')));
+            }
+        } catch (e) {
+            finalizeSubAgent(sub, 'error', (e && e.message) || String(e || '请求失败'));
+        }
+    }
+
+    async function runSubToolRound(sub, calls) {
+        const s = sub.flow;
+        // 子代理工具执行期间喂自己的流看门狗（与主流工具心跳同理）
+        if (!sub.heartbeat && backend.AITouchStream) {
+            sub.heartbeat = setInterval(() => {
+                if (sub.state !== 'running') {
+                    clearInterval(sub.heartbeat);
+                    sub.heartbeat = 0;
+                    return;
+                }
+                try { backend.AITouchStream(sub.id); } catch (e) {}
+            }, 45000);
+        }
+        for (const call of calls) {
+            if (sub.state !== 'running' || s.stopped) break;
+            const toolMessage = {
+                role: 'tool',
+                toolCallId: call.id,
+                name: call.name,
+                arguments: call.arguments,
+                content: '',
+                status: 'running',
+                ts: Date.now(),
+            };
+            sub.session.messages.push(toolMessage);
+            let result = null;
+            try {
+                const allowed = new Set(subToolsForScope().map((tool) => tool.name));
+                if (!allowed.has(call.name)) throw new Error('子代理不允许工具：' + call.name);
+                const parsed = call.arguments ? JSON.parse(call.arguments) : {};
+                result = await executeTool(call.name, parsed, {session: sub.session, toolMessage, stream: s});
+            } catch (e) {
+                toolMessage.status = 'error';
+                toolMessage.content = '工具执行失败：' + ((e && e.message) || e);
+            }
+            if (sub.state !== 'running' || s.stopped) break;
+            if (result != null) {
+                toolMessage.status = 'done';
+                toolMessage.content = String(result);
+            }
+            subTranscriptPush(sub, {role: 'tool', name: call.name, text: String(toolMessage.content || '').slice(0, 600)});
+        }
+        if (sub.state !== 'running' || s.stopped) {
+            finalizeSubAgent(sub, s.stopped ? 'stopped' : sub.state);
+            return;
+        }
+        const assistant = newAssistantMessage(activeProfile());
+        sub.session.messages.push(assistant);
+        s.assistant = assistant;
+        s.thinkStartedAt = 0;
+        runSubRound(sub);
+    }
+
+    function handleSubEvent(name, payload, sub) {
+        const s = sub.flow;
+        if (!payload || payload.id !== s.roundId) return;
+        switch (name) {
+            case 'ai-chunk':
+                if (payload.delta) {
+                    s.assistant.content += payload.delta;
+                    // 转录里维护一条「进行中」的助手条目，流式更新最后一条
+                    const list = subAgentTranscripts.get(sub.toolCallId);
+                    const last = list && list.length ? list[list.length - 1] : null;
+                    if (last && last.role === 'assistant' && last.live) last.text = s.assistant.content;
+                    else subTranscriptPush(sub, {role: 'assistant', text: s.assistant.content, live: true});
+                    subThrottleRender(sub);
+                }
+                break;
+            case 'ai-think':
+                if (payload.delta) s.assistant.reasoning += payload.delta;
+                break;
+            case 'ai-toolcall': {
+                const index = Number(payload.index) || 0;
+                let call = s.toolCalls.get(index);
+                if (!call) {
+                    call = {id: '', name: '', arguments: ''};
+                    s.toolCalls.set(index, call);
+                }
+                if (payload.callId) call.id = payload.callId;
+                if (payload.name) call.name = payload.name;
+                if (payload.argsDelta) call.arguments += payload.argsDelta;
+                break;
+            }
+            case 'ai-done': {
+                if (payload.usage) s.usage = payload.usage;
+                // 结束「进行中」转录条目
+                const list = subAgentTranscripts.get(sub.toolCallId);
+                const last = list && list.length ? list[list.length - 1] : null;
+                if (last && last.role === 'assistant' && last.live) {
+                    last.text = String(s.assistant.content || '').slice(0, 2000);
+                    last.live = false;
+                }
+                const calls = [...s.toolCalls.values()]
+                    .filter((call) => call.name)
+                    .map((call, index) => ({
+                        id: call.id || ('call_sub_' + s.roundNo + '_' + index),
+                        name: call.name,
+                        arguments: call.arguments || '{}',
+                    }));
+                s.toolCalls.clear();
+                if (payload.finishReason === 'tool' && calls.length) {
+                    runSubToolRound(sub, calls);
+                    return;
+                }
+                finalizeSubAgent(sub, 'done');
+                break;
+            }
+            case 'ai-error':
+                finalizeSubAgent(sub, 'error', payload.message || '请求失败');
+                break;
+        }
+    }
+
+    function finalizeSubAgent(sub, state, note) {
+        if (sub.state !== 'running') return;
+        sub.state = state;
+        if (sub.renderTimer) {
+            clearTimeout(sub.renderTimer);
+            sub.renderTimer = 0;
+        }
+        if (sub.heartbeat) {
+            clearInterval(sub.heartbeat);
+            sub.heartbeat = 0;
+        }
+        const s = sub.flow;
+        s.stopped = state !== 'done';
+        if (s.assistant && s.assistant.status === 'streaming') {
+            s.assistant.status = state === 'done' ? 'done' : state;
+        }
+        try {
+            if (backend.AIStop) backend.AIStop(sub.id);
+        } catch (e) {}
+        let summary = note || '';
+        if (!summary && s.assistant) {
+            summary = String(s.assistant.content || '').trim();
+        }
+        if (state === 'error' && !summary) summary = '子代理执行失败';
+        if (state === 'stopped') summary = summary ? '（用户停止）' + summary : '（用户停止）';
+        summary = summary.trim();
+        if (summary.length > AI_SUB_SUMMARY_MAX) summary = summary.slice(0, AI_SUB_SUMMARY_MAX) + '\n…（子代理结果已截断）';
+        const meta = sub.parentToolMessage.agent;
+        if (meta) {
+            meta.state = state;
+            meta.rounds = s.roundNo;
+            meta.ms = Math.max(0, Date.now() - sub.startedAt);
+            meta.tokens = s.usage ? (Number(s.usage.totalTokens) || 0) : 0;
+            meta.summary = summary;
+            meta.note = note || '';
+        }
+        subAgents.delete(sub.id);
+        if (state !== 'done') subAgentTranscripts.delete(sub.toolCallId);
+        try {
+            if (sub.resolve) sub.resolve({ok: state === 'done', text: summary, state});
+        } catch (e) {}
+        persistSessions();
+        const session = sessionById(sub.parentSessionId);
+        if (session) refreshToolWrap(session, sub.parentToolMessage);
+        if (state === 'error') flash('子代理「' + sub.name + '」失败：' + (note || '执行出错'), true);
+        else if (state === 'stopped') flash('子代理「' + sub.name + '」已停止');
+    }
+
+    function stopSubAgentsOf(sessionId) {
+        for (const sub of [...subAgents.values()]) {
+            if (sub.parentSessionId !== sessionId || sub.state !== 'running') continue;
+            sub.flow.stopped = true;
+            try {
+                if (backend.AIStop) backend.AIStop(sub.id);
+            } catch (e) {}
+            finalizeSubAgent(sub, 'stopped');
+        }
+    }
 
     // ---- 定时任务触发（sched-fire）----
     // 多窗口去重：广播会被所有窗口收到。指定目标会话的任务只由持有该会话的窗口执行，
