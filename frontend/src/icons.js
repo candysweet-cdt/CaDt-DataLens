@@ -45,6 +45,7 @@ const rawIcons = {
     'keyboard': '<rect x="1.9" y="4.2" width="12.2" height="7.6" rx="1.2"/><path d="M4.1 6.3h.1M6.1 6.3h.1M8 6.3h.1M9.9 6.3h.1M11.8 6.3h.1"/><path d="M5 9.9h6"/>',
     'keycap': '<rect x="3.4" y="5" width="9.2" height="6" rx="1.4"/><path d="M5.6 8h4.8"/>',
     'code': '<path d="M5.4 4.4L2.6 8l2.8 3.6"/><path d="M10.6 4.4L13.4 8l-2.8 3.6"/><path d="M9.1 3.2l-2.2 9.6"/>',
+    'git': '<circle cx="4.6" cy="3.4" r="1.5"/><circle cx="4.6" cy="12.6" r="1.5"/><circle cx="11.4" cy="5.6" r="1.5"/><path d="M4.6 4.9v6.2"/><path d="M11.4 7.1v1.2c0 1.4-1.1 2.6-2.5 2.6H6.1"/>',
     'save': '<path d="M2.8 3.4c0-.4.4-.8.8-.8h7.6l2 2v8.8c0 .4-.4.8-.8.8H3.6c-.4 0-.8-.4-.8-.8V3.4z"/><path d="M5 2.6v3.2h6V2.6"/><path d="M4.8 13.4V8.6h6.4v4.8"/>',
     'paste': '<rect x="3.4" y="2.6" width="9.2" height="11.6" rx="1.2"/><rect x="6" y="1.6" width="4" height="2" rx="0.6"/>',
     'redo': '<path d="M4 12a4.7 4.7 0 0 1 3.8-7.6h4.4"/><path d="M9.6 1.8l2.9 2.6-2.9 2.6"/>',

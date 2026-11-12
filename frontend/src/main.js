@@ -13480,6 +13480,7 @@ function closeFolder() {
     gitStateCache.available = false;
     gitStateCache.branch = '';
     renderWorkspaceCrumbs();
+    notifyAIGitEntry();
     scheduleSessionSave();
     if (aiPanel && aiPanel.refreshSessionList) aiPanel.refreshSessionList();
     flash('已关闭文件夹');
@@ -13735,6 +13736,19 @@ function initAIPanel() {
                 } : null,
                 openFiles: docs.map((doc) => doc.path || doc.name).filter(Boolean),
             };
+        },
+        getGitRepo: () => {
+            // 面板可能在模块求值早期自动打开：gitStateCache 尚未完成初始化时按「无仓库」处理，
+            // 随后的 refreshGitStatus 会再次通知刷新。
+            try {
+                return {
+                    available: !!gitStateCache.available,
+                    root: gitStateCache.dir,
+                    branch: gitStateCache.branch,
+                };
+            } catch (e) {
+                return null;
+            }
         },
         getScopeRoot: () => workspaceFolder || (file && file.path ? parentDirOf(file.path) : ''),
         openWorkspaceFolder: (dir, sessionId) => {
@@ -18784,6 +18798,7 @@ async function refreshGitStatus() {
         gitStateCache.branch = '';
         applyGitBadges();
         renderWorkspaceCrumbs();
+        notifyAIGitEntry();
         return;
     }
     if (root !== gitStateCache.dir) {
@@ -18821,6 +18836,14 @@ async function refreshGitStatus() {
     for (const d of docs) scheduleGitGutter(d, 400);
     if (currentSidebarView() === 'git' && settings.showSidebar && els.gitChanges) {
         renderGitPanel();
+    }
+    notifyAIGitEntry();
+}
+
+// AI 面板头顶的 Git 图标是否出现，取决于当前工作区是不是 git 仓库。
+function notifyAIGitEntry() {
+    if (aiPanel && typeof aiPanel.refreshGitEntry === 'function') {
+        try { aiPanel.refreshGitEntry(); } catch (e) {}
     }
 }
 

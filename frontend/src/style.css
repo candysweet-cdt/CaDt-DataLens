@@ -5265,6 +5265,84 @@ html[data-theme="whitey"] {
 .ai-user-foot .ai-msg-meta { margin: 0; }
 .ai-user-foot .ai-msg-actions { margin-top: 0; opacity: 1; }
 .ai-msg.user .ai-msg-meta { justify-content: flex-end; }
+/* AI：应用注入消息（Git 快捷操作 / 定时任务）——全宽卡片，不是用户胶囊 */
+.ai-msg.user.ai-app-msg {
+    align-self: stretch;
+    max-width: 100%;
+    align-items: stretch;
+}
+.ai-app-msg-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel2);
+    padding: 7px 10px;
+    font-size: var(--ai-chat-font);
+}
+.ai-app-msg-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    min-width: 0;
+}
+.ai-app-msg-icon { display: inline-flex; flex: none; color: var(--accent); }
+.ai-app-msg-label {
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ai-app-msg-tag {
+    flex: none;
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 15px;
+    color: var(--faint);
+}
+.ai-app-msg-time {
+    margin-left: auto;
+    flex: none;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+}
+.ai-app-msg-foot { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.ai-app-msg-hint { font-size: 10.5px; color: var(--faint); }
+.ai-app-msg-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: auto;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 10.5px;
+    cursor: pointer;
+}
+.ai-app-msg-toggle:hover { color: var(--text); }
+.ai-app-msg-chev { display: inline-flex; transition: transform .12s ease; }
+.ai-app-msg-toggle.expanded .ai-app-msg-chev { transform: rotate(180deg); }
+.ai-app-msg-body { margin-top: 6px; }
+.ai-app-msg-body.hidden { display: none; }
+.ai-app-msg-text {
+    margin: 0;
+    max-height: 260px;
+    overflow: auto;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--muted);
+    font-family: var(--editor-font-family), monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
 .ai-msg.assistant {
     align-self: stretch;
     padding: 2px 0 0;

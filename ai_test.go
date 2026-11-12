@@ -562,6 +562,33 @@ func TestAIMessageImageValidation(t *testing.T) {
 	}
 }
 
+func TestSanitizeAIMessagesToolArguments(t *testing.T) {
+	messages := []AIMessage{
+		{Role: "assistant", ToolCalls: []AIToolCall{
+			{Id: "a", Name: "ask_user", Arguments: `{"questions": []}}`},
+			{Id: "b", Name: "read_file", Arguments: `{"path":"x.txt"}`},
+			{Id: "c", Name: "todo_write", Arguments: "  "},
+			{Id: "d", Name: "run_command", Arguments: `{"command":`},
+		}},
+	}
+	if fixed := sanitizeAIMessages(messages); fixed != 2 {
+		t.Fatalf("应兜底替换 2 个非法参数，实际 %d", fixed)
+	}
+	calls := messages[0].ToolCalls
+	if calls[0].Arguments != "{}" || calls[3].Arguments != "{}" {
+		t.Fatalf("非法参数未收敛为 {}: %#v", calls)
+	}
+	if calls[1].Arguments != `{"path":"x.txt"}` {
+		t.Fatalf("合法参数被改写: %q", calls[1].Arguments)
+	}
+	if strings.TrimSpace(calls[2].Arguments) != "" {
+		t.Fatalf("空参数不应改写: %q", calls[2].Arguments)
+	}
+	if err := validateAIMessages(messages); err != nil {
+		t.Fatalf("兜底后校验仍失败: %v", err)
+	}
+}
+
 func TestAIStreamHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -641,3 +641,21 @@ AI 助手可通过 **app_control** 工具像真人一样操作当前应用窗口
 - AI 会话桥：ai-panel 返回对象新增 `bridgeNewSession({title,message})`（open + newSession + submitText）、`bridgeSwitchSession(id)`、`bridgeListSessions()`；`ai_new_session` 带 message 会真实触发一次模型调用。当前会话还没发过消息时 newSession 复用该会话（只重命名，不重复创建空会话）。
 - 配套内置技能 **cadt-ui**：动作全表 + 使用顺序（先 get_state）+ 边界（不保存/不删除/不跨窗口/无任意 DOM 模拟）。
 - 刻意不提供：保存/另存为（写文件走 write_file/edit_file 审批）、删除/重命名（已有专用工具+回收站）、跨窗口操作、鼠标模拟；键盘模拟 type_text/press_key 仅完全权限档。
+
+## Git 快捷操作（AI 面板头部，2026-11-12）
+
+当前工作区是 Git 仓库时，AI 面板头部在「新建会话」与显示方式切换组之间出现 Git 图标，点击弹出四项：**提交并推送 / 提交代码 / 推送代码 / 拉取代码**。选中后把一段预设指令作为用户消息注入当前会话，由 AI 通过 `run_command`、`ask_user`、`write_file` 完成操作——权限档、命令审批与写审批全部沿用现有通道，不新增后端接口。
+
+- 图标随仓库探测显隐：main.js 的 `refreshGitStatus()` 完成后回调 `aiPanel.refreshGitEntry()`，打开/关闭工作区目录同样即时刷新；按钮 title 带当前分支。提交前若会话是「只读访问」或计划模式，面板直接提示切换权限，不发送指令。
+- 提示词为纯函数（`frontend/src/ai-git.js`，含 `ai-git.test.mjs` 单测），不依赖 DOM。
+- **提交风格配置**：提交类操作先读工作区 `.cadt/git-commit-style.json`；不存在或无法解析时由 AI 用 `ask_user` 询问（提交风格：Conventional Commits（推荐）/ 简洁中文 / Gitmoji / 自定义；语言：中文（推荐）/ 英文；是否追加 Co-authored-by（默认不追加）），并传 `timeoutAction="recommended"`，超时自动采用推荐项。拿到答案后写入该文件：
+  `{"version":1,"style":"conventional|plain|gitmoji|custom","language":"zh|en","coAuthors":false,"coAuthorLine":"","custom":""}`
+  以后同工作区的提交直接读取，不再重复询问。`.cadt/` 属于自动审批的风险路径，首次写配置仍会走一次审批。
+- **推送**：`push` 被远端新提交拒绝（non-fast-forward）时自动 `git pull --no-rebase --no-edit` 合并后重推，不询问用户；只有合并产生冲突才 `ask_user` 询问处理偏好，再解决冲突并完成推送。禁止 `--force`。
+- **拉取**：可直接快进/自动合并时静默完成；因本地未提交改动被阻止时询问（提交 / stash / 取消）；合并冲突时询问后解决。
+- `write_file` 新建文件会自动创建缺失的父目录（`AIEnsureDir`），因此 `.cadt/` 不存在也能一次写入配置。
+
+### 应用消息卡片与工具参数容错（2026-11-12）
+
+- Git 快捷操作、定时任务等由应用注入的指令不再渲染成用户胶囊：改为全宽卡片（图标 + 来源标题 + 「应用消息」标签 + 时间），指令全文默认收起，「查看指令」展开；展开状态按消息 key 记忆，流式重渲染不弹回。旧会话里没有元数据的注入消息按固定前缀（`［Git 快捷操作 · …］`、`[定时任务 · …]`）自动识别。
+- 工具参数规范化（`frontend/src/ai-tool-args.js`）：工具轮结束、会话恢复、请求构建三处统一把 `arguments` 收敛为合法 JSON 对象——原样合法、`jsonrepair` 修复常见损伤、字符串感知的括号平衡扫描取第一个完整 `{…}`。彻底无法修复时**不执行工具**，而是把「参数不是合法 JSON，本次未执行，请重新调用」作为工具错误结果回给模型，对话继续，由 AI 自行重试；Go 侧 `sanitizeAIMessages` 兜底把漏网坏参数按 `{}` 发送并记 warning 日志，不再整轮拒收。

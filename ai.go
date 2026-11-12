@@ -242,6 +242,10 @@ func (a *App) AISendChat(sessionId string, cfg AIConfig, messages []AIMessage, t
 	if err := validateAIConfig(cfg); err != nil {
 		return err
 	}
+	if fixed := sanitizeAIMessages(messages); fixed > 0 {
+		// 兜底：前端已在工具轮把错误作为工具结果回给模型；这里防止旧会话/其他路径的坏参数整轮拒收。
+		writeAppLog("warn", "AI 请求包含 %d 个非法工具参数，已按 {} 兜底发送", fixed)
+	}
 	if err := validateAIMessages(messages); err != nil {
 		return err
 	}
@@ -510,6 +514,28 @@ func validateAIConfig(cfg AIConfig) error {
 		}
 	}
 	return nil
+}
+
+// sanitizeAIMessages 把非法的工具调用参数收敛为 {}：一条坏历史不应让整轮请求失败。
+// 前端会在工具轮结束时把无法修复的参数作为工具错误结果回给模型，这里只是最后兜底。
+// 返回被替换的调用数量。
+func sanitizeAIMessages(messages []AIMessage) int {
+	fixed := 0
+	for i := range messages {
+		for j := range messages[i].ToolCalls {
+			args := strings.TrimSpace(messages[i].ToolCalls[j].Arguments)
+			if args == "" {
+				continue
+			}
+			if json.Valid([]byte(args)) {
+				messages[i].ToolCalls[j].Arguments = args
+				continue
+			}
+			messages[i].ToolCalls[j].Arguments = "{}"
+			fixed++
+		}
+	}
+	return fixed
 }
 
 func validateAIMessages(messages []AIMessage) error {

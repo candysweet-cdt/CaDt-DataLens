@@ -4,6 +4,8 @@ import {iconSvg} from './icons.js';
 import {createFileIcon} from './fileicons.js';
 import {createSessionDiskStore, replaySessionLog} from './ai-session-store.js';
 import {commandFamilySignature, commandText, matchCommandRule} from './ai-command-rules.js';
+import {GIT_ACTIONS, buildGitActionPrompt, detectAppMessage} from './ai-git.js';
+import {inspectToolArguments, safeToolArguments} from './ai-tool-args.js';
 const AI_CONFIG_KEY = 'datalens-ai';
 const AI_SESSIONS_KEY = 'datalens-ai-sessions';
 // 会话存储：默认写磁盘 JSONL；设为 legacy 可临时退回整包 localStorage（排障用）。
@@ -503,6 +505,7 @@ export function createAIPanel(options) {
     const commandOutput = typeof opts.commandOutput === 'function' ? opts.commandOutput : null;
     const onLayout = typeof opts.onLayout === 'function' ? opts.onLayout : () => {};
     const getWorkspaceContext = typeof opts.getWorkspaceContext === 'function' ? opts.getWorkspaceContext : () => ({workspaceFolder: '', activeFile: null, openFiles: []});
+    const getGitRepo = typeof opts.getGitRepo === 'function' ? opts.getGitRepo : () => null;
     const openWorkspaceFolder = typeof opts.openWorkspaceFolder === 'function' ? opts.openWorkspaceFolder : null;
     const getScopeRoot = typeof opts.getScopeRoot === 'function' ? opts.getScopeRoot : () => '';
     const getSelection = typeof opts.getSelection === 'function' ? opts.getSelection : () => null;
@@ -524,6 +527,7 @@ export function createAIPanel(options) {
         head: panel.querySelector('#ai-head'),
         close: panel.querySelector('#ai-close'),
         newBtn: panel.querySelector('#ai-new-session'),
+        gitBtn: panel.querySelector('#ai-git'),
         changesBtn: panel.querySelector('#ai-changes'),
         changesCount: panel.querySelector('#ai-changes-count'),
         moreBtn: panel.querySelector('#ai-more'),
@@ -588,6 +592,7 @@ export function createAIPanel(options) {
         ctxTokMessages: panel.querySelector('#ai-ctx-tok-messages'),
         ctxPopCompact: panel.querySelector('#ai-ctx-pop-compact'),
     };
+    if (el.gitBtn) el.gitBtn.innerHTML = iconSvg('git', 14);
 
     const sessionListEl = document.getElementById('ai-session-list');
     const sessionNewBtn = document.getElementById('ai-session-new');
@@ -698,6 +703,8 @@ export function createAIPanel(options) {
     let mode = floatWindow ? 'dock' : normalizeFloatMode(settings.aiFloatMode);
     let stickBottom = true;
     let processFoldState = new Map();
+    // 应用消息（Git 快捷操作 / 定时任务）默认收起指令全文；展开状态按消息 key 记住，避免重渲染后弹回。
+    const appMsgExpanded = new Set();
     // 流式期间被手动折叠/展开过的轮次 key：轮次结束后要丢弃这些记忆，
     // 否则「处理中点过折叠条」会把状态带进完成态，压掉“完成后默认展开/收起”的判断。
     const processFoldTouched = new Set();
@@ -1199,6 +1206,17 @@ export function createAIPanel(options) {
         if (role === 'user') {
             message.turnStartedAt = Number(raw.turnStartedAt) || 0;
             message.systemNote = raw.systemNote === true;
+            if (raw.app && typeof raw.app === 'object') {
+                // 应用注入的指令（Git 快捷操作 / 定时任务）：聊天里按应用消息卡片展示，不当用户胶囊。
+                message.app = {
+                    kind: aiTextOf(raw.app.kind).slice(0, 32),
+                    label: aiTextOf(raw.app.label).slice(0, 80),
+                };
+            } else if (message.content) {
+                // 旧会话没有 app 元数据：按固定前缀补标识，避免历史注入消息继续显示成用户胶囊。
+                const detected = detectAppMessage(message.content);
+                if (detected) message.app = detected;
+            }
             message.images = Array.isArray(raw.images)
                 ? raw.images.map(aiNormalizeImage).filter(Boolean).slice(0, AI_IMAGE_LIMIT)
                 : [];
@@ -1206,7 +1224,7 @@ export function createAIPanel(options) {
         if (role === 'tool') {
             message.toolCallId = aiTextOf(raw.toolCallId);
             message.name = aiTextOf(raw.name);
-            message.arguments = aiTextOf(raw.arguments);
+            message.arguments = safeToolArguments(raw.arguments);
             message.status = ['running', 'pending', 'done', 'error'].includes(raw.status) ? raw.status : 'done';
             message.approval = normalizeApproval(raw.approval);
             if (message.approval && message.approval.state === 'pending') {
@@ -1297,7 +1315,8 @@ export function createAIPanel(options) {
                 ? raw.toolCalls.map((call) => ({
                     id: aiTextOf(call && call.id),
                     name: aiTextOf(call && call.name),
-                    arguments: aiTextOf(call && call.arguments),
+                    // 历史会话可能存过非法参数（模型多写括号/截断），恢复时先修成合法 JSON。
+                    arguments: safeToolArguments(call && call.arguments),
                 })).filter((call) => call.id && call.name)
                 : [];
             message.usage = raw.usage && typeof raw.usage === 'object'
@@ -3332,6 +3351,8 @@ export function createAIPanel(options) {
             bubble.appendChild(md);
             wrap.appendChild(bubble);
             updateAssistantElement(wrap, message, message.status === 'streaming', options);
+        } else if (message.app) {
+            renderAppMessage(wrap, message, index, session);
         } else {
             const bubble = document.createElement('div');
             bubble.className = 'ai-user-bubble' + (message.systemNote ? ' system-note' : '');
@@ -3354,6 +3375,74 @@ export function createAIPanel(options) {
             appendActions(wrap, message, index, session, foot);
         }
         (parent || el.messages).appendChild(wrap);
+    }
+
+    // 应用注入的消息（Git 快捷操作 / 定时任务）：全宽卡片 + 来源标识，不用用户胶囊；
+    // 指令全文默认收起，点「查看指令」展开。
+    function appMessageKey(message, index, session) {
+        return (session ? session.id : '') + ':' + index + ':' + (Number(message.ts) || 0);
+    }
+
+    function renderAppMessage(wrap, message, index, session) {
+        wrap.classList.add('ai-app-msg');
+        const app = message.app || {};
+        const card = document.createElement('div');
+        card.className = 'ai-app-msg-card';
+
+        const head = document.createElement('div');
+        head.className = 'ai-app-msg-head';
+        const icon = document.createElement('span');
+        icon.className = 'ai-app-msg-icon';
+        icon.innerHTML = iconSvg(app.kind === 'git' ? 'git' : 'clock', 12);
+        const label = document.createElement('span');
+        label.className = 'ai-app-msg-label';
+        label.textContent = app.label || '应用消息';
+        const tag = document.createElement('span');
+        tag.className = 'ai-app-msg-tag';
+        tag.textContent = '应用消息';
+        const time = document.createElement('span');
+        time.className = 'ai-app-msg-time';
+        time.textContent = aiFormatTime(message.ts);
+        head.append(icon, label, tag, time);
+        card.appendChild(head);
+
+        const key = appMessageKey(message, index, session);
+        const expanded = appMsgExpanded.has(key);
+
+        const foot = document.createElement('div');
+        foot.className = 'ai-app-msg-foot';
+        const hint = document.createElement('span');
+        hint.className = 'ai-app-msg-hint';
+        hint.textContent = '由应用自动注入，AI 按这条指令执行';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'ai-app-msg-toggle' + (expanded ? ' expanded' : '');
+        const chev = document.createElement('span');
+        chev.className = 'ai-app-msg-chev';
+        chev.innerHTML = iconSvg('chevron-down', 11);
+        const toggleText = document.createElement('span');
+        toggleText.textContent = expanded ? '收起指令' : '查看指令';
+        toggle.append(chev, toggleText);
+        foot.append(hint, toggle);
+
+        const body = document.createElement('div');
+        body.className = 'ai-app-msg-body' + (expanded ? '' : ' hidden');
+        const pre = document.createElement('pre');
+        pre.className = 'ai-app-msg-text';
+        pre.textContent = message.content || '';
+        body.appendChild(pre);
+
+        toggle.addEventListener('click', () => {
+            const next = !appMsgExpanded.has(key);
+            if (next) appMsgExpanded.add(key);
+            else appMsgExpanded.delete(key);
+            body.classList.toggle('hidden', !next);
+            toggle.classList.toggle('expanded', next);
+            toggleText.textContent = next ? '收起指令' : '查看指令';
+        });
+
+        card.append(foot, body);
+        wrap.appendChild(card);
     }
 
     function toolArgsSummary(value) {
@@ -4383,7 +4472,8 @@ export function createAIPanel(options) {
                     item.toolCalls = usableCalls.map((call) => ({
                         id: call.id,
                         name: call.name,
-                        arguments: call.arguments || '{}',
+                        // 后端会整轮校验：参数不合法时先修复，避免一条坏历史让后续每轮 400。
+                        arguments: safeToolArguments(call.arguments),
                     }));
                 } else if (!content) {
                     // 全部无响应且无正文：整条不发，避免模型看到悬空的 calls。
@@ -6465,6 +6555,10 @@ export function createAIPanel(options) {
             }
         }
         try {
+            if (info.newFile && backend.AIEnsureDir) {
+                // 新文件可能位于尚不存在的目录（如 .cadt/）：SaveFile 只写文件、不建父目录。
+                try { await backend.AIEnsureDir(aiPathDir(info.path)); } catch (e) {}
+            }
             await backend.SaveFile(info.path, info.content, info.eol || '', !!info.hasBom, info.enc || 'utf-8');
         } catch (e) {
             if (toolMessage.approval) {
@@ -7517,7 +7611,7 @@ export function createAIPanel(options) {
         else updateScrollButton();
     }
 
-    async function submitText(text, truncateAt) {
+    async function submitText(text, truncateAt, extra) {
         const value = String(text == null ? '' : text).trim();
         const imageAttachments = attachments.filter((item) => item.kind === 'image').map(aiNormalizeImage).filter(Boolean);
         const textAttachments = attachments.filter((item) => item.kind !== 'image');
@@ -7570,13 +7664,20 @@ export function createAIPanel(options) {
         pendingEdit = null;
 
         const turnStartedAt = Date.now();
-        session.messages.push({
+        const userMessage = {
             role: 'user',
             content: value,
             images: imageAttachments,
             ts: turnStartedAt,
             turnStartedAt,
-        });
+        };
+        if (extra && extra.app && typeof extra.app === 'object') {
+            userMessage.app = {
+                kind: aiTextOf(extra.app.kind).slice(0, 32),
+                label: aiTextOf(extra.app.label).slice(0, 80),
+            };
+        }
+        session.messages.push(userMessage);
         updateSessionTitleFromText(session, value || '图片对话');
         renderSessionList();
         queueLogSave(session);
@@ -7880,7 +7981,14 @@ export function createAIPanel(options) {
         }
     }
 
-    async function handleToolRound(s, calls) {
+    function toolArgsErrorText(name, raw) {
+        const snippet = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 240);
+        return '工具调用参数不是合法 JSON，本次「' + (name || '工具') + '」未执行。' +
+            '请重新发起调用，并输出完整、合法的 JSON 参数。' +
+            (snippet ? '\n原始参数片段：' + snippet : '');
+    }
+
+    async function handleToolRound(s, calls, argErrors) {
         if (stream !== s) return;
         const session = sessionById(s.sessionId);
         if (!session) {
@@ -7939,6 +8047,15 @@ export function createAIPanel(options) {
             };
             session.messages.push(toolMessage);
             if (isOpen() && currentSession() === session) renderMessages(true);
+            // 参数彻底无法修复：不执行工具，把错误作为工具结果回给模型，让它重新发起调用。
+            const invalidArgs = argErrors && argErrors.get(call.id);
+            if (invalidArgs) {
+                toolMessage.status = 'error';
+                toolMessage.content = invalidArgs;
+                persistSessions();
+                refreshToolWrap(session, toolMessage);
+                continue;
+            }
             let result = null;
             try {
                 if (!allowedTools.has(call.name)) throw new Error('当前范围不允许工具：' + call.name);
@@ -8097,13 +8214,17 @@ export function createAIPanel(options) {
                     finishStream();
                     return;
                 }
+                const argErrors = new Map();
                 const calls = [...current.toolCalls.values()]
                     .filter((call) => call.name)
-                    .map((call, index) => ({
-                        id: call.id || ('call_' + current.roundNo + '_' + index),
-                        name: call.name,
-                        arguments: call.arguments || '{}',
-                    }));
+                    .map((call, index) => {
+                        const check = inspectToolArguments(call.arguments);
+                        const id = call.id || ('call_' + current.roundNo + '_' + index);
+                        if (!check.valid && !check.repaired) {
+                            argErrors.set(id, toolArgsErrorText(call.name, call.arguments));
+                        }
+                        return {id, name: call.name, arguments: check.text};
+                    });
                 if (payload.finishReason === 'tool' && calls.length) {
                     current.assistant.status = 'done';
                     current.assistant.toolCalls = calls;
@@ -8111,7 +8232,7 @@ export function createAIPanel(options) {
                     const idx = session ? session.messages.indexOf(current.assistant) : -1;
                     const wrap = idx >= 0 ? el.messages.querySelector('.ai-msg.assistant[data-ai-idx="' + idx + '"]') : null;
                     if (wrap) updateAssistantElement(wrap, current.assistant, false);
-                    handleToolRound(current, calls);
+                    handleToolRound(current, calls, argErrors);
                     return;
                 }
                 // 空回复兜底：模型偶发返回 finishReason=stop 且无任何内容（ask_user 回答后
@@ -8491,6 +8612,86 @@ export function createAIPanel(options) {
             {label: '模型设置…', action: () => openSettings('models')},
         );
         showContextMenu(items, rect.left - 160, rect.bottom + 4);
+    }
+
+    // ---------- Git 快捷操作 ----------
+
+    let gitEntryState = {available: false, root: '', branch: ''};
+
+    // 工作区变化（打开/关闭目录、仓库探测完成）后由 main.js 调用，决定 Git 图标是否出现。
+    function refreshGitEntry() {
+        if (!el.gitBtn) return;
+        let repo = null;
+        try {
+            repo = getGitRepo ? getGitRepo() : null;
+        } catch (e) {
+            repo = null;
+        }
+        const root = currentWorkspacePath();
+        const available = !!(repo && repo.available && root);
+        gitEntryState = {
+            available,
+            root,
+            branch: aiTextOf(repo && repo.branch),
+        };
+        el.gitBtn.classList.toggle('hidden', !available);
+        if (available) {
+            el.gitBtn.title = 'Git 操作' + (gitEntryState.branch ? '（' + gitEntryState.branch + '）' : '');
+        } else {
+            el.gitBtn.title = 'Git 操作';
+        }
+    }
+
+    function gitActionBlockedReason(session) {
+        if (!session) return '没有可用的会话';
+        if (session.archivedAt) return '当前会话已归档，请先取消归档再执行 Git 操作';
+        if (session.planMode) return '计划模式下不能执行 Git 操作，请先退出计划模式';
+        if (currentScopeOf(session) === 'read') return 'Git 操作需要写权限：请把底部权限切到「每次询问」或更高';
+        return '';
+    }
+
+    function runGitAction(action) {
+        const meta = GIT_ACTIONS.find((item) => item.id === action);
+        if (!meta) return;
+        if (stream || oneShot) {
+            flash('AI 正在生成，请等本轮结束后再执行 Git 操作', true);
+            return;
+        }
+        const session = currentSession();
+        const blocked = gitActionBlockedReason(session);
+        if (blocked) {
+            ensureOpen();
+            showNote(blocked, true);
+            flash(blocked, true);
+            return;
+        }
+        if (!gitEntryState.available) {
+            refreshGitEntry();
+            if (!gitEntryState.available) {
+                flash('当前工作区不在 Git 仓库内', true);
+                return;
+            }
+        }
+        const prompt = buildGitActionPrompt(action, {root: gitEntryState.root, branch: gitEntryState.branch});
+        if (!prompt) return;
+        ensureOpen();
+        submitText(prompt, null, {app: {kind: 'git', label: 'Git 快捷操作 · ' + meta.label}}).then((sent) => {
+            if (!sent) flash('Git 操作未能发送，请检查模型配置或当前会话状态', true);
+        }).catch((e) => flash('Git 操作发送失败：' + ((e && e.message) || e), true));
+    }
+
+    function showGitMenu() {
+        if (!el.gitBtn || !showContextMenu) return;
+        refreshGitEntry();
+        if (!gitEntryState.available) {
+            flash('当前工作区不在 Git 仓库内', true);
+            return;
+        }
+        const rect = el.gitBtn.getBoundingClientRect();
+        showContextMenu(GIT_ACTIONS.map((action) => ({
+            label: action.label,
+            action: () => runGitAction(action.id),
+        })), rect.left - 40, rect.bottom + 4);
     }
 
     function renderAttachments() {
@@ -9254,7 +9455,7 @@ export function createAIPanel(options) {
                 if (message.ask) appendAskMarkdown(lines, message.ask);
                 lines.push('```text', message.content || '（无输出）', '```', '');
             } else if (message.role === 'user') {
-                lines.push('## 用户', '', message.content || '', '');
+                lines.push('## ' + (message.app && message.app.label ? '应用 · ' + message.app.label : '用户'), '', message.content || '', '');
                 for (const image of message.images || []) {
                     const src = aiImageSrc(image);
                     if (src) lines.push('![图片](<' + src + '>)', '');
@@ -9282,7 +9483,9 @@ export function createAIPanel(options) {
             lines.push('## 已归档消息（压缩前，不发送）', '');
             for (const message of session.archived) {
                 if (!message || !message.role) continue;
-                const label = message.role === 'user' ? '用户' : (message.role === 'tool' ? ('工具：' + (message.name || '')) : 'AI');
+                const label = message.role === 'user'
+                    ? (message.app && message.app.label ? '应用 · ' + message.app.label : '用户')
+                    : (message.role === 'tool' ? ('工具：' + (message.name || '')) : 'AI');
                 lines.push('### ' + label, '', message.content || '（无内容）', '');
             }
         }
@@ -9677,7 +9880,9 @@ export function createAIPanel(options) {
                 if (!message || !message.role) continue;
                 const row = dialogNode('div', 'ai-mgr-row');
                 const main = dialogNode('div', 'ai-mgr-main');
-                const label = message.role === 'user' ? '用户' : (message.role === 'tool' ? ('工具：' + (message.name || '')) : 'AI');
+                const label = message.role === 'user'
+                    ? (message.app && message.app.label ? '应用 · ' + message.app.label : '用户')
+                    : (message.role === 'tool' ? ('工具：' + (message.name || '')) : 'AI');
                 main.appendChild(dialogNode('div', 'ai-mgr-name', label));
                 main.appendChild(dialogNode('div', 'ai-mgr-meta', String(message.content || '（无内容）').slice(0, 200)));
                 row.appendChild(main);
@@ -10555,6 +10760,7 @@ export function createAIPanel(options) {
             updateComposerState();
             positionOverlays();
             refreshMemoryPath();
+            refreshGitEntry();
             setTimeout(() => {
                 if (el.input) el.input.focus();
                 if (stickBottom) scrollToBottom(false);
@@ -11731,6 +11937,7 @@ export function createAIPanel(options) {
             });
         }
         if (el.newBtn) el.newBtn.addEventListener('click', () => newSession());
+        if (el.gitBtn) el.gitBtn.addEventListener('click', showGitMenu);
         if (sessionNewBtn) sessionNewBtn.addEventListener('click', () => {
             ensureOpen();
             newSession();
@@ -12977,7 +13184,7 @@ export function createAIPanel(options) {
         }
     }
 
-    async function runSubToolRound(sub, calls) {
+    async function runSubToolRound(sub, calls, argErrors) {
         const s = sub.flow;
         // 子代理工具执行期间喂自己的流看门狗（与主流工具心跳同理）
         if (!sub.heartbeat && backend.AITouchStream) {
@@ -13002,6 +13209,13 @@ export function createAIPanel(options) {
                 ts: Date.now(),
             };
             sub.session.messages.push(toolMessage);
+            const invalidArgs = argErrors && argErrors.get(call.id);
+            if (invalidArgs) {
+                toolMessage.status = 'error';
+                toolMessage.content = invalidArgs;
+                subTranscriptPush(sub, {role: 'tool', name: call.name, text: invalidArgs.slice(0, 600)});
+                continue;
+            }
             let result = null;
             try {
                 const allowed = new Set(subToolsForScope().map((tool) => tool.name));
@@ -13069,16 +13283,20 @@ export function createAIPanel(options) {
                     last.text = String(s.assistant.content || '').slice(0, 2000);
                     last.live = false;
                 }
+                const argErrors = new Map();
                 const calls = [...s.toolCalls.values()]
                     .filter((call) => call.name)
-                    .map((call, index) => ({
-                        id: call.id || ('call_sub_' + s.roundNo + '_' + index),
-                        name: call.name,
-                        arguments: call.arguments || '{}',
-                    }));
+                    .map((call, index) => {
+                        const check = inspectToolArguments(call.arguments);
+                        const id = call.id || ('call_sub_' + s.roundNo + '_' + index);
+                        if (!check.valid && !check.repaired) {
+                            argErrors.set(id, toolArgsErrorText(call.name, call.arguments));
+                        }
+                        return {id, name: call.name, arguments: check.text};
+                    });
                 s.toolCalls.clear();
                 if (payload.finishReason === 'tool' && calls.length) {
-                    runSubToolRound(sub, calls);
+                    runSubToolRound(sub, calls, argErrors);
                     return;
                 }
                 finalizeSubAgent(sub, 'done');
@@ -13205,7 +13423,7 @@ export function createAIPanel(options) {
             // 窗口正在生成时延迟重试，避免打断当前轮次（最多约 30 秒）
             for (let i = 0; i < 10 && (stream || oneShot); i++) await aiDelay(3000);
             if (stream || oneShot) throw new Error('当前窗口正在生成，未能注入');
-            const sent = await submitText(prefix + '\n' + prompt);
+            const sent = await submitText(prefix + '\n' + prompt, null, {app: {kind: 'schedule', label: '定时任务 · ' + name}});
             if (!sent) throw new Error('消息未能发送（无可用配置或面板正忙）');
             flash('定时任务「' + name + '」已触发（第 ' + (fire.runNo || 1) + ' 次）');
             if (backend.AIScheduleSetResult) {
@@ -13247,6 +13465,7 @@ export function createAIPanel(options) {
         getMode: () => mode,
         refreshDockFill,
         refreshSessionList: () => renderSessionList(),
+        refreshGitEntry,
         getScope: currentScope,
         bridgeNewSession: async (opts2) => {
             const title = String((opts2 && opts2.title) || '').trim();
