@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {GIT_ACTIONS, GIT_COMMIT_STYLE_PATH, buildGitActionPrompt, detectAppMessage} from './ai-git.js';
+import {GIT_ACTIONS, GIT_COMMIT_STYLE_PATH, buildGitActionPrompt} from './ai-git.js';
 
 test('Git 动作顺序与标签符合菜单约定', () => {
     assert.deepEqual(GIT_ACTIONS.map((item) => item.id), ['commit-push', 'commit', 'push', 'pull']);
@@ -44,13 +44,4 @@ test('工作区与分支注入提示词，未知动作返回空串', () => {
     assert.ok(text.includes('D:/repo'));
     assert.ok(text.includes('main'));
     assert.equal(buildGitActionPrompt('nope', {}), '');
-});
-
-test('旧会话按前缀识别应用消息', () => {
-    const git = detectAppMessage('［Git 快捷操作 · 提交并推送］\n工作区：D:/repo');
-    assert.deepEqual(git, {kind: 'git', label: 'Git 快捷操作 · 提交并推送'});
-    const scheduled = detectAppMessage('[定时任务 · 每日巡检]\n请检查构建');
-    assert.deepEqual(scheduled, {kind: 'schedule', label: '定时任务 · 每日巡检'});
-    assert.equal(detectAppMessage('普通用户消息'), null);
-    assert.equal(detectAppMessage(''), null);
 });

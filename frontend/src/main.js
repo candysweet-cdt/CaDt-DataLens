@@ -1730,6 +1730,22 @@ const mockBackend = {
         if (mockScenario.has('airun')) {
             const toolMessages = (messages || []).filter((message) => message.role === 'tool');
             if (!toolMessages.length) {
+                // ?airun&aithink：模拟「只有思考链、没有正文」的工具轮（回归：工具执行期间思考链不能消失）
+                if (mockScenario.has('aithink')) {
+                    const think = '先确认仓库状态，再执行命令。';
+                    const thinkChunks = think.match(/[^\n]{1,3}/g) || [];
+                    thinkChunks.forEach((chunk, i) => schedule(() => emit('ai-think', {id: sessionId, delta: chunk}), 20 + i * slow));
+                    const base = 20 + thinkChunks.length * slow;
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: 'call_mock_runcmd',
+                        name: 'run_command',
+                        argsDelta: JSON.stringify({command: 'git status --short'}),
+                    }), base + 50);
+                    schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), base + 160);
+                    return null;
+                }
                 schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先执行一条命令确认环境。\n\n'}), 20);
                 schedule(() => emit('ai-toolcall', {
                     id: sessionId,

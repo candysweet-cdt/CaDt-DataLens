@@ -12,16 +12,6 @@ export const GIT_ACTIONS = [
     {id: 'pull', label: '拉取代码'},
 ];
 
-// 旧会话没有 app 元数据时，按注入指令的固定前缀识别应用消息。
-export function detectAppMessage(content) {
-    const text = String(content || '').trim();
-    const git = text.match(/^［Git 快捷操作 · ([^］]+)］/);
-    if (git) return {kind: 'git', label: 'Git 快捷操作 · ' + git[1].trim()};
-    const scheduled = text.match(/^\[定时任务 · ([^\]]+)\]/);
-    if (scheduled) return {kind: 'schedule', label: '定时任务 · ' + scheduled[1].trim()};
-    return null;
-}
-
 const STYLE_RULES = [
     '提交信息风格：先读取工作区的 `' + GIT_COMMIT_STYLE_PATH + '`。',
     '- 文件存在且可解析：严格按其中的 style / language / coAuthors / coAuthorLine / custom 字段执行。',

@@ -657,5 +657,5 @@ AI 助手可通过 **app_control** 工具像真人一样操作当前应用窗口
 
 ### 应用消息卡片与工具参数容错（2026-11-12）
 
-- Git 快捷操作、定时任务等由应用注入的指令不再渲染成用户胶囊：改为全宽卡片（图标 + 来源标题 + 「应用消息」标签 + 时间），指令全文默认收起，「查看指令」展开；展开状态按消息 key 记忆，流式重渲染不弹回。旧会话里没有元数据的注入消息按固定前缀（`［Git 快捷操作 · …］`、`[定时任务 · …]`）自动识别。
+- 应用消息是**通用能力**，不是 Git 专用的：元数据与图标抽在 `frontend/src/ai-app-message.js`（`APP_MESSAGE_ICONS`、`normalizeAppMessage`、`appMessageIcon`、旧前缀识别 `detectAppMessage`），渲染为全宽卡片（图标 + 来源标题 + 「应用消息」标签 + 时间），指令全文默认收起，「查看指令」展开；展开状态按消息 key 记忆，流式重渲染不弹回。任意功能向当前会话注入指令走 `aiPanel.sendAppMessage({kind, label, icon?, content})`（`window.__lens.aiPanel` 同源可用），kind 决定默认图标，也可用 icons.js 登记的 icon 覆盖；Git 快捷操作与定时任务已改为该 API 的调用方。旧会话里没有元数据的注入消息按固定前缀（`［Git 快捷操作 · …］`、`[定时任务 · …]`）自动识别。
 - 工具参数规范化（`frontend/src/ai-tool-args.js`）：工具轮结束、会话恢复、请求构建三处统一把 `arguments` 收敛为合法 JSON 对象——原样合法、`jsonrepair` 修复常见损伤、字符串感知的括号平衡扫描取第一个完整 `{…}`。彻底无法修复时**不执行工具**，而是把「参数不是合法 JSON，本次未执行，请重新调用」作为工具错误结果回给模型，对话继续，由 AI 自行重试；Go 侧 `sanitizeAIMessages` 兜底把漏网坏参数按 `{}` 发送并记 warning 日志，不再整轮拒收。

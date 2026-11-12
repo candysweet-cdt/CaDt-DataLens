@@ -4,7 +4,8 @@ import {iconSvg} from './icons.js';
 import {createFileIcon} from './fileicons.js';
 import {createSessionDiskStore, replaySessionLog} from './ai-session-store.js';
 import {commandFamilySignature, commandText, matchCommandRule} from './ai-command-rules.js';
-import {GIT_ACTIONS, buildGitActionPrompt, detectAppMessage} from './ai-git.js';
+import {GIT_ACTIONS, buildGitActionPrompt} from './ai-git.js';
+import {normalizeAppMessage, appMessageIcon, detectAppMessage} from './ai-app-message.js';
 import {inspectToolArguments, safeToolArguments} from './ai-tool-args.js';
 const AI_CONFIG_KEY = 'datalens-ai';
 const AI_SESSIONS_KEY = 'datalens-ai-sessions';
@@ -1207,11 +1208,8 @@ export function createAIPanel(options) {
             message.turnStartedAt = Number(raw.turnStartedAt) || 0;
             message.systemNote = raw.systemNote === true;
             if (raw.app && typeof raw.app === 'object') {
-                // 应用注入的指令（Git 快捷操作 / 定时任务）：聊天里按应用消息卡片展示，不当用户胶囊。
-                message.app = {
-                    kind: aiTextOf(raw.app.kind).slice(0, 32),
-                    label: aiTextOf(raw.app.label).slice(0, 80),
-                };
+                // 应用注入的指令（Git 快捷操作 / 定时任务 / 其他功能）：聊天里按应用消息卡片展示，不当用户胶囊。
+                message.app = normalizeAppMessage(raw.app);
             } else if (message.content) {
                 // 旧会话没有 app 元数据：按固定前缀补标识，避免历史注入消息继续显示成用户胶囊。
                 const detected = detectAppMessage(message.content);
@@ -3165,7 +3163,12 @@ export function createAIPanel(options) {
         const processAll = finalItem ? group.items.filter((item) => item !== finalItem) : group.items.slice();
         const turnRunning = !!(stream && stream.sessionId === session.id && isLastGroup);
         const streamingFinal = turnRunning && finalItem && stream.assistant === finalItem.message;
-        const finalReasoning = !turnRunning && finalItem && finalItem.message.reasoning && settings.aiShowThinking !== false;
+        // 最终回答是否有正文可展示（流式/出错/停止都算；纯工具调用的 done 不算）。
+        const finalHasBody = !!(finalItem && (finalItem.message.content || finalItem.message.status !== 'done'));
+        // 最终回答的思考链平时挂在「最后一个 items 段」的折叠体里；轮次进行中若最终回答本身
+        // 不渲染（纯工具调用、等待终端执行/审批），也必须挂过去，否则思考链会在工具执行期间消失。
+        const finalReasoning = !!(finalItem && finalItem.message.reasoning && settings.aiShowThinking !== false &&
+            (!turnRunning || !finalHasBody));
         const duration = turnRunning && stream
             ? Math.max(0, Date.now() - (Number(stream.startedAt) || turnStartMs(group)))
             : turnDurationMs(group, finalItem, false);
@@ -3190,7 +3193,6 @@ export function createAIPanel(options) {
         if (!segments.length) segments.push({items: []});
         // 完成后默认收起；但最终回答没有正文时（如工具轮收尾、以工具调用结束），
         // 过程行是唯一信息载体，默认展开以免「全部折叠」看起来没有任何输出。
-        const hasFinalBody = !!(finalItem && (finalItem.message.content || finalItem.message.status !== 'done'));
         // 最终回答的思考链跟随「最后一个 items 段」的折叠体（与完成后收起的设计一致）；
         // 尾部是提问卡时同样挂在它前面的末段，不额外暴露在折叠区外。
         const lastItemsIndex = segments.reduce((acc, seg, idx) => (seg.ask ? acc : idx), -1);
@@ -3215,7 +3217,7 @@ export function createAIPanel(options) {
             }
             const expanded = turnRunning
                 ? (processFoldState.has(key) ? processFoldState.get(key) : true)
-                : (processFoldState.has(key) ? processFoldState.get(key) : !hasFinalBody);
+                : (processFoldState.has(key) ? processFoldState.get(key) : !finalHasBody);
             fold.classList.toggle('collapsed', !expanded);
             const head = document.createElement('button');
             head.type = 'button';
@@ -3261,7 +3263,7 @@ export function createAIPanel(options) {
             host.appendChild(fold);
         });
         if (finalItem) {
-            const showFinal = finalItem.message.content || finalItem.message.status !== 'done';
+            const showFinal = finalHasBody;
             if (showFinal) renderMessage(finalItem.message, finalItem.index, session, host,
                 Object.assign({}, turnOptions, {hideThinking: !streamingFinal}));
         }
@@ -3393,7 +3395,7 @@ export function createAIPanel(options) {
         head.className = 'ai-app-msg-head';
         const icon = document.createElement('span');
         icon.className = 'ai-app-msg-icon';
-        icon.innerHTML = iconSvg(app.kind === 'git' ? 'git' : 'clock', 12);
+        icon.innerHTML = iconSvg(appMessageIcon(app), 12);
         const label = document.createElement('span');
         label.className = 'ai-app-msg-label';
         label.textContent = app.label || '应用消息';
@@ -7611,6 +7613,16 @@ export function createAIPanel(options) {
         else updateScrollButton();
     }
 
+    // 通用应用消息：任意功能向当前会话注入一条带来源标识的「应用消息」卡片，交给 AI 执行。
+    // 调用：aiPanel.sendAppMessage({kind: 'git', label: 'Git 快捷操作 · 提交代码', content: prompt})
+    // kind 决定默认图标（见 ai-app-message.js），也可用 icon 指定 icons.js 里登记的图标。
+    function sendAppMessage(options) {
+        const source = options || {};
+        const content = aiTextOf(source.content).trim();
+        if (!content) return Promise.resolve(false);
+        return submitText(content, null, {app: normalizeAppMessage(source)});
+    }
+
     async function submitText(text, truncateAt, extra) {
         const value = String(text == null ? '' : text).trim();
         const imageAttachments = attachments.filter((item) => item.kind === 'image').map(aiNormalizeImage).filter(Boolean);
@@ -7672,10 +7684,7 @@ export function createAIPanel(options) {
             turnStartedAt,
         };
         if (extra && extra.app && typeof extra.app === 'object') {
-            userMessage.app = {
-                kind: aiTextOf(extra.app.kind).slice(0, 32),
-                label: aiTextOf(extra.app.label).slice(0, 80),
-            };
+            userMessage.app = normalizeAppMessage(extra.app);
         }
         session.messages.push(userMessage);
         updateSessionTitleFromText(session, value || '图片对话');
@@ -8675,7 +8684,7 @@ export function createAIPanel(options) {
         const prompt = buildGitActionPrompt(action, {root: gitEntryState.root, branch: gitEntryState.branch});
         if (!prompt) return;
         ensureOpen();
-        submitText(prompt, null, {app: {kind: 'git', label: 'Git 快捷操作 · ' + meta.label}}).then((sent) => {
+        sendAppMessage({kind: 'git', label: 'Git 快捷操作 · ' + meta.label, content: prompt}).then((sent) => {
             if (!sent) flash('Git 操作未能发送，请检查模型配置或当前会话状态', true);
         }).catch((e) => flash('Git 操作发送失败：' + ((e && e.message) || e), true));
     }
@@ -13423,7 +13432,7 @@ export function createAIPanel(options) {
             // 窗口正在生成时延迟重试，避免打断当前轮次（最多约 30 秒）
             for (let i = 0; i < 10 && (stream || oneShot); i++) await aiDelay(3000);
             if (stream || oneShot) throw new Error('当前窗口正在生成，未能注入');
-            const sent = await submitText(prefix + '\n' + prompt, null, {app: {kind: 'schedule', label: '定时任务 · ' + name}});
+            const sent = await sendAppMessage({kind: 'schedule', label: '定时任务 · ' + name, content: prefix + '\n' + prompt});
             if (!sent) throw new Error('消息未能发送（无可用配置或面板正忙）');
             flash('定时任务「' + name + '」已触发（第 ' + (fire.runNo || 1) + ' 次）');
             if (backend.AIScheduleSetResult) {
@@ -13466,6 +13475,7 @@ export function createAIPanel(options) {
         refreshDockFill,
         refreshSessionList: () => renderSessionList(),
         refreshGitEntry,
+        sendAppMessage,
         getScope: currentScope,
         bridgeNewSession: async (opts2) => {
             const title = String((opts2 && opts2.title) || '').trim();
