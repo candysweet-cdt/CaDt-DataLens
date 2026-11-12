@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
     <title>CaDt-DataLens</title>
@@ -257,6 +258,7 @@
                         <button type="button" class="snav-item snav-child" data-pane="ai">AI 助手</button>
                         <button type="button" class="snav-item snav-child" data-pane="context">上下文注入</button>
                         <button type="button" class="snav-item snav-child" data-pane="preferences">用户偏好</button>
+                        <button type="button" class="snav-item snav-child" data-pane="schedules">定时任务</button>
                     </div>
                 </div>
                 <div id="snav-formats" class="snav-group expanded">
@@ -813,6 +815,19 @@
                             </div>
                         </div>
                         <div class="fmt-hint">每条一句话（≤500 字），最多 100 条；「你 / AI」标出来源。偏好随 AI 配置一起导出 / 导入，也会被 AI 的 preference_* 工具即时更新。</div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="schedules">
+                        <div class="fmt-pane-title">定时任务</div>
+                        <div class="fmt-pane-sub">让 AI 在指定时间自动触发对话：单次（once）/ 固定间隔（interval）/ cron。任务仅在应用运行期间有效；关闭窗口后挂起，重开后不错过的时间不补跑。触发会消耗 token，AI 也可通过 schedule_* 工具管理。</div>
+                        <div class="settings-section-title">全部任务</div>
+                        <div id="ai-opt-schedules" class="ai-sched-list"></div>
+                        <div class="popover-row">
+                            <span class="popover-label"></span>
+                            <div class="ai-settings-key">
+                                <button type="button" id="ai-opt-schedule-add" class="dlg-btn">新建任务…</button>
+                            </div>
+                        </div>
+                        <div class="fmt-hint">scope（触发轮次权限）仅对「每次新建会话」的任务生效；edit 档任务触发时若无人处理写审批会一直挂起，建议触发时保持在电脑前。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="formats">
                         <div class="fmt-pane-title">通用数据格式</div>

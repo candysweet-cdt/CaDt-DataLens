@@ -950,6 +950,77 @@ const mockBackend = {
         }
         return this.AICommandStatus(jobId, 0);
     },
+    async AIScheduleList() {
+        return [...(window.__mockSchedules || (window.__mockSchedules = new Map())).values()]
+            .sort((a, b) => (a.nextRunAt || 0) - (b.nextRunAt || 0));
+    },
+    async AIScheduleCreate(input) {
+        const store = window.__mockSchedules || (window.__mockSchedules = new Map());
+        const kind = String(input.kind || 'once');
+        const now = Date.now();
+        const schedule = {
+            id: 'sch-mock-' + (++mockSchedSeq),
+            name: String(input.name || '').trim() || String(input.prompt || '').trim().slice(0, 30) || '未命名任务',
+            kind,
+            at: String(input.at || ''),
+            intervalMinutes: Number(input.intervalMinutes) || 0,
+            cron: String(input.cron || ''),
+            prompt: String(input.prompt || ''),
+            sessionId: String(input.sessionId || ''),
+            scope: ['chat', 'read', 'edit'].includes(input.scope) ? input.scope : 'chat',
+            enabled: true,
+            createdAt: now,
+            lastRunAt: 0,
+            nextRunAt: kind === 'once'
+                ? (input.at ? Date.parse(input.at) || now + 60000 : now + (Number(input.delayMinutes) || 1) * 60000)
+                : (kind === 'interval' ? now + (Number(input.intervalMinutes) || 1) * 60000 : now + 60000),
+            runCount: 0,
+            maxRuns: kind === 'once' ? 1 : (Number(input.maxRuns) || 0),
+            lastResult: '',
+        };
+        store.set(schedule.id, schedule);
+        if (rt && rt.EventsEmit) rt.EventsEmit('schedules-changed', {changed: true});
+        return JSON.parse(JSON.stringify(schedule));
+    },
+    async AIScheduleUpdate(id, input) {
+        const store = window.__mockSchedules || (window.__mockSchedules = new Map());
+        const schedule = store.get(id);
+        if (!schedule) throw new Error('定时任务不存在：' + id);
+        Object.assign(schedule, {
+            name: String(input.name || '').trim() || schedule.name,
+            kind: String(input.kind || schedule.kind),
+            at: String(input.at || ''),
+            intervalMinutes: Number(input.intervalMinutes) || 0,
+            cron: String(input.cron || ''),
+            prompt: String(input.prompt || schedule.prompt),
+            scope: ['chat', 'read', 'edit'].includes(input.scope) ? input.scope : schedule.scope,
+            maxRuns: Number(input.maxRuns) || 0,
+            nextRunAt: Date.now() + 60000,
+        });
+        if (rt && rt.EventsEmit) rt.EventsEmit('schedules-changed', {changed: true});
+        return JSON.parse(JSON.stringify(schedule));
+    },
+    async AIScheduleDelete(id) {
+        const store = window.__mockSchedules || (window.__mockSchedules = new Map());
+        if (!store.delete(id)) throw new Error('定时任务不存在：' + id);
+        if (rt && rt.EventsEmit) rt.EventsEmit('schedules-changed', {changed: true});
+        return null;
+    },
+    async AIScheduleToggle(id, enabled) {
+        const store = window.__mockSchedules || (window.__mockSchedules = new Map());
+        const schedule = store.get(id);
+        if (!schedule) throw new Error('定时任务不存在：' + id);
+        schedule.enabled = enabled !== false;
+        if (schedule.enabled) schedule.nextRunAt = Date.now() + 60000;
+        if (rt && rt.EventsEmit) rt.EventsEmit('schedules-changed', {changed: true});
+        return JSON.parse(JSON.stringify(schedule));
+    },
+    async AIScheduleSetResult(id, ok, note) {
+        const store = window.__mockSchedules || (window.__mockSchedules = new Map());
+        const schedule = store.get(id);
+        if (schedule) schedule.lastResult = (ok ? '执行成功' : '执行失败') + (note ? '：' + note : '');
+        return null;
+    },
     async StartCommand(id, exe, args) {
         setTimeout(() => {
             if (rt && rt.EventsEmit) {
@@ -3591,6 +3662,12 @@ function selectSettingsPane(pane) {
         if (!aiPanel) initAIPanel();
         if (aiPanel && typeof aiPanel.refreshSettings === 'function') {
             try { aiPanel.refreshSettings(); } catch (e) {}
+        }
+    }
+    if (pane === 'schedules') {
+        if (!aiPanel) initAIPanel();
+        if (aiPanel && typeof aiPanel.refreshScheduleSettings === 'function') {
+            try { aiPanel.refreshScheduleSettings(); } catch (e) {}
         }
     }
 }
@@ -13040,9 +13117,11 @@ function initAIPanel() {
             if (editor && editor.resize) {
                 try { editor.resize(); } catch (e) {}
             }
-            if (terminalUI.open) {
-                try { fitActiveTerm(); } catch (e) {}
-            }
+            // terminalUI 在模块尾部声明：面板按上次状态自动打开时本回调可能先于其初始化
+            // 执行（TDZ），一并用 try/catch 兜底，避免中断整个模块求值。
+            try {
+                if (terminalUI.open) fitActiveTerm();
+            } catch (e) {}
         },
     });
     window.__lens.aiPanel = aiPanel;
@@ -13055,6 +13134,18 @@ function initAIPanel() {
                 if (aiPanel) aiPanel.handleEvent(eventName, payload);
             });
         }
+        // 定时任务：sched-fire 由 Go 调度器广播（多窗口都会收到，执行去重在面板内裁决）
+        rt.EventsOn('sched-fire', (payload) => {
+            if (aiPanel && typeof aiPanel.handleScheduleFire === 'function') {
+                try { aiPanel.handleScheduleFire(payload); } catch (e) {}
+            }
+        });
+        rt.EventsOn('schedules-changed', () => {
+            const activePane = document.querySelector('.settings-pane[data-pane="schedules"]:not(.hidden)');
+            if (activePane && aiPanel && typeof aiPanel.refreshScheduleSettings === 'function') {
+                try { aiPanel.refreshScheduleSettings(); } catch (e) {}
+            }
+        });
     }
 }
 
@@ -17083,7 +17174,6 @@ els.wsBranch.addEventListener('click', (e) => {
 initExplorer();
 initStructurePanel();
 initActivityBar();
-initAIPanel();
 
 // ===== Win11/系统调整光标（后端读注册表当前主题 + 内置候选，失败回落 CSS 关键字） =====
 // 注意：Windows 的 .cur 是多尺寸帧容器（aero_* 含 32/48/64/96/128 五帧），每帧在 ICONDIRENTRY
@@ -17264,7 +17354,11 @@ const TERM_SHELL_LABELS = {pwsh: 'PowerShell 7', powershell: 'Windows PowerShell
 const cmdOutHandlers = new Map();
 const cmdExitHandlers = new Map();
 let cmdSeq = 0;
+// AI 面板初始化必须在 terminalUI 等模块级声明之后：面板若按上次状态自动打开，
+// open() → onLayout 会同步引用这些声明，放在前面会触发 TDZ 中断整个模块求值。
+initAIPanel();
 let mockBgSeq = 0; // mock 后台作业编号
+let mockSchedSeq = 0; // mock 定时任务编号
 
 
 

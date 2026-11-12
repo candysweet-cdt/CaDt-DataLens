@@ -6738,6 +6738,21 @@ html[data-theme="whitey"] {
 .ai-pref-src { flex: none; padding: 0 5px; height: 15px; line-height: 15px; border-radius: 7px; background: var(--accent-weak); color: var(--accent); font-size: 9.5px; }
 .ai-pref-btn { flex: none; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: none; border-radius: 3px; background: none; color: var(--muted); cursor: pointer; }
 .ai-pref-btn:hover { background: var(--hover); color: var(--text); }
+/* 设置 → AI → 定时任务 */
+.ai-sched-list { display: flex; flex-direction: column; gap: 2px; max-height: 380px; overflow: auto; margin: 2px 0 8px; padding: 2px; }
+.ai-sched-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; font-size: 11.5px; }
+.ai-sched-row:hover { background: var(--hover); }
+.ai-sched-row.disabled .ai-sched-name { color: var(--muted); }
+.ai-sched-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ai-sched-name { font-weight: 600; color: var(--text); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-sched-badge { flex: none; padding: 0 5px; height: 15px; line-height: 15px; border-radius: 7px; background: var(--muted-weak, var(--hover)); color: var(--muted); font-size: 9.5px; }
+.ai-sched-badge.on { background: var(--accent-weak); color: var(--accent); }
+.ai-sched-desc { min-width: 0; color: var(--muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.ai-sched-actions { flex: none; display: flex; gap: 3px; }
+.ai-sched-field { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.ai-sched-field > label { flex: none; width: 150px; font-size: 11.5px; color: var(--muted); }
+.ai-sched-field > .ai-settings-input { flex: 1; min-width: 0; }
+.ai-sched-editor textarea.ai-settings-input { resize: vertical; min-height: 64px; }
 .ai-approved-remove {
     flex: none;
     width: 18px;

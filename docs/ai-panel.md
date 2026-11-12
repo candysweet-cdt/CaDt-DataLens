@@ -285,6 +285,9 @@ runTurn(session, userMsg):
 | `background_command(command, cwd?)` | 后端 `AICommandStart`：后台启动长驻/耗时命令，立即返回 `jobId`（`bg-<序号>`）；输出按行缓冲（每作业 256 KB 环形，超限丢弃最早）并照常广播 `cmd-out` | 每次询问 / 自动审批 / 完全权限（计划模式不可用） | 每次询问**是**（与 run_command 同一审批卡，启动时审一次）；自动审批白名单命令免；完全权限免 |
 | `check_command(jobId)` | 后端 `AICommandStatus`：返回 running / exited / notfound、退出码、时长与自上次查询的**增量输出**（单次 ≤64KB，结果截断 16KB） | 同上 | 免 |
 | `stop_command(jobId)` | 后端 `AICommandStop`：终止作业（taskkill 杀整棵进程树），返回最终退出码与已捕获全部输出 | 同上 | 免 |
+| `schedule_create(name?, kind, at?/delayMinutes?/intervalMinutes?/cron?, prompt, sessionId?, scope?, maxRuns?)` | 后端 `AIScheduleCreate`：创建定时任务（once / interval / cron，prompt ≤8KB；scope 仅对「每次新建会话」生效） | 读取+（计划模式不可用） | 免 |
+| `schedule_list()` | 后端 `AIScheduleList`：全部任务（名称、id、类型、下次触发、启停、最近结果） | 读取+ | 免 |
+| `schedule_delete(id)` / `schedule_toggle(id, enabled?)` | 后端 `AIScheduleDelete` / `AIScheduleToggle` | 读取+（计划模式不可用） | 免 |
 
 > AI 改写不再按目标文件的 512KB 设硬限制：`edit_file` / `write_file` 可处理到应用读取上限（>10MB 视为大文件，仍不可读写）；超过 4000 行时 diff 自动降级为公共前缀 / 后缀 + 中间变更块，审批预览最多 40 行。单次写入内容仍上限 256KB，大文件用 `edit_file` 做局部替换。
 >
@@ -293,6 +296,8 @@ runTurn(session, userMsg):
 > memory 工具在**只读访问即可用**（记忆是 AI 的工作笔记而非用户数据）；写入免审批但每次显示卡片，可追溯。`skill_use` 四档通用（只读知识加载零副作用），是只读档工具集的唯一例外。`preference_*` 操作设置页的「用户偏好」列表（存于 AI 配置），同样只读访问可用、免审批，删除即时生效。
 >
 > **后台终端**：`background_command` 启动的作业独立于对话轮生命周期（对话结束作业继续跑，应用退出全部终止）；查状态 / 停止免审批。工具卡片在 `cmd-out` 广播到达时实时追加输出行（面板关闭时只更新缓冲数据，切回可见即恢复），卡片头部显示作业状态（后台运行中 / 已结束 / 已停止 + 退出码）。Go 侧为 `commands.go` 的作业缓冲 + `ai_command_windows.go` 的 `AICommandStart`；同时共享进程桥 16 并发上限与 8 MB 捕获上限。Git Bash 的 `bin/bash.exe` 是 wrapper（真实 bash 是其子进程），因此取消一律走 `taskkill /F /T` 杀整棵进程树并配合 `WaitDelay=3s` 兜底——这也修复了 `run_command` 超时在 wrapper shell 下可能永不返回的隐患；被终止的作业退出码统一记 -1。
+>
+> **定时任务**：调度器在 Go 侧（`ai_schedule.go`，单 ticker 每秒扫描），任务定义与运行状态存派生 SQLite `ai-schedule.db`（modernc pure Go，可随时删除重建，JSON/SQLite 边界与 `ai-index.db` 同一策略）。触发发 `sched-fire` 事件 → 前端注入 `[定时任务 · 名称]` 指令走 `submitText`（复用审批/流式/通知管线），执行结果经 `AIScheduleSetResult` 回写任务卡片。多窗口（独立进程）各自扫描并广播，执行去重在前端：指定会话的任务由持有该会话的窗口执行、无人认领 700ms 后报告失败；新建会话类任务优先聚焦窗口（localStorage 标记先到先得）。任务仅在应用运行期间有效：once 错过标记「已错过」停用不补跑，interval 顺延到下一个整周期，cron 取下一个匹配时刻。设置 → AI 新增「定时任务」页（列表 + 新建/编辑对话框 + 启停/删除），`/schedule` 斜杠命令直达。cron 自写 5 字段解析（约 200 行，支持 `* , - /`，周日 0/7 双写），未引入 robfig/cron。edit 档任务触发时若无人在场处理写审批会一直挂起（守则与设置页均提示）。
 
 **范围安全**（工作区工具执行前）：路径相对 scopeRoot 解析，归一后校验仍在 scopeRoot 内；越界直接返回工具结果「路径超出工作区范围」由模型自行调整。memory/skills 目录独立于范围检查（专用目录 + 文件名白名单兜底）。symlink 逃逸风险见 §21。
 
@@ -323,7 +328,7 @@ runTurn(session, userMsg):
 
 | 档位 | 工具 | 说明 |
 |---|---|---|
-| **只读访问**（默认） | list_dir / read_file / search_text / web_search / web_fetch / memory_* / preference_*（写删计划模式不可用）+ `skill_use` | 范围根 = `workspaceFolder`，无工作区时 = 当前文件所在目录；免审批但每次调用显示卡片 |
+| **只读访问**（默认） | list_dir / read_file / search_text / web_search / web_fetch / memory_* / preference_*（写删计划模式不可用）+ `skill_use` + `schedule_list`（schedule_create / delete / toggle 计划模式不可用） | 范围根 = `workspaceFolder`，无工作区时 = 当前文件所在目录；免审批但每次调用显示卡片 |
 | **每次询问** | 只读工具 + write_file / edit_file / todo_write / run_command / background_command（+ check_command / stop_command）+ 页面点击/输入 | 工作区写操作全部审批、终端命令逐条审批；首次切换 flash 规则说明 |
 | **自动审批** | 与「每次询问」相同 | 工作区写操作自动应用（目标文件有未保存修改，或路径属于 `AGENTS.md` / `.cadt/` / `.agents/` / `.git/` 时仍审批）；白名单内的低风险命令自动执行，其余命令逐条审批；不允许工作区外路径 |
 | **完全权限** | 每次询问全部工具 + 工作区外路径 + 命令免审批 + browser_evaluate | 启用前有二次确认（风险说明弹窗）；破坏性操作需自行向用户说明 |

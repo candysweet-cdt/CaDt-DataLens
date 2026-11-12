@@ -60,7 +60,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - 新增依赖或改变目录结构时说明原因。
 - **体积是第一约束**：任何新依赖先问「能否不引入」，体积预算为 0 的改动优先。
   - 不打包 Chromium / Node / ripgrep / SQLite / LSP。
-  - **唯一 SQLite 例外（2026-11-11 作者批准）**：AI 会话搜索的 `ai-index.db` 派生索引，纯 Go `modernc.org/sqlite`，实测整包 +3.9 MB；它可随时删除重建，JSONL 仍是真源。**不要**把设置、偏好、模型配置或会话正文搬进 SQLite。
+  - **SQLite 例外（作者批准的派生索引，均不存真源数据）**：AI 会话搜索的 `ai-index.db`（2026-11-11 批准，实测整包 +3.9 MB）与 AI 定时任务的 `ai-schedule.db`（2026-11-12）。两者都是纯 Go `modernc.org/sqlite`、可随时删除重建（JSONL / 触发指令原文仍是真源）。**不要**把设置、偏好、模型配置或会话正文搬进 SQLite。
   - 重型前端库（mermaid 2.57 MB 是当前天花板）必须**懒加载**，参考 `main.js` 的 `ensureMermaidScript()`。
   - 明确否决过的方向见 `docs/reports/optimization-proposals.md` 第四节（换 Monaco、内置 SQLite、全项目索引、内置 LSP、打包 rg）。
 

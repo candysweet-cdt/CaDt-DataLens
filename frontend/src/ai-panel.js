@@ -318,6 +318,7 @@ const AI_COMMANDS = [
     {name: '/model', desc: '切换 AI 配置'},
     {name: '/export', desc: '导出会话为 Markdown'},
     {name: '/memory', desc: '打开记忆管理'},
+    {name: '/schedule', desc: '打开定时任务管理（设置）'},
     {name: '/skill', desc: '打开技能管理'},
     {name: '/plan', desc: '进入计划模式（/plan off 关闭，/plan 指令 直接开始规划）'},
     {name: '/init', desc: '生成 AGENTS.md 模板（走写审批）'},
@@ -363,6 +364,22 @@ function aiFormatTime(ts) {
     const date = new Date(ts || Date.now());
     const pad = (n) => String(n).padStart(2, '0');
     return pad(date.getHours()) + ':' + pad(date.getMinutes());
+}
+
+// 定时任务描述：类型 + 下一次触发（本地时间）
+function aiFormatLocalMs(ms) {
+    if (!ms) return '—';
+    const date = new Date(Number(ms));
+    const pad = (n) => String(n).padStart(2, '0');
+    return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+}
+
+function describeAISchedule(s) {
+    if (!s) return '';
+    if (s.kind === 'once') return '单次 · ' + aiFormatLocalMs(s.nextRunAt || s.lastRunAt);
+    if (s.kind === 'interval') return '循环 · 每 ' + s.intervalMinutes + ' 分钟 · 下次 ' + aiFormatLocalMs(s.nextRunAt);
+    if (s.kind === 'cron') return 'cron（' + s.cron + '）· 下次 ' + aiFormatLocalMs(s.nextRunAt);
+    return s.kind || '';
 }
 
 function aiFormatDuration(ms) {
@@ -650,6 +667,8 @@ export function createAIPanel(options) {
         notifyAsk: document.getElementById('ai-opt-notify-ask'),
         notifySound: document.getElementById('ai-opt-notify-sound'),
         retryMax: document.getElementById('ai-opt-retry-max'),
+        schedules: document.getElementById('ai-opt-schedules'),
+        scheduleAdd: document.getElementById('ai-opt-schedule-add'),
         askTimeout: document.getElementById('ai-opt-ask-timeout'),
         askTimeoutAction: document.getElementById('ai-opt-ask-action'),
         logPath: document.getElementById('ai-opt-log-path'),
@@ -2430,6 +2449,218 @@ export function createAIPanel(options) {
         if (opt.prefAdd) opt.prefAdd.disabled = prefs.length >= AI_PREF_LIMIT;
     }
 
+    // ---- 设置 → AI → 定时任务 ----
+
+    function renderScheduleSettings() {
+        if (!opt.schedules) return;
+        if (!backend.AIScheduleList) {
+            opt.schedules.innerHTML = '';
+            const empty = document.createElement('span');
+            empty.className = 'ai-pref-empty';
+            empty.textContent = '（当前版本不支持定时任务）';
+            opt.schedules.appendChild(empty);
+            return;
+        }
+        Promise.resolve(backend.AIScheduleList()).then((list) => {
+            if (!opt.schedules) return;
+            opt.schedules.innerHTML = '';
+            if (!list || !list.length) {
+                const empty = document.createElement('span');
+                empty.className = 'ai-pref-empty';
+                empty.textContent = '（暂无任务；可让 AI 用 schedule_create 创建，或点下方「新建任务」）';
+                opt.schedules.appendChild(empty);
+                return;
+            }
+            for (const s of list) {
+                opt.schedules.appendChild(renderScheduleRow(s));
+            }
+        }).catch((e) => {
+            if (opt.schedules) opt.schedules.textContent = '加载失败：' + ((e && e.message) || e);
+        });
+    }
+
+    function renderScheduleRow(s) {
+        const row = document.createElement('div');
+        row.className = 'ai-sched-row' + (s.enabled ? '' : ' disabled');
+        const main = document.createElement('div');
+        main.className = 'ai-sched-main';
+        const name = document.createElement('span');
+        name.className = 'ai-sched-name';
+        name.textContent = s.name;
+        name.title = s.prompt;
+        const badge = document.createElement('span');
+        badge.className = 'ai-sched-badge' + (s.enabled ? ' on' : '');
+        badge.textContent = s.enabled ? '启用' : '停用';
+        const desc = document.createElement('span');
+        desc.className = 'ai-sched-desc';
+        desc.textContent = describeAISchedule(s) +
+            ' · 权限 ' + s.scope +
+            (s.sessionId ? ' · 指定会话' : ' · 新建会话') +
+            (s.lastResult ? ' · 最近：' + s.lastResult : '');
+        main.append(name, badge, desc);
+        const actions = document.createElement('div');
+        actions.className = 'ai-sched-actions';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'ai-pref-btn';
+        toggle.title = s.enabled ? '停用' : '启用';
+        toggle.textContent = s.enabled ? '⏸' : '▶';
+        toggle.addEventListener('click', () => {
+            Promise.resolve(backend.AIScheduleToggle(s.id, !s.enabled)).then(() => {
+                renderScheduleSettings();
+                flash((s.enabled ? '已停用：' : '已启用：') + s.name);
+            }).catch((e) => flash('操作失败：' + ((e && e.message) || e), true));
+        });
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'ai-pref-btn';
+        edit.title = '编辑';
+        edit.textContent = '✎';
+        edit.addEventListener('click', () => openScheduleEditor(s));
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'ai-pref-btn';
+        remove.title = '删除';
+        remove.textContent = '×';
+        remove.addEventListener('click', () => {
+            askConfirm('删除定时任务「' + s.name + '」？', () => {
+                Promise.resolve(backend.AIScheduleDelete(s.id)).then(() => {
+                    renderScheduleSettings();
+                    flash('已删除定时任务：' + s.name);
+                }).catch((e) => flash('删除失败：' + ((e && e.message) || e), true));
+            });
+        });
+        actions.append(toggle, edit, remove);
+        row.append(main, actions);
+        return row;
+    }
+
+    function openScheduleEditor(existing) {
+        if (!el.dialog || !backend.AIScheduleCreate) return;
+        const isEdit = !!existing;
+        const node = (tag, cls) => {
+            const n = document.createElement(tag);
+            if (cls) n.className = cls;
+            return n;
+        };
+        const row = (labelText, inputNode) => {
+            const r = node('div', 'ai-sched-field');
+            const label = node('label');
+            label.textContent = labelText;
+            r.append(label, inputNode);
+            return r;
+        };
+        const name = node('input', 'ai-settings-input');
+        name.type = 'text';
+        name.placeholder = '省略则取指令前 30 字';
+        const kind = node('select', 'ai-settings-input');
+        for (const [v, label] of [['once', '单次（once）'], ['interval', '固定间隔（interval）'], ['cron', 'cron 表达式']]) {
+            const option = node('option');
+            option.value = v;
+            option.textContent = label;
+            kind.appendChild(option);
+        }
+        const valueInput = node('input', 'ai-settings-input');
+        const valueLabel = node('label');
+        const valueRow = node('div', 'ai-sched-field');
+        valueRow.append(valueLabel, valueInput);
+        const prompt = node('textarea', 'ai-settings-input');
+        prompt.rows = 4;
+        prompt.placeholder = '到点注入给 AI 的指令，例如：检查构建进度并汇报';
+        const scope = node('select', 'ai-settings-input');
+        for (const [v, label] of [['chat', 'chat（纯对话）'], ['read', 'read（只读访问）'], ['edit', 'edit（每次询问）']]) {
+            const option = node('option');
+            option.value = v;
+            option.textContent = label;
+            scope.appendChild(option);
+        }
+        const maxRuns = node('input', 'ai-settings-input');
+        maxRuns.type = 'number';
+        maxRuns.min = '0';
+        maxRuns.placeholder = '0 = 不限';
+        const syncKind = () => {
+            const v = kind.value;
+            if (v === 'once') {
+                valueLabel.textContent = '触发时间（本地，如 2026-11-13 09:00）';
+                valueInput.placeholder = '留空则用「N 分钟后」';
+            } else if (v === 'interval') {
+                valueLabel.textContent = '循环间隔（分钟，1–525600）';
+                valueInput.placeholder = '如 10 = 每 10 分钟';
+            } else {
+                valueLabel.textContent = 'cron 表达式（分 时 日 月 周）';
+                valueInput.placeholder = '如 0 9 * * 1-5';
+            }
+        };
+        kind.addEventListener('change', syncKind);
+        syncKind();
+        if (isEdit) {
+            name.value = existing.name || '';
+            kind.value = existing.kind || 'once';
+            syncKind();
+            if (existing.kind === 'interval') valueInput.value = String(existing.intervalMinutes || '');
+            else if (existing.kind === 'cron') valueInput.value = existing.cron || '';
+            else valueInput.value = existing.at ? aiFormatLocalMs(existing.nextRunAt || existing.lastRunAt) : '';
+            prompt.value = existing.prompt || '';
+            scope.value = ['chat', 'read', 'edit'].includes(existing.scope) ? existing.scope : 'chat';
+            maxRuns.value = String(existing.maxRuns || 0);
+        }
+        const cancelBtn = node('button', 'dlg-btn');
+        cancelBtn.type = 'button';
+        cancelBtn.textContent = '取消';
+        cancelBtn.addEventListener('click', closeAIDialog);
+        const save = node('button', 'dlg-btn primary');
+        save.type = 'button';
+        save.textContent = isEdit ? '保存' : '创建';
+        save.addEventListener('click', () => {
+            const v = valueInput.value.trim();
+            const input = {
+                name: name.value.trim(),
+                kind: kind.value,
+                prompt: prompt.value.trim(),
+                scope: scope.value,
+                maxRuns: aiClampInt(maxRuns.value, 0, 1000000, 0),
+            };
+            if (kind.value === 'once') {
+                input.at = v;
+                if (!v) {
+                    flash('请填写触发时间', true);
+                    return;
+                }
+            } else if (kind.value === 'interval') {
+                input.intervalMinutes = aiClampInt(v, 0, 525600, 0);
+                if (input.intervalMinutes <= 0) {
+                    flash('请填写循环间隔（分钟）', true);
+                    return;
+                }
+            } else {
+                input.cron = v;
+                if (!v) {
+                    flash('请填写 cron 表达式', true);
+                    return;
+                }
+            }
+            const call = isEdit
+                ? backend.AIScheduleUpdate(existing.id, input)
+                : backend.AIScheduleCreate(input);
+            Promise.resolve(call).then(() => {
+                closeAIDialog();
+                renderScheduleSettings();
+                flash((isEdit ? '已保存定时任务：' : '已创建定时任务：') + (input.name || '（未命名）'));
+            }).catch((e) => flash('保存失败：' + ((e && e.message) || e), true));
+        });
+        const body = node('div', 'ai-sched-editor');
+        body.append(
+            row('名称', name),
+            row('类型', kind),
+            valueRow,
+            row('触发指令', prompt),
+            row('权限档（新建会话时生效）', scope),
+            row('最多触发次数', maxRuns),
+        );
+        if (valueLabel.parentElement !== valueRow) valueRow.insertBefore(valueLabel, valueInput);
+        openAIDialog(isEdit ? '编辑定时任务' : '新建定时任务', [body], [cancelBtn, save]);
+    }
+
     function submitPreferenceText(title, value, okLabel, onSubmit) {
         const validate = (raw) => {
             const text = String(raw || '').trim();
@@ -3480,6 +3711,10 @@ export function createAIPanel(options) {
             case 'background_command': return {verb: '后台命令', icon: 'terminal'};
             case 'check_command': return {verb: '查询作业', icon: 'refresh'};
             case 'stop_command': return {verb: '停止作业', icon: 'close'};
+            case 'schedule_create': return {verb: '创建定时任务', icon: 'clock'};
+            case 'schedule_list': return {verb: '定时任务列表', icon: 'clock'};
+            case 'schedule_delete': return {verb: '删除定时任务', icon: 'trash'};
+            case 'schedule_toggle': return {verb: '启停定时任务', icon: 'refresh'};
             case 'memory_list': return {verb: '记忆目录', icon: 'book'};
             case 'memory_read': return {verb: '读取记忆', icon: 'book-open'};
             case 'memory_write': return {verb: '写入记忆', icon: 'book-plus'};
@@ -3546,6 +3781,12 @@ export function createAIPanel(options) {
                 return {primary: aiTextOf(args.command).trim().replace(/\s+/g, ' '), dir: ''};
             case 'check_command': case 'stop_command':
                 return {primary: aiTextOf(args.jobId).trim() || '—', dir: ''};
+            case 'schedule_create':
+                return {primary: aiTextOf(args.name).trim() || aiTextOf(args.prompt).trim().slice(0, 40) || '—', dir: ''};
+            case 'schedule_list':
+                return {primary: '定时任务', dir: ''};
+            case 'schedule_delete': case 'schedule_toggle':
+                return {primary: aiTextOf(args.id).trim() || '—', dir: ''};
             case 'memory_read': case 'memory_write':
                 return {primary: aiTextOf(args.name).trim() || '—', dir: ''};
             case 'memory_list':
@@ -5085,6 +5326,52 @@ export function createAIPanel(options) {
                 required: ['jobId'],
             },
         },
+        schedule_create: {
+            name: 'schedule_create',
+            description: '创建定时任务：到点自动向目标会话注入一条指令并开始一轮对话（消耗 token）。kind=once 用 at（本地时间，如 2026-11-13T09:00）或 delayMinutes（多少分钟后）；kind=interval 用 intervalMinutes；kind=cron 用 5 字段 cron（分 时 日 月 周，支持 * , - /）。scope 仅在「每次新建会话」时作为该会话权限档（chat/read/edit）。仅在用户明确要求定时/循环/提醒时使用，创建前先与用户确认内容。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    name: {type: 'string', description: '任务名，省略则取 prompt 前 30 字'},
+                    kind: {type: 'string', enum: ['once', 'interval', 'cron'], description: '任务类型'},
+                    at: {type: 'string', description: 'once：本地时间（ISO 或 YYYY-MM-DD HH:mm）'},
+                    delayMinutes: {type: 'integer', description: 'once：也可用相对分钟数（10 = 10 分钟后）'},
+                    intervalMinutes: {type: 'integer', description: 'interval：循环间隔（分钟，1–525600）'},
+                    cron: {type: 'string', description: 'cron：5 字段表达式，如 "0 9 * * 1-5"（工作日每天 9 点）'},
+                    prompt: {type: 'string', description: '触发时注入给 AI 的指令（≤8192 字符）'},
+                    sessionId: {type: 'string', description: '目标会话 id；省略则每次触发新建会话'},
+                    scope: {type: 'string', enum: ['chat', 'read', 'edit'], description: '新建会话时的权限档，默认 chat'},
+                    maxRuns: {type: 'integer', description: '最多触发次数，0 = 不限（once 固定 1）'},
+                },
+                required: ['kind', 'prompt'],
+            },
+        },
+        schedule_list: {
+            name: 'schedule_list',
+            description: '列出全部定时任务：名称、id、类型、下一次触发时间、启停状态与最近一次结果。',
+            parameters: {type: 'object', properties: {}},
+        },
+        schedule_delete: {
+            name: 'schedule_delete',
+            description: '删除一个定时任务（按 id）。先用 schedule_list 拿 id。',
+            parameters: {
+                type: 'object',
+                properties: {id: {type: 'string', description: '任务 id'}},
+                required: ['id'],
+            },
+        },
+        schedule_toggle: {
+            name: 'schedule_toggle',
+            description: '启用或停用一个定时任务（按 id）。停用后不再触发，可再次启用。',
+            parameters: {
+                type: 'object',
+                properties: {
+                    id: {type: 'string', description: '任务 id'},
+                    enabled: {type: 'boolean', description: 'true=启用（默认），false=停用'},
+                },
+                required: ['id'],
+            },
+        },
         env_list: {
             name: 'env_list',
             description: '列出用户在本应用中配置的环境变量（只返回名称、描述与启用状态；值永远不会提供）。终端与 run_command 已注入这些变量，命令里可直接引用。',
@@ -5225,9 +5512,11 @@ export function createAIPanel(options) {
             AI_TOOL_DEFS.ask_user,
             AI_TOOL_DEFS.env_list,
             AI_TOOL_DEFS.plan_mode,
+            AI_TOOL_DEFS.schedule_list,
         ];
         if (appControlOn()) list.push(AI_TOOL_DEFS.app_control);
-        if (!planMode) list.push(AI_TOOL_DEFS.memory_write, AI_TOOL_DEFS.preference_write, AI_TOOL_DEFS.preference_remove, AI_TOOL_DEFS.env_create);
+        if (!planMode) list.push(AI_TOOL_DEFS.memory_write, AI_TOOL_DEFS.preference_write, AI_TOOL_DEFS.preference_remove, AI_TOOL_DEFS.env_create,
+            AI_TOOL_DEFS.schedule_create, AI_TOOL_DEFS.schedule_delete, AI_TOOL_DEFS.schedule_toggle);
         // 浏览器：read 档起可浏览（导航/快照/截图），写权限档起可操作页面，full 档可执行任意脚本
         list.push(
             AI_TOOL_DEFS.browser_navigate, AI_TOOL_DEFS.browser_back, AI_TOOL_DEFS.browser_forward,
@@ -6726,6 +7015,52 @@ export function createAIPanel(options) {
                 else lines.push('（无已捕获输出）');
                 return lines.join('\n');
             }
+            case 'schedule_create': {
+                if (!backend.AIScheduleCreate) throw new Error('当前版本不支持定时任务');
+                const created = await backend.AIScheduleCreate({
+                    name: aiTextOf(input.name).trim(),
+                    kind: aiTextOf(input.kind).trim() || 'once',
+                    at: aiTextOf(input.at).trim(),
+                    delayMinutes: aiClampInt(input.delayMinutes, 0, 525600, 0),
+                    intervalMinutes: aiClampInt(input.intervalMinutes, 0, 525600, 0),
+                    cron: aiTextOf(input.cron).trim(),
+                    prompt: aiTextOf(input.prompt),
+                    sessionId: aiTextOf(input.sessionId).trim(),
+                    scope: ['chat', 'read', 'edit'].includes(input.scope) ? input.scope : 'chat',
+                    maxRuns: aiClampInt(input.maxRuns, 0, 1000000, 0),
+                });
+                return '已创建定时任务：' + created.name + '（id=' + created.id + '）\n' +
+                    describeAISchedule(created) + ' · 权限档：' + (created.scope === 'edit' ? 'edit' : created.scope) +
+                    (created.sessionId ? ' · 目标会话 ' + created.sessionId : ' · 每次新建会话') +
+                    (created.scope === 'edit' ? '\n注意：edit 档任务触发时若无人在场处理写审批会一直挂起。' : '');
+            }
+            case 'schedule_list': {
+                if (!backend.AIScheduleList) throw new Error('当前版本不支持定时任务');
+                const list = await backend.AIScheduleList();
+                if (!list.length) return '当前没有定时任务。需要「每 N 分钟 / 每天某时刻 / 单次提醒」时可用 schedule_create 创建。';
+                return list.map((s, i) =>
+                    (i + 1) + '. ' + s.name + '（id=' + s.id + '）\n' +
+                    '   ' + describeAISchedule(s) + ' · ' + (s.enabled ? '启用' : '停用') +
+                    ' · 已触发 ' + (s.runCount || 0) + ' 次' +
+                    (s.lastResult ? '\n   最近：' + s.lastResult : '')
+                ).join('\n');
+            }
+            case 'schedule_delete': {
+                if (!backend.AIScheduleDelete) throw new Error('当前版本不支持定时任务');
+                const id = aiTextOf(input.id).trim();
+                if (!id) throw new Error('id 不能为空');
+                await backend.AIScheduleDelete(id);
+                return '已删除定时任务 ' + id;
+            }
+            case 'schedule_toggle': {
+                if (!backend.AIScheduleToggle) throw new Error('当前版本不支持定时任务');
+                const id = aiTextOf(input.id).trim();
+                if (!id) throw new Error('id 不能为空');
+                const enabled = input.enabled !== false;
+                const s = await backend.AIScheduleToggle(id, enabled);
+                return '已' + (enabled ? '启用' : '停用') + '定时任务「' + s.name + '」（id=' + s.id + '）' +
+                    (enabled ? '\n' + describeAISchedule(s) : '');
+            }
             default:
                 throw new Error('未知工具：' + name);
         }
@@ -6761,6 +7096,7 @@ export function createAIPanel(options) {
             '- env_list 只返回环境变量的名称与描述，值永远不可见；需要用某个变量时，直接在命令中引用它（$名称 / %名称%）。',
             '- env_create 由你提供变量名与描述，值由用户在弹窗中亲自填写；不要用 ask_user 或对话索取变量值（用户填进弹窗的值你看不到）。',
             '- skill_use 返回技能全文；加载后遵循其中指令。',
+            '- schedule_* 管理定时任务：仅当用户明确要求「定时 / 每 N 分钟 / 明早 X 点 / 循环执行」时创建，创建前先与用户确认触发内容与频率；scope 默认 chat；任务需要写文件或执行命令时（scope=edit）提醒用户触发时段需在场处理审批。用户说「看看我有哪些定时任务」时用 schedule_list。',
             ...(appControlOn() ? [
                 '- app_control 操作当前应用窗口（标签/视图/主题/设置/面板/AI 会话）；先 skill_use 加载 cadt-ui 拿动作表，再调用；它不改工作区文件，所有权限档可用。',
             ] : []),
@@ -9906,6 +10242,9 @@ export function createAIPanel(options) {
             case '/memory':
                 await showMemoryDialog();
                 break;
+            case '/schedule':
+                openSettings('schedules');
+                break;
             case '/skill':
                 if (argText) await attachSkillByName(argText);
                 else await showSkillsDialog();
@@ -10938,6 +11277,7 @@ export function createAIPanel(options) {
             });
         }
         if (opt.prefAdd) opt.prefAdd.addEventListener('click', () => addPreference());
+        if (opt.scheduleAdd) opt.scheduleAdd.addEventListener('click', () => openScheduleEditor(null));
         if (opt.prefFilter) opt.prefFilter.addEventListener('input', () => renderPreferenceSettings());
         if (opt.outputLang) opt.outputLang.addEventListener('change', () => {
             config.outputLanguage = ['zh', 'en', 'auto'].includes(opt.outputLang.value) ? opt.outputLang.value : 'zh';
@@ -12428,6 +12768,76 @@ export function createAIPanel(options) {
     whenConfigReady();
     whenSessionsReady();
 
+    // ---- 定时任务触发（sched-fire）----
+    // 多窗口去重：广播会被所有窗口收到。指定目标会话的任务只由持有该会话的窗口执行，
+    // 无人认领则 700ms 后由第一个收到的窗口报告失败；新建会话类任务优先由聚焦窗口执行，
+    // 其余窗口让路 250ms 后先到先得（localStorage 标记）。
+
+    function aiDelay(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function handleScheduleFire(fire) {
+        if (!fire || !fire.scheduleId) return;
+        const key = 'datalens-sched-fire-' + fire.scheduleId + '-' + (fire.runNo || 0);
+        const claimed = () => {
+            if (localStorage.getItem(key)) return false;
+            try {
+                localStorage.setItem(key, String(Date.now()));
+            } catch (e) {}
+            return true;
+        };
+        const prompt = aiTextOf(fire.prompt);
+        const prefix = '[定时任务 · ' + (aiTextOf(fire.name) || fire.scheduleId) + ']';
+        const target = fire.sessionId ? sessions.find((s) => s.id === fire.sessionId) : null;
+        if (fire.sessionId && !target) {
+            // 本窗口不持有目标会话：等可能的持有窗口认领，无人认领则报告失败
+            setTimeout(() => {
+                if (localStorage.getItem(key) || !claimed()) return;
+                flash('定时任务「' + (aiTextOf(fire.name) || fire.scheduleId) + '」的目标会话不存在', true);
+                if (backend.AIScheduleSetResult) {
+                    Promise.resolve(backend.AIScheduleSetResult(fire.scheduleId, false, '目标会话不存在')).catch(() => {});
+                }
+            }, 700);
+            return;
+        }
+        if (!document.hasFocus()) {
+            await aiDelay(250);
+            if (localStorage.getItem(key)) return;
+        }
+        if (!claimed()) return;
+        await runScheduledTurn(fire, target, prefix, prompt);
+    }
+
+    async function runScheduledTurn(fire, target, prefix, prompt) {
+        const name = aiTextOf(fire.name) || fire.scheduleId;
+        try {
+            open(true);
+            let session = target;
+            if (!session) {
+                newSession();
+                session = currentSession();
+                if (!session) throw new Error('无法创建会话');
+                if (fire.scope === 'read' || fire.scope === 'edit') session.scope = fire.scope;
+            }
+            if (currentSession() !== session) switchSession(session.id);
+            // 窗口正在生成时延迟重试，避免打断当前轮次（最多约 30 秒）
+            for (let i = 0; i < 10 && (stream || oneShot); i++) await aiDelay(3000);
+            if (stream || oneShot) throw new Error('当前窗口正在生成，未能注入');
+            const sent = await submitText(prefix + '\n' + prompt);
+            if (!sent) throw new Error('消息未能发送（无可用配置或面板正忙）');
+            flash('定时任务「' + name + '」已触发（第 ' + (fire.runNo || 1) + ' 次）');
+            if (backend.AIScheduleSetResult) {
+                Promise.resolve(backend.AIScheduleSetResult(fire.scheduleId, true, '第 ' + (fire.runNo || 1) + ' 次触发已注入会话')).catch(() => {});
+            }
+        } catch (e) {
+            flash('定时任务「' + name + '」触发失败：' + ((e && e.message) || e), true);
+            if (backend.AIScheduleSetResult) {
+                Promise.resolve(backend.AIScheduleSetResult(fire.scheduleId, false, String((e && e.message) || e))).catch(() => {});
+            }
+        }
+    }
+
     return {
         toggle,
         open,
@@ -12444,6 +12854,8 @@ export function createAIPanel(options) {
             refreshMemoryPath();
         },
         handleEvent,
+        handleScheduleFire,
+        refreshScheduleSettings: renderScheduleSettings,
         refreshContext,
         closeModelEditor,
         attachPath,
