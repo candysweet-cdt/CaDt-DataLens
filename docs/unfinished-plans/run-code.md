@@ -1,7 +1,8 @@
-# 运行代码 v1 方案（未实施）
+# 运行代码 v1 方案与实施记录
 
-> 状态：**方案待评审** · 方案日期：2026-11-13 · 目标版本：`v1.1.0`
-> 范围：单文件"运行代码"（解释型优先 + 编译型）+ 运行输出面板 + 停止/退出码。
+> 状态：**V1 已实施（2026-11-13，含编译型 C/C++/Rust）** · 方案日期：2026-11-13 · 归属版本：**未发布**（CHANGELOG 的「未发布」段；发版时再同步 `app.go` / `wails.json` / NSIS 版本号）
+> 范围：单文件"运行代码"（解释型 + 编译型）+ 运行输出面板 + 停止/退出码。
+> 实施记录见 §13；V2 剩余项（stdin、命令模板）与 V3（AI 联动、项目感知运行、运行配置命名保存）仍未开工。
 > 不在范围：调试器、断点、LSP、项目管理、多文件工程构建、包管理器安装。
 
 ---
@@ -32,7 +33,7 @@
 |---|---|---|
 | 输出面板 | **新建 `run` 视图**，不用 xterm | 需要"点 `path:line:col` 跳源码"和"stderr 标色"，xterm 做这两件事成本高于收益 |
 | 执行通道 | `exec` + 参数数组，**不经 shell 拼接** | 免注入、免引号地狱；只有 `.bat/.cmd/.sh/.ps1` 必须过解释器 |
-| 有未保存修改 | 默认**先保存再运行**（可关） | "看到的就是跑的"；关闭或只读模式下退化为临时副本 |
+| 有未保存修改 | **弹窗三选一**：保存并运行 / 临时副本 / 取消（可记住） | 作者决定：自动保存太武断，让用户当次选；记住后不再问 |
 | cwd | 文件所在目录（设置可切工作区根） | 数据查看器场景要读旁边的数据文件 |
 | 并发 | 最多 3 个运行并存，面板按标签切换 | 长驻服务（`node server.js`）不会挡住下一次运行 |
 | stdin | **V1 不接管**（子进程 stdin 为空 → 读到 EOF） | 第一版不支持交互，绝不假装支持 |
@@ -177,7 +178,7 @@ F5 / 工具栏 ▶
 |---|---|
 | 运行当前文件 | `F5`（当前未占用） |
 | 停止 | `Shift+F5` |
-| 重跑上次命令 | `Ctrl+F5` |
+| 运行面板 | `Alt+F11` |
 | 清空输出 | 面板按钮 |
 | 菜单 | `工具(U) → 运行当前文件` |
 | 工具栏 | 代码类格式下，标题栏右侧出现 ▶（非代码格式隐藏，不做常驻） |
@@ -192,10 +193,10 @@ F5 / 工具栏 ▶
 
 | 文件 | 内容 |
 |---|---|
-| `run.go` | `RunExec` / `PrepareRun` / `CleanupRunTemp`，平台无关的编排与参数校验 |
-| `run_windows.go` | 临时目录、PATH 前置、`taskkill` 复用、Defender 友好的目录选择 |
-| `run_other.go` | 非 Windows 返回"暂只支持 Windows"（保持成对约定） |
-| `run_test.go` | 任务表驱动：配方参数拼装、PATH 前置、临时目录命名与清理、GBK 输出转码 |
+| `run.go` | `PrepareRun` / `RunExec` / `RunStop` / `GetRunTempDir` / `CleanupRunTemp` / `CleanupRunTempStale`；输出合并器 `runStream`、GBK 解码、PATH 前置 |
+| `run_shells_windows.go` | `resolveRunShell`：复用终端面板的 `findGitBash` / `findPwsh`，不另写一套探测 |
+| `run_shells_other.go` | 非 Windows 返回"暂只支持 Windows"（保持成对约定） |
+| `run_test.go` | 文件名净化、GBK 解码、PATH 前置、临时副本 / 编译临时目录、清理闸门、输出切分与截断、`cmd.exe` 端到端 |
 
 ### 6.2 API
 
@@ -239,7 +240,7 @@ func (a *App) CleanupRunTemp() error
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `runAutoSave` | `true` | 有未保存修改时先保存再运行 |
+| `runDirtyMode` | `'ask'` | `ask` 每题都问 / `save` 总是保存 / `temp` 总是临时副本 |
 | `runCwd` | `'file'` | `'file'` 文件目录 / `'workspace'` 工作区根 |
 | `runArgs` | `{}` | 按格式记住上次参数（面板状态行可临时输入） |
 | `runConfigs` | `{}` | 按格式覆盖命令模板（`$FILE $DIR $BASE $EXT` 占位符），V2 |
@@ -275,18 +276,18 @@ func (a *App) CleanupRunTemp() error
 
 ## 10. 分期
 
-### V1（建议先做，约 1 天）
+### V1（✅ 已实施）
 
 - 解释型 8 类（python / node / go run / java / php / ruby / lua / shell 系）
 - `run` 面板 + 停止 + 退出码 + 耗时 + `path:line:col` 跳转 + ANSI 子集
 - 自动保存、临时副本、首次确认、activity 留痕
 - `run_test.go` + 手动验收清单
 
-### V2（约 0.5 天）
+### V2（✅ 编译型与参数输入已随 V1 一起实施；命令模板未做）
 
 - 编译型 C/C++/Rust（两段式）
-- 参数输入、命令模板覆盖、`测试运行`
-- stdin 单行输入框（可选接 `RunInput`）
+- ✅ 参数输入（面板输入框、按语言记住、引号/转义解析、shell 类同样接收）；⬜ 命令模板覆盖、`测试运行`
+- ⬜ stdin 单行输入框（可选接 `RunInput`）
 
 ### V3
 
@@ -322,3 +323,38 @@ func (a *App) CleanupRunTemp() error
 - 平台相关成对：`run_windows.go` + `run_other.go`。
 - 用户可见改动同步 `CHANGELOG.md` 与 `README.md`；实施完成后本文移入 `docs/finished-plans/`。
 - 版本号三处同步（`app.go` / `wails.json` / NSIS）。
+
+---
+
+## 13. 实施记录（2026-11-13）
+
+实际落地与上面的方案有 5 处偏离，均记录在此，避免以后对不上：
+
+| 项 | 方案 | 实际 | 原因 |
+|---|---|---|---|
+| 未保存修改 | 默认先保存（开关） | 弹窗三选一 + 可记住（`runDirtyMode`） | 作者决定：自动保存太武断 |
+| 编译型语言 | 排 V2 | 随 V1 一起做 | 作者决定 |
+| 重跑上次命令 | `Ctrl+F5` | 去掉，只保留 `F5` / `Shift+F5` | 面板已能改参数并回车重跑，单独的「重跑上次」快捷键没有必要 |
+| 临时目录 | `%LOCALAPPDATA%` | `%APPDATA%\CandySweet\CaDt-DataLens\run\` | 沿用 `appDataRoot()`，与项目其他数据同处 |
+| 平台文件 | `run_windows.go` + `run_other.go` | `run_shells_windows.go` + `run_shells_other.go` | 只有 shell 解析涉及平台；其余复用 `commands.go` 已有的 Windows 能力 |
+
+新增文件：`run.go`、`run_shells_windows.go`、`run_shells_other.go`、`run_test.go`、`frontend/src/run.js`、`frontend/src/run.test.mjs`。
+
+改动文件：`app.go`（启动时空跑一次 `CleanupRunTempStale`）、`frontend/src/main.js`（设置默认值与归一化、`dockView='run'`、F5/Shift+F5/Alt+F11、工具菜单三项、运行控制器接线、dirty / 首次确认对话框、`openDocAtLocation`、`ensureToolchainForRun`、`runArgsText` / `setRunArgs`）、`frontend/index.html`（运行面板、参数输入框、活动栏 ▶、两个对话框、设置 → 运行、快捷键说明）、`frontend/src/style.css`（`.run-*`）、`package.json`（test 脚本加入 run.test.mjs）。
+
+验证：`go build ./...`、`go test ./...`（13 s 全绿）、`npm test`（137 通过，其中运行相关 16 例）、`npm run build`、`wails build -s`（产物 `build/bin/CaDt-DataLens.exe`）均通过。
+
+已知未覆盖：GUI 内的实际点击链路未做自动化冒烟（本机无头截图不稳定），需人工过一遍 §11 的 12 条验收清单。
+
+### 13.1 收尾补齐（同日）
+
+首次自验收收发现四处「有实现没接通」，已全部补上：
+
+| 断点 | 症状 | 补法 |
+|---|---|---|
+| `settings.runArgs` 是死配置 | 只有 `argsFor` 读取端，没有任何写入端，参数永远是空数组；面板里 `#run-args-input` 也只是一段孤立 DOM | `run.js` 的 `splitRunArgs` 解析引号/转义并保留 Windows 反斜杠路径；输入框 `input` 事件按语言记住（防抖 400 ms 落盘）、回车直接运行、切标签回显；`main.js` 提供 `argsText` / `setArgs` |
+| 脚本类不收参数 | `.bat/.cmd/.ps1/.sh` 等配方丢弃 `c.args` | 9 条 shell 配方全部补 `...c.args`；编译步骤仍不带参数 |
+| 7 天自动清理从未触发 | `CleanupRunTempStale` 有实现有测试，但全项目无调用点，设置页与 CHANGELOG 却已承诺自动清理 | `app.go` 的 `startup()` 里异步跑一次（幂等、失败不影响启动、多窗口重复无害） |
+| 活动栏 ▶ 不随文件变 | 工具菜单有灰显，活动栏按钮始终可点（点了才提示不支持），与 §11 验收第 8 条不符 | `syncRunButtonState()` 在标签渲染、只读切换、初始化时同步 `disabled` 与 `title` |
+
+补齐后新增 5 个前端测试块（`splitRunArgs` 3 组 + 配方参数 2 组），`npm test` 132 → 137 全绿。

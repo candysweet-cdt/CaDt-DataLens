@@ -234,6 +234,7 @@ const AI_BUILTIN_SKILLS = [
             '',
             '- 报告改了哪些文件、怎么撤销（补丁视图「撤销」/ 设置页最近补丁）；',
             '- 建议下一步（跑测试或构建）。',
+            '- 需要查看补丁视图状态（目标目录、逐文件失败原因、建议目录）或换目标/重检时，用 app_control 的 get_patch / patch_set_root / patch_repreview（只读）；应用与撤销仍由用户在界面确认。',
             '',
             '## 7. 禁止',
             '',
@@ -269,7 +270,7 @@ const AI_BUILTIN_SKILLS = [
             '## 动作表',
             '',
             '- get_state：返回窗口快照（workspace/activeFile/tabs/sidebar/terminal/aiPanel/theme/fullscreen/alwaysOnTop/readOnlyMode）。',
-            '- screenshot：截取当前应用主窗口（含内嵌浏览器与 AI 面板），图片自动附加到对话，可直接查看；用于核对主题、布局、面板是否错位。窗口最小化时先让用户恢复窗口。',
+            '- screenshot {area?}：截取整窗或指定板块，图片自动附加到对话，可直接查看；area = full（默认，整窗）/ editor（编辑区）/ sidebar（侧边栏）/ ai（AI 面板）/ terminal（终端）/ patch（当前补丁视图）/ statusbar（状态栏）。核对局部布局时优先用板块截图，比整窗更清晰。窗口最小化时先让用户恢复窗口。',
             '- get_settings {keys?}：返回当前全部设置值（传 keys 数组只取部分）；同时返回 set_setting 可写键列表。',
             '- get_editor {target?}：文档详情——视图模式、编码/换行/BOM/大小、脏/只读/大文件标记、行数与字符数、光标行列、选区范围与预览、可见行范围（target = 索引/路径，默认活动标签）。当前标签的光标/选区已由 <workspace_context> 每轮自动提供，查看其他标签时再调用。',
             '- get_content {target?, startLine?, endLine?, maxChars?}：读取编辑器内存里的实时文本（含未保存修改，可能与磁盘上的 read_file 结果不同），默认最多 20000 字符。',
@@ -279,6 +280,9 @@ const AI_BUILTIN_SKILLS = [
             '- get_plugins：已安装插件列表（id / name / version / author / 描述 / 启用状态 / 扩展名）。',
             '- get_terminal {id?, lines?}：终端状态——开关、会话列表（id / 标签 / shell / 是否活动）与指定会话（默认活动）缓冲区末尾文本（默认 40 行，最多 200）。',
             '- get_activity {limit?, sinceTs?, actions?, actor?, keyword?}：操作留痕查询（只读）——最近用户与 AI 做过的操作（打开/保存/删除/重命名/设置变更/审批/工具执行等）的逐行文本摘要；只记操作摘要不记文件内容；用户问「我刚才改了什么」或排障时优先用 sinceTs/keyword 查询。',
+            '- get_patch {target?}：补丁视图状态（只读）——目标目录、建议目录（suggestedRoot/Hits/Needed）、外部补丁标记、应用模式与勾选、逐文件 kind/status/reason、hunk 状态与落点、最近一次应用结果；尚未预检时会先自动预检。target = 索引/路径，默认活动标签。',
+            '- patch_set_root {target?, root}：更换补丁目标目录并重新预检（只读，不写工作区）；root 可传绝对路径或相对工作区根的路径。目标文件缺失、建议目录出现时用这个动作切换。',
+            '- patch_repreview {target?, ignoreWhitespace?, allowOffset?}：按选项重新预检补丁（只读）；未传的选项沿用当前值。',
             '- open_file {path}：在本窗口打开文件（标签页）；open_folder {dir}：本窗口切换工作区目录（绝不会开新窗口）。',
             '- activate_tab {index|path}：切换到某标签；close_tab {target}：target = active / 数字索引 / 路径 / "all" / "unmodified"；标签有未保存修改时会弹确认框，由用户决定——不要替用户强行关。',
             '- reopen_closed_tab：撤销最近关闭的标签；move_tab {source,target,before}：同分栏内拖动排序（索引或路径）。',
@@ -296,6 +300,7 @@ const AI_BUILTIN_SKILLS = [
             '## 边界（刻意不提供）',
             '',
             '- 不保存/不另存为、不删除/不重命名文件（写文件走 write_file/edit_file 审批，或让用户手动）。',
+            '- 不应用/撤销补丁：app_control 只读取补丁视图、换目标目录、重新预检；补丁应用走 propose_patch 审批卡或用户手动点「应用」，撤销由用户在补丁视图操作。',
             '- 不跨窗口：多窗口模式的新开窗口、其他窗口的状态都不可触达。',
             '- 鼠标点击不模拟；键盘模拟只有 type_text/press_key 且仅完全权限档。',
         ].join('\n'),
@@ -6820,7 +6825,7 @@ export function createAIPanel(options) {
         },
         app_control: {
             name: 'app_control',
-            description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、截取窗口截图；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出与操作留痕（get_activity）。仅限当前窗口；不改工作区文件。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
+            description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、截取整窗或指定板块截图（screenshot {area}）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -9401,7 +9406,7 @@ export function createAIPanel(options) {
         {
             title: '应用界面（当前窗口）',
             items: [
-                {tools: ['app_control'], text: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、窗口截图、操作留痕（先 skill_use cadt-ui 取动作表）'},
+                {tools: ['app_control'], text: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、窗口截图、操作留痕、补丁视图状态与目标目录（先 skill_use cadt-ui 取动作表）'},
             ],
             note: '用户说「打开看看 / 切到某视图 / 面板错位」时用它；不要用它代替文件读取。',
         },

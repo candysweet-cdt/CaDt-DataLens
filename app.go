@@ -86,6 +86,9 @@ func (a *App) startup(ctx context.Context) {
 	ensureWindowShown(ctx)
 	cleanupSQLTempFiles()
 	cleanupReadingCacheOnStartup()
+	// 运行代码的临时副本 / 编译产物：启动时清一次过期的（7 天），失败不影响启动；
+	// 多窗口进程可能各跑一次，RemoveAll 幂等所以无害。
+	go func() { _, _ = a.CleanupRunTempStale() }()
 	if a.IsDebugConsoleWindow() {
 		// 独立调试控制台窗口：小尺寸独立窗，不处理启动文件/目录
 		runtime.WindowSetTitle(ctx, "调试控制台 · CaDt-DataLens")

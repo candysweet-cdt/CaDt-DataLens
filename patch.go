@@ -133,6 +133,10 @@ type PatchPreview struct {
 	CreatedAt   int64          `json:"createdAt"`
 	DefaultMode string         `json:"defaultMode"`
 	External    bool           `json:"external,omitempty"`
+	// 当前根下目标文件普遍缺失时，就近探测到的高命中率目录（仅建议，不自动切换）
+	SuggestedRoot   string `json:"suggestedRoot,omitempty"`
+	SuggestedHits   int    `json:"suggestedHits,omitempty"`
+	SuggestedNeeded int    `json:"suggestedNeeded,omitempty"`
 }
 
 type PatchFileResult struct {
@@ -657,6 +661,10 @@ type patchPlan struct {
 	Added     int
 	Removed   int
 	External  bool
+
+	SuggestedRoot   string
+	SuggestedHits   int
+	SuggestedNeeded int
 }
 
 var (
@@ -701,6 +709,10 @@ func (p *patchPlan) toPreview() *PatchPreview {
 		External:  p.External,
 		Added:     p.Added,
 		Removed:   p.Removed,
+
+		SuggestedRoot:   p.SuggestedRoot,
+		SuggestedHits:   p.SuggestedHits,
+		SuggestedNeeded: p.SuggestedNeeded,
 	}
 	for _, f := range p.Files {
 		fo := PatchFileOut{
@@ -1036,6 +1048,118 @@ func detectBestStripLevel(files []patchFile, root string) int {
 	return best
 }
 
+// patchRootMatchStats 统计某个根目录下能定位到多少「必须已存在」的目标文件。
+// 新建文件不要求已存在，不计入分母。
+func patchRootMatchStats(files []patchFile, root string) (hits, needed int) {
+	strip := detectBestStripLevel(files, root)
+	for i := range files {
+		f := &files[i]
+		if f.Kind == "unsupported" || f.Kind == "add" {
+			continue
+		}
+		raw := f.RawNew
+		if f.Kind == "delete" || raw == "" || isDevNull(raw) {
+			raw = f.RawOld
+		}
+		rel, pe := stripPatchPath(raw, strip)
+		if pe != nil || rel == "" {
+			continue
+		}
+		needed++
+		abs, pe := resolvePatchRootPath(root, rel)
+		if pe != nil {
+			continue
+		}
+		if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+			hits++
+		}
+	}
+	return hits, needed
+}
+
+const patchRootScanLimit = 64
+
+func appendPatchRootDirs(dst []string, dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return dst
+	}
+	for _, e := range entries {
+		if len(dst) >= patchRootScanLimit {
+			break
+		}
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || strings.EqualFold(name, "node_modules") {
+			continue
+		}
+		dst = append(dst, filepath.Join(dir, name))
+	}
+	return dst
+}
+
+func samePatchDir(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if abs, err := filepath.Abs(a); err == nil {
+		a = abs
+	}
+	if abs, err := filepath.Abs(b); err == nil {
+		b = abs
+	}
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+// suggestPatchRoot 在当前根定位不到足够目标文件时，就近找一个命中率更高的目录。
+// 候选范围：补丁所在目录及其一级子目录、当前工作区父目录、当前工作区一级子目录。
+func suggestPatchRoot(files []patchFile, root, patchPath string) (string, int, int) {
+	curHits, curNeeded := patchRootMatchStats(files, root)
+	if curNeeded == 0 || curHits >= curNeeded {
+		return "", 0, 0
+	}
+	var candidates []string
+	if patchPath != "" {
+		patchDir := filepath.Dir(patchPath)
+		candidates = append(candidates, patchDir)
+		candidates = appendPatchRootDirs(candidates, patchDir)
+	}
+	if parent := filepath.Dir(root); parent != "" && !samePatchDir(parent, root) {
+		candidates = append(candidates, parent)
+	}
+	candidates = appendPatchRootDirs(candidates, root)
+
+	bestRoot := ""
+	bestHits, bestNeeded := 0, 0
+	bestScore := 0.0
+	seen := map[string]bool{}
+	for _, dir := range candidates {
+		if samePatchDir(dir, root) {
+			continue
+		}
+		key := strings.ToLower(filepath.Clean(dir))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			continue
+		}
+		hits, needed := patchRootMatchStats(files, dir)
+		if needed == 0 || hits == 0 || hits <= curHits {
+			continue
+		}
+		score := float64(hits) / float64(needed)
+		if bestRoot != "" && (score < bestScore || (score == bestScore && hits <= bestHits)) {
+			continue
+		}
+		bestRoot, bestHits, bestNeeded, bestScore = dir, hits, needed, score
+	}
+	return bestRoot, bestHits, bestNeeded
+}
+
 func resolvePatchRootPath(root, rel string) (string, *patchError) {
 	abs := filepath.Join(root, filepath.FromSlash(rel))
 	abs = filepath.Clean(abs)
@@ -1293,6 +1417,13 @@ func buildPatchPlan(doc *patchDoc, root, patchID, summary, patchPath string, opt
 		if f.Status == "ok" {
 			plan.Added += f.Added
 			plan.Removed += f.Removed
+		}
+	}
+	if opts.External {
+		if sug, hits, needed := suggestPatchRoot(doc.Files, root, patchPath); sug != "" {
+			plan.SuggestedRoot = sug
+			plan.SuggestedHits = hits
+			plan.SuggestedNeeded = needed
 		}
 	}
 	return plan, nil

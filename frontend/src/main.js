@@ -16,12 +16,16 @@ import {createAIPanel} from './ai-panel.js';
 import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './jsonrepair.js';
 import {createFileIcon, fileIconSpec} from './fileicons.js';
+import {createRunController, splitRunArgs, RECIPES, extOf} from './run.js';
 import {buildJsonLineMap, queryJsonPath} from './jsonpath.js';
 import {semanticDiff, semanticEntryText, unifiedDiff} from './diff.js';
 import {validateJsonSchema} from './jsonschema.js';
 import {getPluginCommands, initPluginRuntime, loadPlugins} from './plugins.js';
 import {createMarkdownRenderer} from './markdown.js';
-import {showPatchView, hidePatchView, disposePatchView, refreshPatchView} from './patch-view.js';
+import {
+    showPatchView, hidePatchView, disposePatchView, refreshPatchView,
+    patchViewSnapshot, setPatchTargetRoot, repreviewPatchView,
+} from './patch-view.js';
 import {WRITING_FONTS, WRITING_PAPERS, formatWritingText, genName, SCENE_SEPARATOR} from './writing.js';
 import changelogText from '../../CHANGELOG.md?raw';
 import termsText from '../../docs/legal/terms.md?raw';
@@ -641,6 +645,22 @@ const mockBackend = {
     async SQLClose() { return null; },
     async TermShells() { return [{id: 'bash', name: 'Git Bash'}]; },
     async DetectToolchain() { return {envs: []}; },
+    async PrepareRun(spec) {
+        return {sourcePath: (spec && spec.srcPath) || 'mock://run/main.py', workDir: 'mock://run', tempDir: '', tempCopy: !!(spec && spec.content)};
+    },
+    async RunExec(id, exe, args) {
+        setTimeout(() => {
+            if (rt && rt.EventsEmit) {
+                rt.EventsEmit('run-out', {id, stream: 'out', data: '模拟运行输出：' + exe + ' ' + (args || []).join(' ') + '\n'});
+                rt.EventsEmit('run-exit', {id, code: 0, durationMs: 12});
+            }
+        }, 30);
+        return null;
+    },
+    async RunStop() { return null; },
+    async ResolveRunShell() { return {path: 'mock-shell', name: 'Mock Shell'}; },
+    async CleanupRunTemp() { return null; },
+    async CleanupRunTempStale() { return 0; },
     async ListLangPackages() { return {packages: [], exists: true}; },
     async GitLineMarksFor() { return []; },
     async GetSystemCursors() { return {}; },
@@ -2535,6 +2555,7 @@ const els = {
     abSearch: document.getElementById('ab-search'),
     abMore: document.getElementById('ab-more'),
     abTerminal: document.getElementById('ab-terminal'),
+    abRun: document.getElementById('ab-run'),
     abDebug: document.getElementById('ab-debug'),
     abGit: document.getElementById('ab-git'),
     abAi: document.getElementById('ab-ai'),
@@ -2618,8 +2639,18 @@ const APP_ACTIONS = [
     'ai_new_session', 'ai_switch_session', 'flash', 'refresh_explorer', 'type_text', 'press_key',
     'open_browser_tab', 'close_browser_tab',
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal',
-    'get_activity',
+    'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
 ];
+
+const APP_SCREENSHOT_AREAS = {
+    full: {selector: '', label: '整窗'},
+    editor: {selector: '#main-pane', label: '编辑区'},
+    sidebar: {selector: '#sidebar', label: '侧边栏'},
+    ai: {selector: '#ai-panel', label: 'AI 面板'},
+    terminal: {selector: '#terminal-panel', label: '终端'},
+    patch: {selector: '.jsoneditor-pane.patch-active .patch-view', label: '补丁视图'},
+    statusbar: {selector: '#statusbar', label: '状态栏'},
+};
 
 function appActionDocInfo(doc) {
     if (!doc) return null;
@@ -3086,6 +3117,31 @@ async function runAppAction(action, params, scope) {
             });
             return lines.join('\n') + (parsed.truncated ? '\n（结果超出上限被截断；可用 limit / sinceTs / keyword 缩小范围）' : '');
         }
+        case 'get_patch': {
+            const doc = appActionResolveDoc(p.target);
+            if (!doc) throw new Error('找不到文档：' + (p.target == null ? 'active' : p.target));
+            if (!(doc.format && doc.format.patch)) throw new Error('目标标签不是 .patch / .diff：' + (doc.path || doc.name));
+            if (!doc.patchState || !doc.patchState.plan) {
+                await refreshPatchView(doc, patchViewContext());
+            }
+            const snap = patchViewSnapshot(doc);
+            if (snap) return snap;
+            const err = doc.patchState && doc.patchState.error;
+            if (err) throw new Error(err);
+            return {loaded: false, name: doc.name, path: doc.path || ''};
+        }
+        case 'patch_set_root': {
+            const doc = appActionResolveDoc(p.target);
+            if (!doc) throw new Error('找不到文档：' + (p.target == null ? 'active' : p.target));
+            if (!(doc.format && doc.format.patch)) throw new Error('目标标签不是 .patch / .diff：' + (doc.path || doc.name));
+            return setPatchTargetRoot(doc, patchViewContext(), p.root);
+        }
+        case 'patch_repreview': {
+            const doc = appActionResolveDoc(p.target);
+            if (!doc) throw new Error('找不到文档：' + (p.target == null ? 'active' : p.target));
+            if (!(doc.format && doc.format.patch)) throw new Error('目标标签不是 .patch / .diff：' + (doc.path || doc.name));
+            return repreviewPatchView(doc, patchViewContext(), {ignoreWhitespace: p.ignoreWhitespace, allowOffset: p.allowOffset});
+        }
         case 'ai_new_session': {
             if (!aiPanel || !aiPanel.bridgeNewSession) throw new Error('AI 面板未初始化');
             const session = await aiPanel.bridgeNewSession({title: p.title, message: p.message});
@@ -3142,11 +3198,35 @@ async function runAppAction(action, params, scope) {
             return {dispatched: key, target: target.id || target.name || target.tagName || 'body'};
         }
         case 'screenshot': {
-            // 截取应用主窗口（含 WebView2 与内嵌浏览器）；由 ai-panel 转成图片消息附加给模型
-            if (!backend.CaptureAppScreenshot) throw new Error('截图通道不可用（请重新构建或更新应用）');
-            const image = await backend.CaptureAppScreenshot();
+            // 截取应用主窗口或指定板块（含 WebView2 与内嵌浏览器）；由 ai-panel 转成图片消息附加给模型
+            const area = String(p.area || 'full').trim().toLowerCase();
+            const spec = APP_SCREENSHOT_AREAS[area];
+            if (!spec) throw new Error('未知截图区域「' + area + '」；可用：' + Object.keys(APP_SCREENSHOT_AREAS).join(' / '));
+            if (!spec.selector) {
+                if (!backend.CaptureAppScreenshot) throw new Error('截图通道不可用（请重新构建或更新应用）');
+                const image = await backend.CaptureAppScreenshot();
+                if (!image || image.length < 50) throw new Error('截图数据为空');
+                return {image, mime: 'image/png', name: '应用截图'};
+            }
+            const el = document.querySelector(spec.selector);
+            if (!el) {
+                let hint = '';
+                if (area === 'ai') hint = '（AI 面板可能已弹出为独立窗口，先停靠回来）';
+                if (area === 'patch') hint = '（先在顶部视图切换里进入补丁视图）';
+                throw new Error('找不到板块：' + spec.label + hint);
+            }
+            const rect = el.getBoundingClientRect();
+            if (!(rect.width > 0 && rect.height > 0)) throw new Error('板块当前不可见：' + spec.label);
+            if (!backend.CaptureAppScreenshotRegion) throw new Error('区域截图通道不可用（请重新构建或更新应用）');
+            const dpr = window.devicePixelRatio || 1;
+            const image = await backend.CaptureAppScreenshotRegion(
+                Math.round(rect.left * dpr),
+                Math.round(rect.top * dpr),
+                Math.max(1, Math.round(rect.width * dpr)),
+                Math.max(1, Math.round(rect.height * dpr))
+            );
             if (!image || image.length < 50) throw new Error('截图数据为空');
-            return {image, mime: 'image/png', name: '应用截图'};
+            return {image, mime: 'image/png', name: '应用截图 · ' + spec.label};
         }
         default:
             throw new Error('未知动作「' + action + '」');
@@ -3278,6 +3358,11 @@ const defaultSettings = {
     autoCheckUpdate: true,
     structureExportLineNums: false,
     langEnv: {},
+    // 运行代码（docs/unfinished-plans/run-code.md）
+    runCwd: 'file',
+    runDirtyMode: 'ask',
+    runArgs: {},
+    runConfirmSeen: [],
     treeExpandDefault: 'expand',
     showBanners: true,
     readOnlyMode: false,
@@ -3397,6 +3482,10 @@ if (settings.mdPreviewWidth === '920' && settings.mdWidthMigrated !== true) {
 }
 settings.structureExportLineNums = !!settings.structureExportLineNums;
 if (!settings.langEnv || typeof settings.langEnv !== 'object') settings.langEnv = {};
+settings.runCwd = settings.runCwd === 'workspace' ? 'workspace' : 'file';
+if (!['ask', 'save', 'temp'].includes(settings.runDirtyMode)) settings.runDirtyMode = 'ask';
+if (!settings.runArgs || typeof settings.runArgs !== 'object') settings.runArgs = {};
+if (!Array.isArray(settings.runConfirmSeen)) settings.runConfirmSeen = [];
 settings.splitRatio = Number(settings.splitRatio);
 if (!Number.isFinite(settings.splitRatio)) settings.splitRatio = 0.5;
 settings.splitRatio = Math.min(0.85, Math.max(0.15, settings.splitRatio));
@@ -3605,6 +3694,16 @@ const elsDialogs = {
     confirmText: document.getElementById('dlg-confirm-text'),
     confirmOk: document.getElementById('btn-discard'),
     conflict: document.getElementById('dlg-save-conflict'),
+    runDirty: document.getElementById('dlg-run-dirty'),
+    runDirtyText: document.getElementById('dlg-run-dirty-text'),
+    runDirtySave: document.getElementById('btn-run-dirty-save'),
+    runDirtyTemp: document.getElementById('btn-run-dirty-temp'),
+    runDirtyCancel: document.getElementById('btn-run-dirty-cancel'),
+    runDirtyRemember: document.getElementById('run-dirty-remember'),
+    runConfirm: document.getElementById('dlg-run-confirm'),
+    runConfirmText: document.getElementById('dlg-run-confirm-text'),
+    runConfirmOk: document.getElementById('btn-run-confirm-ok'),
+    runConfirmCancel: document.getElementById('btn-run-confirm-cancel'),
     conflictText: document.getElementById('dlg-save-conflict-text'),
     conflictReload: document.getElementById('btn-conflict-reload'),
     conflictOverwrite: document.getElementById('btn-conflict-overwrite'),
@@ -3818,6 +3917,7 @@ function applyReadOnlyToDoc(doc) {
 }
 
 function applyReadOnlyMode() {
+    syncRunButtonState();
     updateLockButton();
     const locked = !!settings.readOnlyMode;
     if (appliedReadOnly === locked) return;
@@ -3953,7 +4053,7 @@ function openDialogEl(dlg, options) {
         !elsDialogs.settings.classList.contains('hidden');
     elsDialogs.mask.classList.remove('hidden');
     if (!keepSettings) elsDialogs.settings.classList.add('hidden');
-    for (const other of [elsDialogs.confirm, elsDialogs.conflict, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
+    for (const other of [elsDialogs.confirm, elsDialogs.conflict, elsDialogs.runDirty, elsDialogs.runConfirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
         if (other !== dlg) other.classList.add('hidden');
     }
     dlg.dataset.parentSettings = keepSettings ? '1' : '';
@@ -3966,7 +4066,7 @@ function openDialogEl(dlg, options) {
 
 function closeTopDialog() {
     if (!elsDialogs.settings.classList.contains('hidden')) {
-            for (const dlg of [elsDialogs.confirm, elsDialogs.conflict, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
+            for (const dlg of [elsDialogs.confirm, elsDialogs.conflict, elsDialogs.runDirty, elsDialogs.runConfirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
             if (dlg.classList.contains('hidden') || dlg.dataset.parentSettings !== '1') continue;
             dlg.classList.add('hidden');
             if (dlg === elsDialogs.confirm) confirmAction = null;
@@ -4038,6 +4138,7 @@ function selectSettingsPane(pane) {
     else if (String(pane).startsWith('fmt-')) renderFormatPane(pane.slice(4));
     else if (String(pane).startsWith('lang-')) renderLangPane(pane.slice(5));
     else if (pane === 'plugins') renderPluginsPane();
+    else if (pane === 'run') renderRunPane();
     else if (pane === 'envvars') renderEnvVarsPane();
     else if (pane === 'activity') renderActivityPane();
     if (pane === 'ai' || pane === 'models' || pane === 'context' || pane === 'preferences') {
@@ -4997,6 +5098,67 @@ const LANG_DEFS = [
 
 setupFormatSettings();
 setupLanguageSettings();
+setupRunSettings();
+
+// 设置 → 运行：工作目录、未保存修改策略、首次确认与临时目录
+function setupRunSettings() {
+    const cwd = document.getElementById('run-cwd');
+    const dirtyMode = document.getElementById('run-dirty-mode');
+    const reset = document.getElementById('run-confirm-reset');
+    const openTemp = document.getElementById('run-open-temp');
+    if (cwd) {
+        cwd.addEventListener('change', () => {
+            settings.runCwd = cwd.value === 'workspace' ? 'workspace' : 'file';
+            applySettings();
+        });
+    }
+    if (dirtyMode) {
+        dirtyMode.addEventListener('change', () => {
+            settings.runDirtyMode = ['ask', 'save', 'temp'].includes(dirtyMode.value) ? dirtyMode.value : 'ask';
+            applySettings();
+        });
+    }
+    if (reset) {
+        reset.addEventListener('click', () => {
+            settings.runConfirmSeen = [];
+            applySettings();
+            renderRunPane();
+            flash('已重置，每种语言下次运行会再提示一次');
+        });
+    }
+    if (openTemp) {
+        openTemp.addEventListener('click', async () => {
+            try {
+                const dir = await backend.GetRunTempDir();
+                await backend.ShowInFolder(dir);
+            } catch (e) {
+                flash('打开临时目录失败：' + e, true);
+            }
+        });
+    }
+}
+
+function renderRunPane() {
+    const cwd = document.getElementById('run-cwd');
+    const dirtyMode = document.getElementById('run-dirty-mode');
+    const hint = document.getElementById('run-confirm-hint');
+    const tempHint = document.getElementById('run-temp-hint');
+    if (cwd) cwd.value = settings.runCwd;
+    if (dirtyMode) dirtyMode.value = settings.runDirtyMode;
+    if (hint) {
+        const seen = settings.runConfirmSeen || [];
+        hint.textContent = seen.length
+            ? ('已确认 ' + seen.length + ' 种语言：' + seen.join('、'))
+            : '尚未确认任何语言，首次运行会出现提示。';
+    }
+    if (tempHint && backend.GetRunTempDir) {
+        backend.GetRunTempDir().then((dir) => {
+            tempHint.textContent = dir;
+        }).catch((e) => {
+            tempHint.textContent = '读取失败：' + ((e && e.message) || e);
+        });
+    }
+}
 
 function refreshPluginUI() {
     // 清掉已失效的插件格式导航与面板（插件被禁用/删除后）
@@ -5962,12 +6124,20 @@ const readonlyTipObserver = new MutationObserver((muts) => {
 });
 readonlyTipObserver.observe(document.body, {childList: true, subtree: true});
 
-// 治本：把只读提示的中文文案直接注册进 Ace 的 nls（单参数为消息表）。
+// 治本：把只读提示的中文文案直接注册进 Ace 的 nls。
+// setMessages 是整表替换（不是合并）：必须带上默认英文表，否则其余键会逐个告警并回退。
 // jsoneditor 的语言包不进 Ace nls，二进制 / 文本等只读编辑器此前一直是英文；
 // 这里注册后所有 Ace 实例生效，观察器仅作兜底。
 try {
     if (window.ace && ace.config && typeof ace.config.setMessages === 'function') {
-        ace.config.setMessages({'editor.tooltip.disable-editing': '只读模式下无法编辑'});
+        let base = null;
+        try {
+            const mod = ace.require('ace/lib/default_english_messages');
+            base = mod && mod.defaultEnglishMessages;
+        } catch (e) {}
+        if (base && typeof base === 'object') {
+            ace.config.setMessages(Object.assign({}, base, {'editor.tooltip.disable-editing': '只读模式下无法编辑'}));
+        }
     }
 } catch (e) {}
 
@@ -6502,7 +6672,7 @@ function renderLangPane(id) {
     title.textContent = lang.name;
     const sub = document.createElement('div');
     sub.className = 'fmt-pane-sub';
-    sub.textContent = '环境信息（解释器 / 编译器与配套工具链的路径和版本），缓存到本地，为后续的辅助运行代码功能预留';
+    sub.textContent = '环境信息（解释器 / 编译器与配套工具链的路径和版本），缓存到本地；按 F5 运行当前文件时用的就是这里选中的环境';
     pane.append(title, sub);
 
     for (const tool of lang.tools) {
@@ -7116,6 +7286,7 @@ function moveTabInGroup(gid, srcId, targetId, before) {
 function renderTabs() { renderEditorLayout(); }
 
 function renderEditorLayout() {
+    syncRunButtonState();
     // 提示条先移出布局区，避免被整体清空
     if (els.banner && els.banner.parentElement === els.editor) els.editorArea.appendChild(els.banner);
     els.editor.textContent = '';
@@ -9020,6 +9191,7 @@ function patchViewContext() {
         backend,
         suppressNotify: false,
         getRoot: patchRootPath,
+        chooseFolder: (dir) => backend.OpenFolderDialog(dir || ''),
         openPath: (rel) => {
             const abs = patchAbsPath(rel);
             if (abs) openPath(abs);
@@ -9194,6 +9366,9 @@ function createDocEditor(doc) {
     }
     setupTreeContextMenu(doc);
     doc.mode = splitRequested ? 'split' : previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : binaryMode ? 'binary' : startMode;
+    // 补丁视图是覆盖层：底层编辑器仍按 text 起始，但 doc.mode 必须记成 patch，
+    // 否则首次打开时状态栏显示补丁、视图按钮却选中文本。
+    if (patchRequested) doc.mode = 'patch';
     doc.text = ed.getText();
     // 打开/恢复/重载属于程序化全文替换：清掉码字观察基线，下一次观察以当前内容重新起算
     delete doc._writingLast;
@@ -14287,7 +14462,19 @@ function syncWorkspaceWatcher() {
     } catch (e) {}
 }
 
+// 活动栏 ▶ 与工具菜单保持一致的可用状态（菜单是在打开时算的，按钮要随文件切换实时同步）
+function syncRunButtonState() {
+    if (!els.abRun) return;
+    const supported = !!file && !file.binary && !file.large &&
+        !!RECIPES[extOf(file.name || file.path)] && !settings.readOnlyMode;
+    els.abRun.disabled = !supported;
+    els.abRun.title = supported || !file ? '运行当前文件 (F5)'
+        : settings.readOnlyMode ? '只读模式下不执行代码'
+            : '当前文件不支持运行';
+}
+
 function initActivityBar() {
+    syncRunButtonState();
     if (!els.activityBar) return;
     if (els.abFiles) els.abFiles.addEventListener('click', () => toggleSidebarView('files'));
     if (els.abStructure) els.abStructure.addEventListener('click', () => toggleSidebarView('structure'));
@@ -14296,6 +14483,7 @@ function initActivityBar() {
         if (findTarget()) openFindBar();
         else openGlobalSearch();
     });
+    if (els.abRun) els.abRun.addEventListener('click', () => runController.run());
     if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleDockView('terminal'));
     if (els.abDebug) els.abDebug.addEventListener('click', () => toggleDockView('debug'));
     if (els.abGit) els.abGit.addEventListener('click', () => toggleSidebarView('git'));
@@ -15702,7 +15890,8 @@ function applySwitchMode(mode) {
         return;
     }
     if (doc && doc.sqlActive) closeSqlView(doc);
-    if (currentMode === mode) return;
+    // patch 是覆盖层：即使 currentMode 仍是 patch，也要允许重新显示（状态错位时可自愈）
+    if (currentMode === mode && mode !== 'patch') return;
     if (mode === 'image') {
         if (doc && doc.image) enterImageView(doc);
         return;
@@ -15765,6 +15954,30 @@ function applySwitchMode(mode) {
     }
     if (currentMode === 'patch') {
         hidePatchView(doc);
+        if (doc && (mode === 'code' || mode === 'text')) {
+            // 底层编辑器可能已经是目标模式，setMode 不会触发 onModeChange；
+            // 这里显式同步 doc.mode/currentMode，否则按钮会卡在「补丁视图」。
+            const text = editor.getText();
+            doc.loading = true;
+            try {
+                editor.setMode(mode);
+                editor.setText(text);
+            } catch (e) {
+                console.warn('switch mode failed', e);
+            } finally {
+                doc.loading = false;
+            }
+            doc.mode = mode;
+            currentMode = mode;
+            doc.text = text;
+            if (!doc.dirty) doc.bases[mode] = text;
+            applyAceMode();
+            updateStatus();
+            updateSearchState();
+            applyReadOnlyToDoc(doc);
+            scheduleGitGutter(doc, 300);
+            return;
+        }
     }
     if (mode === 'table') {
         if (doc && doc.format.table) enterCsvTable(doc);
@@ -18409,6 +18622,23 @@ function menuItems(kind) {
         }
         case 'tools': {
             const items = [{
+                label: '运行当前文件',
+                shortcut: 'F5',
+                icon: 'E768',
+                disabled: !file || !runController.isSupported({name: file.name, path: file.path}) || !!settings.readOnlyMode,
+                action: () => runController.run(),
+            }, {
+                label: '停止运行',
+                shortcut: 'Shift+F5',
+                icon: 'E71A',
+                disabled: !runController.hasRunning(),
+                action: () => runController.stop(),
+            }, {
+                label: '运行面板',
+                shortcut: 'Alt+F11',
+                icon: 'E7B3',
+                action: () => runController.togglePanel(),
+            }, {sep: true}, {
                 label: 'JSONPath 查询…',
                 shortcut: 'Ctrl+Shift+J',
                 icon: 'E721',
@@ -18714,6 +18944,19 @@ window.addEventListener('keydown', (e) => {
             gitPopNewBranch();
             return;
         }
+    }
+    if (!isDialogOpen() && e.key === 'F5' && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.shiftKey) runController.stop();
+        else runController.run();
+        return;
+    }
+    if (!isDialogOpen() && e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'F11') {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleDockView('run');
+        return;
     }
     if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit1' || e.key === '1')) {
         e.preventDefault();
@@ -19407,18 +19650,21 @@ function toggleTerminalPanel(force) {
 
 let dockView = 'terminal'; // 底部面板当前内容：'terminal' | 'debug'
 
-// 应用底部面板视图：终端与调试控制台共用同一个容器
+// 应用底部面板视图：终端、调试控制台与运行面板共用同一个容器
 function applyDockView() {
     const panel = document.getElementById('terminal-panel');
     if (!panel) return;
     const termOpen = terminalUI.open && dockView === 'terminal';
     const debugOpen = terminalUI.open && dockView === 'debug';
+    const runOpen = terminalUI.open && dockView === 'run';
     const head = panel.querySelector('.term-head');
-    if (head) head.classList.toggle('hidden', terminalUI.open && dockView === 'debug');
+    if (head) head.classList.toggle('hidden', terminalUI.open && dockView !== 'terminal');
     const termBody = document.getElementById('term-body');
-    if (termBody) termBody.classList.toggle('hidden', terminalUI.open && dockView === 'debug');
+    if (termBody) termBody.classList.toggle('hidden', terminalUI.open && dockView !== 'terminal');
     const debugView = document.getElementById('debug-view');
     if (debugView) debugView.classList.toggle('hidden', !debugOpen);
+    const runView = document.getElementById('run-view');
+    if (runView) runView.classList.toggle('hidden', !runOpen);
     if (els.abTerminal) {
         els.abTerminal.classList.toggle('active', termOpen);
         els.abTerminal.setAttribute('aria-pressed', String(termOpen));
@@ -19427,12 +19673,16 @@ function applyDockView() {
         els.abDebug.classList.toggle('active', debugOpen);
         els.abDebug.setAttribute('aria-pressed', String(debugOpen));
     }
+    if (els.abRun) {
+        els.abRun.classList.toggle('active', runOpen);
+        els.abRun.setAttribute('aria-pressed', String(runOpen));
+    }
     if (termOpen) fitActiveTerm();
 }
 
 // 左下活动栏 / 菜单 / F12 的统一入口：同一视图再点一次收起，不同视图则切换
 function toggleDockView(view) {
-    const target = view === 'debug' ? 'debug' : 'terminal';
+    const target = view === 'debug' ? 'debug' : (view === 'run' ? 'run' : 'terminal');
     const panel = document.getElementById('terminal-panel');
     if (!panel) return;
     if (!terminalUI.open) {
@@ -19446,8 +19696,193 @@ function toggleDockView(view) {
         applyDockView();
         return;
     }
+    if (target === 'run') {
+        // 运行面板再次点击不收起：它承载的是运行结果，收起会让人以为结果丢了
+        applyDockView();
+        return;
+    }
     toggleTerminalPanel(false);
 }
+
+// ---- 运行代码（F5）----
+// 语言配方与输出渲染在 src/run.js；这里只提供「编辑器 / 设置 / 对话框」这些宿主能力。
+
+let runDirtyResolve = null;
+let runConfirmResolve = null;
+
+// 当前文档的文本（与插件 runtime 的 getActiveText 同源，按视图取正确的那份）
+function activeDocText() {
+    if (!file) return '';
+    if (currentMode === 'code' && editor && editor.aceEditor) return editor.aceEditor.getValue();
+    if (currentMode === 'tree' && editor && file.format && typeof file.format.stringify === 'function') {
+        try {
+            return file.format.stringify(editor.get());
+        } catch (e) {
+            return '';
+        }
+    }
+    const ta = textArea();
+    if (ta) return ta.value;
+    return file.binary ? '' : (file.content || '');
+}
+
+function finishRunDirty(choice) {
+    const resolve = runDirtyResolve;
+    runDirtyResolve = null;
+    const remember = !!(elsDialogs.runDirtyRemember && elsDialogs.runDirtyRemember.checked);
+    if (remember && (choice === 'save' || choice === 'temp')) {
+        settings.runDirtyMode = choice;
+        applySettings();
+    }
+    if (elsDialogs.runDirtyRemember) elsDialogs.runDirtyRemember.checked = false;
+    closeTopDialog();
+    if (resolve) resolve(choice);
+}
+
+function finishRunConfirm(ok) {
+    const resolve = runConfirmResolve;
+    runConfirmResolve = null;
+    closeTopDialog();
+    if (resolve) resolve(!!ok);
+}
+
+// 未保存修改的处理：设置里固定的模式直接返回，否则弹三选一
+function askRunDirty(info) {
+    return new Promise((resolve) => {
+        if (settings.runDirtyMode === 'temp') {
+            resolve('temp');
+            return;
+        }
+        if (settings.runDirtyMode === 'save') {
+            resolve(info.canSave ? 'save' : 'temp');
+            return;
+        }
+        elsDialogs.runDirtyText.textContent = info.canSave
+            ? ('「' + (info.name || '当前文件') + '」有未保存的修改，运行前怎么处理？')
+            : ('「' + (info.name || '当前文件') + '」还没有保存到磁盘，只能用临时副本运行。');
+        elsDialogs.runDirtySave.disabled = !info.canSave;
+        runDirtyResolve = resolve;
+        openDialogEl(elsDialogs.runDirty, {keepSettings: true});
+    });
+}
+
+// 首次运行某种语言：明示风险，确认后记住
+function confirmRunOnce(label) {
+    return new Promise((resolve) => {
+        elsDialogs.runConfirmText.textContent =
+            '将以你的 Windows 账户权限在本机执行 ' + label + ' 代码。只运行你自己写的或可信的文件。';
+        runConfirmResolve = resolve;
+        openDialogEl(elsDialogs.runConfirm, {keepSettings: true});
+    });
+}
+
+if (elsDialogs.runDirtySave) {
+    elsDialogs.runDirtySave.addEventListener('click', () => finishRunDirty('save'));
+    elsDialogs.runDirtyTemp.addEventListener('click', () => finishRunDirty('temp'));
+    elsDialogs.runDirtyCancel.addEventListener('click', () => finishRunDirty('cancel'));
+    const closeBtn = elsDialogs.runDirty.querySelector('.dialog-close');
+    if (closeBtn) closeBtn.addEventListener('click', () => finishRunDirty('cancel'));
+}
+if (elsDialogs.runConfirmOk) {
+    elsDialogs.runConfirmOk.addEventListener('click', () => finishRunConfirm(true));
+    elsDialogs.runConfirmCancel.addEventListener('click', () => finishRunConfirm(false));
+    const closeBtn = elsDialogs.runConfirm.querySelector('.dialog-close');
+    if (closeBtn) closeBtn.addEventListener('click', () => finishRunConfirm(false));
+}
+
+// 工具链：优先用设置里缓存的扫描结果，没扫过就现场扫一次
+async function ensureToolchainForRun(langId, toolId) {
+    let eff = effectiveToolEnv(langId, toolId);
+    if (eff && eff.ok && eff.path) return eff;
+    const env = toolEnvFor(langId, toolId);
+    if (!env.scannedAt) {
+        try {
+            const res = backend.DetectToolchain ? await backend.DetectToolchain(toolId, env.pathOverride || '') : null;
+            const list = res && Array.isArray(res.envs) ? res.envs : [];
+            env.envs = list;
+            env.scannedAt = Date.now();
+            env.error = list.length ? '' : ((res && res.error) || '未找到可用环境');
+            applySettings();
+        } catch (e) {
+            env.error = (e && e.message) || String(e);
+        }
+        eff = effectiveToolEnv(langId, toolId);
+    }
+    return eff && eff.ok && eff.path ? eff : null;
+}
+
+// 从运行输出里点位置引用 → 打开（或切到）对应文件的对应行列
+async function openDocAtLocation(path, line, column) {
+    if (!path) return;
+    let doc = findDocByPath(path);
+    if (!doc) {
+        await openPathsHere([path]);
+        doc = findDocByPath(path);
+    }
+    if (!doc) {
+        flash('打不开：' + path, true);
+        return;
+    }
+    await selectLineInDoc(doc, line, column);
+}
+
+// 运行参数：按语言记住输入框原文（回显用），执行时才拆成 argv。
+// 输入过程中只改内存并防抖落盘，避免每个字符都重同步整份设置。
+function runArgsText(langId) {
+    const value = settings.runArgs && settings.runArgs[langId];
+    if (Array.isArray(value)) return value.join(' '); // 兼容早期按数组存的写法
+    return typeof value === 'string' ? value : '';
+}
+let runArgsSaveTimer = 0;
+function setRunArgs(langId, text) {
+    if (!settings.runArgs || typeof settings.runArgs !== 'object') settings.runArgs = {};
+    if (runArgsText(langId) === text) return;
+    settings.runArgs[langId] = text;
+    clearTimeout(runArgsSaveTimer);
+    runArgsSaveTimer = setTimeout(applySettings, 400);
+}
+
+const runController = createRunController({
+    backend,
+    onEvent: (name, cb) => {
+        if (rt && rt.EventsOn) rt.EventsOn(name, cb);
+    },
+    getActiveDoc: () => (file ? {
+        path: file.path || '',
+        name: file.name || '',
+        dirty: !!file.dirty,
+        binary: !!file.binary,
+        large: !!file.large,
+        formatId: file.format ? file.format.id : '',
+    } : null),
+    getDocText: () => activeDocText(),
+    saveDoc: () => saveDoc(file, {silent: true}),
+    isReadOnly: () => !!settings.readOnlyMode,
+    flash,
+    askDirtyChoice: (info) => askRunDirty(info),
+    hasConfirmed: (lang) => (settings.runConfirmSeen || []).includes(lang),
+    confirmRun: async (label, lang) => {
+        const ok = await confirmRunOnce(label);
+        if (ok && !settings.runConfirmSeen.includes(lang)) {
+            settings.runConfirmSeen.push(lang);
+            applySettings();
+        }
+        return ok;
+    },
+    openLocation: (path, line, column) => openDocAtLocation(path, line, column),
+    ensureToolchain: (langId, toolId) => ensureToolchainForRun(langId, toolId),
+    copyText: (text, label) => copyText(text, label),
+    logActivity: (name, meta) => activityLog.log('code.run', name, meta),
+    argsFor: (langId) => splitRunArgs(runArgsText(langId)),
+    argsText: (langId) => runArgsText(langId),
+    setArgs: (langId, text) => setRunArgs(langId, text),
+    resolveWorkDir: (fallback) => (settings.runCwd === 'workspace' && workspaceFolder ? workspaceFolder : fallback),
+    showRunPanel: () => toggleDockView('run'),
+    hidePanel: () => toggleTerminalPanel(false),
+});
+
+// 首次确认按语言 id 记录（run.js 里传 label + lang）
+runController.mount();
 
 async function createTermSession(shell = '') {
     if (!backend.TermCreate) {

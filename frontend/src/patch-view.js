@@ -54,6 +54,9 @@ export function patchViewState(doc) {
             loading: false,
             error: '',
             expanded: new Set(),
+            root: '',
+            ignoreWhitespace: false,
+            allowOffset: false,
         };
     }
     return doc.patchState;
@@ -90,18 +93,27 @@ export async function refreshPatchView(doc, ctx) {
 
 async function loadPreview(doc, ctx, options) {
     const st = patchViewState(doc);
+    const opts = options || {};
+    if (opts.root) st.root = opts.root;
+    if (typeof opts.ignoreWhitespace === 'boolean') st.ignoreWhitespace = opts.ignoreWhitespace;
+    if (typeof opts.allowOffset === 'boolean') st.allowOffset = opts.allowOffset;
+    const canRepreview = st.plan && st.plan.planId && !opts.root;
     st.loading = true;
     st.error = '';
     render(doc, ctx);
     try {
-        const root = ctx.getRoot();
         let plan;
-        if (options && options.repreview && st.plan && st.plan.planId) {
-            plan = await ctx.backend.PatchRepreview(st.plan.planId, !!options.allowOffset, !!options.ignoreWhitespace);
+        if (canRepreview) {
+            plan = await ctx.backend.PatchRepreview(st.plan.planId, st.allowOffset, st.ignoreWhitespace);
         } else {
+            const root = st.root || ctx.getRoot();
             plan = await ctx.backend.PatchPreviewFile(doc.path, root);
+            if (st.ignoreWhitespace || st.allowOffset) {
+                plan = await ctx.backend.PatchRepreview(plan.planId, st.allowOffset, st.ignoreWhitespace);
+            }
         }
         st.plan = plan;
+        st.root = plan.root || st.root;
         st.selected = new Set((plan.files || []).filter((f) => f.status === 'ok').map((f) => f.relPath));
         st.result = null;
     } catch (e) {
@@ -111,6 +123,19 @@ async function loadPreview(doc, ctx, options) {
         st.loading = false;
         render(doc, ctx);
     }
+}
+
+async function chooseTargetRoot(doc, ctx, plan) {
+    const current = (plan && plan.root) || ctx.getRoot() || '';
+    let picked = '';
+    try {
+        picked = await ctx.chooseFolder(current);
+    } catch (e) {
+        ctx.flash('选择目标目录失败：' + ((e && e.message) || e), true);
+        return;
+    }
+    if (!picked || (current && picked.toLowerCase() === current.toLowerCase())) return;
+    await loadPreview(doc, ctx, {root: picked});
 }
 
 function render(doc, ctx) {
@@ -182,33 +207,49 @@ function render(doc, ctx) {
         actions.appendChild(btnApply);
     }
     bar.appendChild(actions);
-    host.appendChild(bar);
+    const head = el('div', 'patch-head');
+    head.appendChild(bar);
+    host.appendChild(head);
 
     if (plan) {
         const toolbar = el('div', 'patch-subbar');
-        const info = el('span', 'patch-root', '目标：' + (plan.root || '（未选择）'));
-        info.title = plan.root || '';
-        toolbar.appendChild(info);
+        const rootWrap = el('span', 'patch-root-wrap');
+        rootWrap.appendChild(el('span', 'patch-root-label', '目标：'));
+        const rootBtn = el('button', 'patch-link patch-root', plan.root || '（未选择）');
+        rootBtn.type = 'button';
+        rootBtn.title = '选择补丁要写入的目标文件夹';
+        rootBtn.addEventListener('click', () => chooseTargetRoot(doc, ctx, plan));
+        rootWrap.appendChild(rootBtn);
+        const btnRoot = el('button', 'patch-link', '更改…');
+        btnRoot.type = 'button';
+        btnRoot.addEventListener('click', () => chooseTargetRoot(doc, ctx, plan));
+        rootWrap.appendChild(btnRoot);
+        toolbar.appendChild(rootWrap);
         const ws = el('label', 'patch-opt');
         const wsBox = document.createElement('input');
         wsBox.type = 'checkbox';
+        wsBox.checked = st.ignoreWhitespace;
         wsBox.addEventListener('change', () => {
-            loadPreview(doc, ctx, {repreview: true, ignoreWhitespace: wsBox.checked, allowOffset: wsAllow.checked});
+            loadPreview(doc, ctx, {ignoreWhitespace: wsBox.checked, allowOffset: wsAllow.checked});
         });
         ws.append(wsBox, document.createTextNode(' 忽略行尾空白'));
         const wsAllowLabel = el('label', 'patch-opt');
         const wsAllow = document.createElement('input');
         wsAllow.type = 'checkbox';
+        wsAllow.checked = st.allowOffset;
         wsAllow.addEventListener('change', () => {
-            loadPreview(doc, ctx, {repreview: true, ignoreWhitespace: wsBox.checked, allowOffset: wsAllow.checked});
+            loadPreview(doc, ctx, {ignoreWhitespace: wsBox.checked, allowOffset: wsAllow.checked});
         });
         wsAllowLabel.append(wsAllow, document.createTextNode(' 允许上下文位移'));
         toolbar.append(ws, wsAllowLabel);
         const btnReload = el('button', 'patch-link', '重新预检');
         btnReload.type = 'button';
-        btnReload.addEventListener('click', () => loadPreview(doc, ctx));
+        btnReload.addEventListener('click', () => loadPreview(doc, ctx, {root: plan.root || st.root}));
         toolbar.appendChild(btnReload);
-        host.appendChild(toolbar);
+        head.appendChild(toolbar);
+        if (!st.loading && plan.suggestedRoot && plan.suggestedRoot !== plan.root) {
+            host.appendChild(renderRootSuggestion(doc, ctx, plan));
+        }
     }
 
     if (st.loading) {
@@ -256,6 +297,115 @@ function canApply(st) {
         return (st.plan.files || []).every((f) => !st.selected.has(f.relPath) || f.status === 'ok');
     }
     return true;
+}
+
+// 给 app_control 的只读快照：补丁目标、逐文件状态/失败原因、建议目录与最近一次结果。
+export function patchViewSnapshot(doc) {
+    const st = doc && doc.patchState;
+    if (!st) return null;
+    const plan = st.plan;
+    if (!plan) {
+        return {
+            loaded: false,
+            loading: !!st.loading,
+            error: st.error || '',
+            patchPath: (doc && doc.path) || '',
+        };
+    }
+    const out = {
+        loaded: true,
+        name: doc.name || '',
+        patchPath: plan.patchPath || doc.path || '',
+        root: plan.root || '',
+        summary: plan.summary || '',
+        patchId: plan.patchId || '',
+        external: !!plan.external,
+        mode: st.mode || '',
+        selected: Array.from(st.selected || []),
+        added: plan.added || 0,
+        removed: plan.removed || 0,
+        applicable: !!plan.applicable,
+        files: (plan.files || []).map((f) => ({
+            relPath: f.relPath || '',
+            kind: f.kind || '',
+            status: f.status || '',
+            reason: f.reason || '',
+            added: f.added || 0,
+            removed: f.removed || 0,
+            hunks: (f.hunks || []).map((h) => ({
+                header: h.header || '',
+                status: h.status || '',
+                reason: h.reason || '',
+                applyAtLine: h.applyAtLine || 0,
+            })),
+        })),
+    };
+    if (plan.suggestedRoot) {
+        out.suggestedRoot = plan.suggestedRoot;
+        out.suggestedHits = plan.suggestedHits || 0;
+        out.suggestedNeeded = plan.suggestedNeeded || 0;
+    }
+    if (st.result) {
+        out.result = {
+            ok: !!st.result.ok,
+            mode: st.result.mode || '',
+            applied: st.result.applied || 0,
+            skipped: st.result.skipped || 0,
+            message: st.result.message || '',
+        };
+    }
+    return out;
+}
+
+function isAbsolutePath(text) {
+    return /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(text);
+}
+
+export async function setPatchTargetRoot(doc, ctx, root) {
+    let target = String(root == null ? '' : root).trim();
+    if (!target) throw new Error('root 不能为空');
+    if (!isAbsolutePath(target)) {
+        const base = ctx.getRoot();
+        if (!base) throw new Error('未打开工作区，请传绝对路径');
+        target = String(base).replace(/[\\/]+$/, '') + '/' + target.replace(/\\/g, '/');
+    }
+    await loadPreview(doc, ctx, {root: target});
+    const st = patchViewState(doc);
+    if (st.error) throw new Error(st.error);
+    if (!st.plan) throw new Error('补丁预览失败');
+    return patchViewSnapshot(doc);
+}
+
+export async function repreviewPatchView(doc, ctx, options) {
+    const opts = options || {};
+    await loadPreview(doc, ctx, {
+        ignoreWhitespace: typeof opts.ignoreWhitespace === 'boolean' ? opts.ignoreWhitespace : undefined,
+        allowOffset: typeof opts.allowOffset === 'boolean' ? opts.allowOffset : undefined,
+    });
+    const st = patchViewState(doc);
+    if (st.error) throw new Error(st.error);
+    if (!st.plan) throw new Error('补丁预览失败');
+    return patchViewSnapshot(doc);
+}
+
+function renderRootSuggestion(doc, ctx, plan) {
+    const box = el('div', 'patch-suggest');
+    const left = el('div', 'patch-suggest-left');
+    left.appendChild(el('span', 'patch-suggest-text', '目标目录可能不对：'));
+    const pathBtn = el('button', 'patch-link patch-suggest-path', plan.suggestedRoot);
+    pathBtn.type = 'button';
+    pathBtn.title = plan.suggestedRoot;
+    pathBtn.addEventListener('click', () => loadPreview(doc, ctx, {root: plan.suggestedRoot}));
+    left.appendChild(pathBtn);
+    box.appendChild(left);
+    const right = el('div', 'patch-suggest-right');
+    right.appendChild(el('span', 'patch-suggest-hits', '命中 ' + plan.suggestedHits + '/' + plan.suggestedNeeded + ' 个目标文件。'));
+    const use = el('button', 'patch-link patch-suggest-use', '使用该目录');
+    use.type = 'button';
+    use.addEventListener('click', () => loadPreview(doc, ctx, {root: plan.suggestedRoot}));
+    right.appendChild(use);
+    box.appendChild(right);
+    return box;
 }
 
 function renderFile(doc, ctx, file, st) {
@@ -385,12 +535,14 @@ function renderResult(result) {
 async function apply(doc, ctx) {
     const st = patchViewState(doc);
     if (!st.plan || !canApply(st)) return;
+    const root = st.plan.root;
     const files = Array.from(st.selected);
     try {
         const result = await ctx.backend.PatchApply(st.plan.planId, files, null, st.mode);
         st.result = result;
         if (result && result.applied > 0) ctx.notifyChanged(files);
-        await loadPreview(doc, ctx);
+        // 完整重检一次：应用后索引里已有记录，能找回补丁 ID 让「撤销」可用
+        await loadPreview(doc, ctx, {root});
         st.result = result;
         st.plan = st.plan;
         render(doc, ctx);

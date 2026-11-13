@@ -132,7 +132,36 @@ func shotEncodePNG(bgra []byte, w int, h int) (string, error) {
 	return base64.StdEncoding.EncodeToString(out.Bytes()), nil
 }
 
+func shotClampRect(x, y, w, h, maxW, maxH int) (int, int, int, int, error) {
+	if x < 0 {
+		w += x
+		x = 0
+	}
+	if y < 0 {
+		h += y
+		y = 0
+	}
+	if x >= maxW || y >= maxH {
+		return 0, 0, 0, 0, fmt.Errorf("截图区域超出窗口")
+	}
+	if x+w > maxW {
+		w = maxW - x
+	}
+	if y+h > maxH {
+		h = maxH - y
+	}
+	if w <= 0 || h <= 0 {
+		return 0, 0, 0, 0, fmt.Errorf("截图区域无效（%dx%d）", w, h)
+	}
+	return x, y, w, h, nil
+}
+
 func shotCaptureWindowPNG(hwnd uintptr) (string, error) {
+	return shotCaptureWindowRegionPNG(hwnd, -1, -1, 0, 0)
+}
+
+// shotCaptureWindowRegionPNG 截取窗口；rw/rh 大于 0 时只保留窗口内该矩形区域（物理像素）。
+func shotCaptureWindowRegionPNG(hwnd uintptr, rx, ry, rw, rh int) (string, error) {
 	if hwnd == 0 {
 		return "", fmt.Errorf("找不到主窗口")
 	}
@@ -169,6 +198,24 @@ func shotCaptureWindowPNG(hwnd uintptr) (string, error) {
 	}
 
 	src := raw
+	if rw > 0 && rh > 0 {
+		cx, cy, cw, ch, cerr := shotClampRect(rx, ry, rw, rh, raw.w, raw.h)
+		if cerr != nil {
+			return "", cerr
+		}
+		cropped, err := shotNewSurface(screen, cw, ch)
+		if err != nil {
+			return "", err
+		}
+		procShotBitBlt.Call(cropped.dc, 0, 0, uintptr(cw), uintptr(ch),
+			raw.dc, uintptr(cx), uintptr(cy), shotSrcCopy)
+		src = cropped
+	}
+	defer func() {
+		if src != raw {
+			src.close()
+		}
+	}()
 	for attempt := 0; ; attempt++ {
 		bgra, err := src.readBGRA()
 		if err != nil {
@@ -204,4 +251,14 @@ func (a *App) CaptureAppScreenshot() (string, error) {
 		return "", fmt.Errorf("找不到主窗口")
 	}
 	return shotCaptureWindowPNG(hwnd)
+}
+
+// CaptureAppScreenshotRegion 截取主窗口内的指定区域（物理像素，相对窗口左上角）。
+// 供 app_control screenshot {area} 做板块截图；越界会自动裁剪。
+func (a *App) CaptureAppScreenshotRegion(x, y, width, height int) (string, error) {
+	hwnd := findWailsWindow()
+	if hwnd == 0 {
+		return "", fmt.Errorf("找不到主窗口")
+	}
+	return shotCaptureWindowRegionPNG(hwnd, x, y, width, height)
 }

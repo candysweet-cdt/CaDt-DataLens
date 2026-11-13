@@ -273,6 +273,53 @@ func TestPlanDuplicatePathRejected(t *testing.T) {
 	}
 }
 
+func TestPlanSuggestsBetterRoot(t *testing.T) {
+	base := t.TempDir()
+	current := filepath.Join(base, "workspace")
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	patchDir := filepath.Join(base, "samples")
+	demo := filepath.Join(patchDir, "demo")
+	writePatchTestFile(t, demo, "src/config.js", "theme=light\n")
+	writePatchTestFile(t, demo, "src/style.css", "a{}\n")
+	text := "--- a/src/config.js\n+++ b/src/config.js\n@@ -1 +1 @@\n-theme=light\n+theme=dark\n" +
+		"--- a/src/style.css\n+++ b/src/style.css\n@@ -1 +1 @@\n-a{}\n+b{}\n" +
+		"--- /dev/null\n+++ b/src/banner.js\n@@ -0,0 +1 @@\n+export const banner = 1;\n"
+	doc := mustParse(t, text)
+	patchPath := filepath.Join(patchDir, "demo.patch")
+
+	plan, err := buildPatchPlan(doc, current, "id", "示例", patchPath, patchPlanOptions{External: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SuggestedRoot == "" {
+		t.Fatal("当前根缺少目标文件，应给出目录建议")
+	}
+	if !strings.EqualFold(filepath.Clean(plan.SuggestedRoot), filepath.Clean(demo)) {
+		t.Fatalf("建议目录 = %q，期望 %q", plan.SuggestedRoot, demo)
+	}
+	if plan.SuggestedHits != 2 || plan.SuggestedNeeded != 2 {
+		t.Fatalf("命中统计 = %d/%d，期望 2/2（新建文件不计入分母）", plan.SuggestedHits, plan.SuggestedNeeded)
+	}
+
+	// 目标匹配时不再建议；本应用生成的补丁（External=false）也不建议
+	plan, err = buildPatchPlan(doc, demo, "id", "示例", patchPath, patchPlanOptions{External: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SuggestedRoot != "" {
+		t.Fatalf("目标已匹配仍给出建议：%q", plan.SuggestedRoot)
+	}
+	plan, err = buildPatchPlan(doc, current, "id", "示例", patchPath, patchPlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SuggestedRoot != "" {
+		t.Fatalf("非外部补丁不应给出建议：%q", plan.SuggestedRoot)
+	}
+}
+
 func TestPlanCRLFAndGBKPreserved(t *testing.T) {
 	root := t.TempDir()
 	abs := filepath.Join(root, "crlf.txt")
