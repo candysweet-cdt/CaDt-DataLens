@@ -1,7 +1,7 @@
 // 工具调用参数规范化：保证发给 API 的 arguments 一定是合法 JSON 对象。
 // 模型偶发在参数末尾多写一个 } 或截断，非法文本一旦进入会话历史，
 // 之后每一轮请求都会被后端校验拒收，所以存储与发送两端都要过这一层。
-import {repairJson} from './jsonrepair.js';
+import {repairJson} from '../jsonrepair.js';
 
 function parseObject(text) {
     if (!text) return null;

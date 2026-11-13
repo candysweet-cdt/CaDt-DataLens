@@ -144,7 +144,7 @@ test('ACTIVITY_DOMAINS 覆盖全部动作大类', () => {
 // 静态断言（方案 §8）：每个 P0/P1 action 在触发点代码里都有字面量调用。
 test('每个操作事件都有触发点', () => {
     const mainSrc = readFileSync(new URL('./main.js', import.meta.url), 'utf8');
-    const aiSrc = readFileSync(new URL('./ai-panel.js', import.meta.url), 'utf8');
+    const aiSrc = readFileSync(new URL('./ai/ai-panel.js', import.meta.url), 'utf8');
     const src = mainSrc + aiSrc;
     const required = [
         'file.open', 'file.save', 'file.saveAs', 'file.create', 'file.delete', 'file.rename', 'file.move', 'file.format',

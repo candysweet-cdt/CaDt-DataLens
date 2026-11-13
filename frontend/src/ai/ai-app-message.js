@@ -1,6 +1,6 @@
 // 应用消息的通用元数据与图标：AI 面板里的「应用消息」卡片由任何功能复用，
 // 调用方只需给 {kind, label, icon?, content}，不必自己拼消息结构或图标。
-import {ICONS} from './icons.js';
+import {ICONS} from '../icons.js';
 
 // kind -> 默认图标；未登记或未知 kind 一律回落到 info。
 export const APP_MESSAGE_ICONS = {

@@ -12,7 +12,7 @@ import {createDebugConsole} from './debugconsole.js';
 import {createActivityLog} from './activity-log.js';
 import {iconSvg, renderMenuIcon} from './icons.js';
 import {createPalette} from './palette.js';
-import {createAIPanel} from './ai-panel.js';
+import {createAIPanel} from './ai/ai-panel.js';
 import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './jsonrepair.js';
 import {createFileIcon, fileIconSpec} from './fileicons.js';

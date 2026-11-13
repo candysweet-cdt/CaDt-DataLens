@@ -1,11 +1,11 @@
 // ai-panel.js：右侧 AI 助手面板（批次 2–6：会话 / 流式聊天 / 思考链 / 三形态 / 工具桥 / 记忆 / 技能 / 写审批 / Todolist / 变更记录 / 提示词 / 压缩 / 设置）
 // 设计文档见 docs/finished-plans/ai-panel.md。
-import {iconSvg} from './icons.js';
-import {createContextMenu} from './contextmenu.js';
-import {copyImageUrlToClipboard} from './image-clipboard.js';
-import {createImageLightbox} from './image-lightbox.js';
-import {createFileIcon} from './fileicons.js';
-import {buildSessionOutlineItems} from './session-outline.js';
+import {iconSvg} from '../icons.js';
+import {createContextMenu} from '../contextmenu.js';
+import {copyImageUrlToClipboard} from '../image-clipboard.js';
+import {createImageLightbox} from '../image-lightbox.js';
+import {createFileIcon} from '../fileicons.js';
+import {buildSessionOutlineItems} from '../session-outline.js';
 import {createSessionDiskStore, replaySessionLog} from './ai-session-store.js';
 import {
     analyzeDangerousCommand,
@@ -27,7 +27,7 @@ import {
     writeRuleSubject,
 } from './ai-permissions.js';
 import {GIT_ACTIONS, buildGitActionPrompt} from './ai-git.js';
-import {enhanceWidgets} from './widget.js';
+import {enhanceWidgets} from '../widget.js';
 import {normalizeAppMessage, appMessageIcon, detectAppMessage} from './ai-app-message.js';
 import {inspectToolArguments, safeToolArguments} from './ai-tool-args.js';
 import {
