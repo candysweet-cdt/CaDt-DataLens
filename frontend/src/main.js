@@ -3637,6 +3637,9 @@ const settingsUI = createSettingsUI({
 });
 const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
 const writingUI = createWritingUI({
+    set flashTimer(v) { flashTimer = v; },
+    set dirty(v) { dirty = v; },
+    set autoSaveTimer(v) { autoSaveTimer = v; },
     get nextCmdSeq() { return nextCmdSeq; },
     get activityLog() { return activityLog; },
     get allFormatDefs() { return allFormatDefs; },
@@ -3695,6 +3698,11 @@ const writingUI = createWritingUI({
 });
 const {CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, applyWritingFormat, applyWritingMode, canSplitDoc, cancelAutoSave, closeFootPopover, editorLocale, effectiveToolEnv, flash, fmtSize, formatDisplayName, insertSceneSeparator, isSqlSupportedDoc, isSvgDoc, jumpToPosition, markdownRenderer, mdPreviewWidthLabel, normalizeLegacySqlMode, openCloseConfirm, openGotoDialog, openWritingNameDialog, renderEnvVarsPane, renderFmtTable, renderFormatPane, renderLangPane, renderMarkdownHtml, renderMermaidBlocks, renderPluginsPane, renderRunPane, resolveMarkdownImages, scheduleAutoSave, scheduleCursorPosition, scheduleWritingCaret, setDirty, splitKindFor, toggleWritingMode, toolEnvFor, updateAiWidthWidget, updateBackendDirty, updateCursorPosition, updateTabDirty, updateWindowTitle, updateWritingStats, viewDisabled, viewLabel, viewOptionsFor, writingFormatable} = writingUI;
 const editorGroupsMod = createEditorGroups({
+    set currentMode(v) { currentMode = v; },
+    set dirty(v) { dirty = v; },
+    set file(v) { file = v; },
+    set editor(v) { editor = v; },
+    set docSeq(v) { docSeq = v; },
     get activityLog() { return activityLog; },
     get aiPanel() { return aiPanel; },
     get aiReferenceFileMenuItems() { return aiReferenceFileMenuItems; },
@@ -3783,7 +3791,7 @@ const editorGroupsMod = createEditorGroups({
     get viewOptionsFor() { return viewOptionsFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, editorGroups, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, focusedGroupId, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, splitRoot, syncAllBrowserTabs, syncBrowserTab, textArea, toggleBookmark, toggleFocusedNode, updateAiWriteBadge, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
+const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, editorGroups, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, focusedGroupId, groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, splitRoot, syncAllBrowserTabs, syncBrowserTab, textArea, toggleBookmark, toggleFocusedNode, updateAiWriteBadge, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
 const NEW_FILE_TYPES = [
     {label: 'JSON 文件', name: '新建文件.json'},
     {label: '文本文件', name: '新建文件.txt'},
@@ -6294,6 +6302,7 @@ const menuBarMod = createMenuBar({
 const {clickEditorButton, formatDocument, getOpenMenuEl, hideMenuBar, menuBar, menuKeyMap, openMenuByKind, setOpenMenuEl, showMenuBar} = menuBarMod;
 // switchMode 外壳负责操作留痕（view.switch）；实际切换在 applySwitchMode。
 const modeSwitch = createModeSwitch({
+    set currentMode(v) { currentMode = v; },
     get activityLog() { return activityLog; },
     get applyAceMode() { return applyAceMode; },
     get applyReadOnlyToDoc() { return applyReadOnlyToDoc; },
@@ -6425,6 +6434,8 @@ const appActions = createAppActions({
 });
 const {copyExternalIntoDir, exitApp, getPendingExternalDrop, parentDirOf, readRecentOpen, recentOpenMenuItems, rememberRecentOpen, setPendingExternalDrop, setPendingExternalDropValue} = appActions;
 const sessionRestore = createSessionRestore({
+    get setFocusedGroupId() { return setFocusedGroupId; },
+    get setSplitRoot() { return setSplitRoot; },
     get activateDoc() { return activateDoc; },
     get activityLog() { return activityLog; },
     get createGroup() { return createGroup; },
@@ -7413,6 +7424,7 @@ initStructurePanel();
 initActivityBar();
 
 const bridgeUI = createBridgeUI({
+    set syncedOpenMode(v) { syncedOpenMode = v; },
     get activateDoc() { return activateDoc; },
     get activityLog() { return activityLog; },
     get addDocToFocusedGroup() { return addDocToFocusedGroup; },

@@ -228,7 +228,7 @@ async function restoreSession(sess) {
         const idxToGid = new Map();
         for (const gspec of (sess.groups || [])) {
             const g = deps.createGroup();
-            deps.focusedGroupId = g.id;
+            deps.setFocusedGroupId(g.id);
             idxToGid.set(idxToGid.size, g.id);
             await deps.openPathsHere(gspec.paths || []);
             const activeDoc = deps.findDocByPath(gspec.active);
@@ -237,7 +237,7 @@ async function restoreSession(sess) {
             }
         }
         if (sess.split && typeof sess.split === 'object') {
-            deps.splitRoot = deserializeSplitSession(sess.split, idxToGid);
+            deps.setSplitRoot(deserializeSplitSession(sess.split, idxToGid));
         }
         const current = sess.current ? deps.findDocByPath(sess.current) : null;
         if (current) {
