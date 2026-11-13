@@ -6042,7 +6042,6 @@ async function saveAll() {
 
 els.btnWelcomeOpen.addEventListener('click', openDialog);
 
-applySettings();
 elsSettings.fixed.addEventListener('change', () => {
     settings.fixedKeys = elsSettings.fixed.checked;
     applySettings();
@@ -7349,7 +7348,6 @@ window.addEventListener('keydown', (e) => {
     if (file && file.dirty) revertDocToSaved(file);
 }, true);
 
-initContextMenus();
 els.wsProject.addEventListener('click', (e) => {
     e.stopPropagation();
     showProjectMenu(els.wsProject);
@@ -7358,14 +7356,21 @@ els.wsBranch.addEventListener('click', (e) => {
     e.stopPropagation();
     showBranchMenu(els.wsBranch);
 });
-initExplorer();
-initStructurePanel();
-initActivityBar();
 
 const cursorThemes = createCursorThemes({
     get backend() { return backend; },
 });
 const {setDragCursor} = cursorThemes;
+
+
+// —— 启动初始化（放在所有域模块工厂与解构之后：这些调用会经 deps getter
+//    触达后置绑定的模块导出，前置执行会 TDZ）——
+applySettings();
+initContextMenus();
+initExplorer();
+initStructurePanel();
+initActivityBar();
+
 const terminalMod = createTerminalUI({
     get showGitFileHistory() { return showGitFileHistory; },
     get gitRollbackPaths() { return gitRollbackPaths; },
@@ -7453,3 +7458,4 @@ const bridgeUI = createBridgeUI({
     get workspaceFolder() { return workspaceFolder; },
 });
 const {createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, notifyAIGitEntry, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths} = bridgeUI;
+
