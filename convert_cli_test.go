@@ -70,6 +70,21 @@ func TestParseConvertArgsErrors(t *testing.T) {
 	}
 }
 
+func TestParseConvertArgsIgnoresGuiFlags(t *testing.T) {
+	cases := [][]string{
+		{"--new-window", "--ai-float", `D:\workspace`},
+		{"--new-window", "--debug-console"},
+		{"--open-settings=models"},
+		{"--new-window", "--ai-session=abc", `D:\workspace`},
+	}
+	for _, args := range cases {
+		opts, isConvert, err := parseConvertArgs(args)
+		if err != nil || isConvert || opts != nil {
+			t.Fatalf("GUI 参数 %v 不应进入转换模式：opts=%+v convert=%v err=%v", args, opts, isConvert, err)
+		}
+	}
+}
+
 func TestParseConvertArgsRefusesOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	a := writeConvertFixture(t, dir, "a.json", `{}`)

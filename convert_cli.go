@@ -100,6 +100,14 @@ func expandConvertInputs(args []string) ([]string, error) {
 
 func parseConvertArgs(args []string) (*convertOptions, bool, error) {
 	isConvert := false
+	// 先整体判断是否转换模式：GUI 启动参数（--new-window / --ai-float / --debug-console 等）
+	// 不能当成未知参数拒绝，否则独立窗口子进程会在启动前直接退出。
+	for _, arg := range args {
+		if strings.TrimSpace(arg) == "--convert" {
+			isConvert = true
+			break
+		}
+	}
 	var inputs []string
 	to := ""
 	out := ""
@@ -109,7 +117,6 @@ func parseConvertArgs(args []string) (*convertOptions, bool, error) {
 		arg := args[i]
 		switch {
 		case arg == "--convert":
-			isConvert = true
 		case arg == "--to" || arg == "-t":
 			i++
 			if i >= len(args) {
@@ -135,6 +142,9 @@ func parseConvertArgs(args []string) (*convertOptions, bool, error) {
 				return nil, true, errors.New(convertUsage)
 			}
 		case strings.HasPrefix(arg, "-"):
+			if !isConvert {
+				continue
+			}
 			return nil, true, fmt.Errorf("未知参数：%s", arg)
 		default:
 			inputs = append(inputs, arg)
