@@ -160,5 +160,5 @@ async function reloadAllFromDisk() {
 }
 
 
-    return {propsTimeText, reloadAllFromDisk, showFileProperties};
+    return {newDocumentMenuItems, propsTimeText, reloadAllFromDisk, showFileProperties};
 }

@@ -6360,7 +6360,7 @@ const globalSearch = createGlobalSearch({
     get waitUntil() { return waitUntil; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {openGlobalSearch} = globalSearch;
+const {isGlobalSearchOpen, openGlobalSearch} = globalSearch;
 const jsonQuery = createJsonQuery({
     get copyText() { return copyText; },
     get docs() { return docs; },
@@ -6967,7 +6967,7 @@ let gsShiftCount = 0;
 let gsShiftAt = 0;
 
 window.addEventListener('keydown', (e) => {
-    if (globalSearch.open) return;
+    if (isGlobalSearchOpen()) return;
     if (e.key === 'Shift' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.repeat) {
         const now = Date.now();
         if (now - gsShiftAt > 600) gsShiftCount = 0;

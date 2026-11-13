@@ -3,6 +3,7 @@
 //
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
+import DOMPurify from 'dompurify';
 import {WRITING_FONTS, formatWritingText, genName, SCENE_SEPARATOR} from './writing.js';
 import {RECIPES, SELF_TEST} from './run.js';
 import {initPluginRuntime, loadPlugins} from './plugins.js';

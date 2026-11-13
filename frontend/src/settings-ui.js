@@ -945,5 +945,5 @@ function scheduleWordCount() {
     function getConfirmAction() { return confirmAction; }
     function setConfirmAction(v) { confirmAction = v; }
 
-    return {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, closeDialogs, closeTopDialog, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount};
+    return {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, closeDialogs, closeTopDialog, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getConfirmAction, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setConfirmAction, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount};
 }

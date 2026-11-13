@@ -265,5 +265,5 @@ function bindGlobalSearch() {
 bindGlobalSearch();
 
 
-    return {openGlobalSearch};
+    return {isGlobalSearchOpen: () => globalSearch.open, openGlobalSearch};
 }

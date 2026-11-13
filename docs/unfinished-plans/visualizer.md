@@ -2,11 +2,11 @@
 
 > 状态：**方案已定，待实施**（本轮只出方案，不改代码）
 > 范围：AI 回答内的可视化（对话内卡片 + 落盘页面），不含主界面 Markdown 预览与阅读模式
-> 首轮交付：阶段 1–5 全部，含卡片「另存为」与图表引擎
-> 已定决策：围栏驱动 / 不做 `visualize` 工具 / 另存为纳入首轮 / **≤5 MB 依赖可接受，能力优先**（见 §7）
-> 版本预算：**+1.07 MiB**（ECharts 全量，照 mermaid 放 `public/vendor/` 懒加载），远低于 5 MB
+> 首轮交付：阶段 1–6 全部，含卡片「另存为」、图表引擎、ELK 布局与词云
+> 已定决策：围栏驱动 / 不做 `visualize` 工具 / 另存为纳入首轮 / **≤5 MB 依赖可接受，能力优先** / **ELK.js 与词云确认纳入**（见 §7）
+> 版本预算：**+约 2.7 MiB**（ECharts 1.07 + ELK 1.57 + 词云 ≤0.05，均放 `public/vendor/` 懒加载），5 MB 预算内剩余约 2.3 MiB
 > 版本号：不变更（内部能力整合，无新增设置项）
-> 提出日期：2026-11-13
+> 提出日期：2026-11-13；锚点校对：2026-11-13 22:46（`12f010f` 重构后）
 
 ## 1. 背景
 
@@ -20,17 +20,19 @@ WorkBuddy 的 Visualizer 由三层构成，与具体渲染技术无关：
 
 本应用已具备 1 的内容（写在提示词里）、2 的雏形（散在 3 处）、3 的实现（`widget.js`，安全性更严）。差距在于这三层各自为政，且**模型出图只能手写 SVG 坐标**。
 
-### 1.1 现状五条管线（已核对源码）
+### 1.1 现状五条管线（锚点已按 `12f010f` 重构后校对）
 
 | # | 管线 | 锚点 | 说明 |
 |---|---|---|---|
-| 1 | `svg` / `html` 卡片 | `frontend/src/widget.js`、`markdown.js:47`、`ai/ai-panel.js:5830` | `WIDGET_LANGS = {svg, html, htm}`；Shadow DOM + DOMPurify + CSS 清洗；`MAX_WIDGETS_PER_MESSAGE=8`、`MAX_WIDGET_CHARS=200KB`；流式期间只标 pending，整轮结束才挂载；卡片带「源码 / 复制」 |
-| 2 | mermaid 11 | `main.js:6353–6413` | `ensureMermaidScript()` 懒加载 `/vendor/mermaid/mermaid.min.js`（2.57 MB），`securityLevel:'strict'` + DOMPurify 二次清洗 |
-| 3 | 图片 | `markdown.js:35`（`data-ai-src`）、`main.js:6418`（`resolveMarkdownImages`）、`image-lightbox.js` | Windows 盘符路径经 `ADD_URI_PROTOCOL:['c']` 放行，后端 `ReadImageAsDataURL` 转 data URL |
-| 4 | HTML 回答页 | 内置技能 `answer-me-with-html`（`ai/ai-panel.js:524`） | `write_file` → `.cadt/answers/<slug>.html` → `app_control` 内嵌浏览器打开 |
+| 1 | `svg` / `html` 卡片 | `frontend/src/widget.js`、`markdown.js:47`、`ai/ai-panel.js:5060`（`enhanceWidgets`） | `WIDGET_LANGS = {svg, html, htm}`；Shadow DOM + DOMPurify + CSS 清洗；`MAX_WIDGETS_PER_MESSAGE=8`、`MAX_WIDGET_CHARS=200KB`；流式期间只标 pending，整轮结束才挂载；卡片带「源码 / 复制」 |
+| 2 | mermaid 11 | `frontend/src/writing-ui.js:1858–1920`（`ensureMermaidScript` / `renderMermaidBlocks` / `resolveMarkdownImages`），调用点 `editor-groups.js:3142` | 懒加载 `/vendor/mermaid/mermaid.min.js`（2.57 MB），`securityLevel:'strict'` + DOMPurify 二次清洗 |
+| 3 | 图片 | `markdown.js:35`（`data-ai-src`）、`writing-ui.js:1922`（`resolveMarkdownImages`）、`image-lightbox.js`、`app.go:1224`（`ReadImageAsDataURL`） | Windows 盘符路径经 `ADD_URI_PROTOCOL:['c']` 放行，后端转 data URL |
+| 4 | HTML 回答页 | 内置技能 `answer-me-with-html`（`ai/ai-constants.js:476`） | `write_file` → `.cadt/answers/<slug>.html` → `app_control` 内嵌浏览器打开 |
 | 5 | 纯 CSS 柱图 | `reading/reading-view.js:520` | 阅读模式最近 7 天统计，独立实现 |
 
-规范文本分散在三处：`inline-visual`（`ai-panel.js:395`）、`answer-me-with-html`（`ai-panel.js:524`）、`docs/skills/cadt-file-layout/SKILL.md:27`。且 `widget.js:21` 的 `SHADOW_STYLE` 又手写了一份 `--color-*` 别名映射，与 `inline-visual` 第 5 节的变量清单是两份事实。
+规范文本分散在三处：`inline-visual`（`ai/ai-constants.js:347`）、`answer-me-with-html`（`ai/ai-constants.js:476`）、`docs/skills/cadt-file-layout/SKILL.md:27`。且 `widget.js:21` 的 `SHADOW_STYLE` 又手写了一份 `--color-*` 别名映射，与 `inline-visual` 第 5 节的变量清单是两份事实。
+
+> 重构说明：`main.js` 已拆到约 7,400 行，mermaid 与 Markdown 渲染链迁入 `writing-ui.js`，AI 技能定义迁入 `ai/ai-constants.js`。**所有 `ai-panel.js:395` / `main.js:6353` 一类旧锚点均已失效**，实施前以 `grep` 实测为准。
 
 ### 1.2 前提变更（2026-11-13 作者确认）
 
@@ -44,8 +46,9 @@ WorkBuddy 的 Visualizer 由三层构成，与具体渲染技术无关：
 
 - **不再写一个渲染器。** `widget.js` 的 Shadow DOM + DOMPurify + 禁 `<script>` 边界比 WorkBuddy 更严，保留并升格。
 - **安全边界与"引库"不冲突，前提是库在应用侧跑、产出静态 SVG。** 见 §3.5 的 SSR 方案。
-- **复用已内置的 mermaid。** 实测 `frontend/public/vendor/mermaid/mermaid.min.js` 含 `xychart-beta`（2）、`pie`（271）、`sankey-beta`（2）、`block-beta`（2）、`packet-beta`（3）、`quadrantChart`（26）、`gitGraph`（17）。零新增字节即可给模型一整套声明式图语法。
-- **不动 `main.js`（除 §4 阶段 3 的一处可选抽取）。** 作者有在途改动，实施前重跑 `git status` 核对。
+- **复用已内置的 mermaid。** 实测 `frontend/public/vendor/mermaid/mermaid.min.js` 含 **19 种图型**（§10.1），零新增字节即可给模型一整套声明式图语法。
+- **ELK 与词云都属于「布局层」，不是新渲染器。** ELK.js 只输出节点/边的 `x`/`y`，d3-cloud 只输出 `{text, x, y, rotate, size}`，两者都产出**坐标数据**；最终 SVG 仍由应用拼装或喂给 ECharts `graph` 的 `layout:'none'`，再走现有 `sanitizeWidgetHtml` → Shadow DOM 管线。因此它们与 §3.5 的 SSR 方案、与禁脚本边界都不冲突。
+- **默认不动 `writing-ui.js`。** AI 面板侧新增懒加载器即可复用同一份 vendor；若要抽共用模块需改 `writing-ui.js`（可选，见 §3.6）。工作树当前干净（最新提交 `12f010f`），但实施前仍重跑 `git status`。
 
 ## 2. 目标与非目标
 
@@ -56,6 +59,7 @@ WorkBuddy 的 Visualizer 由三层构成，与具体渲染技术无关：
 - 统一路由：把三处「何时画 / 哪种形态 / 是否落盘」收敛成一张决策表。
 - 统一外壳：所有 AI 可视化共用一张卡片（标签、源码、复制、限额、流式策略、链接拦截）；`kind` 元数据区分形态。
 - 打通卡片 → 落盘：卡片「另存为」写 `.cadt/answers/`，使对话内卡片与 HTML 回答页不再是两条割裂管线。
+- **布局与词云能力**：` ```graph ` 用 ELK 自动布局（模型只给节点+边）、` ```wordcloud ` 出词云，两者都产出坐标数据后走现有静态 SVG 管线，不新增渲染器、不放宽安全边界。
 
 ### 非目标（明确不做）
 
@@ -87,7 +91,7 @@ WorkBuddy 的 Visualizer 由三层构成，与具体渲染技术无关：
 
 新增 `frontend/src/ai/visual-spec.js`，导出 `VISUAL_TOKENS`（主题变量 + `--color-*` 别名 + 兜底色）、`VISUAL_BUDGET`（viewBox 680 / 高 520px / 字号 ≥11px / 最多两列 / 单条 ≤3 张 / 单块 200 KB / 单条上限 8 张 / CSS 24 KB）、`VISUAL_RULES`（按 kind 分组的规范文本）、`VISUAL_ROUTING`（§3.3 决策表文本）。
 
-`widget.js` 的 `SHADOW_STYLE` 由 `VISUAL_TOKENS` 生成；`ai-panel.js` 的 `inline-visual` content 改为拼装 `VISUAL_RULES`。`answer-me-with-html` 与 `cadt-file-layout` 的形态判断改为引用同一张表。
+`widget.js` 的 `SHADOW_STYLE` 由 `VISUAL_TOKENS` 生成；`ai/ai-constants.js` 的 `inline-visual` content 改为拼装 `VISUAL_RULES`。`answer-me-with-html` 与 `cadt-file-layout` 的形态判断改为引用同一张表。
 
 **额外职责**：`VISUAL_TOKENS` 还要能导出「当前主题的具体色值」，供 ECharts SSR 注入 option（见 §3.5，静态 SVG 里 CSS 变量不生效）。
 
@@ -110,11 +114,11 @@ WorkBuddy 的 Visualizer 由三层构成，与具体渲染技术无关：
 | 层 | 方案 | 新增体积 | 模型要写什么 | 能力 |
 |---|---|---|---|---|
 | L0 | 纯 SVG 手绘（原方案） | 0 | `<svg>` 坐标全手算 | 最弱，比例/刻度靠模型估算，不可复核 |
-| **L1** | **复用内置 mermaid 11** | **0** | `xychart-beta` / `pie` / `sankey-beta` 等声明式文本 | 柱/线/饼/桑基/象限/时序，零成本、现成懒加载与 strict 净化 |
+| **L1** | **复用内置 mermaid 11** | **0** | `xychart-beta` / `pie` / `mindmap` 等声明式文本 | 19 种图型，零成本、现成懒加载与 strict 净化 |
 | **L2** | **ECharts 6 SSR → SVG 字符串** | **+1.07 MiB** | ECharts `option` JSON | 20+ 图型、dataset transform、自动 aria-label / decal 无障碍、数值精确 |
 | L3 | Chart.js（不采纳） | +205 KiB | chart config | Canvas，须管理活实例；能力弱于 L2 |
 
-**首轮上 L1 + L2。** 合计 +1.07 MiB，占 5 MB 预算的 21%，exe 从 28.0 MB → 约 29.1 MB（+3.8%）。L1 当天可用、L2 是真正的能力扩展。
+**首轮上 L1 + L2。** 这一阶梯本身耗 +1.07 MiB（占 5 MB 预算的 21%）；L1 零字节当天可用、L2 是真正的能力扩展。**全量预算**含阶段 6 的 ELK 与词云共 2.69 MiB、exe 约 30.8 MB，见 §3.7。
 
 ### 3.5 L2 实现要点：ECharts SSR → 静态 SVG（保留禁脚本边界）
 
@@ -141,10 +145,10 @@ chart.dispose();
 
 ### 3.6 L1 实现要点：mermaid 复用
 
-- 已内置 mermaid 11 与 `renderMermaidBlocks`（`main.js:6386`），`securityLevel:'strict'` + DOMPurify 兜底都有。
-- 让 AI 卡片的 ` ```mermaid ` 也能渲染，最小改法是在 `widget.js` / 新增 `mermaid-render.js` 里**自己写一个 20 行懒加载器**（检查 `window.mermaid`，没有就插 `<script src="/vendor/mermaid/mermaid.min.js">`），完全不动 `main.js`；代价是加载逻辑有两份。
-- 更干净的做法是抽 `frontend/src/mermaid-render.js` 供 `main.js` 与 AI 面板共用，但**需改 `main.js` 一处**，与作者在途改动冲突，标为阶段 3 的可选项，实施前确认。
-- 提示词补一段 mermaid 图表语法速查（`xychart-beta` / `pie` / `sankey-beta`），优先于手写 SVG。
+- `renderMermaidBlocks` 与懒加载器现位于 `frontend/src/writing-ui.js:1864/1890`，`securityLevel:'strict'` + DOMPurify 兜底都有；`editor-groups.js:3142` 是主界面预览的调用点。
+- 让 AI 卡片的 ` ```mermaid ` 也能渲染，最小改法是在新增 `frontend/src/ai/mermaid-render.js` 里**自己写一个 20 行懒加载器**（检查 `window.mermaid`，没有就插 `<script src="/vendor/mermaid/mermaid.min.js">`），**完全不动 `writing-ui.js`**；代价是加载逻辑有两份。
+- 更干净的做法是抽 `frontend/src/mermaid-render.js` 供 `writing-ui.js` 与 AI 面板共用，但需改 `writing-ui.js` 一处，标为阶段 3 可选项。
+- 提示词补一段 mermaid 图型速查（见 §10.1 完整清单），优先于手写 SVG。
 
 ### 3.7 实测体积数据（2026-11-13）
 
@@ -157,9 +161,15 @@ chart.dispose();
 | ECharts 6.1.0 `echarts.simple.min.js` | 489 KiB | 166 KiB | +489 KiB |
 | ECharts 6.1.0 `echarts.common.min.js` | 698 KiB | 235 KiB | +698 KiB |
 | **ECharts 6.1.0 `echarts.min.js`（全量，选用）** | **1096 KiB** | **361 KiB** | **+1.07 MiB** |
+| **ELK.js 0.12.1 `elk.bundled.js`（选用）** | **1608 KiB** | **482 KiB** | **+1.57 MiB** |
+| **echarts-wordcloud 2.1.0 `.min.js`（首选）** | **16 KiB** | **6.4 KiB** | **+16 KiB** |
+| **d3-cloud 2.0.0 `build/d3-cloud.js`（兜底）** | **34 KiB** | **8.5 KiB** | **+34 KiB** |
+| echarts-gl 2.0.8（不建议） | 626 KiB | — | +626 KiB |
 | 对照：现有 `mermaid.min.js` | 2514 KiB | — | 已在包内 |
 
-基线：`build/bin/CaDt-DataLens.exe` 28.0 MB、`frontend/dist` 9.3 MB、`dist/assets/index-*.js` 2.0 MiB。ECharts 全量约为 mermaid 的 44%，仍在 5 MB 预算内。若改用 npm 依赖 + Vite tree-shaking，ECharts core + 少量图型约 350–450 KiB 原始，但会进主包、失去懒加载，**不采用**。
+> **勘误**：上一版把 ELK.js 写成 188 KiB / 53 KiB gz，来自国内技术博客的二手数据；实测 jsdelivr 官方 `elkjs@0.12.1` 的 `lib/elk.bundled.js` 为 1,646,241 B（1.57 MiB）、gzip 481,999 B；`elk-worker.min.js` 亦为 1.56 MiB。ELK 是 GWT 编译的 Java 布局引擎，本体比 ECharts 还大。**结论不变**（仍在预算内），但体积数字以本表为准。
+
+基线：`build/bin/CaDt-DataLens.exe` 28.0 MB、`frontend/dist` 9.3 MB、`dist/assets/index-*.js` 2.0 MiB。四项合计 **2.69 MiB 原始**，占 5 MB 预算的 54%，剩余约 2.31 MiB；exe 约 30.8 MB。若改用 npm 依赖 + Vite tree-shaking，ECharts core + 少量图型约 350–450 KiB 原始，但会进主包、失去懒加载，**不采用**。ELK 亦可用 `@dagrejs/dagre@3.1.3`（活跃 fork，约 55 KiB）作轻量降级，但不支持 ELK 的多算法与大规模图。
 
 ## 4. 实施阶段（每阶段可独立提交 / 回滚）
 
@@ -167,7 +177,7 @@ chart.dispose();
 
 1. 新增 `frontend/src/ai/visual-spec.js`，把 `widget.js:11–37` 常量与 `SHADOW_STYLE`、`inline-visual` 第 5/6 节的变量与数字搬进去，额外导出「当前主题具体色值」。
 2. `widget.js` 改为 import `VISUAL_TOKENS` / `VISUAL_BUDGET` 生成 `SHADOW_STYLE` 与限额常量。
-3. `ai-panel.js` 的 `inline-visual` content 改为拼装 `VISUAL_RULES`，文字与原版逐句对齐。
+3. `ai/ai-constants.js` 的 `inline-visual` content 改为拼装 `VISUAL_RULES`，文字与原版逐句对齐。
 4. 新增 `visual-spec.test.mjs`；`frontend/package.json` test script 追加该文件（硬编码列表，不加就不会执行）。
 5. 验证：`npm test` 全绿（含 `widget.test.mjs` 现有 7 例）→ `npm run build` → 冒烟出一张 `svg` 卡片，与改动前逐像素比对无差异。
 
@@ -181,7 +191,7 @@ chart.dispose();
 
 ### 阶段 3：图表引擎（能力扩展主线）
 
-1. **L1 mermaid 卡片**：新增 `frontend/src/ai/mermaid-render.js`（懒加载器 + `mermaid.render` + DOMPurify 兜底），接进 `enhanceWidgets` 的异步分支；`inline-visual` 补 mermaid 语法速查。默认不动 `main.js`（可选抽取见 §3.6）。
+1. **L1 mermaid 卡片**：新增 `frontend/src/ai/mermaid-render.js`（懒加载器 + `mermaid.render` + DOMPurify 兜底），接进 `enhanceWidgets` 的异步分支；`ai-constants.js` 的 `inline-visual` 补完整图型速查（§10.1）。默认不动 `writing-ui.js`（可选抽取见 §3.6）。
 2. **L2 ECharts SSR**：把 `echarts.min.js`（1.07 MiB）放 `frontend/public/vendor/echarts/`；新增 `frontend/src/ai/chart-render.js`（懒加载、option 校验、主题色注入、SSR→SVG、`dispose`、主题/宽度变化重渲染）；产物走 `sanitizeWidgetHtml(svg,'svg')` 进现有卡片。
 3. `inline-visual` 补 ` ```echarts ` 的 option 模板与硬边界（纯 JSON、无 formatter 函数、无外链、禁动画）。
 4. 新增 `chart-render.test.mjs`：option 白名单拒绝用例、超限与非法 JSON 降级、主题色注入、`animation:false` 强制、SSR 产物不含 `<script>`。
@@ -197,9 +207,29 @@ chart.dispose();
 
 ### 阶段 5：文档同步
 
-- `AGENTS.md`：补 `visual-spec.js` / `chart-render.js` / `mermaid-render.js` 与 `widget.js` 新职责；**记一条作者批准的体积例外**（本功能 ≤5 MB 可接受，参照 SQLite 派生索引例外的写法）；顺手修正已过时的路径（`ai-panel.js` 已在 `src/ai/`，`widget.test.mjs` 已存在）。
+- `AGENTS.md`：补 `visual-spec.js` / `chart-render.js` / `mermaid-render.js` 与 `widget.js` 新职责；**记一条作者批准的体积例外**（本功能 ≤5 MB 可接受，参照 SQLite 派生索引例外的写法）。`AGENTS.md` 已随重构同步过模块清单，无需再修旧路径。
 - `CHANGELOG.md` / `README.md`：阶段 3 起有用户可见变化，同步对应小节。
 - 全部实施后把本文档移入 `docs/finished-plans/`。
+
+### 阶段 6：ELK 布局 + 词云（作者确认纳入，独立可回滚）
+
+两个库都**只做布局、不做渲染**，产出坐标数据后仍由应用拼静态 SVG，因此不动安全边界。
+
+**6.1 ELK 关系图自动布局**
+
+1. 放 `frontend/public/vendor/elk/elk.bundled.js`（1.57 MiB）到 vendor，懒加载；新增 `frontend/src/ai/layout-render.js`。
+2. 新增围栏 ` ```graph `（或 ` ```mermaid kind=graph `），模型只写 `{nodes:[{id,label}], edges:[{from,to,label}]}` 纯 JSON + 可选 `algorithm`（`layered` / `force` / `stress`）。
+3. 应用侧 `new ELK().layout(graph)` 得到 `x`/`y`/`width`/`height` 与边路由点 → 拼 `<path>` / `<rect>` / `<text>` 静态 SVG（或喂给 ECharts `graph` series 的 `layout:'none'`）→ `sanitizeWidgetHtml(svg,'svg')` → 现有卡片。
+4. 节点数上限（建议 ≤150）、布局超时（建议 3s）、失败降级为「保留源码 + 简单分层兜底」；ELK 初始化较重，实例复用、不要每张卡 new 一个。
+5. 测试：DAG / 环 / 孤立节点 / 超上限 / 非法 JSON 的表驱动降级；输出不含 `<script>`。
+
+**6.2 词云**
+
+1. **首选 `echarts-wordcloud@2.1.0`（16 KiB）**：源码实测含 `getContext`×16、`getImageData`×5、`createElement('canvas')`×5，布局用临时 canvas 做像素碰撞检测；文字最终是 zrender `graphic.Text`（命中 71 次）。WebView2 里 canvas 可用，故布局能跑；**但官方未承诺 SSR 兼容**，阶段 6 第一件事就是在 `ssr:true` 下实测 `renderToSVGString()` 是否输出 `<text>`。能出图就走它，最省事。
+2. **兜底 `d3-cloud@2.0.0`（34 KiB）**：若 SSR 出不来，改用 d3-cloud 只算布局 → 得到 `{text, x, y, rotate, size}` → 应用自己拼静态 SVG 字符串。这条路 100% 可控（主题色、字号、`role="img"` + `<title>/<desc>` 全在我们手里），且完全不经过 ECharts painter。
+3. 围栏 ` ```wordcloud ` 只带 `{words:[{text,value}], …}` 纯 JSON；词数上限（建议 ≤120）、字号上下限、停用词与中文分词策略写进规范；主题色取 `VISUAL_TOKENS`，不用 `prefers-color-scheme`。
+4. 测试：空词表 / 单词超长 / 全零权重 / 超上限 / 非法 JSON 的降级；输出 SVG 不含 `<script>` 与外链。
+5. 验证：两种词云渲染路径各冒烟一张；深色主题下颜色正确；与 ` ```echarts ` 卡片共存不互相污染 `window.echarts` 实例。
 
 ## 5. 文件改动清单
 
@@ -209,21 +239,27 @@ chart.dispose();
 | `frontend/src/ai/mermaid-render.js` | 新增（懒加载 + 渲染） | 3 |
 | `frontend/src/ai/chart-render.js` / `.test.mjs` | 新增（option 校验 + SSR→SVG） | 3 |
 | `frontend/public/vendor/echarts/echarts.min.js` | **新增 vendor 资源（1.07 MiB）** | 3 |
-| `frontend/public/vendor/licenses/echarts.LICENSE` | 新增许可证文件 | 3 |
+| `frontend/src/ai/layout-render.js` / `.test.mjs` | 新增（ELK 布局 → 静态 SVG） | 6 |
+| `frontend/src/ai/wordcloud-render.js` / `.test.mjs` | 新增（词云布局 → 静态 SVG） | 6 |
+| `frontend/public/vendor/elk/elk.bundled.js` | **新增 vendor 资源（1.57 MiB）** | 6 |
+| `frontend/public/vendor/wordcloud/echarts-wordcloud.min.js` | 新增 vendor 资源（16 KiB，首选） | 6 |
+| `frontend/public/vendor/wordcloud/d3-cloud.js` | 新增 vendor 资源（34 KiB，SSR 不兼容时兜底） | 6 |
+| `frontend/public/vendor/licenses/echarts.LICENSE` / `elk.LICENSE` / `wordcloud.LICENSE` / `d3-cloud.LICENSE` | 新增许可证文件 | 3、6 |
 | `frontend/src/widget.js` / `.test.mjs` | 改：常量外移、kind 解析、异步渲染分支、标签、另存为 | 1–4 |
 | `frontend/src/markdown.js` | 改：fence 分流接 `widgetKindOf` | 2 |
-| `frontend/src/ai/ai-panel.js` | 改：技能内容拼装规范、补 mermaid / echarts 模板 | 1–4 |
+| `frontend/src/ai/ai-constants.js` | 改：两个技能内容拼装规范、补 mermaid / echarts 模板 | 1–4 |
+| `frontend/src/ai/ai-panel.js` | 改：`enhanceWidgets`（`5060`）接异步渲染分支 | 3 |
 | `frontend/package.json` | 改：test script 追加两个新测试 | 1、3 |
 | `docs/skills/cadt-file-layout/SKILL.md` | 改：决策树引用单一来源 | 4 |
 | `AGENTS.md` / `CHANGELOG.md` / `README.md` | 改：文档与体积例外 | 5 |
-| `frontend/src/main.js` | **默认不改**；仅当采纳 §3.6 共用抽取时改一处，实施前须与作者确认 | 3（可选） |
+| `frontend/src/writing-ui.js` | **默认不改**；仅当采纳 §3.6 共用抽取时改一处 | 3（可选） |
 
 ## 6. 验证与体积
 
 - `cd frontend && npm test` → `npm run build` → `wails build -devtools` 冒烟。
-- 冒烟清单：四种 kind 各一张；mermaid 柱图 / ECharts 饼图；流式期间不闪烁；整轮结束后挂载；8 张 / 200 KB 超限降级为源码；`no-widget` 保持代码块；浅色 / 深色主题切换后 ECharts 重渲染且颜色正确；卡片内链接交系统浏览器；`<script>` / `onclick` / 外链 `url()` / `position:fixed` 仍被清洗；**ECharts option 里塞 `formatter` 函数字符串被拒并降级**；会话重放后卡片仍在。
-- 体积：新增 vendor 1.07 MiB + 约 400 行 JS（含测试）；exe 28.0 MB → 约 29.1 MB（+3.8%），在作者批准的 5 MB 预算内。
-- 性能：库懒加载、不进 Vite 主包；卡片挂载时机、限额、pending 策略不变；ECharts 实例用完即 `dispose`，不常驻；不新增全局监听。
+- 冒烟清单：四种 kind 各一张；mermaid 柱图 / ECharts 饼图 / ELK 关系图 / 词云各一张；流式期间不闪烁；整轮结束后挂载；8 张 / 200 KB 超限降级为源码；`no-widget` 保持代码块；浅色 / 深色主题切换后 ECharts 与词云重渲染且颜色正确；卡片内链接交系统浏览器；`<script>` / `onclick` / 外链 `url()` / `position:fixed` 仍被清洗；**ECharts option 里塞 `formatter` 函数字符串被拒并降级**；ELK 超 3s / 超 150 节点降级；词云空词表与非法 JSON 降级；会话重放后卡片仍在。
+- 体积：新增 vendor **2.69 MiB**（ECharts 1.07 + ELK 1.57 + 词云 0.05）+ 约 600 行 JS（含测试）；exe 28.0 MB → 约 30.8 MB（+10%），在作者批准的 5 MB 预算内，剩余约 2.31 MiB。
+- 性能：四个库全部懒加载、不进 Vite 主包；卡片挂载时机、限额、pending 策略不变；ECharts 实例用完即 `dispose`、ELK 实例复用、词云临时 canvas 用完释放；不新增全局监听。
 
 ## 7. 已定决策与剩余开放问题
 
@@ -235,20 +271,23 @@ chart.dispose();
 | 本轮动作 | **只出方案，不改代码** | 先 review 设计 |
 | 「另存为」 | **纳入首轮** | 对话内卡片与 `.cadt/answers/` 共用同一内核 |
 | **依赖预算** | **≤5 MB 可接受，能力优先于体积** | 作者明确；解除体积约束，聚焦给模型扩展可视化能力 |
-| **图表引擎** | **L1 复用 mermaid + L2 ECharts SSR→SVG；不引 Chart.js** | 见 §3.4；合计 +1.07 MiB，且静态 SVG 产出不破坏禁脚本边界 |
+| **图表引擎** | **L1 复用 mermaid + L2 ECharts SSR→SVG；不引 Chart.js** | 见 §3.4；静态 SVG 产出不破坏禁脚本边界 |
+| **布局与词云** | **ELK.js 0.12.1 与词云确认纳入**（阶段 6） | 作者 23:15 确认；两者都是布局层、产出坐标数据，渲染仍走现有静态 SVG 管线；四项 vendor 合计 2.69 MiB，5 MB 预算内 |
 
 ### 7.2 术语澄清
 
 - **围栏驱动**：模型把图当作回复正文的一部分输出（```svg / ```mermaid / ```echarts），`markdown.js` fence 规则识别后生成占位，应用侧渲染并挂卡片。消息里就是一段 `content` 字符串。
-- **工具驱动**：模型发起一次 `tool_calls`（仿 `AI_TOOL_DEFS.skill_use`），参数带 `kind` / `code`；工具返回后界面插入卡片。图不再是文本，需要 `ai-session-store.js` 存调用、结果与卡片位置，`ai-panel.js:6258` 的 `tool_calls` 一一配对约束也要扩展。WorkBuddy `show_widget` 属于此类。
+- **工具驱动**：模型发起一次 `tool_calls`（仿 `AI_TOOL_DEFS.skill_use`），参数带 `kind` / `code`；工具返回后界面插入卡片。图不再是文本，需要 `ai/ai-session-store.js` 存调用、结果与卡片位置，`ai/ai-panel.js:5488` 的 `tool_calls` 一一配对约束也要扩展。WorkBuddy `show_widget` 属于此类。
 
 两者**共用同一个 Shadow DOM 渲染内核**，区别只在「图怎么从模型进到界面」。
 
 ### 7.3 剩余开放问题
 
-1. **mermaid 加载逻辑是否抽共用模块**：抽取更干净但要改 `main.js` 一处（与作者在途改动冲突）；不抽则在 AI 面板侧多一份 20 行加载器。默认选不抽。
+1. **mermaid 加载逻辑是否抽共用模块**：抽取更干净但要改 `writing-ui.js` 一处；不抽则在 AI 面板侧多一份 20 行加载器。默认选不抽。
 2. **ECharts 是否走全量 vendor**：全量 1.07 MiB / 懒加载 / 零配置，选用；tree-shaken ESM 更小但进主包、失去懒加载，不采用。
-3. **是否最终切到工具驱动**：见 §9，不构成当前阻塞。
+3. **词云走哪条渲染路径**：先实测 `echarts-wordcloud` 在 `ssr:true` 下能否 `renderToSVGString()` 出 `<text>`；能则用 16 KiB 首选，不能则退 `d3-cloud` 34 KiB 自拼 SVG。两条都已备好，不阻塞实施。
+4. **§10 其余能力是否排期**：§10.1 图型速查 / §10.2 应用自出图 / §10.3 交互出口 / §10.4 机制层仍是能力清单，不纳入首轮验收，按 §10.7 单独排期。
+5. **是否最终切到工具驱动**：见 §9，不构成当前阻塞。
 
 ## 8. 风险
 
@@ -258,24 +297,26 @@ chart.dispose();
 - **首次加载延迟**：1.07 MiB 首次懒加载可感，需占位提示；ECharts 实例必须 `dispose`，否则多图会话内存累积。
 - **ECharts 6 破坏性变更**：默认主题 / 布局计算与 v5 不同，升级需截图回归，提示词模板按 v6 写。
 - **规范漂移**：`cadt-file-layout/SKILL.md` 是纯文本无法 import JS，只能文档注明单一来源，阶段 5 复核。
-- **未提交改动（重点）**：方案阶段 1 / 3 需要改 `frontend/src/ai/ai-panel.js` 的技能内容，而 21:50 的 `git status` 显示该文件**已有作者在途改动**（另有未跟踪 `ai-constants.js`）。实施前必须重跑 `git status`、先读该文件的当前内容再定位，不得 `git checkout` / `reset`；若作者的改动正好也在技能定义区，先与作者确认合并方式，必要时把「技能文本拼装」延后到阶段 5。
-- **AGENTS.md 已过时**：`src/ai-panel.js`、`src/ai-session-store.js` 等路径已随 `structure-cleanup.md` 阶段 1 移入 `src/ai/`，引用行号前先实测核对。
+- **词云 SSR 兼容性未经官方承诺**：`echarts-wordcloud` 布局依赖临时 canvas 的 `getImageData`，虽在 WebView2 里可用，但 `ssr:true` 下能否输出 `<text>` 必须阶段 6 第一件事实测。不能则退 `d3-cloud` 自拼 SVG（已备好），不要为此放宽 sanitize 或允许脚本。
+- **ELK 初始化与体积**：1.57 MiB 的 GWT 引擎首次加载与 `new ELK()` 都有成本，实例需复用；150 节点 / 3s 超时必须兜底，否则一张复杂图会拖住整轮消息。若后续觉得不值，`@dagrejs/dagre@3.1.3`（约 55 KiB，活跃 fork）可作轻量替换。
+- **体积数字以实测为准**：上一版 ELK 的 188 KiB 是二手博客数据，实测为 1.57 MiB。后续任何库先看官方分发文件大小（进 exe 的是未压缩原始字节），不要引用经验值。
+- **重构后锚点易失效**：`12f010f` 已把 mermaid 迁入 `writing-ui.js`、技能迁入 `ai-constants.js`、`main.js` 拆到 7,400 行。实施前重跑 `git status` 与 `grep` 定位，不要按本文档写死的行号判断；域模块一律「factory + 显式依赖注入」，新模块照此办理，不要往 `main.js` 回填。
 
 ## 9. 长线演进：工具驱动值不值得切
 
-首轮选围栏驱动的依据是「改动面 + 会话层风险」。作者解除体积预算后，**§9.1 第 5 条的长线优点已可在围栏驱动下提前兑现**：` ```echarts ` 的 option JSON 本身就是结构化数据，应用侧精确绘图、数值来自模型给出的数据而非手算坐标，不需要切工具驱动、不需要付会话层的税。
+首轮选围栏驱动的依据是「改动面 + 会话层风险」。作者解除体积预算后，**原 §9.1 第 5 条的长线优点已可在围栏驱动下提前兑现**：` ```echarts ` 的 option JSON 本身就是结构化数据，应用侧精确绘图、数值来自数据而非手算坐标，不需要切工具驱动、不需要付会话层的税。
 
 ### 9.1 工具驱动仍然独有的长线优点
 
 1. **图能被会话子系统认识**：卡片是 Markdown 渲染的副产物，无身份；`session-outline.js`、`sessionindex*.go`、`activity.go` 只认识文本。带 `id` / `kind` / `title` 后才能进大纲、被检索、单独折叠 / 重绘 / 撤销。
-2. **上下文成本可压掉**：一段 SVG / 一份 option JSON 常 2–5k token，每轮重发都带着；工具调用参数可在上下文组装时替换为一句占位（保留 `tool_call id` + 结果摘要）。`ai-session-store.js:103-117` 已有 `archive` / `truncate` / `summary` 机制。
+2. **上下文成本可压掉**：一段 SVG / 一份 option JSON 常 2–5k token，每轮重发都带着；工具调用参数可在上下文组装时替换为一句占位（保留 `tool_call id` + 结果摘要）。`ai/ai-session-store.js:103-117` 已有 `archive` / `truncate` / `summary` 机制。
 3. **规范从软约束变硬约束**：工具 schema 可强制 `kind` 枚举、option 长度、必填字段，渲染前强校验。
 4. **稳定挂载点带来真交互**：卡片禁 `<script>`，交互只能外层注入；工具驱动给每张卡片稳定 id，围栏驱动靠 DOM 顺序，重放后漂移。
 
 ### 9.2 不会消失的成本
 
-- **会话层永久税**：`serializeSessionMessage` / `encodeMessageEvent` / 重放 / `archive` / `truncate` / `ai-index.db` 派生索引 / `ai-panel.js:6258` 的 `tool_calls` 一一配对，此后每次动会话都得带着它。
-- **多模型适配**：`ai-config-model.js` 下各家工具调用稳定性不同，弱模型出图率会掉。
+- **会话层永久税**：`serializeSessionMessage` / `encodeMessageEvent` / 重放 / `archive` / `truncate` / `ai-index.db` 派生索引 / `ai/ai-panel.js:5488` 的 `tool_calls` 一一配对，此后每次动会话都得带着它。
+- **多模型适配**：`ai/ai-config-model.js` 下各家工具调用稳定性不同，弱模型出图率会掉。
 - **可移植性**：图不再是纯文本，导出会话给外部工具看只剩占位。
 - **第二套定义**：与 `skill_use` 并存，多一套工具描述、权限档矩阵与开关。
 
@@ -287,3 +328,76 @@ chart.dispose();
 2. 长会话里图与 option 的 token 成本成为实际抱怨；
 3. 图需要进会话大纲 / 搜索 / 操作留痕；
 4. 要把「选中 CSV / JSON 数据直接出图」做成应用内动作（而非模型给数据）。
+
+## 10. 还能扩展什么（能力清单）
+
+结论先行：**最大的空间不在「再引一个库」，而在把已有能力用起来、以及让应用自己出图。**
+
+> 状态更新：§10.5 的 **ELK.js 与词云已由作者确认纳入**，实现见 §4 阶段 6，已计入首轮交付与体积预算；本节其余条目仍是清单，不纳入首轮验收。
+
+### 10.1 零字节：包里已有的图型远没用满
+
+实测 `frontend/public/vendor/mermaid/mermaid.min.js`（mermaid 11）的图型关键字命中：
+
+| 类别 | 已内置图型 |
+|---|---|
+| 结构 / 关系 | `flowchart`、`classDiagram`、`erDiagram`、`block-beta`、`architecture`、`C4Context`、`requirementDiagram` |
+| 时序 / 状态 | `sequenceDiagram`、`stateDiagram`、`gantt`、`timeline`、`gitGraph`、`journey` |
+| 层级 / 发散 | `mindmap`、`quadrantChart`、`packet-beta`、`sankey-beta` |
+| 数据 | `xychart-beta`、`pie` |
+
+共 **19 种**，当前方案 §3.6 只提了 7 种。ECharts 6 另有 `graph` / `treemap` / `sunburst` / `heatmap` / `calendar` / `parallel` / `radar` / `boxplot` / `candlestick` / `themeRiver` / `gauge` 等，同样没进提示词。
+
+**真正的瓶颈是规范层**：模型必须知道有哪些图型、什么场景用哪个、语法模板长什么样。库装了不写进 `VISUAL_RULES` 等于没装。这是最便宜、最容易漏、收益最直接的一步——0 字节，改一段提示词数据。
+
+### 10.2 应用自己出图：CaDt 最独特、目前完全空白
+
+不是「模型画图」，而是 UI 直接把**当前打开的数据**变成图，数据在本地、数值精确、可点回源文件行。已有基础设施几乎全齐：
+
+| 数据源 | 已有能力 | 可视化 | 新增依赖 |
+|---|---|---|---|
+| CSV / TSV | `sqlview*.go` 只读 SQL、CSV 表格视图、`optimization-proposals.md` 列统计提案 | 列直方图 / 缺失值热力图 / 相关性矩阵 / 选中区域一键出图 | 复用 ECharts SSR，0 |
+| JSON / YAML / TOML | `structure.js`（17 语言大纲）、`formats.js`、`schema-panel.js` | 结构图 / Schema 关系图 / 按体量 treemap | 0 |
+| 文件夹 | `structuredir.go`、`explorer.js` | 目录 sunburst / treemap（按大小、类型着色） | 0 |
+| 二进制 / 图片 | `app.go:1224`、hex 视图（1 MB 上限） | 字节分布直方图 / 滚动熵图 / 位图色阶 | 纯 SVG 即可 |
+| 差异 | `diff-dialog.js`、`patch*.go` | JSON / YAML 树级结构 diff、变更密度热力 | 0 |
+| SQL 查询结果 | `sqlview*.go` | 按列类型自动推荐图型 | 0 |
+
+这一层把「数据查看器」和「聊天机器人配图」区分开，也是 §9.1 第 5 条长线优点的完整兑现。建议排在第二优先。
+
+### 10.3 交互与出口：架构能力，不是新库
+
+- **SSR 是静态 SVG**，tooltip / dataZoom / 联动 / 缩放都拿不到。要交互得让应用在卡片外持有**活实例**（例如复用 `editor-groups.js` 的预览容器），这是独立的架构决策，不是再装一个库。
+- **应用侧注入点击**：点节点跳 `path:line:col`（`run.js` 已有跳转解析）、点柱子发追问（仿 WorkBuddy `sendPrompt()`）。卡片禁 `<script>`，但事件可以由外层事件委托注入，不破坏边界。
+- **出口能力**：SVG → PNG 复制到剪贴板（`app.go:1371` `GetClipboardImage` 已有图片通道）、打印、导出 `.cadt/answers/`（阶段 4 已列）、离线 HTML 归档。
+- **无障碍与主题**：ECharts 自带 aria-label 与 decal 图案；深色 / 色盲友好配色走 `VISUAL_TOKENS` 重新 SSR。
+
+### 10.4 机制层：让能力可持续扩展
+
+- 把「图型注册」做成数据：`VISUAL_RULES` 里每种图型一条 `{kind, 语法, 适用场景, 模板, 兜底}`，新增图型只改数据、不动渲染代码。
+- 插件注册可视化类型：`plugins.js` 已有 `cadt.registerFormat`，可加 `cadt.registerVisualization(kind, renderer)`，让第三方扩图型而不动核心（沿用「factory + 显式依赖注入」约定）。
+- 这是「能力扩展」最长效的一步，比再装一个库有价值。
+
+### 10.5 真正值得新增依赖的（都在 5 MB 内）
+
+| 能力 | 库 | 体积（实测原始 / gzip） | 判断 |
+|---|---|---|---|
+| 关系图自动布局 | **ELK.js 0.12.1** | **1.57 MiB / 482 KiB** | **已确认纳入**（阶段 6）：模型只给「节点 + 边」，布局交给引擎，架构图 / 依赖图 / 调用图质量跃升；支持 `layered` / `force` / `stress` 多算法与异步 Worker。轻量降级可选 `@dagrejs/dagre@3.1.3`（约 55 KiB，活跃 fork；原 `dagre@0.8.5` 2017 停更） |
+| 词云 | **echarts-wordcloud 2.1.0**（首选）/ **d3-cloud 2.0.0**（兜底） | **16 KiB / 6.4 KiB** / **34 KiB / 8.5 KiB** | **已确认纳入**（阶段 6）：前者需实测 SSR 兼容性，后者只算布局、应用自拼静态 SVG，100% 可控；两者都在预算内，可同时备着 |
+| 3D / 大规模散点 | echarts-gl 2.0.8 | 626 KiB | **不值**：数据查看器用不上，且 GL 不支持 SSR 静态 SVG，与卡片模型冲突 |
+| 地图 | ECharts geo + 地图 JSON | 代码已在，数据 1 MB+ | **不建议**：中国地图必须使用合规审图号底图，离线分发与更新维护成本高；本项目无地理数据场景 |
+| Graphviz wasm 布局 | ~2 MB | — | **不值**：ELK.js 已够 |
+
+### 10.6 明确不建议
+
+3D / WebGL、地图、实时大屏、动画叙事——这些偏离「本地多格式数据查看器」的定位，且大多需要活实例或外链资源，会逼着放宽安全边界。**安全边界是唯一不能拿能力交换的东西**。
+
+### 10.7 排序建议
+
+已纳入首轮的按 §4 阶段 1–6 执行；本节只排**尚未纳入**的能力：
+
+1. **§10.1 图型速查表**（0 字节，改提示词数据，立刻见效）——虽未单列阶段，但阶段 1 拼装 `VISUAL_RULES` 时顺手补齐最省事
+2. **§10.2 选中 CSV 数据 → 一键出图**（复用 SSR，最贴产品定位）
+3. **§10.3 交互与出口**（按需）
+4. **§10.4 机制层：图型注册 + 插件可视化扩展**（长效）
+5. 地图 / 3D 不排进路线图
