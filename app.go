@@ -32,7 +32,7 @@ const (
 	imagePreviewLimit = 32 << 20
 )
 
-const appVersion = "v1.0.0"
+const appVersion = "v1.1.0"
 
 type App struct {
 	ctx                 context.Context
@@ -69,6 +69,7 @@ type FileData struct {
 	Image    bool   `json:"image,omitempty"`
 	IsDir    bool   `json:"isDir"`
 	HexShown int64  `json:"hexShown,omitempty"`
+	Mtime    string `json:"mtime,omitempty"`
 }
 
 func NewApp() *App {
@@ -357,6 +358,7 @@ func (a *App) OpenFile(path string, enc string) (*FileData, error) {
 			Binary:   true,
 			Image:    imageFile,
 			HexShown: int64(shown),
+			Mtime:    formatFileMtime(info.ModTime()),
 		}, nil
 	}
 	hasBom := len(raw) >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF
@@ -380,6 +382,7 @@ func (a *App) OpenFile(path string, enc string) (*FileData, error) {
 		Eol:     eol,
 		HasBom:  hasBom,
 		Large:   info.Size() > largeFileBytes,
+		Mtime:   formatFileMtime(info.ModTime()),
 	}, nil
 }
 
@@ -542,22 +545,101 @@ func imageMimeByExtension(path string) string {
 	return ""
 }
 
-func (a *App) SaveFile(path, content, eol string, hasBom bool, enc string) error {
-	if path == "" {
-		return fmt.Errorf("没有目标文件")
-	}
+func buildSaveBytes(content, eol string, hasBom bool, enc string) ([]byte, error) {
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	if eol == "crlf" {
 		content = strings.ReplaceAll(content, "\n", "\r\n")
 	}
 	raw, err := encodeString(content, enc)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if hasBom && (enc == "" || enc == "utf-8" || enc == "auto") {
 		raw = append([]byte{0xEF, 0xBB, 0xBF}, raw...)
 	}
+	return raw, nil
+}
+
+func (a *App) SaveFile(path, content, eol string, hasBom bool, enc string) error {
+	if path == "" {
+		return fmt.Errorf("没有目标文件")
+	}
+	raw, err := buildSaveBytes(content, eol, hasBom, enc)
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(path, raw, 0644)
+}
+
+// formatFileMtime 把修改时间格式化为纳秒字符串：JS 的 Number 存不下 1e18 级整数，
+// 用字符串透传保证前后端比较精确。
+func formatFileMtime(t time.Time) string {
+	return strconv.FormatInt(t.UnixNano(), 10)
+}
+
+// FileStatInfo 文件磁盘状态（外部修改检测用）。
+type FileStatInfo struct {
+	Exists bool   `json:"exists"`
+	Mtime  string `json:"mtime"`
+	Size   int64  `json:"size"`
+}
+
+// GetFileStat 返回文件当前修改时间（UnixNano 字符串）；文件不存在时 Exists=false。
+func (a *App) GetFileStat(path string) (*FileStatInfo, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("缺少文件路径")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &FileStatInfo{}, nil
+		}
+		return nil, err
+	}
+	return &FileStatInfo{Exists: true, Mtime: formatFileMtime(info.ModTime()), Size: info.Size()}, nil
+}
+
+// SaveFileResult 保存结果：Conflict=true 表示磁盘已被外部修改，本次未写入。
+type SaveFileResult struct {
+	OK       bool   `json:"ok"`
+	Conflict bool   `json:"conflict"`
+	Deleted  bool   `json:"deleted,omitempty"`
+	Mtime    string `json:"mtime,omitempty"`
+}
+
+// SaveFileChecked 与 SaveFile 相同，但写入前校验磁盘 mtime：
+// expectMtime 非空且与当前磁盘不一致时不写入并返回 Conflict，避免覆盖外部修改；
+// expectMtime 为空表示不校验（新建 / 另存为 / 用户选择强制覆盖）。
+func (a *App) SaveFileChecked(path, content, eol string, hasBom bool, enc string, expectMtime string) (*SaveFileResult, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("没有目标文件")
+	}
+	raw, err := buildSaveBytes(content, eol, hasBom, enc)
+	if err != nil {
+		return nil, err
+	}
+	if expect := strings.TrimSpace(expectMtime); expect != "" {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				return &SaveFileResult{Conflict: true, Deleted: true}, nil
+			}
+			return nil, statErr
+		}
+		if formatFileMtime(info.ModTime()) != expect {
+			return &SaveFileResult{Conflict: true, Mtime: formatFileMtime(info.ModTime())}, nil
+		}
+	}
+	if err := os.WriteFile(path, raw, 0644); err != nil {
+		return nil, err
+	}
+	result := &SaveFileResult{OK: true}
+	if info, statErr := os.Stat(path); statErr == nil {
+		result.Mtime = formatFileMtime(info.ModTime())
+	}
+	return result, nil
 }
 
 func decodeBytes(raw []byte, enc string) (string, string, error) {
