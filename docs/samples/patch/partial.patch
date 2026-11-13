@@ -1,0 +1,34 @@
+diff --git a/src/message.js b/src/message.js
+--- a/src/message.js
++++ b/src/message.js
+@@ -1,6 +1,9 @@
+ export function buildMessage(name, count) {
++    if (!count) {
++        return 'Hello, ' + name + '! No new messages.';
++    }
+     const suffix = count > 1 ? 's' : '';
+     return 'Hello, ' + name + '! You have ' + count + ' new message' + suffix + '.';
+ }
+ 
+ export function buildEmptyMessage() {
+diff --git a/src/config.js b/src/config.js
+--- a/src/config.js
++++ b/src/config.js
+@@ -1,5 +1,5 @@
+ // 补丁示例用的配置（docs/samples/patch）
+ export const config = {
+-    theme: 'dark',
++    theme: 'solarized',
+     pageSize: 20,
+     locale: 'zh-CN',
+diff --git a/src/style.css b/src/style.css
+--- a/src/style.css
++++ b/src/style.css
+@@ -1,5 +1,5 @@
+ .banner {
+     padding: 12px 16px;
+-    border-radius: 4px;
+-    background: #eef4ff;
++    border-radius: 6px;
++    background: #f5f7fb;
+ }

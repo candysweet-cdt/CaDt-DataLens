@@ -216,3 +216,51 @@ func TestRecentBranchesFromReflog(t *testing.T) {
 		t.Fatalf("limited recent = %#v", limited)
 	}
 }
+
+func TestGitDiffForUntrackedFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("未安装 git，跳过差异集成测试")
+	}
+	dir := t.TempDir()
+	gitTestCmd(t, dir, "init")
+	gitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	gitTestCmd(t, dir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestCmd(t, dir, "add", "a.txt")
+	gitTestCmd(t, dir, "commit", "-m", "init")
+
+	app := &App{}
+	res, err := app.GitDiffFor(dir, "a.txt")
+	if err != nil || res.HasChanges {
+		t.Fatalf("已跟踪且无改动不应有差异：res=%#v err=%v", res, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = app.GitDiffFor(dir, "new.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.HasChanges {
+		t.Fatal("未跟踪文件应按全部新增生成差异")
+	}
+	for _, want := range []string{"new file mode 100644", "--- /dev/null", "+++ b/new.txt", "@@ -0,0 +1,2 @@", "+hello", "+world"} {
+		if !strings.Contains(res.Diff, want) {
+			t.Fatalf("diff 缺少 %q：\n%s", want, res.Diff)
+		}
+	}
+}
+
+func TestNewFileUnifiedDiffNoTrailingNewline(t *testing.T) {
+	diff := newFileUnifiedDiff("docs/new.md", "line1\nline2")
+	wantTail := "+line1\n+line2\n\\ No newline at end of file"
+	if !strings.HasSuffix(diff, wantTail) {
+		t.Fatalf("diff 尾部 = %q，want %q", diff, wantTail)
+	}
+	if empty := newFileUnifiedDiff("empty.txt", ""); strings.Contains(empty, "@@") {
+		t.Fatalf("空文件不应有 hunk：%q", empty)
+	}
+}

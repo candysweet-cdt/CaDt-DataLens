@@ -1,0 +1,9 @@
+.banner {
+    padding: 12px 16px;
+    border-radius: 4px;
+    background: #eef4ff;
+}
+
+.banner-title {
+    font-weight: 600;
+}

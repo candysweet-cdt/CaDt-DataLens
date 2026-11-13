@@ -1,0 +1,27 @@
+diff --git a/src/config.js b/src/config.js
+--- a/src/config.js
++++ b/src/config.js
+@@ -1,6 +1,6 @@
+ // 补丁示例用的配置（docs/samples/patch）
+ export const config = {
+-    theme: 'blue',
++    theme: 'dark',
+     pageSize: 20,
+     locale: 'zh-CN',
+     features: {
+diff --git a/src/legacy.js b/src/legacy.js
+--- a/src/legacy.js
++++ b/src/legacy.js
+@@ -1,3 +1,3 @@
+ // 旧版入口（这个文件在示例里不存在）
+-export const legacy = false;
++export const legacy = true;
+ export default legacy;
+diff --git a/src/style.css b/src/style.css
+--- a/src/style.css
++++ b/src/style.css
+@@ -20,3 +20,3 @@
+ .banner {
+-    padding: 8px;
++    padding: 24px;
+ }

@@ -27,6 +27,16 @@ func main() {
 		}
 	}
 
+	// 补丁命令行：不启动窗口、不依赖 AI，处理完直接退出。
+	if patchOpts, isPatch, patchErr := parsePatchArgs(os.Args[1:]); isPatch {
+		attachParentConsole()
+		if patchErr != nil {
+			fmt.Fprintln(os.Stderr, patchErr)
+			os.Exit(2)
+		}
+		os.Exit(runPatchCommand(patchOpts))
+	}
+
 	ensureAppDataDir()
 	startAppLog()
 	defer stopAppLog()

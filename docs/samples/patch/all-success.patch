@@ -1,0 +1,38 @@
+diff --git a/src/config.js b/src/config.js
+--- a/src/config.js
++++ b/src/config.js
+@@ -1,10 +1,10 @@
+ // 补丁示例用的配置（docs/samples/patch）
+ export const config = {
+-    theme: 'light',
+-    pageSize: 20,
++    theme: 'dark',
++    pageSize: 50,
+     locale: 'zh-CN',
+     features: {
+-        patchView: false,
++        patchView: true,
+         aiPanel: true,
+     },
+ };
+diff --git a/src/style.css b/src/style.css
+--- a/src/style.css
++++ b/src/style.css
+@@ -7,3 +7,8 @@
+ .banner-title {
+     font-weight: 600;
+ }
++
++.banner-note {
++    color: #5b6472;
++    font-size: 12px;
++}
+diff --git a/src/banner.js b/src/banner.js
+new file mode 100644
+--- /dev/null
++++ b/src/banner.js
+@@ -0,0 +1,4 @@
++export function bannerText(count) {
++    if (!count) return '暂无新消息';
++    return '你有 ' + count + ' 条新消息';
++}

@@ -633,17 +633,64 @@ func (a *App) GitDiffFor(dir string, path string) (*GitDiffResult, error) {
 	}
 	out = strings.TrimRight(out, "\n")
 	if out == "" {
-		// 未跟踪/暂存新增文件没有 HEAD 差异
+		// 暂存新增文件没有 HEAD 差异
 		out2, code2, _ := gitRun(dir, []string{"diff", "--cached", "--", path}, 10000)
 		if code2 == 0 && strings.TrimSpace(out2) != "" {
 			result.HasChanges = true
 			result.Diff = strings.TrimRight(out2, "\n")
+		} else if patch, ok := untrackedFileUnifiedDiff(dir, path); ok {
+			// 未跟踪文件：HEAD 与索引都没有版本，按「全部新增」生成补丁
+			result.HasChanges = true
+			result.Diff = patch
 		}
 		return result, nil
 	}
 	result.HasChanges = true
 	result.Diff = out
 	return result, nil
+}
+
+// untrackedFileUnifiedDiff 为未被 git 跟踪的文本文件生成「新文件」补丁。
+// 已跟踪、目录、过大或二进制文件返回 false。
+func untrackedFileUnifiedDiff(dir, path string) (string, bool) {
+	if _, code, _ := gitRun(dir, []string{"ls-files", "--error-unmatch", "--", path}, 5000); code != 1 {
+		return "", false
+	}
+	abs := path
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(dir, path)
+	}
+	info, err := os.Stat(abs)
+	if err != nil || info.IsDir() || info.Size() > 2<<20 {
+		return "", false
+	}
+	raw, err := os.ReadFile(abs)
+	if err != nil || looksBinary(raw) {
+		return "", false
+	}
+	return newFileUnifiedDiff(filepath.ToSlash(strings.TrimPrefix(path, "./")), string(raw)), true
+}
+
+// newFileUnifiedDiff 按 git 新文件补丁格式拼接内容，供差异视图直接展示。
+func newFileUnifiedDiff(rel, content string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "diff --git a/%s b/%s\n", rel, rel)
+	b.WriteString("new file mode 100644\n")
+	b.WriteString("--- /dev/null\n")
+	fmt.Fprintf(&b, "+++ b/%s\n", rel)
+	text := strings.ReplaceAll(content, "\r\n", "\n")
+	if text == "" {
+		return strings.TrimRight(b.String(), "\n")
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	fmt.Fprintf(&b, "@@ -0,0 +1,%d @@\n", len(lines))
+	for _, line := range lines {
+		b.WriteString("+" + line + "\n")
+	}
+	if !strings.HasSuffix(text, "\n") {
+		b.WriteString("\\ No newline at end of file\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // GitLineMarks 行级标记：0 基行号集合（代码视图行号左侧色条用）。
