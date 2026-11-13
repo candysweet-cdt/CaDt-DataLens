@@ -121,5 +121,8 @@ function formatDocument() {
 }
 
 
-    return {clickEditorButton, formatDocument, hideMenuBar, menuBar, menuKeyMap, openMenuByKind, openMenuEl, showMenuBar};
+    function getOpenMenuEl() { return openMenuEl; }
+    function setOpenMenuEl(v) { openMenuEl = v; }
+
+    return {clickEditorButton, formatDocument, getOpenMenuEl, hideMenuBar, menuBar, menuKeyMap, openMenuByKind, setOpenMenuEl, showMenuBar};
 }

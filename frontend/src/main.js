@@ -6291,7 +6291,7 @@ const menuBarMod = createMenuBar({
     get textArea() { return textArea; },
     get updateStatus() { return updateStatus; },
 });
-const {clickEditorButton, formatDocument, hideMenuBar, menuBar, menuKeyMap, openMenuByKind, openMenuEl, showMenuBar} = menuBarMod;
+const {clickEditorButton, formatDocument, getOpenMenuEl, hideMenuBar, menuBar, menuKeyMap, openMenuByKind, setOpenMenuEl, showMenuBar} = menuBarMod;
 // switchMode 外壳负责操作留痕（view.switch）；实际切换在 applySwitchMode。
 const modeSwitch = createModeSwitch({
     get activityLog() { return activityLog; },
@@ -6846,7 +6846,7 @@ function closeAllMenus() {
         m.querySelector('.dropdown').classList.add('hidden');
     });
     if (ctxMenu) ctxMenu.close();
-    openMenuEl = null;
+    setOpenMenuEl(null);
 }
 
 function openMenu(menuEl) {
@@ -6864,7 +6864,7 @@ function openMenu(menuEl) {
         dd.style.overflowY = 'auto';
     }
     menuEl.classList.add('open');
-    openMenuEl = menuEl;
+    setOpenMenuEl(menuEl);
 }
 
 // 菜单条在静止鼠标下唤出时会补发 mouseenter，坐标与上次真实移动相同则不算悬停切换
@@ -6873,7 +6873,7 @@ document.addEventListener('mousemove', (e) => { lastMouseX = e.clientX; lastMous
 document.querySelectorAll('#menubar .menu').forEach((menuEl) => {
     menuEl.querySelector('.menu-label').addEventListener('click', (e) => {
         e.stopPropagation();
-        if (openMenuEl === menuEl) {
+        if (getOpenMenuEl() === menuEl) {
             closeAllMenus();
             return;
         }
@@ -6881,7 +6881,7 @@ document.querySelectorAll('#menubar .menu').forEach((menuEl) => {
     });
     menuEl.querySelector('.menu-label').addEventListener('mouseenter', (e) => {
         if (e.clientX === lastMouseX && e.clientY === lastMouseY) return;
-        if (openMenuEl && openMenuEl !== menuEl) openMenu(menuEl);
+        if (getOpenMenuEl() && getOpenMenuEl() !== menuEl) openMenu(menuEl);
     });
 });
 window.addEventListener('blur', () => hideMenuBar());
@@ -7363,14 +7363,6 @@ const cursorThemes = createCursorThemes({
 const {setDragCursor} = cursorThemes;
 
 
-// —— 启动初始化（放在所有域模块工厂与解构之后：这些调用会经 deps getter
-//    触达后置绑定的模块导出，前置执行会 TDZ）——
-applySettings();
-initContextMenus();
-initExplorer();
-initStructurePanel();
-initActivityBar();
-
 const terminalMod = createTerminalUI({
     get showGitFileHistory() { return showGitFileHistory; },
     get gitRollbackPaths() { return gitRollbackPaths; },
@@ -7412,6 +7404,14 @@ const terminalMod = createTerminalUI({
     get workspaceFolder() { return workspaceFolder; },
 });
 const {applyDockView, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSidebarView, fitActiveTerm, runArgsText, runController, switchSidebarView, syncTerminalTheme, termCwd, terminalUI, toggleDockView, toggleSidebarView, toggleTerminalPanel, getDockView, setDockView, nextCmdSeq, nextMockBgSeq, nextMockSchedSeq, startRunProject} = terminalMod;
+// —— 启动初始化：必须在 terminalMod 解构之后（applySettings 经 deps 触达
+//    terminal-ui 导出），也必须在 bridgeUI 工厂之前（保持原始执行顺序）——
+applySettings();
+initContextMenus();
+initExplorer();
+initStructurePanel();
+initActivityBar();
+
 const bridgeUI = createBridgeUI({
     get activateDoc() { return activateDoc; },
     get activityLog() { return activityLog; },
