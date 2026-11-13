@@ -6,6 +6,7 @@ import MarkdownIt from 'markdown-it';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
 import markdownItKatex from '@vscode/markdown-it-katex';
+import {buildWidgetPlaceholder, widgetLangOf} from './widget.js';
 
 // createMarkdownRenderer 创建渲染器。
 // deps.mdLineNumbers(): boolean —— 代码块是否带行号（实时读取设置）
@@ -41,12 +42,19 @@ export function createMarkdownRenderer(deps) {
             : self.renderToken(tokens, idx, options);
     };
 
-    function renderMarkdownCodeBlock(text, info) {
+    // env.aiWidgets 由 AI 面板注入：只有它被显式打开时，svg / html 围栏才渲染成可视化卡片。
+    // 主界面 Markdown 预览与阅读模式不传该开关，行为保持不变；info 里写 no-widget 可强制保留源码。
+    function renderMarkdownCodeBlock(text, info, env) {
         const code = String(text || '').replace(/\n$/, '');
-        if (String(info || '').trim().toLowerCase() === 'mermaid' && mermaidPlaceholder) {
+        const infoText = String(info || '').trim();
+        const widgetLang = env && env.aiWidgets ? widgetLangOf(infoText) : '';
+        if (widgetLang && !/\bno-widget\b/i.test(infoText)) {
+            return buildWidgetPlaceholder(code, widgetLang);
+        }
+        if (infoText.toLowerCase() === 'mermaid' && mermaidPlaceholder) {
             return mermaidPlaceholder(code);
         }
-        const language = String(info || '').trim().split(/\s+/)[0];
+        const language = infoText.split(/\s+/)[0];
         let highlighted = '';
         if (language && hljs.getLanguage(language)) {
             try {
@@ -66,8 +74,10 @@ export function createMarkdownRenderer(deps) {
             '</div>\n';
     }
 
-    markdownRenderer.renderer.rules.fence = (tokens, idx) => renderMarkdownCodeBlock(tokens[idx].content, tokens[idx].info);
-    markdownRenderer.renderer.rules.code_block = (tokens, idx) => renderMarkdownCodeBlock(tokens[idx].content, '');
+    markdownRenderer.renderer.rules.fence = (tokens, idx, options, env) =>
+        renderMarkdownCodeBlock(tokens[idx].content, tokens[idx].info, env);
+    markdownRenderer.renderer.rules.code_block = (tokens, idx, options, env) =>
+        renderMarkdownCodeBlock(tokens[idx].content, '', env);
     const defaultLinkOpen = markdownRenderer.renderer.rules.link_open ||
         ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
     markdownRenderer.renderer.rules.link_open = (tokens, idx, options, env, self) => {
@@ -80,8 +90,8 @@ export function createMarkdownRenderer(deps) {
         return defaultLinkOpen(tokens, idx, options, env, self);
     };
 
-    function renderMarkdownHtml(text) {
-        const html = markdownRenderer.render(text || '');
+    function renderMarkdownHtml(text, env) {
+        const html = markdownRenderer.render(text || '', env || {});
         return DOMPurify.sanitize(html, {
             USE_PROFILES: {html: true, mathMl: true, svg: true},
             ADD_ATTR: ['target', 'rel'],
