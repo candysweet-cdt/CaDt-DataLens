@@ -208,6 +208,8 @@ export function buildSessionMeta(session) {
         round: Number(session && session.round) || 0,
         archivedAt: Number(session && session.archivedAt) || 0,
         pinned: !!(session && session.pinned),
+        // 后台结束、用户尚未查看的会话：'' / 'done' / 'error'（列表右侧状态圆点用）
+        unread: session && (session.unread === 'done' || session.unread === 'error') ? session.unread : '',
         messageCount: Array.isArray(session && session.messages) ? session.messages.length : 0,
         archivedCount: Array.isArray(session && session.archived) ? session.archived.length : 0,
         logFile: textOf(session && session.logFile),

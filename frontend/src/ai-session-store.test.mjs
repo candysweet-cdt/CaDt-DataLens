@@ -34,6 +34,26 @@ test('header + messages replay', () => {
     assert.equal(result.torn, false);
 });
 
+test('model-switch note keeps kind/systemNote/modelNote', () => {
+    const note = {
+        role: 'user',
+        kind: 'model-switch',
+        systemNote: true,
+        content: '模型已从 A 更改为 B',
+        modelNote: {from: 'A', to: 'B', account: '账号 1', effort: '高'},
+        ts: 5,
+        turnStartedAt: 0,
+    };
+    const result = replaySessionLog(logOf(
+        encodeSessionHeader({id: 's1'}),
+        encodeMessageEvent(note, 'm-1', false),
+    ));
+    assert.equal(result.messages.length, 1);
+    assert.equal(result.messages[0].kind, 'model-switch');
+    assert.equal(result.messages[0].systemNote, true);
+    assert.deepEqual(result.messages[0].modelNote, note.modelNote);
+});
+
 test('truncate keeps prefix', () => {
     const text = logOf(
         encodeSessionHeader({id: 's1'}),
