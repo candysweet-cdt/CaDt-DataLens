@@ -5234,7 +5234,7 @@ function initAIPanel() {
         fonts: {latin: uiFonts, cjk: cjkFonts, mono: editorFonts},
         saveSettings: applySettings,
         activity: activityLog,
-        openTermTab: openBgTermTab,
+        openTermTab: (...args) => openBgTermTab(...args),
         runAppAction,
         hostAppActions: () => APP_ACTIONS,
         browserHost: {
@@ -5278,7 +5278,7 @@ function initAIPanel() {
             openSettings(pane);
         },
         setDragCursor,
-        openVirtualDoc,
+        openVirtualDoc: (...args) => openVirtualDoc(...args),
         commandOutput: (id, handlers) => {
             const off = () => {
                 cmdOutHandlers.delete(id);
