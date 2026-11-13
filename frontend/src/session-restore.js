@@ -258,5 +258,5 @@ async function restoreSession(sess) {
 }
 
 
-    return {knownDocViews, pendingDocViews, saveSessionNow, scheduleSessionSave, sessionPathKey};
+    return {knownDocViews, pendingDocViews, readSession, readWorkspaceSession, restoreSession, saveSessionNow, scheduleSessionSave, sessionPathKey};
 }

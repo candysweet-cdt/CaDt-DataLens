@@ -3271,12 +3271,14 @@ window.__lens = {
     get structurePanel() { return structurePanel; },
     get terminalUI() { return terminalUI; },
     get closedTabs() { return closedTabs; },
-    openCloseConfirm,
-    openPaths,
-    openTargets,
-    openFolderWorkspace,
-    reopenClosedTab,
-    setTheme,
+    // 这些函数拆分到域模块后经 const 解构引入（不再有函数声明提升），
+    // 这里必须用 getter 延迟求值，否则顶层急切求值会 TDZ
+    get openCloseConfirm() { return openCloseConfirm; },
+    get openPaths() { return openPaths; },
+    get openTargets() { return openTargets; },
+    get openFolderWorkspace() { return openFolderWorkspace; },
+    get reopenClosedTab() { return reopenClosedTab; },
+    get setTheme() { return setTheme; },
     runAppAction,
 };
 let dirty = false;
@@ -6444,7 +6446,7 @@ const sessionRestore = createSessionRestore({
     get switchMode() { return switchMode; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {knownDocViews, pendingDocViews, saveSessionNow, scheduleSessionSave, sessionPathKey} = sessionRestore;
+const {knownDocViews, pendingDocViews, readSession, readWorkspaceSession, restoreSession, saveSessionNow, scheduleSessionSave, sessionPathKey} = sessionRestore;
 const propertiesUI = createPropertiesUI({
     get activateDoc() { return activateDoc; },
     get backend() { return backend; },
@@ -7398,7 +7400,7 @@ const terminalMod = createTerminalUI({
     get toolEnvFor() { return toolEnvFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {applyDockView, cmdExitHandlers, cmdOutHandlers, currentSidebarView, fitActiveTerm, runArgsText, runController, switchSidebarView, syncTerminalTheme, termCwd, terminalUI, toggleDockView, toggleSidebarView, toggleTerminalPanel} = terminalMod;
+const {applyDockView, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSidebarView, fitActiveTerm, runArgsText, runController, switchSidebarView, syncTerminalTheme, termCwd, terminalUI, toggleDockView, toggleSidebarView, toggleTerminalPanel} = terminalMod;
 const bridgeUI = createBridgeUI({
     get activateDoc() { return activateDoc; },
     get activityLog() { return activityLog; },
