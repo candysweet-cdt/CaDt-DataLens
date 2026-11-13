@@ -33,15 +33,37 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `*_test.go`：与同名源文件对应的单元测试
 
 ### 前端 `frontend/`
-- `src/main.js`：界面主体（标签页、设置、编辑器、菜单、CSV 表格、Markdown 预览）——最大的单文件，改动务必先定位函数再动手
+- `src/main.js`：组合根与核心枢纽（标签页核心状态、命令面板、菜单注册表、初始化接线，约 7,400 行）。域逻辑已拆到下面的模块，每个都是「factory + 显式依赖注入」——依赖一律经 `deps` 延迟求值（main.js 传 getter），不依赖声明顺序；改动某域时先找到对应模块，不要往 main.js 回填
+- `src/editor-groups.js`：编辑器组/分栏（二叉分割树）、标签页渲染、各预览视图（Markdown/SVG/图片/CSV 表格/SQL/补丁）、标签右键菜单、书签、面包屑（从 main.js 拆出的最大模块）
+- `src/writing-ui.js`：写作模式 + 格式渲染/语言定义（LANG_DEFS、markdown 渲染管线、mermaid、字数统计、goto、自动保存）
+- `src/settings-ui.js`：设置页（elsSettings/elsDialogs、applySettings、主题、全屏/置顶、只读锁、对话框族、操作留痕接线）
+- `src/terminal-ui.js`：内置终端、底部面板 dock、运行控制器接线
+- `src/bridge-ui.js`：进程桥/虚拟文档/浏览器标签/git 面板数据/后台作业视图
+- `src/titlebar-popovers.js`：标题栏项目选择与 Git 分支弹层（IDEA 式）
+- `src/menu-bar.js`：IDEA 新 UI 菜单条（三横唤出）
+- `src/mode-switch.js`：switchMode 外壳（留痕）与 applySwitchMode
+- `src/session-restore.js`：标签页/分组/分屏布局持久化与恢复、文档视图记忆
+- `src/app-actions.js`：退出、最近打开、外部拖放复制
+- `src/app-links.js`：外链打开、内置文档（更新日志/协议）、开发者工具
+- `src/update-check.js`：更新检查（对话框 + 启动静默检查 + 状态栏）
+- `src/format-convert.js`：格式互转 + JSON 修复
+- `src/find-bar.js`：查找替换条（Ace + 纯文本双路径）
+- `src/global-search.js`：工作区全局搜索
+- `src/json-query.js`：JSONPath 查询栏
+- `src/diff-dialog.js`：双文件对比对话框
+- `src/schema-panel.js`：JSON Schema 校验面板
+- `src/quick-switch.js`：快速切换器（Ctrl+`）
+- `src/activity-pane.js`：设置页「操作记录」面板
+- `src/properties-ui.js`：文件/路径属性对话框、从磁盘全部重新加载
+- `src/cursor-themes.js`：Win11 系统光标主题（注册表读取 + 内置候选）
 - `src/formats.js`：格式驱动层（parse / stringify 双向转换，插件格式也走这里）
 - `src/structure.js`：17 种语言的结构/大纲解析（纯函数，无 DOM 依赖）
-- `src/session-outline.js`：结构面板的「会话结构」渲染（用户消息定位条）。数据与跳转由 `ai-panel.js` 的 `bridgeSessionOutline` / `bridgeJumpToMessage` 提供，这里只画行与处理点击/键盘
+- `src/session-outline.js`：结构面板的「会话结构」渲染（用户消息定位条）。数据与跳转由 `ai/ai-panel.js` 的 `bridgeSessionOutline` / `bridgeJumpToMessage` 提供，这里只画行与处理点击/键盘
 - `src/explorer.js`：文件树（惰性加载 + 内存缓存 + 自动刷新）
 - `src/run.js`：运行代码（扩展名 → 运行配方、命令模板 / 自检脚本 / 项目确认、stdin、dirty 决策、输出面板与 ANSI / `path:line:col` 跳转、AI 分析提示词）；`src/run.test.mjs` 覆盖纯函数
 - `src/patch-view.js`：补丁视图（文件卡 / hunk / 模式切换 / 应用 / 撤销），只做渲染，解析与写入全走 Go
-- `src/ai-panel.js`、`src/palette.js`、`src/contextmenu.js`、`src/icons.js`、`src/fileicons*.js`、`src/plugins.js`、`src/jsonrepair.js`、`src/debugconsole.js`
-- `src/ai-session-store.js`：AI 会话 JSONL 编解码/重放 + 磁盘适配（图片外置、增量持久化）
+- `src/palette.js`、`src/contextmenu.js`、`src/icons.js`、`src/fileicons*.js`、`src/plugins.js`、`src/jsonrepair.js`、`src/debugconsole.js`
+- `src/ai/`：AI 助手（`ai-panel.js` 面板主体 + 闭包；`ai-constants.js` 常量与纯辅助函数；`ai-session-store.js` JSONL 编解码/重放 + 磁盘适配；`ai-command-rules.js`、`ai-permissions.js`、`ai-config-model.js`、`ai-git.js`、`ai-app-message.js`、`ai-tool-args.js`；测试与源码同目录）
 - `src/activity-log.js`：操作留痕前端服务（脱敏 sanitizer、攒批 ≤200ms/20 条调 `ActivityAppend`；开关与保留月数在设置 → 操作记录）
 - `src/markdown.js`：共享 Markdown 渲染/sanitize（main.js 与阅读模式共用，规则单一来源）
 - `src/widget.js`：AI 回答里 `svg` / `html` 围栏的可视化卡片（Shadow DOM 承载 + DOMPurify 清洗，样式隔离、主题变量继承；`<style>` 先抽出单独清洗再注入 shadow，外链 `url()` / `@import` 与 `position:fixed` 会被处理；只有 AI 面板传 `env.aiWidgets` 时启用）。配套内置技能 `inline-visual`（对话内卡片）与 `answer-me-with-html`（多面板页面），规则改动要同步这两个技能
@@ -84,7 +106,8 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - 文件大小硬限制（`app.go`）：>10 MB 只读、>100 MB 拒绝打开、图片预览 32 MB、二进制 hex 1 MB。放宽限制前先确认性能。
 
 ### 前端侧
-- `main.js` 很大，改动前先 `search_text` 定位函数名，避免整文件重读。
+- `main.js` 是组合根（约 7,400 行）：改动前先按域找到对应模块（editor-groups / writing-ui / settings-ui / terminal-ui / bridge-ui 等），不要把域逻辑回填进 main.js；新域一律新建模块。
+- 域模块的约定是「factory + 显式依赖注入」：`export function createXxx(deps)`，依赖一律 `deps.X` 延迟求值，main.js 侧传 getter（`get X() { return X; }`）——不依赖声明顺序、不拍 let 快照。新增域照此办理，不要在模块顶层 import main.js 的绑定。
 - 格式相关逻辑放 `formats.js`，结构解析放 `structure.js`，不要往 `main.js` 里塞新的格式分支。
 - Markdown 渲染链：markdown-it → DOMPurify → hljs / KaTeX / mermaid；涉安全的改动（sanitize、外链、内嵌 HTML）必须保守，**原始 HTML 不执行是硬要求**。
 - 预览/表格等大 DOM 操作注意避免整段 `innerHTML` 重渲染。

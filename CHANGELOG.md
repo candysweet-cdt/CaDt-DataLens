@@ -27,6 +27,13 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 内部结构（docs/unfinished-plans/structure-cleanup.md 实施记录）
+
+- **main.js 单体拆分**：21,188 行 → 7,447 行（-65%），组合根（标签页核心、命令面板、菜单注册表、初始化接线）保留在 `main.js`，其余按域拆成独立模块——`cursor-themes`（系统光标）、`terminal-ui`（内置终端与底部面板）、`bridge-ui`（进程桥/虚拟文档/浏览器标签/git 面板）、`settings-ui`（设置/主题/对话框/字数统计/留痕接线）、`writing-ui`（写作模式 + 格式渲染 + 语言定义）、`editor-groups`（编辑器组/分栏/标签/各预览视图，5,125 行）、`titlebar-popovers`（项目选择 + Git 分支弹层）、`menu-bar`（IDEA 式菜单条）、`mode-switch`（模式切换外壳）、`activity-pane`（设置页操作记录）、`properties-ui`（属性对话框）、`session-restore`（会话持久化）、`app-actions`（退出/最近打开/拖放复制）、`app-links`（外链/内置文档）、`update-check`（更新检查）、`format-convert`（格式互转）、`find-bar`（查找替换）、`global-search`（工作区搜索）、`json-query`（JSONPath）、`diff-dialog`（双文件对比）、`schema-panel`（Schema 校验）、`quick-switch`（快速切换器）。拆分采用「factory + 显式依赖注入」：依赖一律经 `deps` 延迟求值（调用方传 getter），不依赖声明顺序、不拍 let 快照；函数体原样搬移。每批拆分后 `npm test`（161 项）与 `npm run build` 验证通过。
+- **AI 面板常量外移**：`ai-panel.js` 闭包前的 832 行常量与纯辅助函数（存储键、容量上限、时间/字数/图片估算等）拆到 `src/ai/ai-constants.js`；`createAIPanel` 闭包骨架保持原样。
+- **仓库卫生**：`.gitignore` 补齐 `*.exe~` 与 `/nul` 规则，清掉根目录残留的 27 MB 旧 exe 映像。
+- **ai-* 归目录**：8 个 `ai-*` 前端模块与测试迁入 `src/ai/`（沿用 `reading/` 先例）；顺带把此前从未被执行的 `ai-permissions.test.mjs` 纳入测试脚本（150 → 161 项）。
+
 ### 外观
 
 - **Harness 主题按 deepseek-harness 源码重做**：旧实现只借了 dsh 的「白底 + 灰侧栏」轮廓，强调色是自己调的紫蓝 `#4d6bfe`，语法高亮又是从 Github 主题抄来的红色关键字，混在一起偏紫、和 dsh 对不上。现在 token 全部照 `packages/client/ui-theme/src/styles/design-platform.css` 的 static 调色板与 alias 语义层映射：内容白 `#ffffff`、侧栏 `neutral-bluish-50`、次级面 `neutral-bluish-60`、分隔线 `rgba(0,0,0,.1)`、正文 `#0f1115`、次要文字 `#81858c`、强调用 deepseek 蓝 `#4176e6`、悬停/选中用 `rgba(38,49,72,.06/.1)`、状态色取 `state-*` 与 `file-diff-*`；代码高亮改用同目录 `shiki.css` 的 token 表（关键字 `#d6336c`、字符串 `#2f9e44`、注释 `#868e96`、函数 `#6741d9`…）。同时按 dsh 的组件观感补了三处细节：主按钮（发送、对话框主操作）改成 `brand-primary` 近黑、用户气泡改成扁平 `deepseek-50 #edf3fe` 无边框胶囊、输入框纯白 + `lg` 圆角——之前整屏发紫正是气泡和按钮都在吃 `accent`。
