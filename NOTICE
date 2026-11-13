@@ -37,6 +37,20 @@ https://github.com/mholt/PapaParse
 Licensed under the MIT License.
 
 ----------------------------------------------------------------------
+reverse-engineer-anything (REA Agent Skill)
+Copyright (c) 2026 morluto
+https://github.com/morluto/rea
+Licensed under the MIT License.
+The skill is shipped in docs/skills/reverse-engineer-anything/ and embedded in the application.
+
+----------------------------------------------------------------------
+chinese-formal-document-format (Agent Skill)
+Copyright (c) 2026 chinese-formal-document-format contributors
+https://github.com/ianlinkstudy/chinese-formal-document-format
+Licensed under the MIT License.
+The skill is shipped in docs/skills/chinese-formal-document-format/ and embedded in the application.
+
+----------------------------------------------------------------------
 Inter
 Copyright (c) 2016 The Inter Project Authors
 https://github.com/rsms/inter

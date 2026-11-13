@@ -7,9 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
-//go:embed docs/skills/cadt-datalens
+//go:embed all:docs/skills
 var skillAssets embed.FS
 
 const (
@@ -17,7 +18,17 @@ const (
 	skillSource   = "docs/skills/" + skillDirName
 	skillMarker   = "name: cadt-datalens"
 	skillExeToken = "{{EXE_PATH}}"
+
+	builtinSkillsRoot  = "builtin-skills"
+	builtinSkillsStamp = ".cadt-builtin-version"
 )
+
+// appBuiltinSkillDirs 随 exe 分发、在 AI 面板「技能管理」中显示为「内置」的技能目录。
+// 首次列出技能时按应用版本释放到 <应用数据>/builtin-skills/，供 read_file 读取 references 等附属文件。
+var appBuiltinSkillDirs = []string{
+	"reverse-engineer-anything",
+	"chinese-formal-document-format",
+}
 
 type AgentSkillTarget struct {
 	Dir        string `json:"dir"`
@@ -36,15 +47,15 @@ func agentSkillTargetDirs(home string) []string {
 	}
 }
 
-// skillEntryPaths 列出嵌入的技能目录里需要落盘的文件（相对 target 根的路径）。
-func skillEntryPaths() ([]string, error) {
+// skillEntryPaths 列出嵌入的技能目录里需要落盘的文件（相对 source 的路径）。
+func skillEntryPaths(source string) ([]string, error) {
 	paths := []string{}
-	err := fs.WalkDir(skillAssets, skillSource, func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(skillAssets, source, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if !d.IsDir() {
-			rel, e := filepath.Rel(skillSource, path)
+			rel, e := filepath.Rel(source, path)
 			if e != nil {
 				return e
 			}
@@ -70,21 +81,21 @@ func skillInstalledAt(root string) (bool, error) {
 	return strings.Contains(string(data), skillMarker), nil
 }
 
-func writeAgentSkillAt(root, exe string) error {
-	paths, err := skillEntryPaths()
+func writeSkillDirAt(root, source, dirName, exe string) error {
+	paths, err := skillEntryPaths(source)
 	if err != nil {
 		return err
 	}
-	base := skillWritePath(root)
+	base := filepath.Join(root, dirName)
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return err
 	}
 	for _, rel := range paths {
-		content, err := skillAssets.ReadFile(filepath.ToSlash(filepath.Join(skillSource, rel)))
+		content, err := skillAssets.ReadFile(filepath.ToSlash(filepath.Join(source, rel)))
 		if err != nil {
 			return err
 		}
-		if strings.EqualFold(rel, "SKILL.md") {
+		if exe != "" && strings.EqualFold(rel, "SKILL.md") {
 			content = []byte(strings.ReplaceAll(string(content), skillExeToken, exe))
 		}
 		dest := filepath.Join(base, rel)
@@ -96,6 +107,53 @@ func writeAgentSkillAt(root, exe string) error {
 		}
 	}
 	return nil
+}
+
+func writeAgentSkillAt(root, exe string) error {
+	return writeSkillDirAt(root, skillSource, skillDirName, exe)
+}
+
+var (
+	builtinSkillsOnce sync.Once
+	builtinSkillsDir  string
+)
+
+// AIBuiltinSkillsDir 返回随应用分发的内置技能目录（首次调用时物化；失败返回空串）。
+func (a *App) AIBuiltinSkillsDir() string {
+	builtinSkillsOnce.Do(func() {
+		builtinSkillsDir = materializeBuiltinSkills()
+	})
+	return builtinSkillsDir
+}
+
+// materializeBuiltinSkills 把内置技能按应用版本释放到应用数据目录，版本变化时覆盖刷新。
+// 失败只记日志并返回空串：内置技能不出现，但不影响应用其余功能。
+func materializeBuiltinSkills() string {
+	root := appDataRoot()
+	if root == "" {
+		return ""
+	}
+	target := filepath.Join(root, builtinSkillsRoot)
+	stamp := filepath.Join(target, builtinSkillsStamp)
+	want := appVersion + "|" + strings.Join(appBuiltinSkillDirs, ",")
+	if data, err := os.ReadFile(stamp); err == nil && strings.TrimSpace(string(data)) == want {
+		return target
+	}
+	for _, dir := range appBuiltinSkillDirs {
+		if err := os.RemoveAll(filepath.Join(target, dir)); err != nil {
+			writeAppLog("warn", "内置技能 %s 清理失败：%v", dir, err)
+			return ""
+		}
+		if err := writeSkillDirAt(target, "docs/skills/"+dir, dir, ""); err != nil {
+			writeAppLog("warn", "内置技能 %s 写入失败：%v", dir, err)
+			return ""
+		}
+	}
+	if err := os.WriteFile(stamp, []byte(want), 0o644); err != nil {
+		writeAppLog("warn", "内置技能版本标记写入失败：%v", err)
+		return ""
+	}
+	return target
 }
 
 func removeAgentSkillAt(root string) error {

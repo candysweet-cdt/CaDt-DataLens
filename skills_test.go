@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -69,5 +70,61 @@ func TestAgentSkillRemoveForeignDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(foreign, "SKILL.md")); err != nil {
 		t.Fatal("外来目录不应被删除")
+	}
+}
+
+func TestBuiltinSkillAssetsPresent(t *testing.T) {
+	for _, dir := range appBuiltinSkillDirs {
+		source := "docs/skills/" + dir
+		paths, err := skillEntryPaths(source)
+		if err != nil {
+			t.Fatalf("%s 嵌入失败：%v", dir, err)
+		}
+		if len(paths) < 2 {
+			t.Fatalf("%s 文件过少：%v", dir, paths)
+		}
+		data, err := skillAssets.ReadFile(source + "/SKILL.md")
+		if err != nil {
+			t.Fatalf("%s/SKILL.md 未嵌入：%v", dir, err)
+		}
+		if !strings.Contains(string(data), "name: "+dir) {
+			t.Fatalf("%s/SKILL.md frontmatter 名称不匹配", dir)
+		}
+	}
+}
+
+func TestMaterializeBuiltinSkills(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("AppData", configDir)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	builtinSkillsOnce = sync.Once{}
+	builtinSkillsDir = ""
+	t.Cleanup(func() {
+		builtinSkillsOnce = sync.Once{}
+		builtinSkillsDir = ""
+	})
+	dir := materializeBuiltinSkills()
+	if dir == "" {
+		t.Fatal("内置技能物化失败")
+	}
+	for _, name := range appBuiltinSkillDirs {
+		if _, err := os.Stat(filepath.Join(dir, name, "SKILL.md")); err != nil {
+			t.Fatalf("%s/SKILL.md 未落盘：%v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, builtinSkillsStamp)); err != nil {
+		t.Fatalf("版本标记未写入：%v", err)
+	}
+	// 版本标记命中时不重复覆盖：改动一个文件后再次物化应保持改动。
+	probe := filepath.Join(dir, appBuiltinSkillDirs[0], "SKILL.md")
+	if err := os.WriteFile(probe, []byte("probe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	builtinSkillsOnce = sync.Once{}
+	if got := materializeBuiltinSkills(); got != dir {
+		t.Fatalf("重复物化目录变化：%q != %q", got, dir)
+	}
+	if data, err := os.ReadFile(probe); err != nil || string(data) != "probe" {
+		t.Fatalf("版本未变时不应覆盖已有文件：%q %v", data, err)
 	}
 }

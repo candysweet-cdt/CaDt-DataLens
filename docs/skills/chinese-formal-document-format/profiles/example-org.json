@@ -1,0 +1,22 @@
+{
+  "name": "示例集团内部材料版",
+  "description": "演示如何在不改动 Skill 主体的情况下覆盖单位内部样式。",
+  "page": {
+    "margin_top_mm": 36,
+    "margin_bottom_mm": 34,
+    "margin_left_mm": 30,
+    "margin_right_mm": 28
+  },
+  "fonts": {
+    "title": "黑体",
+    "body": "仿宋",
+    "heading1": "黑体",
+    "heading2": "楷体",
+    "heading3": "仿宋",
+    "heading4": "仿宋"
+  },
+  "paragraph": {
+    "body_line_pt": 30,
+    "signature_space_before_pt": 24
+  }
+}

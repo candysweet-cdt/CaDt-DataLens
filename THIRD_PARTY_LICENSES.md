@@ -15,6 +15,8 @@ The following components are licensed under the MIT License:
 - KaTeX — Copyright (c) 2013-2020 Khan Academy and other contributors
 - @vscode/markdown-it-katex — Copyright (c) Microsoft Corporation
 - go-pty — Copyright (c) 2023 Ayman Bagabas（terminal_windows.go 的终端启动流程改编自该项目）
+- reverse-engineer-anything（REA Agent Skill）— Copyright (c) 2026 morluto（许可证：[docs/skills/reverse-engineer-anything/LICENSE](docs/skills/reverse-engineer-anything/LICENSE)）
+- chinese-formal-document-format（中文正式文档排版 Agent Skill）— Copyright (c) 2026 chinese-formal-document-format contributors（许可证：[docs/skills/chinese-formal-document-format/LICENSE](docs/skills/chinese-formal-document-format/LICENSE)）
 
 ```text
 MIT License

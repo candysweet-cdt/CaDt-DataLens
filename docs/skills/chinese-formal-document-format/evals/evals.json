@@ -1,0 +1,53 @@
+{
+  "skill_name": "chinese-formal-document-format",
+  "evals": [
+    {
+      "id": 1,
+      "name": "report-content-preservation",
+      "prompt": "这是一份季度经营分析报告，不要改任何文字，按中文正式文档格式排版，输出 DOCX 和格式核验报告。",
+      "expected_output": "A valid DOCX with unchanged text and structure plus a passing verification report.",
+      "files": [
+        "examples/before/01-quarterly-report.docx"
+      ],
+      "assertions": [
+        "All 15 paragraph texts and their order remain identical.",
+        "The file opens as a valid DOCX and contains no placeholder text.",
+        "Page size is A4 with the configured margins.",
+        "Title, body, headings, signature, and date use the configured fonts, sizes, line spacing, alignment, and indents.",
+        "The verification report marks content integrity and typography checks as passed."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "minutes-metadata-preservation",
+      "prompt": "这是会议纪要草稿，先判断文种；不明确先问我。保留所有数字、标点和段序。",
+      "expected_output": "A valid meeting-minutes DOCX with preserved metadata and decision text plus any structural ambiguity called out.",
+      "files": [
+        "examples/before/02-minutes.docx"
+      ],
+      "assertions": [
+        "The document type is identified as meeting minutes.",
+        "The metadata block remains top-aligned and unindented.",
+        "All 14 paragraph texts and their order remain identical.",
+        "No closing phrase is added.",
+        "The date remains right-aligned with the configured indentation."
+      ]
+    },
+    {
+      "id": 3,
+      "name": "plan-table-structure",
+      "prompt": "这是带表格的实施方案，只调整页面、标题层级和表格格式，不要重做内容，完成后检查结构有没有变化。",
+      "expected_output": "A valid plan DOCX with the same table content and merged layout plus a passing structure check.",
+      "files": [
+        "examples/before/03-digital-plan-table.docx"
+      ],
+      "assertions": [
+        "The document type is identified as a plan.",
+        "All paragraph and table-cell texts remain identical.",
+        "The merged cell remains merged and spans the same columns.",
+        "The table uses the configured header/body fonts, borders, and cell margins.",
+        "The verification report marks content integrity, page, typography, and table checks as passed."
+      ]
+    }
+  ]
+}
