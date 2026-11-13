@@ -628,5 +628,5 @@ async function maybeRunConvertJob() {
 })();
 
 
-    return {createBgTermView, gitRootDir, gitStateCache, notifyAIGitEntry, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff};
+    return {createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, notifyAIGitEntry, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths};
 }

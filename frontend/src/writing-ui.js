@@ -907,7 +907,7 @@ initPluginRuntime({
     },
     runCommandSync: (opts) => deps.backend.RunCommandSync(opts.exe, opts.args, opts.cwd || '', opts.timeoutMs || 20000),
     runCommand: (opts) => {
-        const id = 'cmd-' + nextCmdSeq();
+        const id = 'cmd-' + deps.nextCmdSeq();
         deps.cmdOutHandlers.set(id, (stream, data) => {
             if (stream === 'out' && opts.onOut) opts.onOut(data);
             if (stream === 'err' && opts.onErr) opts.onErr(data);

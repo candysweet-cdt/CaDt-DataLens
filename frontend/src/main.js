@@ -3637,6 +3637,7 @@ const settingsUI = createSettingsUI({
 });
 const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
 const writingUI = createWritingUI({
+    get nextCmdSeq() { return nextCmdSeq; },
     get activityLog() { return activityLog; },
     get allFormatDefs() { return allFormatDefs; },
     get applyCsvTableZoom() { return applyCsvTableZoom; },
@@ -6335,7 +6336,7 @@ const findBar = createFindBar({
     get flash() { return flash; },
     get groupOfDoc() { return groupOfDoc; },
 });
-const {closeFindBar, ensureFindBarHost, findTarget, focusFindEditor, openFindBar, runFind} = findBar;
+const {closeFindBar, ensureFindBarHost, findState, findTarget, focusFindEditor, openFindBar, runFind} = findBar;
 const globalSearch = createGlobalSearch({
     get activateDoc() { return activateDoc; },
     get backend() { return backend; },
@@ -6413,7 +6414,7 @@ const quickSwitchMod = createQuickSwitch({
     get viewLabel() { return viewLabel; },
     get viewOptionsFor() { return viewOptionsFor; },
 });
-const {openQuickSwitch, quickSwitch, toggleQuickSwitch} = quickSwitchMod;
+const {handleQuickSwitchKey, openQuickSwitch, quickSwitch, toggleQuickSwitch} = quickSwitchMod;
 const appActions = createAppActions({
     get backend() { return backend; },
     get baseNameOf() { return baseNameOf; },
@@ -6423,7 +6424,7 @@ const appActions = createAppActions({
     get openPath() { return openPath; },
     get rt() { return rt; },
 });
-const {copyExternalIntoDir, exitApp, parentDirOf, readRecentOpen, recentOpenMenuItems, rememberRecentOpen, setPendingExternalDrop} = appActions;
+const {copyExternalIntoDir, exitApp, getPendingExternalDrop, parentDirOf, readRecentOpen, recentOpenMenuItems, rememberRecentOpen, setPendingExternalDrop, setPendingExternalDropValue} = appActions;
 const sessionRestore = createSessionRestore({
     get activateDoc() { return activateDoc; },
     get activityLog() { return activityLog; },
@@ -6466,7 +6467,7 @@ const propertiesUI = createPropertiesUI({
     get structureTextForDoc() { return structureTextForDoc; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {propsTimeText, reloadAllFromDisk, showFileProperties} = propertiesUI;
+const {newDocumentMenuItems, propsTimeText, reloadAllFromDisk, showFileProperties} = propertiesUI;
 const appLinks = createAppLinks({
     get activateDoc() { return activateDoc; },
     get backend() { return backend; },
@@ -7252,9 +7253,9 @@ if (rt) {
         rt.OnFileDrop((_x, _y, paths) => {
             if (!Array.isArray(paths) || !paths.length) return;
             // 文件树目录行的外部拖放：先复制进目录，而不是打开
-            const pending = pendingExternalDrop;
+            const pending = getPendingExternalDrop();
             if (pending && Date.now() - pending.at < 5000) {
-                pendingExternalDrop = null;
+                setPendingExternalDropValue(null);
                 copyExternalIntoDir(paths, pending.destDir);
                 return;
             }
@@ -7366,6 +7367,11 @@ const cursorThemes = createCursorThemes({
 });
 const {setDragCursor} = cursorThemes;
 const terminalMod = createTerminalUI({
+    get showGitFileHistory() { return showGitFileHistory; },
+    get gitRollbackPaths() { return gitRollbackPaths; },
+    get gitGroupCollapsed() { return gitGroupCollapsed; },
+    get showGitRecentLog() { return showGitRecentLog; },
+    get nextCmdSeq() { return nextCmdSeq; },
     get activityLog() { return activityLog; },
     get applySettings() { return applySettings; },
     get backend() { return backend; },
@@ -7400,7 +7406,7 @@ const terminalMod = createTerminalUI({
     get toolEnvFor() { return toolEnvFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {applyDockView, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSidebarView, fitActiveTerm, runArgsText, runController, switchSidebarView, syncTerminalTheme, termCwd, terminalUI, toggleDockView, toggleSidebarView, toggleTerminalPanel} = terminalMod;
+const {applyDockView, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSidebarView, fitActiveTerm, runArgsText, runController, switchSidebarView, syncTerminalTheme, termCwd, terminalUI, toggleDockView, toggleSidebarView, toggleTerminalPanel, getDockView, setDockView, nextCmdSeq, nextMockBgSeq, nextMockSchedSeq, startRunProject} = terminalMod;
 const bridgeUI = createBridgeUI({
     get activateDoc() { return activateDoc; },
     get activityLog() { return activityLog; },
@@ -7446,4 +7452,4 @@ const bridgeUI = createBridgeUI({
     get updateBrowserTitle() { return updateBrowserTitle; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {createBgTermView, gitRootDir, gitStateCache, notifyAIGitEntry, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff} = bridgeUI;
+const {createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, notifyAIGitEntry, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths} = bridgeUI;

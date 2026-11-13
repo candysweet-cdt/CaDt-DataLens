@@ -98,7 +98,7 @@ function quickSwitchSubItems(level) {
             label,
             checked: current === id,
             action: () => {
-                deps.settings.formatSettings[formatId] = {...getFormatSettings(formatId), indent: id};
+                deps.settings.formatSettings[formatId] = {...deps.getFormatSettings(formatId), indent: id};
                 deps.applySettings();
                 if (deps.currentMode === 'code' && deps.file && deps.file.format && deps.file.format.id === formatId &&
                     deps.file.editor && deps.file.editor.aceEditor) deps.applyAceMode(true);
@@ -329,5 +329,5 @@ deps.els.quickSwitchBack.addEventListener('click', (e) => {
 });
 
 
-    return {openQuickSwitch, quickSwitch, toggleQuickSwitch};
+    return {handleQuickSwitchKey, openQuickSwitch, quickSwitch, toggleQuickSwitch};
 }

@@ -87,11 +87,11 @@ function renderGitPanel() {
             const isUntracked = deps.gitStateCache.untrackedSet.has(path);
             deps.ctxMenu.open([
                 {label: '查看差异', icon: 'E8D3', action: () => deps.showGitDiff(path)},
-                {label: '文件历史', icon: 'E81C', action: () => showGitFileHistory(path)},
+                {label: '文件历史', icon: 'E81C', action: () => deps.showGitFileHistory(path)},
                 {sep: true},
                 {label: '回滚更改', icon: 'E7A7', danger: true, action: () => {
                     const what = isUntracked ? '该文件未被版本管理，回滚将删除文件：' : '将丢弃该文件的全部未提交修改：';
-                    deps.openCloseConfirm(what + '\n' + path, () => gitRollbackPaths([path], isUntracked ? [path] : []), '回滚');
+                    deps.openCloseConfirm(what + '\n' + path, () => deps.gitRollbackPaths([path], isUntracked ? [path] : []), '回滚');
                 }},
             ], e.clientX, e.clientY);
         });
@@ -107,7 +107,7 @@ function renderGitPanel() {
         chev.type = 'button';
         chev.className = 'git-chev';
         chev.title = '展开/收起';
-        chev.innerHTML = iconSvg(gitGroupCollapsed[key] ? 'chevron-right' : 'chevron-down', 10);
+        chev.innerHTML = iconSvg(deps.gitGroupCollapsed[key] ? 'chevron-right' : 'chevron-down', 10);
         const gcb = document.createElement('input');
         gcb.type = 'checkbox';
         gcb.className = 'git-group-cb';
@@ -115,7 +115,7 @@ function renderGitPanel() {
         label.textContent = title;
         head.append(chev, gcb, label);
         const rowsWrap = document.createElement('div');
-        rowsWrap.className = 'git-group-rows' + (gitGroupCollapsed[key] ? ' collapsed' : '');
+        rowsWrap.className = 'git-group-rows' + (deps.gitGroupCollapsed[key] ? ' collapsed' : '');
         const rowCbs = () => [...rowsWrap.querySelectorAll('.git-file-row input[type="checkbox"]')];
         const updateGroupState = () => {
             const cbs = rowCbs();
@@ -128,9 +128,9 @@ function renderGitPanel() {
             updateGroupState();
         });
         chev.addEventListener('click', () => {
-            gitGroupCollapsed[key] = !gitGroupCollapsed[key];
-            rowsWrap.classList.toggle('collapsed', gitGroupCollapsed[key]);
-            chev.innerHTML = iconSvg(gitGroupCollapsed[key] ? 'chevron-right' : 'chevron-down', 10);
+            deps.gitGroupCollapsed[key] = !deps.gitGroupCollapsed[key];
+            rowsWrap.classList.toggle('collapsed', deps.gitGroupCollapsed[key]);
+            chev.innerHTML = iconSvg(deps.gitGroupCollapsed[key] ? 'chevron-right' : 'chevron-down', 10);
         });
         block.append(head, rowsWrap);
         for (const row of rows) {
@@ -448,7 +448,7 @@ const runController = createRunController({
         const value = deps.settings.runConfigs && deps.settings.runConfigs[langId];
         return typeof value === 'string' ? value.trim() : '';
     },
-    resolveWorkDir: (fallback) => (deps.settings.runCwd === 'workspace' && deps.workspaceFolder ? workspaceFolder : fallback),
+    resolveWorkDir: (fallback) => (deps.settings.runCwd === 'workspace' && deps.workspaceFolder ? deps.workspaceFolder : fallback),
     showRunPanel: () => toggleDockView('run'),
     hidePanel: () => toggleTerminalPanel(false),
 });
@@ -660,12 +660,12 @@ if (deps.els.gitSplitter) {
         deps.applySettings();
     });
 }
-deps.els.gitRecentLog.addEventListener('click', () => showGitRecentLog());
+deps.els.gitRecentLog.addEventListener('click', () => deps.showGitRecentLog());
 deps.els.gitCommitBtn.addEventListener('click', () => runGitCommit(false));
 deps.els.gitCommitPushBtn.addEventListener('click', () => runGitCommit(true));
 
 function collectCheckedPaths() {
-    return [...els.gitChanges.querySelectorAll('.git-file-row input[type="checkbox"]:checked')].map((cb) => cb.dataset.path);
+    return [...deps.els.gitChanges.querySelectorAll('.git-file-row input[type="checkbox"]:checked')].map((cb) => cb.dataset.path);
 }
 
 async function runGitCommit(push) {
@@ -849,5 +849,5 @@ if (deps.els.terminalResize) {
     function nextMockBgSeq() { return ++mockBgSeq; }
     function nextMockSchedSeq() { return ++mockSchedSeq; }
 
-    return {applyDockView, renderGitPanel, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSidebarView, fitActiveTerm, runArgsText, runController, switchSidebarView, syncTerminalTheme, termCwd, terminalUI, toggleDockView, toggleSidebarView, toggleTerminalPanel, getDockView, setDockView, nextCmdSeq, nextMockBgSeq, nextMockSchedSeq};
+    return {applyDockView, renderGitPanel, startRunProject, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSidebarView, fitActiveTerm, runArgsText, runController, switchSidebarView, syncTerminalTheme, termCwd, terminalUI, toggleDockView, toggleSidebarView, toggleTerminalPanel, getDockView, setDockView, nextCmdSeq, nextMockBgSeq, nextMockSchedSeq};
 }

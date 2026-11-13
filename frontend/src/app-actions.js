@@ -99,5 +99,8 @@ async function copyExternalIntoDir(paths, destDir) {
 }
 
 
-    return {copyExternalIntoDir, exitApp, parentDirOf, readRecentOpen, recentOpenMenuItems, rememberRecentOpen, setPendingExternalDrop};
+    function getPendingExternalDrop() { return pendingExternalDrop; }
+    function setPendingExternalDropValue(v) { pendingExternalDrop = v; }
+
+    return {copyExternalIntoDir, exitApp, getPendingExternalDrop, parentDirOf, readRecentOpen, recentOpenMenuItems, rememberRecentOpen, setPendingExternalDrop, setPendingExternalDropValue};
 }

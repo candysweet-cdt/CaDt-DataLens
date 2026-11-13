@@ -21,7 +21,7 @@ function newDocumentMenuItems() {
             action: () => deps.openCreateEntryDialog(deps.workspaceFolder, true, '新建文件夹', '新建文件夹'),
         },
         {sep: true},
-        ...newFileTypeMenuItems((type) => {
+        ...deps.newFileTypeMenuItems((type) => {
             const dot = type.name.lastIndexOf('.');
             const ext = dot >= 0 ? type.name.slice(dot) : '';
             deps.newDocumentWith('未命名' + ext, ext.toLowerCase() === '.json' ? '{}' : '');

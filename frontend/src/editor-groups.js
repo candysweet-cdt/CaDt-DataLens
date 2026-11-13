@@ -5000,7 +5000,7 @@ function showSvgMenu(doc, x, y) {
             }
         }},
         {sep: true},
-        ...aiReferenceFileMenuItems(doc),
+        ...deps.aiReferenceFileMenuItems(doc),
         {label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)},
     ];
@@ -5037,7 +5037,7 @@ function showImageMenu(doc, x, y) {
             }
         }},
         {sep: true},
-        ...aiReferenceFileMenuItems(doc),
+        ...deps.aiReferenceFileMenuItems(doc),
         {label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)},
     ];
@@ -5086,7 +5086,7 @@ function showMdPreviewMenu(doc, x, y) {
         items.push({label: '刷新预览', icon: 'E72C', action: () => renderMarkdownPreview(doc)});
     }
     items.push({sep: true});
-    items.push(...aiReferenceFileMenuItems(doc));
+    items.push(...deps.aiReferenceFileMenuItems(doc));
     items.push({label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')});
     items.push({label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)});
     deps.ctxMenu.open(items, x, y);
@@ -5112,7 +5112,7 @@ function showTabMenu(doc, x, y) {
         {label: '复制文件名', icon: 'E8C8', action: () => deps.copyText(doc.name, '文件名')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: () => showPathInFolder(doc.path)},
         {label: '与另一个标签页比较…', icon: 'E8A5', disabled: gdocs.filter((d) => d.path && !d.binary).length < 2, action: () => deps.openDiffDialog(doc.path)},
-        ...aiReferenceFileMenuItems(doc),
+        ...deps.aiReferenceFileMenuItems(doc),
         {label: '在 AI 中询问此文件', iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>', disabled: !hasPath, action: () => deps.askAIAboutPath(doc.path)},
         {sep: true},
         {label: '在新窗口中打开', shortcut: 'Shift+F4', icon: 'E8A7', disabled: !hasPath, action: () => deps.openInNewWindows([doc.path])},

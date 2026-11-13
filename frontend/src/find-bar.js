@@ -444,5 +444,5 @@ function bindFindBar() {
 bindFindBar();
 
 
-    return {closeFindBar, ensureFindBarHost, findTarget, focusFindEditor, openFindBar, runFind};
+    return {closeFindBar, ensureFindBarHost, findState, findTarget, focusFindEditor, openFindBar, runFind};
 }

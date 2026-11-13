@@ -137,16 +137,16 @@ fillFontSelect(elsSettings.editorFontFamily, deps.editorFonts);
 fillFontSelect(elsSettings.editorCjkFont, deps.cjkFonts);
 fillFontSelect(elsSettings.aiChatFontEn, [
     {id: 'follow', name: '跟随界面英文字体'},
-    ...uiFonts.map((f) => ({id: 'ui:' + f.id, name: f.name})),
-    ...editorFonts.map((f) => ({id: 'mono:' + f.id, name: f.name + '（等宽）'})),
+    ...deps.uiFonts.map((f) => ({id: 'ui:' + f.id, name: f.name})),
+    ...deps.editorFonts.map((f) => ({id: 'mono:' + f.id, name: f.name + '（等宽）'})),
 ]);
 fillFontSelect(elsSettings.aiChatFontCjk, [
     {id: 'follow', name: '跟随界面中文字体'},
-    ...cjkFonts.map((f) => ({id: 'cjk:' + f.id, name: f.name})),
+    ...deps.cjkFonts.map((f) => ({id: 'cjk:' + f.id, name: f.name})),
 ]);
 fillFontSelect(elsSettings.aiChatCodeFont, [
     {id: 'follow', name: '跟随编辑器字体'},
-    ...editorFonts.map((f) => ({id: 'mono:' + f.id, name: f.name})),
+    ...deps.editorFonts.map((f) => ({id: 'mono:' + f.id, name: f.name})),
 ]);
 
 const elsDialogs = {
@@ -321,7 +321,7 @@ function updateLockButton() {
         deps.els.lock.classList.toggle('locked', locked);
         deps.els.lock.setAttribute('aria-pressed', String(locked));
         deps.els.lock.title = locked ? '解除只读锁定' : '只读锁定';
-        deps.els.lock.innerHTML = locked ? LOCK_ICON : deps.UNLOCK_ICON;
+        deps.els.lock.innerHTML = locked ? deps.LOCK_ICON : deps.UNLOCK_ICON;
     }
 }
 
