@@ -33,6 +33,8 @@ const (
 	runFlushBytes    = 8 << 10               // 攒够 8 KB 立即发
 	runTempKeep      = 7 * 24 * time.Hour    // 临时目录保留时长
 	runTempDirPrefix = "run-"
+	runInputMax      = 4 << 10 // 单次 stdin 输入上限
+	runInputQueue    = 32      // 未被消费的输入行数上限
 )
 
 // RunSpec 前端给出的运行请求。
@@ -344,6 +346,134 @@ func (s *runStream) readPipe(pipe io.Reader, stream string) {
 	}
 }
 
+// runStdin 一个运行任务的 stdin 通道。
+//
+// 用 os.Pipe 而不是 io.Pipe：cmd.Stdin 是 *os.File 时 os/exec 直接把 fd 交给子进程，
+// 不会另起 copy goroutine，cmd.Wait 因此不依赖我们何时关闭写端。
+// 输入走带缓冲队列：子进程完全不读 stdin 时，写端会阻塞在 Write 上，
+// 但 RunInput 只往队列里放，永不阻塞 UI 线程；进程结束关闭 fd 会唤醒阻塞的 Write。
+type runStdin struct {
+	w         *os.File
+	queue     chan string
+	eof       chan struct{} // 用户请求 EOF：排空队列后再关写端
+	done      chan struct{} // 进程已退出：立即强制关闭
+	closeW    sync.Once
+	closeEof  sync.Once
+	closeDone sync.Once
+}
+
+var (
+	runStdinMu sync.Mutex
+	runStdins  = map[string]*runStdin{}
+)
+
+func (s *runStdin) write(text string) bool {
+	_, err := s.w.Write([]byte(text + "\n"))
+	return err == nil
+}
+
+func (s *runStdin) closeWriter() {
+	s.closeW.Do(func() { _ = s.w.Close() })
+}
+
+func (s *runStdin) pump() {
+	defer s.closeWriter()
+	for {
+		// 先排空已入队的输入，避免「发一行 + 立刻 EOF」时 select 选中 eof 把输入丢掉
+		select {
+		case text := <-s.queue:
+			if !s.write(text) {
+				return
+			}
+			continue
+		default:
+		}
+		select {
+		case text := <-s.queue:
+			if !s.write(text) {
+				return
+			}
+		case <-s.eof:
+			return
+		case <-s.done:
+			return
+		}
+	}
+}
+
+// sendEOF 正常结束输入：pump 排空队列后自行关闭写端。
+func (s *runStdin) sendEOF() {
+	s.closeEof.Do(func() { close(s.eof) })
+}
+
+// forceClose 进程已退出：直接关 fd，唤醒可能阻塞在 Write 上的 pump。
+func (s *runStdin) forceClose() {
+	s.closeDone.Do(func() { close(s.done) })
+	s.closeWriter()
+}
+
+func registerRunStdin(id string, w *os.File) *runStdin {
+	s := &runStdin{
+		w:     w,
+		queue: make(chan string, runInputQueue),
+		eof:   make(chan struct{}),
+		done:  make(chan struct{}),
+	}
+	runStdinMu.Lock()
+	runStdins[id] = s
+	runStdinMu.Unlock()
+	go s.pump()
+	return s
+}
+
+func unregisterRunStdin(id string) {
+	runStdinMu.Lock()
+	s := runStdins[id]
+	delete(runStdins, id)
+	runStdinMu.Unlock()
+	if s != nil {
+		s.forceClose()
+	}
+}
+
+// RunInput 往运行中的进程写一行输入（自动补 \n）。队列满说明进程没有在读 stdin。
+func (a *App) RunInput(id, text string) error {
+	runStdinMu.Lock()
+	s := runStdins[strings.TrimSpace(id)]
+	runStdinMu.Unlock()
+	if s == nil {
+		return fmt.Errorf("运行 %q 已结束，不能写入输入", id)
+	}
+	if len(text) > runInputMax {
+		return fmt.Errorf("单次输入不能超过 %d 字节", runInputMax)
+	}
+	select {
+	case <-s.done:
+		return fmt.Errorf("运行 %q 已结束", id)
+	case <-s.eof:
+		return fmt.Errorf("运行 %q 的输入端已关闭（EOF）", id)
+	default:
+	}
+	select {
+	case s.queue <- text:
+		return nil
+	default:
+		return fmt.Errorf("输入队列已满（进程可能没有读取 stdin）")
+	}
+}
+
+// RunEndInput 关闭 stdin（发送 EOF）：给按行读到 EOF 才退出的程序一个正常结束的机会。
+func (a *App) RunEndInput(id string) error {
+	runStdinMu.Lock()
+	s := runStdins[strings.TrimSpace(id)]
+	runStdinMu.Unlock()
+	if s == nil {
+		return fmt.Errorf("运行 %q 已结束", id)
+	}
+	s.sendEOF()
+	return nil
+}
+
 // RunExec 启动一个运行进程：输出走 run-out（{id, stream, data}），结束走 run-exit。
 // pathPrepend 非空时前置到子进程 PATH（编译型语言运行阶段用）。
 func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string) error {
@@ -391,11 +521,21 @@ func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string) er
 		stopRunningCommand(id)
 		return err
 	}
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		stopRunningCommand(id)
+		return err
+	}
+	cmd.Stdin = stdinR
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
+		_ = stdinR.Close()
+		_ = stdinW.Close()
 		stopRunningCommand(id)
 		return fmt.Errorf("启动失败：%w", err)
 	}
+	_ = stdinR.Close() // 读端已交给子进程，父进程只留写端
+	registerRunStdin(id, stdinW)
 
 	stream := &runStream{a: a, id: id, startedAt: started}
 	stopFlusher := stream.startFlusher()
@@ -423,6 +563,7 @@ func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string) er
 			}
 		}
 		stream.finish()
+		unregisterRunStdin(id)
 		exit := RunExit{Id: id, Code: code, DurationMs: time.Since(started).Milliseconds()}
 		if runEmitHook != nil {
 			runEmitHook("run-exit", exit)

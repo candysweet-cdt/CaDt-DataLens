@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 
 import {
     RECIPES, extOf, stemOf, joinPath, cmdText, versionOf, versionAtLeast,
-    ansiSegments, splitRefs, splitRunArgs,
+    ansiSegments, splitRefs, splitRunArgs, applyRunTemplate, SELF_TEST, SELF_TEST_MARK,
+    buildRunAnalysisPrompt,
 } from './run.js';
 
 test('配方表：每项都有 run，编译型必须有 build 与 outExt', () => {
@@ -144,4 +145,53 @@ test('配方：脚本解释器同样接收运行参数', () => {
     assert.deepEqual(RECIPES.sh.run(ctx), ['a.sh', 'x']);
     assert.deepEqual(RECIPES.bat.run(ctx), ['/c', 'a.sh', 'x']);
     assert.deepEqual(RECIPES.ps1.run(ctx), ['-NoLogo', '-NoProfile', '-File', 'a.sh', 'x']);
+});
+
+test('applyRunTemplate：占位符是单个 argv，路径含空格不被切开', () => {
+    const ctx = {
+        tool: 'C://py//python.exe', file: 'C://my docs\\a.py', dir: 'C://my docs',
+        base: 'a.py', stem: 'a', ext: 'py', out: 'a.exe', args: ['--x', 'hello world'],
+    };
+    assert.deepEqual(applyRunTemplate('$TOOL -u $FILE $ARGS', ctx),
+        ['C://py//python.exe', '-u', 'C://my docs\\a.py', '--x', 'hello world']);
+    assert.deepEqual(applyRunTemplate('"$TOOL" "--in=$FILE" $ARGS', ctx),
+        ['C://py//python.exe', '--in=C://my docs\\a.py', '--x', 'hello world']);
+});
+
+test('applyRunTemplate：全部占位符与编译型 $OUT', () => {
+    const ctx = {tool: 'gcc', file: 'D://w//main.c', dir: 'D://w', base: 'main.c', stem: 'main', ext: 'c', out: 'D://tmp//main.exe', args: []};
+    assert.deepEqual(applyRunTemplate('$OUT $STEM $EXT $BASE $DIR', ctx),
+        ['D://tmp//main.exe', 'main', 'c', 'main.c', 'D://w']);
+});
+
+test('applyRunTemplate：空模板与未知占位符', () => {
+    assert.deepEqual(applyRunTemplate('', {}), []);
+    assert.deepEqual(applyRunTemplate('$TOOL $NOPE', {tool: 'py'}), ['py', '$NOPE']);
+    assert.deepEqual(applyRunTemplate('$ARGS', {args: ['a', 'b']}), ['a', 'b']);
+});
+
+test('SELF_TEST：每个自检脚本都有配方、文件名与固定标记', () => {
+    assert.ok(Object.keys(SELF_TEST).length >= 10);
+    for (const [ext, info] of Object.entries(SELF_TEST)) {
+        assert.ok(RECIPES[ext], ext + ' 缺少运行配方');
+        assert.ok(info.name.endsWith('.' + ext), ext + ' 的文件名后缀不匹配');
+        assert.ok(info.code.includes(SELF_TEST_MARK), ext + ' 没有打印固定标记');
+    }
+});
+
+test('buildRunAnalysisPrompt：空输出返回空串，元数据进入提示词', () => {
+    assert.equal(buildRunAnalysisPrompt('   \n  ', {}), '');
+    const p = buildRunAnalysisPrompt('Traceback\nValueError: bad', {file: 'a.py', lang: 'Python', code: 1});
+    assert.ok(p.includes('a.py') && p.includes('Python') && p.includes('退出码：1'));
+    assert.ok(p.includes('ValueError: bad'));
+});
+
+test('buildRunAnalysisPrompt：尾部 200 行与 12000 字符双重截断', () => {
+    const many = Array.from({length: 300}, (_, i) => 'line-' + i).join('\n');
+    const p1 = buildRunAnalysisPrompt(many, {});
+    assert.ok(p1.includes('line-299') && !p1.includes('line-0\n'), '只保留尾部 200 行');
+    const huge = 'x'.repeat(20000) + '\nTHE_END';
+    const p2 = buildRunAnalysisPrompt(huge, {});
+    assert.ok(p2.includes('已省略') && p2.includes('THE_END'));
+    assert.ok(p2.length < 13000, '提示词长度应受控');
 });

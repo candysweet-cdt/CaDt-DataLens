@@ -1004,6 +1004,31 @@
                         </div>
                         <div class="fmt-hint hint-indent">脚本里写 <code>open('data.csv')</code> 这类相对路径时按此目录解析；默认选文件所在目录，方便直接读旁边的数据文件。</div>
                         <div class="fmt-hint hint-indent">运行面板顶部可填「运行参数」：空格分隔、含空格用引号包起来，按语言记住并随运行标签回显；参数只传给程序，不会进入编译命令。</div>
+                        <div class="settings-section-title">命令模板（可选，按语言覆盖默认命令）</div>
+                        <div class="popover-row">
+                            <span class="popover-label">适用语言</span>
+                            <select id="run-template-lang" class="opt-select"></select>
+                        </div>
+                        <div class="popover-row">
+                            <input id="run-template-input" class="run-template-input" type="text" spellcheck="false" autocomplete="off"
+                                   placeholder="留空使用默认命令，例如：$TOOL -u $FILE $ARGS">
+                        </div>
+                        <div class="fmt-hint hint-indent">
+                            模板是完整命令行（首个词为可执行文件）。占位符：<code>$TOOL</code> 扫描到的解释器 / 编译器、<code>$FILE</code> 源文件、<code>$DIR</code> 工作目录、<code>$BASE</code> 文件名、<code>$STEM</code> 主文件名、<code>$EXT</code> 扩展名、<code>$OUT</code> 编译产物、<code>$ARGS</code> 运行参数。按空格分词后逐项替换，不经 shell；含空格的路径请用引号包住占位符。编译型的编译步骤仍用默认配方。
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">验证运行环境</span>
+                            <select id="run-selftest-lang" class="opt-select"></select>
+                            <button type="button" id="run-selftest" class="dlg-btn">运行自检脚本</button>
+                        </div>
+                        <div class="fmt-hint hint-indent">自检在临时目录里跑一段只打印一行标记的最小脚本，验证该语言的工具链能否真正编译 / 执行文件；不改动任何用户文件，结果在底部「运行」面板。</div>
+                        <div class="settings-section-title">运行配置（多套参数预设）</div>
+                        <div class="popover-row">
+                            <input id="run-profile-name" class="run-template-input" type="text" spellcheck="false" autocomplete="off" placeholder="配置名称，例如：读大 CSV">
+                            <button type="button" id="run-profile-save" class="dlg-btn">保存当前配置</button>
+                        </div>
+                        <div class="fmt-hint hint-indent">保存时记下运行面板里的参数、当前语言的命令模板与语言；之后在面板顶部下拉里一键载入。配置只存预设，不改变默认设置。</div>
+                        <div id="run-profile-list" class="run-profile-list"></div>
                         <div class="popover-row">
                             <span class="popover-label">有未保存修改时</span>
                             <select id="run-dirty-mode" class="opt-select">
@@ -1024,7 +1049,7 @@
                         </div>
                         <div class="fmt-hint hint-indent" id="run-temp-hint">—</div>
                         <div class="fmt-hint">已支持：Python、Node.js / TypeScript、Go、Java、C、C++、Rust、PHP、Ruby、Lua、Shell / Batch / PowerShell。临时目录里超过 7 天的编译产物与临时副本会自动清理。</div>
-                        <div class="fmt-hint">运行不接管标准输入：需要交互输入的程序会立刻拿到 EOF；同时最多 3 个任务，长驻服务请用「停止」结束。</div>
+                        <div class="fmt-hint">运行中出现 stdin 输入条，可逐行发送输入或点 EOF 结束；同时最多 3 个任务，长驻服务请用「停止」结束。项目运行（Ctrl+F5）只执行探测出的固定命令，不会自动安装依赖或修改项目文件。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="shortcuts">
                         <div class="popover-shortcuts">
@@ -1044,6 +1069,7 @@
                             <div class="settings-section-title">运行</div>
                             <div><span>运行当前文件</span><span class="kbd">F5</span></div>
                             <div><span>停止运行</span><span class="kbd">Shift+F5</span></div>
+                            <div><span>运行项目</span><span class="kbd">Ctrl+F5</span></div>
                             <div><span>运行面板</span><span class="kbd">Alt+F11</span></div>
                             <div class="settings-section-title">视图与窗口</div>
                             <div><span>文件侧边栏</span><span class="kbd">Ctrl+B</span></div>
@@ -1748,6 +1774,7 @@
                         <div class="ws-row"><span class="ws-label">文件侧边栏</span><span class="ws-key">Ctrl+B</span></div>
                         <div class="ws-row"><span class="ws-label">终端</span><span class="ws-key">Alt+F12</span></div>
                         <div class="ws-row"><span class="ws-label">运行当前文件</span><span class="ws-key">F5</span></div>
+                        <div class="ws-row"><span class="ws-label">运行项目</span><span class="ws-key">Ctrl+F5</span></div>
                         <div class="ws-row"><span class="ws-label">搜索</span><span class="ws-key">Ctrl+F</span></div>
                         <div class="ws-row"><span class="ws-label">新窗口</span><span class="ws-key">Shift+F4</span></div>
                         <div class="ws-row"><span class="ws-label">设置</span><span class="ws-key">Ctrl+,</span></div>
@@ -1958,6 +1985,7 @@
                 <div class="run-head">
                     <span class="run-title">运行</span>
                     <div class="run-tabs" id="run-tabs"></div>
+                    <select id="run-profile-select" class="run-profile-select" aria-label="运行配置" title="载入已保存的运行配置（参数与命令模板）"></select>
                     <input id="run-args-input" class="run-args" type="text" spellcheck="false" autocomplete="off" placeholder="运行参数（可选）" title="传给程序的参数，空格分隔；含空格的用引号包起来">
                     <div class="run-actions">
                         <button type="button" id="run-clear" class="term-btn" title="清空当前输出" aria-label="清空当前输出">
@@ -1971,7 +1999,22 @@
                         </button>
                     </div>
                 </div>
+                <div class="run-project-bar hidden" id="run-project-bar">
+                    <span class="run-input-label">项目</span>
+                    <span id="run-project-root" class="run-project-root"></span>
+                    <select id="run-project-cmd" class="opt-select" aria-label="要执行的项目命令"></select>
+                    <button type="button" id="run-project-go" class="dlg-btn primary">执行</button>
+                    <button type="button" id="run-project-cancel" class="dlg-btn">取消</button>
+                </div>
+                <div class="run-project-note hidden" id="run-project-note"></div>
                 <div class="run-body" id="run-body"></div>
+                <div class="run-input-bar hidden" id="run-input-bar">
+                    <span class="run-input-label">stdin</span>
+                    <input id="run-stdin-input" class="run-stdin" type="text" spellcheck="false" autocomplete="off"
+                           placeholder="给程序发送一行输入，回车发送" title="输入会写给正在运行的进程；不读 stdin 的程序请点 EOF 或直接停止">
+                    <button type="button" id="run-stdin-send" class="dlg-btn">发送</button>
+                    <button type="button" id="run-stdin-eof" class="dlg-btn" title="关闭输入端（发送 EOF），让按行读到结尾才结束的程序正常退出">EOF</button>
+                </div>
                 <div class="run-status" id="run-status"></div>
             </div>
         </div>

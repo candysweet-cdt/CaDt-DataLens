@@ -17658,6 +17658,20 @@ export function createAIPanel(options) {
             switchSession(String(id || ''));
             return currentSession() ? {id: currentSession().id, title: currentSession().title} : null;
         },
+        // 只把文本放进输入框，不自动发送：外部功能（如运行面板「发给 AI 分析」）用。
+        // 触发原生 input 事件让自动高度 / 发送按钮 / 斜杠命令提示跟着更新。
+        bridgeSetDraft: (text) => {
+            if (!el.input) return false;
+            open(true);
+            el.input.value = String(text || '');
+            el.input.dispatchEvent(new Event('input', {bubbles: true}));
+            try {
+                el.input.focus();
+                const end = el.input.value.length;
+                if (typeof el.input.setSelectionRange === 'function') el.input.setSelectionRange(end, end);
+            } catch (e) { /* 焦点不可用时草稿仍已填入 */ }
+            return true;
+        },
         // 后台终端标签页（内容区）用的桥：快照 / 输出订阅 / 停止
         bridgeBgJob: (jobId) => bgJobSnapshot(String(jobId || '')),
         bridgeOnBgUpdate: (cb) => {

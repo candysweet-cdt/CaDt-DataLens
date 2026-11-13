@@ -27,7 +27,8 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `plugins.go` / `skills.go` / `market.go` / `update.go`：插件、技能注册（`docs/skills` 经 `go:embed` 分发，内置技能首次列出时物化到应用数据 `builtin-skills/`）、市场、检查更新
 - `gitinfo.go`：Git 分支/提交面板后端
 - `delete*.go`、`envvars*.go`、`terminal_windows.go`、`toolchain_windows.go`、`integration_windows.go`、`installer_cli_windows.go`、`notify_windows.go`、`cursors*`、`windowicon*`：Windows 能力与注册表集成
-- `run.go` / `run_shells_*.go`：运行代码（`PrepareRun` 临时副本与工作目录、`RunExec` 流式执行 + GBK 解码 + PATH 前置、`RunStop`、临时目录清理）；配方与语言知识在前端 `src/run.js`，Go 侧只负责起进程
+- `run.go` / `run_shells_*.go`：运行代码（`PrepareRun` 临时副本与工作目录、`RunExec` 流式执行 + GBK 解码 + PATH 前置、stdin 队列 `RunInput` / `RunEndInput`、`RunStop`、临时目录清理）；配方与语言知识在前端 `src/run.js`，Go 侧只负责起进程
+- `run_project.go`：项目感知运行（`DetectRunProject` 只读探测项目标记与候选命令，遇 `.git` / 用户主目录停止）；执行仍走 `RunExec`，确认在前端
 - `dialogs.go`、`commands.go`、`preview_assets.go`、`debugconsole.go`
 - `*_test.go`：与同名源文件对应的单元测试
 
@@ -36,7 +37,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `src/formats.js`：格式驱动层（parse / stringify 双向转换，插件格式也走这里）
 - `src/structure.js`：17 种语言的结构/大纲解析（纯函数，无 DOM 依赖）
 - `src/explorer.js`：文件树（惰性加载 + 内存缓存 + 自动刷新）
-- `src/run.js`：运行代码（扩展名 → 运行配方、工具链选取、dirty 决策、输出面板与 ANSI / `path:line:col` 跳转）；`src/run.test.mjs` 覆盖纯函数
+- `src/run.js`：运行代码（扩展名 → 运行配方、命令模板 / 自检脚本 / 项目确认、stdin、dirty 决策、输出面板与 ANSI / `path:line:col` 跳转、AI 分析提示词）；`src/run.test.mjs` 覆盖纯函数
 - `src/patch-view.js`：补丁视图（文件卡 / hunk / 模式切换 / 应用 / 撤销），只做渲染，解析与写入全走 Go
 - `src/ai-panel.js`、`src/palette.js`、`src/contextmenu.js`、`src/icons.js`、`src/fileicons*.js`、`src/plugins.js`、`src/jsonrepair.js`、`src/debugconsole.js`
 - `src/ai-session-store.js`：AI 会话 JSONL 编解码/重放 + 磁盘适配（图片外置、增量持久化）
@@ -53,7 +54,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 ### `docs/`
 - `packaging.md`（打包与发布）、`plugins/`、`skills/`、`samples/`、`screenshots/`、`icons/`、`legal/`
 - `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`）
-- `unfinished-plans/`：未开工/进行中的方案（目前：`structure-cleanup.md`、`ai-patch-approval.md`、`run-code.md`）
+- `unfinished-plans/`：未开工/进行中的方案（目前：`structure-cleanup.md`）；`ai-patch-approval.md`、`run-code.md` 已实施完并移入 `finished-plans/`
 - `icon-guidelines.md`
 - `reports/optimization-proposals.md`：体积与性能优化提案（含实测体积基线）
 

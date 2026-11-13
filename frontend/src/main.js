@@ -16,7 +16,7 @@ import {createAIPanel} from './ai-panel.js';
 import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './jsonrepair.js';
 import {createFileIcon, fileIconSpec} from './fileicons.js';
-import {createRunController, splitRunArgs, RECIPES, extOf} from './run.js';
+import {createRunController, splitRunArgs, RECIPES, extOf, SELF_TEST} from './run.js';
 import {buildJsonLineMap, queryJsonPath} from './jsonpath.js';
 import {semanticDiff, semanticEntryText, unifiedDiff} from './diff.js';
 import {validateJsonSchema} from './jsonschema.js';
@@ -658,9 +658,12 @@ const mockBackend = {
         return null;
     },
     async RunStop() { return null; },
+    async RunInput() { return null; },
+    async RunEndInput() { return null; },
     async ResolveRunShell() { return {path: 'mock-shell', name: 'Mock Shell'}; },
     async CleanupRunTemp() { return null; },
     async CleanupRunTempStale() { return 0; },
+    async DetectRunProject() { return {root: '', kind: 'Mock', marker: '', commands: [], note: '浏览器 mock 环境没有项目探测'}; },
     async ListLangPackages() { return {packages: [], exists: true}; },
     async GitLineMarksFor() { return []; },
     async GetSystemCursors() { return {}; },
@@ -3358,10 +3361,13 @@ const defaultSettings = {
     autoCheckUpdate: true,
     structureExportLineNums: false,
     langEnv: {},
-    // 运行代码（docs/unfinished-plans/run-code.md）
+    // 运行代码（docs/finished-plans/run-code.md）
     runCwd: 'file',
     runDirtyMode: 'ask',
     runArgs: {},
+    runConfigs: {},
+    runProfiles: [],
+    runActiveProfile: '',
     runConfirmSeen: [],
     treeExpandDefault: 'expand',
     showBanners: true,
@@ -3485,6 +3491,9 @@ if (!settings.langEnv || typeof settings.langEnv !== 'object') settings.langEnv 
 settings.runCwd = settings.runCwd === 'workspace' ? 'workspace' : 'file';
 if (!['ask', 'save', 'temp'].includes(settings.runDirtyMode)) settings.runDirtyMode = 'ask';
 if (!settings.runArgs || typeof settings.runArgs !== 'object') settings.runArgs = {};
+if (!settings.runConfigs || typeof settings.runConfigs !== 'object') settings.runConfigs = {};
+if (!Array.isArray(settings.runProfiles)) settings.runProfiles = [];
+if (typeof settings.runActiveProfile !== 'string') settings.runActiveProfile = '';
 if (!Array.isArray(settings.runConfirmSeen)) settings.runConfirmSeen = [];
 settings.splitRatio = Number(settings.splitRatio);
 if (!Number.isFinite(settings.splitRatio)) settings.splitRatio = 0.5;
@@ -5098,6 +5107,113 @@ const LANG_DEFS = [
 
 setupFormatSettings();
 setupLanguageSettings();
+// 命名运行配置：存的是「参数 + 命令模板 + 语言」预设，选中时载入到当前语言，
+// 不是运行时的另一套分支——面板里看到的仍然是这次真正会用的值。
+function renderRunProfiles() {
+    const select = document.getElementById('run-profile-select');
+    const list = document.getElementById('run-profile-list');
+    const profiles = Array.isArray(settings.runProfiles) ? settings.runProfiles : [];
+    if (select) {
+        select.textContent = '';
+        const def = document.createElement('option');
+        def.value = '';
+        def.textContent = '默认配置';
+        select.appendChild(def);
+        for (const p of profiles) {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            opt.textContent = p.name;
+            select.appendChild(opt);
+        }
+        const active = settings.runActiveProfile || '';
+        select.value = profiles.some((p) => p.id === active) ? active : '';
+    }
+    if (!list) return;
+    list.textContent = '';
+    if (!profiles.length) {
+        const empty = document.createElement('div');
+        empty.className = 'fmt-hint';
+        empty.textContent = '还没有保存的配置。';
+        list.appendChild(empty);
+        return;
+    }
+    for (const p of profiles) {
+        const row = document.createElement('div');
+        row.className = 'run-profile-row';
+        const name = document.createElement('span');
+        name.className = 'run-profile-name';
+        name.textContent = p.name;
+        const detail = document.createElement('span');
+        detail.className = 'run-profile-detail';
+        detail.textContent = [p.lang ? '[' + p.lang + ']' : '', p.args || '', p.template || '']
+            .filter(Boolean).join('  ');
+        detail.title = detail.textContent;
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'run-profile-del';
+        del.textContent = '删除';
+        del.addEventListener('click', () => deleteRunProfile(p.id));
+        row.append(name, detail, del);
+        list.appendChild(row);
+    }
+}
+
+function applyRunProfile(id) {
+    settings.runActiveProfile = id || '';
+    const profile = (settings.runProfiles || []).find((p) => p.id === id);
+    if (profile) {
+        const lang = runController.currentLang() || '';
+        if (lang) {
+            if (typeof profile.args === 'string') settings.runArgs[lang] = profile.args;
+            if (profile.template) settings.runConfigs[lang] = profile.template;
+            const tplLang = document.getElementById('run-template-lang');
+            if (tplLang && [...tplLang.options].some((o) => o.value === lang)) tplLang.value = lang;
+            const input = document.getElementById('run-args-input');
+            if (input && typeof profile.args === 'string') input.value = profile.args;
+        }
+    }
+    applySettings();
+    renderRunProfiles();
+    renderRunPane();
+    if (profile) flash('已载入运行配置：' + profile.name);
+}
+
+function saveRunProfile() {
+    const nameEl = document.getElementById('run-profile-name');
+    const name = nameEl ? nameEl.value.trim() : '';
+    if (!name) {
+        flash('请填配置名称', true);
+        return;
+    }
+    const lang = runController.currentLang() || '';
+    if (!lang) {
+        flash('先打开一个可运行的文件，再保存配置', true);
+        return;
+    }
+    const argsEl = document.getElementById('run-args-input');
+    const args = argsEl ? argsEl.value : runArgsText(lang);
+    const template = (settings.runConfigs && settings.runConfigs[lang]) || '';
+    if (!Array.isArray(settings.runProfiles)) settings.runProfiles = [];
+    const profile = {
+        id: 'rp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+        name, lang, args, template,
+    };
+    settings.runProfiles.push(profile);
+    settings.runActiveProfile = profile.id;
+    if (nameEl) nameEl.value = '';
+    applySettings();
+    renderRunProfiles();
+    flash('已保存运行配置：' + name);
+}
+
+function deleteRunProfile(id) {
+    settings.runProfiles = (settings.runProfiles || []).filter((p) => p.id !== id);
+    if (settings.runActiveProfile === id) settings.runActiveProfile = '';
+    applySettings();
+    renderRunProfiles();
+}
+
+let runTemplateSaveTimer = 0;
 setupRunSettings();
 
 // 设置 → 运行：工作目录、未保存修改策略、首次确认与临时目录
@@ -5106,6 +5222,10 @@ function setupRunSettings() {
     const dirtyMode = document.getElementById('run-dirty-mode');
     const reset = document.getElementById('run-confirm-reset');
     const openTemp = document.getElementById('run-open-temp');
+    const templateLang = document.getElementById('run-template-lang');
+    const templateInput = document.getElementById('run-template-input');
+    const selfTestLang = document.getElementById('run-selftest-lang');
+    const selfTestBtn = document.getElementById('run-selftest');
     if (cwd) {
         cwd.addEventListener('change', () => {
             settings.runCwd = cwd.value === 'workspace' ? 'workspace' : 'file';
@@ -5136,6 +5256,60 @@ function setupRunSettings() {
             }
         });
     }
+
+    // 命令模板按语言覆盖（同一语言的多个扩展名共用一份）
+    if (templateLang) {
+        const seen = new Map();
+        for (const recipe of Object.values(RECIPES)) {
+            if (!seen.has(recipe.lang)) seen.set(recipe.lang, recipe.label);
+        }
+        for (const [id, label] of seen) {
+            const opt = document.createElement('option');
+            opt.value = id;
+            opt.textContent = label;
+            templateLang.appendChild(opt);
+        }
+        templateLang.addEventListener('change', renderRunPane);
+    }
+    if (templateInput) {
+        templateInput.addEventListener('input', () => {
+            const lang = templateLang ? templateLang.value : '';
+            if (!lang) return;
+            if (!settings.runConfigs || typeof settings.runConfigs !== 'object') settings.runConfigs = {};
+            settings.runConfigs[lang] = templateInput.value;
+            clearTimeout(runTemplateSaveTimer);
+            runTemplateSaveTimer = setTimeout(applySettings, 400);
+        });
+    }
+    if (selfTestLang) {
+        for (const ext of Object.keys(SELF_TEST)) {
+            const recipe = RECIPES[ext];
+            if (!recipe) continue;
+            const opt = document.createElement('option');
+            opt.value = ext;
+            opt.textContent = recipe.label + ' (.' + ext + ')';
+            selfTestLang.appendChild(opt);
+        }
+    }
+    if (selfTestBtn) {
+        selfTestBtn.addEventListener('click', () => {
+            if (selfTestLang && selfTestLang.value) runController.selfTest(selfTestLang.value);
+        });
+    }
+    const profileSelect = document.getElementById('run-profile-select');
+    const profileSave = document.getElementById('run-profile-save');
+    const profileName = document.getElementById('run-profile-name');
+    if (profileSelect) profileSelect.addEventListener('change', () => applyRunProfile(profileSelect.value));
+    if (profileSave) profileSave.addEventListener('click', saveRunProfile);
+    if (profileName) {
+        profileName.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            e.stopPropagation();
+            saveRunProfile();
+        });
+    }
+    renderRunProfiles();
 }
 
 function renderRunPane() {
@@ -5143,8 +5317,13 @@ function renderRunPane() {
     const dirtyMode = document.getElementById('run-dirty-mode');
     const hint = document.getElementById('run-confirm-hint');
     const tempHint = document.getElementById('run-temp-hint');
+    const templateLang = document.getElementById('run-template-lang');
+    const templateInput = document.getElementById('run-template-input');
     if (cwd) cwd.value = settings.runCwd;
     if (dirtyMode) dirtyMode.value = settings.runDirtyMode;
+    if (templateLang && templateInput) {
+        templateInput.value = (settings.runConfigs && settings.runConfigs[templateLang.value]) || '';
+    }
     if (hint) {
         const seen = settings.runConfirmSeen || [];
         hint.textContent = seen.length
@@ -5158,6 +5337,7 @@ function renderRunPane() {
             tempHint.textContent = '读取失败：' + ((e && e.message) || e);
         });
     }
+    renderRunProfiles();
 }
 
 function refreshPluginUI() {
@@ -14512,6 +14692,16 @@ function askAIAboutPath(path) {
     if (aiPanel.attachPath) aiPanel.attachPath(path, {focus: true});
 }
 
+// 运行面板「发给 AI 分析」：只预填输入框，发送与否由用户决定（不自动触发模型调用）
+function openAIPanelWithDraft(text) {
+    if (!aiPanel) initAIPanel();
+    if (!aiPanel || !aiPanel.bridgeSetDraft) {
+        flash('AI 面板不可用', true);
+        return;
+    }
+    aiPanel.bridgeSetDraft(text);
+}
+
 const AI_REFERENCE_ICON_HTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>';
 
 function aiPanelOpenNow() {
@@ -18638,6 +18828,12 @@ function menuItems(kind) {
                 shortcut: 'Alt+F11',
                 icon: 'E7B3',
                 action: () => runController.togglePanel(),
+            }, {
+                label: '运行项目…',
+                shortcut: 'Ctrl+F5',
+                icon: 'E7B3',
+                disabled: !file && !workspaceFolder,
+                action: () => startRunProject(),
             }, {sep: true}, {
                 label: 'JSONPath 查询…',
                 shortcut: 'Ctrl+Shift+J',
@@ -18950,6 +19146,12 @@ window.addEventListener('keydown', (e) => {
         e.stopPropagation();
         if (e.shiftKey) runController.stop();
         else runController.run();
+        return;
+    }
+    if (!isDialogOpen() && e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'F5') {
+        e.preventDefault();
+        e.stopPropagation();
+        startRunProject();
         return;
     }
     if (!isDialogOpen() && e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'F11') {
@@ -19873,13 +20075,39 @@ const runController = createRunController({
     ensureToolchain: (langId, toolId) => ensureToolchainForRun(langId, toolId),
     copyText: (text, label) => copyText(text, label),
     logActivity: (name, meta) => activityLog.log('code.run', name, meta),
+    askAI: (text) => openAIPanelWithDraft(text),
     argsFor: (langId) => splitRunArgs(runArgsText(langId)),
     argsText: (langId) => runArgsText(langId),
     setArgs: (langId, text) => setRunArgs(langId, text),
+    templateFor: (langId) => {
+        const value = settings.runConfigs && settings.runConfigs[langId];
+        return typeof value === 'string' ? value.trim() : '';
+    },
     resolveWorkDir: (fallback) => (settings.runCwd === 'workspace' && workspaceFolder ? workspaceFolder : fallback),
     showRunPanel: () => toggleDockView('run'),
     hidePanel: () => toggleTerminalPanel(false),
 });
+
+// Ctrl+F5：探测当前文件 / 工作区所属项目，把候选命令列在面板里由用户确认后执行
+async function startRunProject() {
+    const path = (file && file.path) || workspaceFolder || '';
+    if (!path) {
+        flash('先打开一个文件或工作区', true);
+        return;
+    }
+    let info;
+    try {
+        info = await backend.DetectRunProject(path);
+    } catch (e) {
+        flash('项目探测失败：' + ((e && e.message) || e), true);
+        return;
+    }
+    if (!info || !info.commands || !info.commands.length) {
+        flash((info && info.note) || '没有可运行的项目命令', true);
+        return;
+    }
+    runController.showProjectChoice(info);
+}
 
 // 首次确认按语言 id 记录（run.js 里传 label + lang）
 runController.mount();

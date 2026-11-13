@@ -1,8 +1,9 @@
-# 运行代码 v1 方案与实施记录
+# 运行代码方案与实施记录
 
-> 状态：**V1 已实施（2026-11-13，含编译型 C/C++/Rust）** · 方案日期：2026-11-13 · 归属版本：**未发布**（CHANGELOG 的「未发布」段；发版时再同步 `app.go` / `wails.json` / NSIS 版本号）
-> 范围：单文件"运行代码"（解释型 + 编译型）+ 运行输出面板 + 停止/退出码。
-> 实施记录见 §13；V2 剩余项（stdin、命令模板）与 V3（AI 联动、项目感知运行、运行配置命名保存）仍未开工。
+> 状态：**V1 / V2 / V3 全部已实施（2026-11-13）** · 方案日期：2026-11-13 · 归属版本：**未发布**（CHANGELOG 的「未发布」段；发版时再同步 `app.go` / `wails.json` / NSIS 版本号）
+> 范围：单文件运行（解释型 + 编译型）+ 运行输出面板 + stdin + 命令模板 / 自检 + AI 联动 + 项目感知运行 + 命名配置。
+> 实施记录见 §13（V1 与收尾补齐）、§14（V2/V3）。
+> 未做的只剩：完整交互终端（光标控制 / 密码回显等）、命令模板的可视化向导、项目命令自定义持久化。
 > 不在范围：调试器、断点、LSP、项目管理、多文件工程构建、包管理器安装。
 
 ---
@@ -36,7 +37,7 @@
 | 有未保存修改 | **弹窗三选一**：保存并运行 / 临时副本 / 取消（可记住） | 作者决定：自动保存太武断，让用户当次选；记住后不再问 |
 | cwd | 文件所在目录（设置可切工作区根） | 数据查看器场景要读旁边的数据文件 |
 | 并发 | 最多 3 个运行并存，面板按标签切换 | 长驻服务（`node server.js`）不会挡住下一次运行 |
-| stdin | **V1 不接管**（子进程 stdin 为空 → 读到 EOF） | 第一版不支持交互，绝不假装支持 |
+| stdin | **V2 接管单行输入**：`os.Pipe` + 缓冲队列，面板逐行发送 / `EOF` 结束 | 子进程不读 stdin 也不能阻塞 UI 或 `cmd.Wait()`；V1 曾刻意留空（读到 EOF） |
 | 语言判定 | 按**扩展名**，不看内容 | `structure.js` 的 EXTENSIONS 已经是唯一真源，复用即可 |
 | 工具版本要求 | 从扫描缓存取，不满足就禁用按钮并说明 | 扫描结果本来就是干这个的 |
 
@@ -179,6 +180,7 @@ F5 / 工具栏 ▶
 | 运行当前文件 | `F5`（当前未占用） |
 | 停止 | `Shift+F5` |
 | 运行面板 | `Alt+F11` |
+| 运行项目 | `Ctrl+F5`（V3） |
 | 清空输出 | 面板按钮 |
 | 菜单 | `工具(U) → 运行当前文件` |
 | 工具栏 | 代码类格式下，标题栏右侧出现 ▶（非代码格式隐藏，不做常驻） |
@@ -242,12 +244,14 @@ func (a *App) CleanupRunTemp() error
 |---|---|---|
 | `runDirtyMode` | `'ask'` | `ask` 每题都问 / `save` 总是保存 / `temp` 总是临时副本 |
 | `runCwd` | `'file'` | `'file'` 文件目录 / `'workspace'` 工作区根 |
-| `runArgs` | `{}` | 按格式记住上次参数（面板状态行可临时输入） |
-| `runConfigs` | `{}` | 按格式覆盖命令模板（`$FILE $DIR $BASE $EXT` 占位符），V2 |
+| `runArgs` | `{}` | 按语言记住面板参数原文（回显用，执行时拆 argv） |
+| `runConfigs` | `{}` | 按语言覆盖完整命令行模板（`$TOOL $FILE $DIR $BASE $STEM $EXT $OUT $ARGS`） |
+| `runProfiles` | `[]` | 命名运行配置：`{id, name, lang, args, template}` |
+| `runActiveProfile` | `''` | 面板顶部当前选中的配置 id，空为默认 |
 | `runConfirmSeen` | `[]` | 已确认过"执行本机代码"风险的语言，只提示一次 |
 | `runKeepSessions` | `4` | 面板保留的运行标签数 |
 
-设置 → 常用编程语言面板底部加一块「运行」：默认行为、cwd 选择、命令模板覆盖（折叠）+ 「测试运行」按钮（跑一段 `print("ok")` 验证工具链可用）。
+设置 → 运行 独立面板：工作目录、未保存修改策略、命令模板覆盖、自检脚本、命名配置、首次确认重置、临时目录。运行面板头部放参数框、配置下拉与 stdin 条。
 
 ---
 
@@ -266,8 +270,8 @@ func (a *App) CleanupRunTemp() error
 
 ## 9. 边界与已知限制（写进 UI，不藏着）
 
-- 无 stdin：`input()` / `prompt()` 会立刻拿到 EOF 报错，不是卡死。面板给一行提示「该程序在等待输入（暂不支持交互）」。
-- 单文件：不做工程构建。目录里有 `go.mod` / `package.json` / `Cargo.toml` 时只提示"检测到项目文件，v1 只运行当前文件"。
+- stdin 只支持**逐行输入**，不是完整交互终端（无光标控制、无密码回显关闭）；程序不读 stdin 时队列会报满并提示，不会卡界面。
+- 项目运行（V3）只执行探测出来的固定命令，不解析 `package.json` 里的任意脚本、不自动安装依赖；每次都要用户点「执行」确认。
 - 临时副本：同目录依赖与相对路径会失效（§4）。
 - 无调试：不给断点、变量面板、步进。
 - 只支持本机（不做远程/容器）。
@@ -283,17 +287,18 @@ func (a *App) CleanupRunTemp() error
 - 自动保存、临时副本、首次确认、activity 留痕
 - `run_test.go` + 手动验收清单
 
-### V2（✅ 编译型与参数输入已随 V1 一起实施；命令模板未做）
+### V2（✅ 全部已实施）
 
-- 编译型 C/C++/Rust（两段式）
-- ✅ 参数输入（面板输入框、按语言记住、引号/转义解析、shell 类同样接收）；⬜ 命令模板覆盖、`测试运行`
-- ⬜ stdin 单行输入框（可选接 `RunInput`）
+- ✅ 编译型 C/C++/Rust（两段式）
+- ✅ 参数输入（面板输入框、按语言记住、引号/转义解析、shell 类同样接收）
+- ✅ 命令模板覆盖（占位符解析不经 shell）与「验证运行环境」自检脚本
+- ✅ stdin 单行输入框（`RunInput` / `RunEndInput`）
 
-### V3
+### V3（✅ 全部已实施）
 
-- 失败时「把输出发给 AI 分析」——复用现有 AI 面板，输入框预填「这段运行输出是什么问题」+ 输出尾部 200 行，成本极低、感知价值高
-- 项目感知运行（`npm start` / `go run .` / `cargo run`）
-- 运行配置命名保存（多套参数）
+- ✅ 失败时「把输出发给 AI 分析」——复用 AI 面板，只预填输入框不自动发送；尾部 200 行 / 12000 字符上限
+- ✅ 项目感知运行（`npm start` / `go run .` / `cargo run` …），`Ctrl+F5` + 面板内确认
+- ✅ 运行配置命名保存（多套参数与模板预设）
 
 ---
 
@@ -313,6 +318,14 @@ func (a *App) CleanupRunTemp() error
 | 10 | 打开 `.bat` 含中文路径与空格 | 正常执行（引号处理正确） |
 | 11 | `file:line` 链接点击 | 跳到对应标签页的对应行列 |
 | 12 | 单次输出 20 MB（`dir /s`） | 到 8 MB 截断并提示，UI 不卡 |
+| 13 | `input()` 程序按 F5 | 出现 stdin 条，发一行后程序读到并继续；点 EOF 后正常退出 |
+| 14 | 程序完全不读 stdin，连发 40 行 | 提示输入队列已满，界面不卡，可停止 |
+| 15 | 设置 → 运行 写模板 `$TOOL -u $FILE $ARGS` | 运行命令与默认一致；路径含空格不被切开 |
+| 16 | 自检脚本（如 Python 未装） | 面板明确给出「未检测到环境」与自检未通过结论 |
+| 17 | 失败输出点「发给 AI 分析」 | AI 输入框被预填，未自动发送模型请求 |
+| 18 | `Ctrl+F5` 在有 `package.json` 的项目里 | 面板列出 `npm start`，点「执行」后才跑，cwd=项目根 |
+| 19 | 用户主目录有无关 `package.json` | 探测到主目录即停，不误报为项目 |
+| 20 | 保存两套命名配置并切换 | 参数框与模板随之载入，删除后下拉同步 |
 
 ---
 
@@ -334,7 +347,7 @@ func (a *App) CleanupRunTemp() error
 |---|---|---|---|
 | 未保存修改 | 默认先保存（开关） | 弹窗三选一 + 可记住（`runDirtyMode`） | 作者决定：自动保存太武断 |
 | 编译型语言 | 排 V2 | 随 V1 一起做 | 作者决定 |
-| 重跑上次命令 | `Ctrl+F5` | 去掉，只保留 `F5` / `Shift+F5` | 面板已能改参数并回车重跑，单独的「重跑上次」快捷键没有必要 |
+| 重跑上次命令 / 项目运行 | `Ctrl+F5` | 不做「重跑上次」；`Ctrl+F5` 改给 V3 项目运行 | 面板已能改参数并回车重跑；项目感知运行需要一个独立且不冲突的入口 |
 | 临时目录 | `%LOCALAPPDATA%` | `%APPDATA%\CandySweet\CaDt-DataLens\run\` | 沿用 `appDataRoot()`，与项目其他数据同处 |
 | 平台文件 | `run_windows.go` + `run_other.go` | `run_shells_windows.go` + `run_shells_other.go` | 只有 shell 解析涉及平台；其余复用 `commands.go` 已有的 Windows 能力 |
 
@@ -342,7 +355,7 @@ func (a *App) CleanupRunTemp() error
 
 改动文件：`app.go`（启动时空跑一次 `CleanupRunTempStale`）、`frontend/src/main.js`（设置默认值与归一化、`dockView='run'`、F5/Shift+F5/Alt+F11、工具菜单三项、运行控制器接线、dirty / 首次确认对话框、`openDocAtLocation`、`ensureToolchainForRun`、`runArgsText` / `setRunArgs`）、`frontend/index.html`（运行面板、参数输入框、活动栏 ▶、两个对话框、设置 → 运行、快捷键说明）、`frontend/src/style.css`（`.run-*`）、`package.json`（test 脚本加入 run.test.mjs）。
 
-验证：`go build ./...`、`go test ./...`（13 s 全绿）、`npm test`（137 通过，其中运行相关 16 例）、`npm run build`、`wails build -s`（产物 `build/bin/CaDt-DataLens.exe`）均通过。
+V1 收尾时验证：`go build ./...`、`go test ./...`（13 s 全绿）、`npm test`（137 通过）、`npm run build`、`wails build -s` 均通过。V2/V3 后的最新数据见 §14。
 
 已知未覆盖：GUI 内的实际点击链路未做自动化冒烟（本机无头截图不稳定），需人工过一遍 §11 的 12 条验收清单。
 
@@ -358,3 +371,25 @@ func (a *App) CleanupRunTemp() error
 | 活动栏 ▶ 不随文件变 | 工具菜单有灰显，活动栏按钮始终可点（点了才提示不支持），与 §11 验收第 8 条不符 | `syncRunButtonState()` 在标签渲染、只读切换、初始化时同步 `disabled` 与 `title` |
 
 补齐后新增 5 个前端测试块（`splitRunArgs` 3 组 + 配方参数 2 组），`npm test` 132 → 137 全绿。
+
+---
+
+## 14. V2 / V3 实施记录（2026-11-13）
+
+起点：V1 提交 `fc8d857`（`feat(run-code): F5 运行代码、运行输出面板与参数输入`），在其之上继续。作者要求「开始前先 commit」，所以 V2/V3 的改动与该提交分离。
+
+| 块 | 落地 | 关键取舍 / 踩到的坑 |
+|---|---|---|
+| V2-a stdin | `run.go` 加 `runStdin`（`os.Pipe` + 32 行队列 + pump goroutine）、`RunInput` / `RunEndInput`；运行面板加 stdin 条，编译阶段隐藏，输入回显 | 用 `os.Pipe` 而非 `io.Pipe`：`cmd.Stdin` 是 `*os.File` 时 `os/exec` 不另起 copy goroutine，`cmd.Wait()` 不依赖我们何时关写端。正常 EOF 走 `eof` channel 让 pump **先排空队列再关**，进程退出才强制关 fd 唤醒阻塞的 Write——第一版直接 `close(done)` 会丢掉刚入队的那行，被自举辅助进程测试抓到 |
+| V2-b 模板与自检 | `applyRunTemplate` 纯函数（先 `splitRunArgs` 再逐 token 替换，`$ARGS` 展开成多个 argv）；抽出 `makeSteps` 供正常运行 / 自检 / 项目运行共用；`SELF_TEST` 15 段最小脚本 | 模板是完整命令行，占位符值永远是「一个 argv」，路径含空格不会被切开，全程不经 shell。自检**忽略用户模板**，验证的是工具链本身；临时副本落在应用数据目录，不碰用户文件 |
+| V3-a AI 联动 | `ai-panel.js` 加 `bridgeSetDraft`（只填输入框、触发原生 `input` 事件、不发送）；`buildRunAnalysisPrompt` 纯函数（尾部 200 行 / 12000 字符） | 模型调用是外部付费动作，坚持「预填不自动发送」，发送权留给用户 |
+| V3-b 项目运行 | `run_project.go` 的 `DetectRunProject`（向上 8 层、遇 `.git` / 用户主目录停止、只读探测）；`Ctrl+F5` + 运行面板内确认条 | 不用弹窗：面板确认条更贴合「列出命令再确认」，也绕开对话框体系的 Promise 悬空坑。测试抓到**用户主目录里的 `package.json` 被误判为项目**，才补上 home 边界；命令每次都要点「执行」，不记住 |
+| V3-c 命名配置 | `settings.runProfiles` / `runActiveProfile`，设置页增删、面板顶部下拉载入 | 配置是**预设**而非运行时分支：选中即把参数与模板载入当前语言，面板里看到的仍是这次真正会用的值，避免「显示一套、跑另一套」 |
+
+新增文件：`run_project.go`、`run_project_test.go`。
+
+改动文件：`run.go` / `run_test.go`（stdin）、`frontend/src/run.js`（模板、自检、项目、AI、配置、stdin）、`frontend/src/main.js`（设置、快捷键、菜单、mock、AI 桥接）、`frontend/src/ai-panel.js`（draft 桥）、`frontend/index.html`、`frontend/src/style.css`、`frontend/wailsjs/`（重新生成绑定）、README / CHANGELOG / AGENTS.md。
+
+验证：`go test ./...` 13.8 s 全绿（新增 stdin 2 例、项目探测 4 组）、`npm test` **143 通过**（新增模板 4 组、AI 提示词 2 组）、`npm run build`、`wails build -s -devtools` 成功（产物 `build/bin/CaDt-DataLens.exe`）。
+
+已知未覆盖：GUI 点击链路仍未自动化冒烟，§11 新增的第 13–20 条需人工过一遍；项目命令在 Windows 上依赖 `npm.cmd` / `make` 等能被 `exec.LookPath` 找到，缺失时面板显示启动失败而不是预先禁用；stdin 不是完整交互终端（无光标控制 / 密码回显关闭）。

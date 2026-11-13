@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -347,5 +349,99 @@ func TestRunExecEndToEnd(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("没有收到标准输出：%#v", events.lines)
+	}
+}
+
+func TestRunInputValidation(t *testing.T) {
+	app := &App{}
+	if err := app.RunInput("missing", "x"); err == nil {
+		t.Error("不存在的运行 id 应报错")
+	}
+	if err := app.RunEndInput("missing"); err == nil {
+		t.Error("不存在的运行 id 应报错")
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	id := "run-input-validation"
+	registerRunStdin(id, w)
+	defer unregisterRunStdin(id)
+
+	if err := app.RunInput(id, strings.Repeat("x", runInputMax+1)); err == nil {
+		t.Error("超长输入应被拒绝")
+	}
+	if err := app.RunInput(id, "hello"); err != nil {
+		t.Errorf("正常输入不应报错：%v", err)
+	}
+	// 没人读管道 → pump 会阻塞在 Write，队列应当报满而不是卡住调用方
+	for i := 0; i < runInputQueue+8; i++ {
+		_ = app.RunInput(id, "x")
+	}
+	if err := app.RunInput(id, "overflow"); err == nil {
+		t.Error("输入队列满应返回错误，不能阻塞 UI")
+	}
+	if err := app.RunEndInput(id); err != nil {
+		t.Errorf("关闭输入端失败：%v", err)
+	}
+	if err := app.RunInput(id, "after-eof"); err == nil {
+		t.Error("输入端关闭后不应再接受输入")
+	}
+}
+
+func TestRunInputEndToEnd(t *testing.T) {
+	// 辅助进程模式：用测试二进制自己当子进程，读到 stdin EOF 后把内容原样吐回。
+	// 比依赖 cmd.exe / findstr 可靠，也不受沙箱与外部工具影响。
+	if os.Getenv("CADT_RUN_STDIN_HELPER") == "1" {
+		data, _ := io.ReadAll(os.Stdin)
+		fmt.Printf("got:%s", data)
+		os.Exit(0)
+	}
+	t.Setenv("CADT_RUN_STDIN_HELPER", "1")
+	events := captureRunEvents(t)
+	app := &App{}
+	id := "run-stdin-e2e"
+	if err := app.RunExec(id, os.Args[0], []string{"-test.run=TestRunInputEndToEnd"}, "", ""); err != nil {
+		t.Fatalf("RunExec 失败：%v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		runStdinMu.Lock()
+		_, ok := runStdins[id]
+		runStdinMu.Unlock()
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("超时：stdin 未注册")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := app.RunInput(id, "hello-stdin"); err != nil {
+		t.Fatalf("RunInput 失败：%v", err)
+	}
+	if err := app.RunEndInput(id); err != nil {
+		t.Fatalf("RunEndInput 失败：%v", err)
+	}
+
+	deadline = time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		events.mu.Lock()
+		done := events.exit != nil
+		events.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	events.mu.Lock()
+	defer events.mu.Unlock()
+	if events.exit == nil {
+		t.Fatal("超时：没有收到 run-exit（关闭 stdin 后进程应结束）")
+	}
+	if !strings.Contains(strings.Join(events.lines, "\n"), "got:hello-stdin") {
+		t.Errorf("子进程没有读到 stdin 输入：%#v", events.lines)
 	}
 }

@@ -3,7 +3,7 @@
 // 分层：本文件负责「配方 + 面板 + 输出渲染」，后端（run.go）只负责「准备临时文件、起进程、回传输出」。
 // 语言知识留在这里（与 structure.js / formats.js 同一原则），Go 侧不认识 python / gcc 这些名字。
 //
-// 设计取舍（见 docs/unfinished-plans/run-code.md）：
+// 设计取舍（见 docs/finished-plans/run-code.md）：
 //   - 输出面板用 DOM 而不是 xterm：要支持「点编译器报错里的 path:line:col 跳源码」；
 //   - exec 参数数组，不经 shell 拼接；只有 .bat/.cmd/.sh/.ps1 才交给解释器；
 //   - V1 不接管 stdin，交互式程序会拿到 EOF（报错而非卡住）。
@@ -62,6 +62,47 @@ export const RECIPES = {
 const SHELL_FALLBACK = {
     pwsh: {shell: 'powershell', label: 'PowerShell'},
 };
+
+// 自检脚本：设置 → 运行 里「验证运行环境」用，按扩展名索引。
+// 每段都只打印固定标记、不读写文件，跑在应用数据的临时目录里，不碰用户文件。
+export const SELF_TEST = {
+    py: {name: 'cadt_selftest.py', code: 'print("cadt-selftest-ok")\n'},
+    js: {name: 'cadt_selftest.js', code: 'console.log("cadt-selftest-ok");\n'},
+    ts: {name: 'cadt_selftest.ts', code: 'console.log("cadt-selftest-ok");\n'},
+    go: {name: 'cadt_selftest.go', code: 'package main\nimport "fmt"\nfunc main() { fmt.Println("cadt-selftest-ok") }\n'},
+    java: {name: 'CadTSelfTest.java', code: 'public class CadTSelfTest { public static void main(String[] a) { System.out.println("cadt-selftest-ok"); } }\n'},
+    c: {name: 'cadt_selftest.c', code: '#include <stdio.h>\nint main(void) { puts("cadt-selftest-ok"); return 0; }\n'},
+    cpp: {name: 'cadt_selftest.cpp', code: '#include <iostream>\nint main() { std::cout << "cadt-selftest-ok" << std::endl; }\n'},
+    rs: {name: 'cadt_selftest.rs', code: 'fn main() { println!("cadt-selftest-ok"); }\n'},
+    php: {name: 'cadt_selftest.php', code: '<?php echo "cadt-selftest-ok\\n";\n'},
+    rb: {name: 'cadt_selftest.rb', code: 'puts "cadt-selftest-ok"\n'},
+    lua: {name: 'cadt_selftest.lua', code: 'print("cadt-selftest-ok")\n'},
+    bat: {name: 'cadt_selftest.bat', code: '@echo cadt-selftest-ok\n'},
+    ps1: {name: 'cadt_selftest.ps1', code: 'Write-Output "cadt-selftest-ok"\n'},
+    sh: {name: 'cadt_selftest.sh', code: 'echo cadt-selftest-ok\n'},
+};
+export const SELF_TEST_MARK = 'cadt-selftest-ok';
+
+// 「发给 AI 分析」的提示词：只取尾部 200 行 / 12000 字符，避免把整个输出塞进上下文。
+// 纯函数，便于单测；空输出返回空串，由调用方决定提示。
+export function buildRunAnalysisPrompt(text, meta) {
+    const lines = String(text || '').split('\n');
+    let tail = lines.slice(-200).join('\n').trim();
+    if (!tail) return '';
+    if (tail.length > 12000) tail = '…（前面已省略）\n' + tail.slice(-12000);
+    const m = meta || {};
+    return [
+        '这段运行输出是什么问题？请给出原因和可执行的修复建议。',
+        '',
+        '文件：' + (m.file || ''),
+        '语言：' + (m.lang || ''),
+        '退出码：' + (m.code == null ? '（仍在运行或已停止）' : m.code),
+        '',
+        '```text',
+        tail,
+        '```',
+    ].join('\n');
+}
 
 // ---- 小工具 ----
 
@@ -134,6 +175,32 @@ export function splitRunArgs(text) {
         has = true;
     }
     if (has) out.push(cur);
+    return out;
+}
+
+// 命令模板：先按引号规则拆成 token，再逐 token 替换占位符。
+// 关键点：占位符值（路径常含空格）永远是「一个 argv」，不经 shell 拼接；
+// $ARGS 单独展开成多个 argv，用户不写 $ARGS 就等于忽略面板里的运行参数。
+const RUN_TEMPLATE_VARS = /\$(TOOL|FILE|DIR|BASE|STEM|EXT|OUT)\b/g;
+
+export function applyRunTemplate(template, ctx) {
+    const values = {
+        $TOOL: ctx.tool || '',
+        $FILE: ctx.file || '',
+        $DIR: ctx.dir || '',
+        $BASE: ctx.base || '',
+        $STEM: ctx.stem || '',
+        $EXT: ctx.ext || '',
+        $OUT: ctx.out || '',
+    };
+    const out = [];
+    for (const token of splitRunArgs(template)) {
+        if (token === '$ARGS') {
+            out.push(...(ctx.args || []));
+            continue;
+        }
+        out.push(token.replace(RUN_TEMPLATE_VARS, (name) => values[name] || ''));
+    }
     return out;
 }
 
@@ -242,6 +309,7 @@ export function createRunController(deps) {
     let seq = 0;
     let activeId = '';
     let els = null;
+    let pendingProject = null;
 
     function mount() {
         els = {
@@ -253,10 +321,36 @@ export function createRunController(deps) {
             closeAll: document.getElementById('run-close-all'),
             panelClose: document.getElementById('run-panel-close'),
             args: document.getElementById('run-args-input'),
+            inputBar: document.getElementById('run-input-bar'),
+            stdin: document.getElementById('run-stdin-input'),
+            stdinSend: document.getElementById('run-stdin-send'),
+            stdinEof: document.getElementById('run-stdin-eof'),
+            projectBar: document.getElementById('run-project-bar'),
+            projectRoot: document.getElementById('run-project-root'),
+            projectNote: document.getElementById('run-project-note'),
+            projectCmd: document.getElementById('run-project-cmd'),
+            projectGo: document.getElementById('run-project-go'),
+            projectCancel: document.getElementById('run-project-cancel'),
         };
+        if (els.projectGo) els.projectGo.addEventListener('click', runProjectFromChoice);
+        if (els.projectCancel) els.projectCancel.addEventListener('click', () => {
+            hideProjectChoice();
+            const session = sessions.get(activeId);
+            if (session) appendLine(session, '▸ 已取消项目运行', 'info');
+        });
         if (els.clear) els.clear.addEventListener('click', () => clearActive());
         if (els.closeAll) els.closeAll.addEventListener('click', () => closeAll());
         if (els.panelClose) els.panelClose.addEventListener('click', () => deps.hidePanel());
+        if (els.stdinSend) els.stdinSend.addEventListener('click', sendInput);
+        if (els.stdinEof) els.stdinEof.addEventListener('click', endInput);
+        if (els.stdin) {
+            els.stdin.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                e.stopPropagation();
+                sendInput();
+            });
+        }
         if (els.args) {
             // 输入即记住（按当前任务的语种），回车直接跑，省得再去按 F5
             els.args.addEventListener('input', persistArgs);
@@ -396,35 +490,14 @@ export function createRunController(deps) {
         const ctx = {
             file: workspace.sourcePath,
             dir: workDir,
+            base: doc.name || '',
+            stem: stemOf(doc.name || workspace.sourcePath),
+            ext,
+            tool: tool.path,
             out: outPath,
             args: deps.argsFor(recipe.lang),
         };
-        const steps = [];
-        if (recipe.build) {
-            steps.push({
-                kind: 'build',
-                exe: tool.path,
-                args: recipe.build(ctx),
-                cwd: workDir,
-                pathPrepend: '',
-            });
-            steps.push({
-                kind: 'run',
-                exe: outPath,
-                args: recipe.run(ctx).slice(1),
-                cwd: workDir,
-                // 编译产物依赖编译器同目录的运行时 dll（MinGW），必须前置 PATH
-                pathPrepend: dirOf(tool.path),
-            });
-        } else {
-            steps.push({
-                kind: 'run',
-                exe: tool.path,
-                args: recipe.run(ctx),
-                cwd: workDir,
-                pathPrepend: '',
-            });
-        }
+        const steps = makeSteps(recipe, tool, ctx, deps.templateFor(recipe.lang));
 
         session.steps = steps;
         session.label = sessionLabel(recipe);
@@ -435,11 +508,118 @@ export function createRunController(deps) {
         await execSteps(session, steps);
     }
 
+    // 设置 → 运行 的「验证运行环境」：跑一段只打印固定标记的最小脚本。
+    // 不碰用户文件、不弹确认框、忽略用户模板（目的是验证工具链本身），但走同一条执行通道。
+    async function selfTest(ext) {
+        const info = SELF_TEST[ext];
+        const recipe = RECIPES[ext];
+        if (!info || !recipe) {
+            deps.flash('该语言没有自检脚本', true);
+            return;
+        }
+        if (deps.isReadOnly()) {
+            deps.flash('只读模式下不执行代码', true);
+            return;
+        }
+        if ([...sessions.values()].filter((s) => s.state === 'running').length >= MAX_RUNNING) {
+            deps.flash('同时运行超过 ' + MAX_RUNNING + ' 个，先停止一个', true);
+            deps.showRunPanel();
+            return;
+        }
+        const session = createSession({name: '自检 ' + recipe.label}, recipe);
+        session.selfTest = true;
+        activate(session.id);
+        deps.showRunPanel();
+        appendLine(session, '▸ 自检 ' + recipe.label + '：临时脚本只打印一行标记，不改动任何文件', 'info');
+
+        const tool = await resolveTool(recipe);
+        if (!tool.ok) {
+            appendLine(session, tool.error, 'err');
+            finishSession(session, 'failed', null);
+            return;
+        }
+        if (recipe.min && !versionAtLeast(versionOf(tool.version), recipe.min)) {
+            appendLine(session, recipe.label + ' 版本过低：当前 ' + (tool.version || '未知') +
+                '，需要 ' + recipe.min.join('.') + '+', 'err');
+            finishSession(session, 'failed', null);
+            return;
+        }
+        let workspace;
+        try {
+            workspace = await deps.backend.PrepareRun({
+                srcPath: '',
+                content: info.code,
+                tempName: info.name,
+                needTemp: !!recipe.build,
+            });
+        } catch (e) {
+            appendLine(session, '准备自检环境失败：' + errText(e), 'err');
+            finishSession(session, 'failed', null);
+            return;
+        }
+        session.tempDir = workspace.tempDir || '';
+        const outPath = recipe.outExt
+            ? joinPath(workspace.tempDir, stemOf(info.name) + recipe.outExt)
+            : '';
+        const ctx = {
+            file: workspace.sourcePath,
+            dir: workspace.workDir || workspace.tempDir || '',
+            base: info.name,
+            stem: stemOf(info.name),
+            ext,
+            tool: tool.path,
+            out: outPath,
+            args: [],
+        };
+        const steps = makeSteps(recipe, tool, ctx, '');
+        session.steps = steps;
+        session.state = 'running';
+        session.startedAt = performance.now();
+        startTimer(session);
+        renderStatus();
+        await execSteps(session, steps);
+    }
+
+    // 由配方（或用户命令模板）生成 1~2 个执行步骤；正常运行、自检与项目运行共用。
+    // 模板是完整命令行，第一个 token 是可执行文件；编译型的 build 步骤仍用默认配方。
+    function makeSteps(recipe, tool, ctx, template) {
+        const cmd = template ? applyRunTemplate(template, ctx) : null;
+        const override = !!(cmd && cmd.length);
+        const steps = [];
+        if (recipe.build) {
+            steps.push({
+                kind: 'build',
+                exe: tool.path,
+                args: recipe.build(ctx),
+                cwd: ctx.dir,
+                pathPrepend: '',
+            });
+            steps.push({
+                kind: 'run',
+                exe: override ? cmd[0] : ctx.out,
+                args: override ? cmd.slice(1) : recipe.run(ctx).slice(1),
+                cwd: ctx.dir,
+                // 编译产物依赖编译器同目录的运行时 dll（MinGW），必须前置 PATH
+                pathPrepend: dirOf(tool.path),
+            });
+        } else {
+            steps.push({
+                kind: 'run',
+                exe: override ? cmd[0] : tool.path,
+                args: override ? cmd.slice(1) : recipe.run(ctx),
+                cwd: ctx.dir,
+                pathPrepend: '',
+            });
+        }
+        return steps;
+    }
+
     async function execSteps(session, steps) {
         let total = 0;
         for (const step of steps) {
             if (session.cancelled || session.closed) break;
             session.phase = step.kind;
+            session.eofSent = false;
             renderStatus();
             appendLine(session, '▸ ' + (step.kind === 'build' ? '编译：' : '运行：') + cmdText(step.exe, step.args), 'info');
             const id = session.id + '-' + step.kind;
@@ -519,7 +699,8 @@ export function createRunController(deps) {
             recipe,
             label: sessionLabel(recipe),
             state: 'running',
-            phase: 'run',
+            phase: recipe.build ? 'build' : 'run',
+            eofSent: false,
             code: null,
             startedAt: performance.now(),
             durationMs: 0,
@@ -582,6 +763,7 @@ export function createRunController(deps) {
             s.tabEl.classList.toggle('active', sid === id);
         }
         syncArgs(session.recipe.lang);
+        if (els && els.stdin) els.stdin.value = '';
         renderStatus();
     }
 
@@ -618,6 +800,14 @@ export function createRunController(deps) {
         else session.durationMs = Math.round(performance.now() - session.startedAt);
         stopTimer(session);
         flushPending(session);
+        if (session.selfTest) {
+            const text = session.outEl.innerText || '';
+            const ok = state === 'exited' && text.includes(SELF_TEST_MARK);
+            appendLine(session, ok
+                ? '✓ 自检通过：' + session.label + ' 能正常编译 / 执行文件'
+                : '✗ 自检未通过：没有看到预期输出，请检查上面的报错或 设置 → 编程语言 里的环境',
+                ok ? 'info' : 'err');
+        }
         if (session.tempDir) deps.backend.CleanupRunTemp(session.tempDir).catch(() => {});
         session.tempDir = '';
         deps.logActivity(session.title, {
@@ -717,6 +907,130 @@ export function createRunController(deps) {
         if (session.pinned) session.outEl.scrollTop = session.outEl.scrollHeight;
     }
 
+    // ---------- stdin ----------
+
+    function activeStepId(session) {
+        return session.id + '-' + (session.phase || 'run');
+    }
+
+    function inputAvailable(session) {
+        return !!session && session.state === 'running' && session.phase !== 'build' && !session.eofSent;
+    }
+
+    async function sendInput() {
+        const session = sessions.get(activeId);
+        if (!inputAvailable(session) || !els || !els.stdin) return;
+        const text = els.stdin.value;
+        try {
+            await deps.backend.RunInput(activeStepId(session), text);
+            appendLine(session, '» ' + text, 'info');
+            els.stdin.value = '';
+            els.stdin.focus();
+        } catch (e) {
+            deps.flash('发送输入失败：' + errText(e), true);
+        }
+    }
+
+    async function endInput() {
+        const session = sessions.get(activeId);
+        if (!session || session.state !== 'running' || session.phase === 'build') return;
+        try {
+            await deps.backend.RunEndInput(activeStepId(session));
+            session.eofSent = true;
+            appendLine(session, '» 已关闭输入端（EOF）', 'info');
+            renderStatus();
+        } catch (e) {
+            deps.flash('关闭输入失败：' + errText(e), true);
+        }
+    }
+
+    // ---------- 项目感知运行（V3） ----------
+
+    // 只在面板里列出候选命令，用户点「执行」才真的起进程；不记住、每次都要确认。
+    function showProjectChoice(info) {
+        if (!els || !els.projectBar) return;
+        const cmds = (info && info.commands) || [];
+        if (!cmds.length) {
+            deps.flash((info && info.note) || '没有可运行的项目命令', true);
+            return;
+        }
+        pendingProject = info;
+        els.projectRoot.textContent = info.root || '';
+        els.projectRoot.title = info.root || '';
+        els.projectNote.textContent = info.note || '';
+        els.projectNote.classList.toggle('hidden', !info.note);
+        els.projectCmd.textContent = '';
+        cmds.forEach((cmd, i) => {
+            const opt = document.createElement('option');
+            opt.value = String(i);
+            opt.textContent = cmd.label || cmd.exe || ('命令 ' + (i + 1));
+            els.projectCmd.appendChild(opt);
+        });
+        els.projectBar.classList.remove('hidden');
+        deps.showRunPanel();
+    }
+
+    function hideProjectChoice() {
+        pendingProject = null;
+        if (!els) return;
+        if (els.projectBar) els.projectBar.classList.add('hidden');
+        if (els.projectNote) els.projectNote.classList.add('hidden');
+    }
+
+    async function runProjectFromChoice() {
+        const info = pendingProject;
+        if (!info || !els || !els.projectCmd) return;
+        const cmd = (info.commands || [])[Number(els.projectCmd.value) || 0];
+        hideProjectChoice();
+        if (!cmd) return;
+        await runProject(info, cmd);
+    }
+
+    async function runProject(info, cmd) {
+        if (deps.isReadOnly()) {
+            deps.flash('只读模式下不执行代码', true);
+            return;
+        }
+        if ([...sessions.values()].filter((s) => s.state === 'running').length >= MAX_RUNNING) {
+            deps.flash('同时运行超过 ' + MAX_RUNNING + ' 个，先停止一个', true);
+            deps.showRunPanel();
+            return;
+        }
+        const recipe = {lang: 'project', label: (info.kind || '项目') + ' 项目', run: () => []};
+        const session = createSession({name: cmd.label || '项目运行'}, recipe);
+        activate(session.id);
+        deps.showRunPanel();
+        appendLine(session, '▸ 项目根：' + (info.root || '') + '（' + (info.marker || '') + '）', 'info');
+        const steps = [{
+            kind: 'run',
+            exe: cmd.exe,
+            args: cmd.args || [],
+            cwd: cmd.cwd || info.root || '',
+            pathPrepend: '',
+        }];
+        session.steps = steps;
+        session.state = 'running';
+        session.startedAt = performance.now();
+        startTimer(session);
+        renderStatus();
+        await execSteps(session, steps);
+    }
+
+    // ---------- 发给 AI 分析 ----------
+
+    function askAI(session) {
+        const prompt = buildRunAnalysisPrompt(session.outEl.innerText || '', {
+            file: session.title || '',
+            lang: session.label,
+            code: session.code == null ? '（仍在运行或已停止）' : session.code,
+        });
+        if (!prompt) {
+            deps.flash('还没有可分析的输出', true);
+            return;
+        }
+        deps.askAI(prompt);
+    }
+
     // ---------- 状态行 ----------
 
     function startTimer(session) {
@@ -737,6 +1051,7 @@ export function createRunController(deps) {
         if (!els || !els.status) return;
         els.status.textContent = '';
         const session = sessions.get(activeId);
+        if (els.inputBar) els.inputBar.classList.toggle('hidden', !inputAvailable(session));
         if (!session) {
             const hint = document.createElement('span');
             hint.className = 'run-status-hint';
@@ -784,6 +1099,15 @@ export function createRunController(deps) {
             deps.copyText(text, '运行输出');
         });
         els.status.appendChild(copyBtn);
+        if (session.outEl.childNodes.length) {
+            const aiBtn = document.createElement('button');
+            aiBtn.type = 'button';
+            aiBtn.className = 'run-btn';
+            aiBtn.textContent = '发给 AI 分析';
+            aiBtn.title = '把输出尾部 200 行填进 AI 输入框，不会自动发送';
+            aiBtn.addEventListener('click', () => askAI(session));
+            els.status.appendChild(aiBtn);
+        }
     }
 
     // ---------- 工具链 ----------
@@ -824,5 +1148,5 @@ export function createRunController(deps) {
         return e.message || String(e);
     }
 
-    return {mount, run, stop, togglePanel, isSupported, hasRunning, clearActive, closeAll};
+    return {mount, run, selfTest, showProjectChoice, currentLang, stop, togglePanel, isSupported, hasRunning, clearActive, closeAll};
 }
