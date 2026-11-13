@@ -20,10 +20,11 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `sessionindex*.go`：AI 会话 SQLite **派生**搜索索引（modernc pure Go，JSONL 为唯一真源）
 - `activity.go`：操作留痕（追加式 JSONL、按月分文件滚动分段、跨进程写锁、保留清理；只存操作摘要，不存正文与密钥）
 - `sqlview*.go`：CSV/TSV/JSONL 的只读 SQL 查询（导入临时 SQLite，不修改原文件）
+- `patch.go` / `patch_app.go` / `patch_cli.go` / `patch_platform_*.go`：`.patch` 解析、严格匹配、两阶段应用（atomic / partial）、字节级备份与撤销、索引与 WAL；`patch_app.go` 只是 Wails 薄包装，`patch_cli.go` 提供 `--check-patch` / `--apply-patch` / `--revert-patch`（不启动窗口）。核心逻辑是不依赖 App 的自由函数，CLI 与界面共用
 - `browser*.go` / `devtools_*.go`：内嵌浏览器、开发者工具
 - `search.go`：工作区内容搜索（有 `searchBudget`、`searchMaxFileSize` 等硬预算）
 - `structuredir.go`：结构化目录导出
-- `plugins.go` / `skills.go` / `market.go` / `update.go`：插件、技能注册、市场、检查更新
+- `plugins.go` / `skills.go` / `market.go` / `update.go`：插件、技能注册（`docs/skills` 经 `go:embed` 分发，内置技能首次列出时物化到应用数据 `builtin-skills/`）、市场、检查更新
 - `gitinfo.go`：Git 分支/提交面板后端
 - `delete*.go`、`envvars*.go`、`terminal_windows.go`、`toolchain_windows.go`、`integration_windows.go`、`installer_cli_windows.go`、`notify_windows.go`、`cursors*`、`windowicon*`：Windows 能力与注册表集成
 - `dialogs.go`、`commands.go`、`preview_assets.go`、`debugconsole.go`
@@ -34,10 +35,12 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `src/formats.js`：格式驱动层（parse / stringify 双向转换，插件格式也走这里）
 - `src/structure.js`：17 种语言的结构/大纲解析（纯函数，无 DOM 依赖）
 - `src/explorer.js`：文件树（惰性加载 + 内存缓存 + 自动刷新）
+- `src/patch-view.js`：补丁视图（文件卡 / hunk / 模式切换 / 应用 / 撤销），只做渲染，解析与写入全走 Go
 - `src/ai-panel.js`、`src/palette.js`、`src/contextmenu.js`、`src/icons.js`、`src/fileicons*.js`、`src/plugins.js`、`src/jsonrepair.js`、`src/debugconsole.js`
 - `src/ai-session-store.js`：AI 会话 JSONL 编解码/重放 + 磁盘适配（图片外置、增量持久化）
 - `src/activity-log.js`：操作留痕前端服务（脱敏 sanitizer、攒批 ≤200ms/20 条调 `ActivityAppend`；开关与保留月数在设置 → 操作记录）
 - `src/markdown.js`：共享 Markdown 渲染/sanitize（main.js 与阅读模式共用，规则单一来源）
+- `src/widget.js`：AI 回答里 `svg` / `html` 围栏的可视化卡片（Shadow DOM 承载 + DOMPurify 清洗，样式隔离、主题变量继承；`<style>` 先抽出单独清洗再注入 shadow，外链 `url()` / `@import` 与 `position:fixed` 会被处理；只有 AI 面板传 `env.aiWidgets` 时启用）。配套内置技能 `inline-visual`（对话内卡片）与 `answer-me-with-html`（多面板页面），规则改动要同步这两个技能
 - `src/reading/`：阅读模式（`reading.js` 控制器、`reading-model.js` 纯函数 TOC/排序/进度/joinSoftLines、`reading-state.js` localStorage 进度/书签/统计、`reading-view.js` 书架/详情/目录 DOM、`reading-render.js` md/txt/docx/epub 渲染 + LRU、`reading-search.js` 章内/全书查找、`reading-tts.js` 朗读）；Go 侧对应 `reading*.go`；方案见 `docs/finished-plans/reading-mode.md`；**只读，禁止调用写接口**
 - `src/style.css`：布局、主题、Ace/jsoneditor 样式；`src/reading.css`：阅读模式样式（`.rd-` 前缀）
 - `index.html`：窗口结构、菜单、设置对话框

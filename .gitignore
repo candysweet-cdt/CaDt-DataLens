@@ -14,6 +14,7 @@ Thumbs.db
 # AI 助手本地状态：持久记忆与计划文件不入库
 .cadt/
 .zcode/
+.workbuddy/
 
 # 运行中替换 exe 时重命名留下的旧映像
 *.running-old*.exe
