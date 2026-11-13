@@ -19,5 +19,9 @@ Thumbs.db
 # 运行中替换 exe 时重命名留下的旧映像
 *.running-old*.exe
 
-# 运行中替换 exe 时的临时备份映像
+# 运行中替换 exe 时的临时备份映像（按名字单独忽略，并兜住所有 *.exe~ 变体）
 /datalens.exe~
+/*.exe~
+
+# Windows 保留设备名误产物（cmd 里 redirect 到 nul 时可能落在仓库根）
+/nul
