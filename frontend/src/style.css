@@ -391,69 +391,121 @@ html[data-theme="github"] {
     --icons: url('/vendor/img/jsoneditor-icons-light.svg');
 }
 
-/* dsh / Qoder 一类 harness 的浅色方案：白色内容区 + 中性灰侧栏 + 蓝色强调 */
+/* deepseek-harness（dsh）浅色主题：白底内容区 + 中性灰侧栏 + 近黑主按钮 + deepseek 蓝强调。
+   取值对齐 dsh 源码 packages/client/ui-theme/src/styles/design-platform.css（static 调色板 +
+   alias 语义层）与同目录 shiki.css（代码高亮），只做变量映射，不改结构。 */
 html[data-theme="harness"] {
     color-scheme: light;
+    /* 面：alias-bg-base = neutral-bluish-00；侧栏 = neutral-bluish-50；平台/次级面 = neutral-bluish-60 */
     --bg: #ffffff;
-    --panel: #f7f8fa;
-    --panel2: #fbfcfd;
-    --border: #e4e7ec;
-    --text: #1f2329;
-    --muted: #667085;
-    --accent: #4d6bfe;
+    --panel: #f9fafb;
+    --panel2: #f5f6f7;
+    /* 线：alias-border-l2 rgba(0,0,0,.1)，l4 用于强调分隔 */
+    --border: rgba(0, 0, 0, 0.1);
+    /* 字：label-primary = neutral-bluish-1000，label-tertiary = neutral-bluish-600 */
+    --text: #0f1115;
+    --muted: #81858c;
+    /* 强调：link / state-business-primary = deepseek-500；主按钮另按 brand-primary 走近黑 */
+    --accent: #4176e6;
     --on-accent: #ffffff;
-    --git-added: #1a7f37;
-    --git-modified: #0550ae;
-    --git-deleted: #6e7781;
-    --git-untracked: #cf222e;
-    --git-ignored: #9a6700;
-    --git-conflict: #cf222e;
-    --val-key: #0550ae;
-    --val-string: #0a3069;
-    --val-number: #0550ae;
-    --val-bool: #cf222e;
-    --val-null: #8250df;
-    --orange: #bc4c00;
-    --red: #cf222e;
-    --green: #1a7f37;
-    --warn: #9a6700;
-    --hover: #f1f3f6;
-    --placeholder: #98a2b3;
-    --faint: #c7ccd5;
-    --chip-bg: rgba(31, 35, 41, 0.06);
-    --tree-hover: #f3f5f8;
-    --tree-highlight: #eef2f8;
-    --tree-highlight-active: #e2e8f2;
-    --tree-selected: #e9eef7;
-    --field-focus-bg: #f7f9fc;
-    --accent-weak: rgba(77, 107, 254, 0.12);
-    --text-selection: rgba(77, 107, 254, 0.2);
-    --ace-selection: #dbe4ff;
-    --ace-active: #f7f8fa;
-    --ace-indent: #e1e5eb;
-    --ace-punct: #57606a;
-    --ace-gutter: #98a2b3;
-    --syn-keyword: #cf222e;
-    --syn-operator: #24292f;
-    --syn-comment: #6e7781;
-    --syn-tag: #116329;
-    --syn-attr: #0550ae;
-    --syn-attr-value: #0a3069;
-    --syn-yaml-key: #0550ae;
-    --syn-json-key: #0550ae;
-    --syn-function: #8250df;
-    --syn-heading: #0550ae;
-    --py-builtin: #8250df;
-    --py-doc: #6e7781;
-    --py-self: #e36209;
-    --scroll-thumb: #d7dbe1;
-    --scroll-thumb-hover: #b9c0c9;
-    --shadow: rgba(31, 35, 41, 0.1);
-    --shadow-strong: rgba(31, 35, 41, 0.18);
-    --mask: rgba(31, 35, 41, 0.3);
-    --banner-bg: #fff8e1;
-    --banner-fg: #7a5300;
+    /* git 状态：file-diff-*-marker 与 state-* 别名 */
+    --git-added: #01a241;
+    --git-modified: #4176e6;
+    --git-deleted: #81858c;
+    --git-untracked: #ec1313;
+    --git-ignored: #dd8629;
+    --git-conflict: #ec1313;
+    /* 数据取值配色沿用 shiki token：constant/string/keyword/function */
+    --val-key: #1c7ed6;
+    --val-string: #2f9e44;
+    --val-number: #1c7ed6;
+    --val-bool: #d6336c;
+    --val-null: #6741d9;
+    --orange: #dd8629;   /* amber-600 = state-warn-label */
+    --red: #ec1313;      /* red-600 = state-error-primary */
+    --green: #01a241;    /* 与 file-diff-added-marker 同色，保证文字可读 */
+    --warn: #dd8629;
+    /* 交互：interactive-bg-hover rgba(38,49,72,.06)，active 为 .1 */
+    --hover: rgba(38, 49, 72, 0.06);
+    --placeholder: #adb2b8;  /* label-caption */
+    --faint: #cfd3d6;        /* label-dimmed 偏淡，这里再深一档保证提示文字可读 */
+    --chip-bg: rgba(38, 49, 72, 0.06);
+    --tree-hover: rgba(38, 49, 72, 0.06);
+    --tree-highlight: rgba(38, 49, 72, 0.06);
+    --tree-highlight-active: rgba(38, 49, 72, 0.1);
+    --tree-selected: #ebeef2;  /* sidebar-nav-item-active = neutral-bluish-100 */
+    --field-focus-bg: #ffffff; /* input-major */
+    --accent-weak: rgba(65, 118, 230, 0.1);
+    --text-selection: rgba(59, 130, 246, 0.4);  /* bg-document-selection = blue-500 40% */
+    --ace-selection: #dbeafe;
+    --ace-active: #f9fafb;
+    --ace-indent: #e9ecf2;
+    --ace-punct: #495057;
+    --ace-gutter: #adb2b8;
+    /* 代码高亮：shiki.css 的 token 表（open-color 取值） */
+    --syn-keyword: #d6336c;
+    --syn-operator: #495057;
+    --syn-comment: #868e96;
+    --syn-tag: #d6336c;
+    --syn-attr: #e8590c;
+    --syn-attr-value: #2f9e44;
+    --syn-yaml-key: #1c7ed6;
+    --syn-json-key: #1c7ed6;
+    --syn-function: #6741d9;
+    --syn-heading: #0f1115;
+    --py-builtin: #6741d9;
+    --py-doc: #868e96;
+    --py-self: #e8590c;
+    --scroll-thumb: #e5e5e5;  /* neutral-200 */
+    --scroll-thumb-hover: #d4d4d4;
+    --shadow: rgba(15, 17, 21, 0.1);
+    --shadow-strong: rgba(15, 17, 21, 0.18);
+    --mask: rgba(0, 0, 0, 0.24);  /* bg-mask-1 */
+    --banner-bg: #fef5e7;         /* amber-100 */
+    --banner-fg: #8a5300;
     --icons: url('/vendor/img/jsoneditor-icons-light.svg');
+}
+
+/* harness 的骨架细节：主按钮近黑（brand-primary = neutral-bluish-1000，hover 750）、
+   用户气泡是扁平的 deepseek-50 无边框胶囊、输入框为纯白 —— 这几处不跟着 accent 走，
+   否则整屏会变成紫蓝色（accent 只用于链接/选中/聚焦）。 */
+html[data-theme="harness"] .ai-send-btn,
+html[data-theme="harness"] .dlg-btn.primary,
+html[data-theme="harness"] .tb-btn.primary,
+html[data-theme="harness"] .sql-btn.primary {
+    background: #0f1115;
+    border-color: #0f1115;
+    color: #ffffff;
+}
+html[data-theme="harness"] .ai-send-btn:hover,
+html[data-theme="harness"] .dlg-btn.primary:hover,
+html[data-theme="harness"] .tb-btn.primary:hover,
+html[data-theme="harness"] .sql-btn.primary:hover {
+    background: #43454a;
+    border-color: #43454a;
+    filter: none;
+}
+html[data-theme="harness"] .ai-send-btn.ai-stop { background: #ec1313; }
+html[data-theme="harness"] .ai-user-bubble {
+    background: #edf3fe;          /* specific-bubble = deepseek-50 */
+    border-color: transparent;
+    border-radius: 12px;          /* dsw-radius-md */
+}
+html[data-theme="harness"] .ai-composer {
+    background: #ffffff;          /* specific-input-major */
+    border-color: rgba(0, 0, 0, 0.1);
+    border-radius: 16px;          /* dsw-radius-lg */
+    box-shadow: 0 2px 8px rgba(15, 17, 21, 0.06);
+}
+html[data-theme="harness"] .ai-app-msg-card,
+html[data-theme="harness"] .ai-tool-card:not(.error) {
+    border-color: rgba(0, 0, 0, 0.1);
+    background: #ffffff;
+    border-radius: 12px;
+}
+html[data-theme="harness"] .snav-item.active {
+    background: #ebeef2;          /* sidebar-nav-item-active */
+    color: #0f1115;
 }
 
 html[data-theme="newsprint"] {
@@ -3233,6 +3285,7 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
 .sb-tool:focus, .sb-toggle:focus, .sb-empty-btn:focus { outline: none; }
 .sb-tool.active { color: var(--accent); background: var(--accent-weak); }
 .sb-tool:disabled { opacity: 0.4; background: transparent; }
+.sb-tool.hidden { display: none; }
 .sb-body { flex: 1; min-height: 0; overflow: auto; padding: 3px 0 10px; }
 .sb-row {
     position: relative;
@@ -3360,6 +3413,37 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
 .st-status, .st-empty-hint { color: var(--muted); }
 .st-status { padding-left: 30px; }
 .st-empty-hint { font-size: 11px; line-height: 1.6; }
+/* ===== 会话结构（用户消息定位条）===== */
+.so-row {
+    /* .sb-row 默认 width:max-content：这里要让长文本按面板宽度省略 */
+    width: 100%;
+    gap: 6px;
+}
+.so-num {
+    flex: none;
+    min-width: 15px;
+    text-align: right;
+    color: var(--muted);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+}
+.so-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+}
+.so-time {
+    flex: none;
+    color: var(--muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+.so-row.so-current .so-num,
+.so-row.so-current .so-text { color: var(--accent); }
+.so-row.so-current::before { background: var(--accent-weak); }
 
 .sb-status .sb-icon { visibility: hidden; }
 .sb-root .sb-name { font-weight: 500; }
@@ -5646,6 +5730,12 @@ html[data-theme="whitey"] {
 .ai-msg.archived { opacity: 0.82; }
 .ai-msg.archived .ai-user-foot { display: none; }
 .ai-msg { max-width: 100%; }
+/* 从会话结构定位跳过来时闪一下，避免「跳过去了却看不出是哪条」 */
+@keyframes ai-msg-flash {
+    0% { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+    100% { background: transparent; }
+}
+.ai-msg.ai-msg-flash .ai-user-bubble { animation: ai-msg-flash 1.4s ease-out; }
 .ai-msg.user {
     align-self: flex-end;
     max-width: 88%;
@@ -6204,8 +6294,77 @@ html[data-theme="whitey"] {
 .ai-msg-action:hover { background: var(--hover); color: var(--text); }
 .ai-msg-action svg { width: 13px; height: 13px; display: block; }
 .ai-msg-action[data-ai-act="retry"] { color: var(--red); }
-.ai-usage { margin-top: 4px; color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
-.ai-usage.hidden { display: none; }
+
+/* 每轮操作行的附加信息：用量徽标（可点开明细）+ 本轮耗时 */
+.ai-msg-usage {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 22px;
+    padding: 0 7px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--panel2);
+    color: var(--muted);
+    font: inherit;
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.ai-msg-usage:hover { background: var(--hover); color: var(--text); }
+.ai-msg-usage-icon { display: inline-flex; }
+.ai-msg-usage-icon svg { width: 12px; height: 12px; display: block; }
+.ai-msg-duration {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 3px;
+    color: var(--faint);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* 本轮用量浮层 */
+.ai-turn-usage {
+    position: fixed;
+    z-index: 90;
+    width: 318px;
+    max-width: calc(100vw - 16px);
+    padding: 9px 11px 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .28);
+    font-size: 11.5px;
+    line-height: 1.6;
+}
+.ai-turn-usage-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--border);
+}
+.ai-turn-usage-title { display: inline-flex; align-items: center; gap: 5px; color: var(--text); font-weight: 600; }
+.ai-turn-usage-icon { display: inline-flex; color: var(--muted); }
+.ai-turn-usage-icon svg { width: 13px; height: 13px; display: block; }
+.ai-turn-usage-head b { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ai-turn-usage-rows { display: flex; flex-direction: column; gap: 1px; padding-top: 6px; }
+.ai-turn-usage-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.ai-turn-usage-row > span:first-child { flex: none; color: var(--muted); }
+.ai-turn-usage-value {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ai-turn-usage-value.num { font-variant-numeric: tabular-nums; }
 
 .ai-note {
     align-self: center;
@@ -6458,6 +6617,111 @@ html[data-theme="whitey"] {
     flex: none;
     margin-top: 0;
 }
+/* ===== 补丁审批（propose_patch，多文件） ===== */
+.ai-patch-takeover .ai-takeover-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ai-takeover-stat {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.ai-takeover-stat .add { color: var(--green); }
+.ai-takeover-stat .del { color: var(--red); }
+.ai-takeover-stat .files { color: var(--muted); }
+.ai-patch-filelist {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-height: 0;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel2);
+}
+.ai-patch-filerow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 7px;
+    border-radius: 5px;
+    font-size: 11.5px;
+    cursor: pointer;
+}
+.ai-patch-filerow:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.ai-patch-filerow input[type="checkbox"] { flex: none; margin: 0; }
+.ai-patch-filerow.conflict,
+.ai-patch-filerow.blocked,
+.ai-patch-filerow.unsupported { cursor: default; }
+.ai-patch-path {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font-family: var(--editor-font-family);
+    font-size: 11.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ai-patch-filerow.conflict .ai-patch-path,
+.ai-patch-filerow.blocked .ai-patch-path,
+.ai-patch-filerow.unsupported .ai-patch-path { color: var(--muted); }
+.ai-patch-kind {
+    flex: none;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: var(--accent-weak);
+    color: var(--accent);
+    font-size: 9.5px;
+    line-height: 15px;
+    white-space: nowrap;
+}
+.ai-patch-kind.danger { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); }
+.ai-patch-stat {
+    flex: none;
+    display: inline-flex;
+    justify-content: flex-end;
+    gap: 5px;
+    min-width: 62px;
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+}
+.ai-patch-stat .add { color: var(--green); }
+.ai-patch-stat .del { color: var(--red); }
+.ai-patch-badge {
+    flex: none;
+    padding: 0 5px;
+    border-radius: 3px;
+    background: var(--accent-weak);
+    color: var(--accent);
+    font-size: 9.5px;
+    line-height: 15px;
+    white-space: nowrap;
+}
+.ai-patch-badge.conflict,
+.ai-patch-badge.blocked { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); }
+.ai-patch-badge.unsupported { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+.ai-patch-reason {
+    padding: 0 7px 4px 27px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
+    word-break: break-word;
+}
+.ai-patch-takeover .ai-takeover-body > .ai-patch-moderow { margin-top: 0; }
+.ai-patch-takeover .ai-patch-moderow label { gap: 6px; }
+.ai-patch-takeover .ai-approval-actions { margin-left: auto; }
+.ai-patch-takeover .ai-takeover-foot .dlg-btn[disabled] { opacity: 0.55; }
 /* 消息流里的待审批占位：完整内容在 composer 接管区 */
 .ai-approval-placeholder {
     display: flex;
@@ -8084,10 +8348,11 @@ body.console-only > :not(.dbg-console) { display: none !important; }
 .ai-modality-checks { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; }
 .ai-modality-checks label { display: inline-flex; align-items: center; gap: 4px; color: var(--text); cursor: pointer; }
 
-/* 每轮文件改动汇总卡（Qoder 风格） */
+/* 每轮文件改动汇总卡（Qoder 风格）：与回答正文同一列、同宽，不再右对齐收缩 */
 .ai-changes-card {
-    max-width: 560px;
-    margin: 2px 0 6px auto;
+    width: 100%;
+    max-width: 100%;
+    margin: 2px 0 6px;
     overflow: hidden;
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -8796,7 +9061,11 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .ai-agv-summary-title + .ai-agv-msg { margin-bottom: 0; }
 .ai-agv-live-tip { color: var(--muted); font-size: 10.5px; text-align: center; padding: 4px 0 2px; }
 /* 后台终端内容区标签页 */
-.bgterm-pane { display: flex; flex-direction: column; padding: 8px; }
+/* display 必须挂在 .active 上：直接用 .bgterm-pane 设 display 会顶掉
+   .jsoneditor-pane { display: none }（同权重、后定义者胜），导致非激活标签页的
+   面板照样铺在原位，看起来像多出一个输出框。 */
+.bgterm-pane { padding: 8px; }
+.jsoneditor-pane.active.bgterm-pane { display: flex; flex-direction: column; }
 .bgterm-info {
     flex: 0 0 34%;
     min-height: 64px;

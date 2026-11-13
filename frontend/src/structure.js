@@ -1,4 +1,5 @@
 import {createFileIcon} from './fileicons.js';
+import {renderSessionOutline, syncSessionOutlineActive} from './session-outline.js';
 
 // ===== 结构视图：解析当前文件并生成可导航的大纲/符号树 =====
 // 支持 Markdown 标题层级、HTML/XML 标签树、Python/JS/TS/Go/Java 等语言的
@@ -1478,7 +1479,7 @@ function walkNodes(children, fn) {
 }
 
 export function createStructurePanel(options) {
-    const {body, refreshBtn, collapseBtn, getText, getCursorLine, onJump, parseAsync} = options || {};
+    const {body, refreshBtn, collapseBtn, getText, getCursorLine, onJump, parseAsync, onSessionJump} = options || {};
     let doc = null;
     let result = null;
     let visible = false;
@@ -1488,6 +1489,13 @@ export function createStructurePanel(options) {
     let lastDocId = null;
     let currentLine = 0;
     let parseSeq = 0;
+    // 两个数据源：文件结构 / 当前 AI 会话的用户消息定位条。
+    // sources 由调用方按「内容区当前显示什么」决定；pref 是用户在两者都存在时的偏好。
+    let sources = {file: true, session: false};
+    let sourcePref = 'file';
+    let outline = null;
+    let outlineSig = '';
+    let outlineActive = -1;
 
     if (refreshBtn) {
         refreshBtn.innerHTML = ICONS.refresh;
@@ -1514,8 +1522,19 @@ export function createStructurePanel(options) {
         lastDocId = nextDoc ? nextDoc.id : null;
     }
 
+    // 有效来源：只有一个可用时用它；两个都在时听用户偏好（默认文件结构）。
+    function effectiveSource() {
+        if (!sources.file) return sources.session ? 'session' : 'none';
+        if (!sources.session) return 'file';
+        return sourcePref === 'session' ? 'session' : 'file';
+    }
+
     function refresh() {
         if (!body) return;
+        if (effectiveSource() === 'session') {
+            renderSession();
+            return;
+        }
         if (!doc) {
             result = null;
             renderMessage('打开文件后在这里查看结构', '');
@@ -1570,6 +1589,25 @@ export function createStructurePanel(options) {
             const line = Number(getCursorLine());
             if (Number.isFinite(line) && line > 0) setCursor(line);
         } catch (e) {}
+    }
+
+    // 会话结构：当前会话的用户消息定位条（数据由 ai-panel 提供）
+    function renderSession() {
+        body.textContent = '';
+        updateCollapseButton();
+        if (!outline) {
+            renderMessage('正在读取会话结构…', '');
+            return;
+        }
+        if (!(outline.items || []).length) {
+            renderMessage('当前会话还没有用户消息', '');
+            return;
+        }
+        renderSessionOutline(body, outline, {
+            onJump: (index) => {
+                if (typeof onSessionJump === 'function') onSessionJump(index);
+            },
+        });
     }
 
     function renderMessage(text, hint, buttonText, action) {
@@ -1788,6 +1826,10 @@ export function createStructurePanel(options) {
     function setVisible(next) {
         const want = !!next;
         if (visible === want) {
+            if (want && effectiveSource() === 'session') {
+                if (!body.firstChild) renderSession();
+                return;
+            }
             if (want && !result && doc) refresh();
             return;
         }
@@ -1831,6 +1873,46 @@ export function createStructurePanel(options) {
         updateRowStates();
     }
 
+    // ---- 数据源切换（文件结构 / 会话结构） ----
+
+    // 调用方按「内容区当前显示什么」传 {file, session}；返回生效的来源。
+    function setSources(next) {
+        const src = {file: !!(next && next.file), session: !!(next && next.session)};
+        const changed = src.file !== sources.file || src.session !== sources.session;
+        sources = src;
+        if (changed) refresh();
+        return effectiveSource();
+    }
+
+    // 用户在两者都存在时切换偏好；返回生效的来源（不可用时自动回落）。
+    function setSource(pref) {
+        const want = pref === 'session' ? 'session' : 'file';
+        if (want !== sourcePref) {
+            sourcePref = want;
+            refresh();
+        }
+        return effectiveSource();
+    }
+
+    // 会话大纲快照：{sessionId, items: [{index, round, text, ts}], activeIndex}
+    function setSessionOutline(snapshot) {
+        const items = snapshot && Array.isArray(snapshot.items) ? snapshot.items : [];
+        const sig = (snapshot && snapshot.sessionId ? snapshot.sessionId : '') + '|' +
+            items.map((item) => (item.index + ':' + (Number(item.ts) || 0))).join(',');
+        const active = snapshot && Number.isFinite(Number(snapshot.activeIndex)) ? Number(snapshot.activeIndex) : -1;
+        const sameItems = !!outline && sig === outlineSig;
+        outline = {sessionId: (snapshot && snapshot.sessionId) || '', items, activeIndex: active};
+        outlineSig = sig;
+        outlineActive = active;
+        if (effectiveSource() !== 'session') return;
+        // 只是滚动位置变了：不重建 DOM，避免拖动时闪
+        if (sameItems) {
+            syncSessionOutlineActive(body, outlineActive);
+            return;
+        }
+        renderSession();
+    }
+
     // structureText 把当前结构树渲染成文本。format：
     //   tree     —— 与「结构化目录」一致（├──/└──，首行文件名）
     //   indent   —— 两空格逐层缩进
@@ -1839,6 +1921,8 @@ export function createStructurePanel(options) {
     // lineNums 为 true 时每个节点附 :L行号（根节点是文件本身，不带）。
     // 忽略折叠状态，导出全量。
     function structureText(format, lineNums) {
+        // 会话结构没有可导出的文件树
+        if (effectiveSource() !== 'file') return '';
         if (!result || !result.root) return '';
         const fmt = format || 'tree';
         const rootLabel = String(result.root.label || (doc && doc.name) || '结构');
@@ -1889,6 +1973,10 @@ export function createStructurePanel(options) {
         refresh,
         setCursor,
         setSelected,
+        setSources,
+        setSource,
+        setSessionOutline,
+        getSource: effectiveSource,
         getResult: () => result,
         getDocId: () => (doc ? doc.id : null),
         structureText,

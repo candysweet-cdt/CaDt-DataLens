@@ -304,6 +304,9 @@ func (a *App) CleanupRunTemp() error
 
 ## 11. 验收清单
 
+手工验收请直接用 `docs/samples/run-code/` 里的可执行样例，该目录的 `README.md` 逐条对应下表，
+并标了每项需要填的参数 / 点的按钮。
+
 | # | 场景 | 期望 |
 |---|---|---|
 | 1 | 打开 `hello.py`（无修改）按 F5 | 面板出现输出，退出码 0，耗时可读 |

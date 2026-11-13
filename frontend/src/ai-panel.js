@@ -5,6 +5,7 @@ import {createContextMenu} from './contextmenu.js';
 import {copyImageUrlToClipboard} from './image-clipboard.js';
 import {createImageLightbox} from './image-lightbox.js';
 import {createFileIcon} from './fileicons.js';
+import {buildSessionOutlineItems} from './session-outline.js';
 import {createSessionDiskStore, replaySessionLog} from './ai-session-store.js';
 import {
     analyzeDangerousCommand,
@@ -901,6 +902,9 @@ export function createAIPanel(options) {
     const setDragCursor = typeof opts.setDragCursor === 'function' ? opts.setDragCursor : () => {};
     const commandOutput = typeof opts.commandOutput === 'function' ? opts.commandOutput : null;
     const onLayout = typeof opts.onLayout === 'function' ? opts.onLayout : () => {};
+    // 面板状态（开合 / 显示方式 / 消息流）变化的宿主通知：结构面板据此决定
+    // 「文件结构 / 会话结构」的可见性与内容
+    const onPanelStateChange = typeof opts.onPanelStateChange === 'function' ? opts.onPanelStateChange : null;
     const getWorkspaceContext = typeof opts.getWorkspaceContext === 'function' ? opts.getWorkspaceContext : () => ({workspaceFolder: '', activeFile: null, openFiles: []});
     const getGitRepo = typeof opts.getGitRepo === 'function' ? opts.getGitRepo : () => null;
     const openWorkspaceFolder = typeof opts.openWorkspaceFolder === 'function' ? opts.openWorkspaceFolder : null;
@@ -1023,7 +1027,6 @@ export function createAIPanel(options) {
     const bgUpdateListeners = new Set();
     // 实时写入状态订阅：状态栏徽标用，事件驱动（每次写操作落盘前后各推一次），不轮询磁盘
     const writeStatusListeners = new Set();
-    let liveWrite = {relPath: '', path: '', added: 0, removed: 0};
     let agentViewState = null;        // 详情视图当前打开的子代理 {toolCallId, subId, name}
     let agentViewTimer = 0;
     let chipsPopKind = '';
@@ -1153,6 +1156,11 @@ export function createAIPanel(options) {
 
     let config = loadAIConfig();
     let sessions = loadAISessions();
+    // 会话级「正在生成」注册表：每个会话各自一条流，切换会话不共享状态。
+    // 后端 AISendChat 按 session.id#round 独立取消，天然支持多会话并发生成。
+    // stream 只作为「当前查看会话的流」的镜像（由 syncStreamView 维护），
+    // 渲染与 composer 相关的读取点直接用它；跨会话判断一律走 streams。
+    const streams = new Map();
     let stream = null;
     let oneShot = null;
     let titleJob = null;
@@ -1193,12 +1201,11 @@ export function createAIPanel(options) {
     let appDirPromise = null;
     let memoryFallbackNotified = false;
     let logSaveErrorShown = false;
-    let lastSystemPrompt = AI_DEFAULT_SYSTEM_PROMPT;
-    let lastContextMeta = null;
     // 上下文占用估算依赖「真正会发给模型的系统提示词」：面板重开 / 切换会话 / 注入开关变化后
     // 需要异步重建，否则会沿用默认或旧值，显示偏小或带着旧工作区上下文。
-    let systemPromptEstimateAt = 0;
-    let systemPromptEstimateJob = null;
+    // 按会话缓存：并发生成 / 来回切会话时，A 的提示词不能拿去估 B 的占用。
+    const promptCache = new Map();      // sessionId -> {text, meta, at}
+    const promptJobs = new Map();       // sessionId -> in-flight Promise
     let drag = null;
     let settingsStatusTimer = 0;
     let fontSaveTimer = 0;
@@ -1238,7 +1245,7 @@ export function createAIPanel(options) {
     let dismissedPlanApproval = '';
     const messageQueue = [];
     let queueSeq = 0;
-    let interjectPending = false;
+    const interjectPending = new Set();  // sessionId：该会话有一条「插话」待优先发送
     let archiveOverflowAt = 0;
     let autoCompactCount = new Map();
     let autoCompactWarnedAt = 0;
@@ -1861,6 +1868,7 @@ export function createAIPanel(options) {
             message.reasoning = aiTextOf(raw.reasoning);
             message.thinkingSignature = aiTextOf(raw.thinkingSignature);
             message.model = aiTextOf(raw.model);
+            message.modelAccount = aiTextOf(raw.modelAccount);
             message.planMode = raw.planMode === true;
             message.thinkMs = Number(raw.thinkMs) || 0;
             message.finishedAt = Number(raw.finishedAt) || 0;
@@ -1886,6 +1894,7 @@ export function createAIPanel(options) {
                     completionTokens: Number(raw.usage.completionTokens) || 0,
                     totalTokens: Number(raw.usage.totalTokens) || 0,
                     cachedTokens: Number(raw.usage.cachedTokens) || 0,
+                    cacheWriteTokens: Number(raw.usage.cacheWriteTokens) || 0,
                 }
                 : null;
             // 每轮结束的文件改动汇总卡：随 JSONL 持久化，重放后照常渲染
@@ -1912,6 +1921,8 @@ export function createAIPanel(options) {
             scope: AI_SCOPES.includes(raw.scope) ? raw.scope : 'read',
             workspace: aiTextOf(raw.workspace),
             profileId: aiTextOf(raw.profileId),
+            // 会话级模型：账号 + 条目 id（未选择时回落到窗口默认）
+            modelId: aiTextOf(raw.modelId),
             systemPrompt: aiTextOf(raw.systemPrompt),
             promptTemplateId: aiTextOf(raw.promptTemplateId),
             messages,
@@ -1947,6 +1958,7 @@ export function createAIPanel(options) {
             scope: 'read',
             workspace: currentWorkspacePath(),
             profileId: '',
+            modelId: '',
             systemPrompt: '',
             promptTemplateId: '',
             messages: [],
@@ -2268,6 +2280,74 @@ export function createAIPanel(options) {
         return sessions.find((s) => s.id === config.activeSessionId) || sessions[0] || null;
     }
 
+    // ---------- 会话级流注册表 ----------
+    // 每个会话一条独立的流：A 会话在生成时切到 B 会话，B 的 composer 应该是「发送」而不是「停止」，
+    // 并且可以独立发起新一轮（后端按 sessionId 隔离，互不打断）。
+
+    function streamOf(sessionId) {
+        return sessionId ? (streams.get(sessionId) || null) : null;
+    }
+
+    function anyStreaming() {
+        return streams.size > 0;
+    }
+
+    // 上下文压缩（oneShot）同一时间只允许一个，但 UI 与发送判定必须按会话：
+    // 后台会话在压缩，不该让当前会话的输入框变成「停止 / 排队」。
+    function compactOf(sessionId) {
+        return oneShot && sessionId && oneShot.sessionId === sessionId ? oneShot : null;
+    }
+
+    // 把镜像 stream 对齐到「当前查看会话」的流；所有依赖 stream 的 UI 读取点先调它。
+    function syncStreamView() {
+        const session = currentSession();
+        stream = session ? (streams.get(session.id) || null) : null;
+        return stream;
+    }
+
+    // 注册 / 注销会话流，并立即刷新镜像与 composer 状态。
+    function attachStream(next) {
+        streams.set(next.sessionId, next);
+        // 正在看的会话开始新一轮：上一轮留下的「已完成未查看」已经没有意义，
+        // 否则列表里会先显示绿点、要等用户再点一次条目才变成运行中。
+        const viewed = currentSession();
+        if (viewed && viewed.id === next.sessionId) clearSessionUnread(viewed);
+        syncStreamView();
+        return next;
+    }
+
+    function detachStream(next) {
+        if (next && streams.get(next.sessionId) === next) streams.delete(next.sessionId);
+        syncStreamView();
+    }
+
+    // ---------- 每会话系统提示词缓存 ----------
+    // 占用估算用的是「这一轮真会发给模型的系统提示词」；A 会话的注入上下文（工作区 / 附件 / 记忆）
+    // 不能拿去估 B 会话，所以缓存与 in-flight 任务都按 sessionId 分开。
+
+    function promptTextOf(sessionId) {
+        const hit = sessionId ? promptCache.get(sessionId) : null;
+        return (hit && hit.text) || AI_DEFAULT_SYSTEM_PROMPT;
+    }
+
+    function promptCachedAt(sessionId) {
+        const hit = sessionId ? promptCache.get(sessionId) : null;
+        return hit ? Number(hit.at) || 0 : 0;
+    }
+
+    function rememberPrompt(sessionId, bundle) {
+        if (!sessionId || !bundle) return;
+        promptCache.set(sessionId, {
+            text: bundle.text || AI_DEFAULT_SYSTEM_PROMPT,
+            meta: bundle.meta || null,
+            at: Date.now(),
+        });
+    }
+
+    function forgetPrompt(sessionId) {
+        if (sessionId) promptCache.delete(sessionId);
+    }
+
     function activeProfile() {
         const found = config.profiles.find((p) => p.id === config.activeProfileId);
         return found || config.profiles[0] || null;
@@ -2277,6 +2357,44 @@ export function createAIPanel(options) {
     function activeModelEntry() {
         const profile = activeProfile();
         return profile ? modelEntryOf(profile, config.activeModelId) : null;
+    }
+
+    // ---------- 会话级模型 ----------
+    // 参考 dsh：模型选择属于会话（随会话持久化），没选过的会话回落到窗口默认；
+    // 手动切换会同时更新「这个会话的选择」与「窗口默认」（新会话继承上次用的）。
+    function sessionModelRef(session) {
+        const target = session === undefined ? currentSession() : session;
+        const pinnedProfile = target && target.profileId
+            ? config.profiles.find((p) => p.id === target.profileId)
+            : null;
+        if (!pinnedProfile) return {profile: activeProfile(), entry: activeModelEntry(), pinned: false};
+        let modelId = aiTextOf(target.modelId);
+        if (!modelId) {
+            // 旧会话只有账号没有条目：按窗口当前条目 / 账号记住的条目回落
+            modelId = pinnedProfile.id === config.activeProfileId ? config.activeModelId : pinnedProfile.lastModelId;
+        }
+        return {profile: pinnedProfile, entry: modelEntryOf(pinnedProfile, modelId), pinned: true};
+    }
+
+    function profileOf(session) {
+        return sessionModelRef(session).profile;
+    }
+
+    function entryOf(session) {
+        return sessionModelRef(session).entry;
+    }
+
+    // 会话自己的上下文窗口（预算 / 压缩估算用）。
+    function contextWindowOf(session) {
+        const entry = entryOf(session);
+        return (entry && entry.contextWindow) || 128000;
+    }
+
+    // 把选择固定到会话上（发送时 / 手动切换模型时）。
+    function pinSessionModel(session, profile, entry) {
+        if (!session) return;
+        session.profileId = profile ? profile.id : '';
+        session.modelId = entry ? entry.id : '';
     }
 
     // 激活账号的旧字段镜像 = 激活条目；saveAIConfig 每次保存前同步，
@@ -2291,12 +2409,6 @@ export function createAIPanel(options) {
         profile.reasoningEffort = entry.reasoningEffort;
         profile.thinking = entry.thinking;
         profile.thinkingBudget = entry.thinkingBudget;
-    }
-
-    // 当前模型条的上下文窗口（预算/压缩估算用）。
-    function activeContextWindow() {
-        const entry = activeModelEntry();
-        return (entry && entry.contextWindow) || 128000;
     }
 
     function providerLabel(profile) {
@@ -2319,11 +2431,12 @@ export function createAIPanel(options) {
 
     // 组装请求配置：连接字段取账号；模型字段取条目。激活账号用 activeModelId，
     // 其他账号（如分类器引用）用其 lastModelId 记住的条目。
-    function configForProfile(profile) {
+    function configForProfile(profile, entry) {
         if (!profile) return configForModel(null, null);
+        if (entry) return configForModel(profile, entry);
         const isActive = profile.id === (activeProfile() && activeProfile().id);
-        const entry = modelEntryOf(profile, isActive ? config.activeModelId : profile.lastModelId);
-        return configForModel(profile, entry);
+        const fallback = modelEntryOf(profile, isActive ? config.activeModelId : profile.lastModelId);
+        return configForModel(profile, fallback);
     }
 
     function updateSessionTitleFromText(session, text) {
@@ -2350,20 +2463,34 @@ export function createAIPanel(options) {
     function finishTitleJob() {
         const job = titleJob;
         titleJob = null;
-        if (!job) return;
-        const session = sessionById(job.sessionId);
-        if (!session || session.title !== job.titleBase) return;
-        const title = generatedTitle(job.buffer);
-        if (!title || title === session.title) return;
-        session.title = title;
-        persistSessions();
-        renderSessionList();
-        queueLogSave(session);
+        if (job) {
+            const session = sessionById(job.sessionId);
+            const title = session && session.title === job.titleBase ? generatedTitle(job.buffer) : '';
+            if (title && title !== session.title) {
+                session.title = title;
+                persistSessions();
+                renderSessionList();
+                queueLogSave(session);
+            }
+        }
+        // 结束（无论成败）后再处理排队的会话：多会话同时收尾时都能拿到标题
+        drainTitleQueue();
+    }
+
+    // 标题任务同一时间只跑一个（后端也要按 id 路由事件），但排队的会话不能丢：
+    // 以前 titleJob 忙时第二个会话的标题会被静默跳过，要等它下一轮才补。
+    const pendingTitleSessions = [];
+
+    function drainTitleQueue() {
+        while (!titleJob && pendingTitleSessions.length) {
+            const session = sessionById(pendingTitleSessions.shift());
+            if (session) maybeAutoTitle(session);
+        }
     }
 
     // 首轮结束后额外请求一次模型生成标题；失败/用户已改名时保留原标题。
     function maybeAutoTitle(session) {
-        if (!config.autoTitle || titleJob) return false;
+        if (!config.autoTitle) return false;
         if (!session || session.archivedAt || !backend.AISendChat) return false;
         if (titleAttempted.has(session.id)) return false;
         const messages = session.messages || [];
@@ -2374,8 +2501,13 @@ export function createAIPanel(options) {
         if (!text) return false;
         const fallback = text.replace(/\s+/g, ' ').trim().slice(0, 24);
         if (session.title !== fallback) return false;
-        const profile = activeProfile();
+        const profile = profileOf(session);
         if (!profile) return false;
+        // 已经有标题任务在跑：排队，等它结束后再补（多会话并发生成时很常见）
+        if (titleJob) {
+            if (!pendingTitleSessions.includes(session.id)) pendingTitleSessions.push(session.id);
+            return false;
+        }
         titleAttempted.add(session.id);
         const id = session.id + '#title-' + Date.now();
         titleJob = {id, sessionId: session.id, buffer: '', titleBase: session.title};
@@ -2383,14 +2515,17 @@ export function createAIPanel(options) {
             {role: 'system', content: AI_TITLE_SYSTEM_PROMPT},
             {role: 'user', content: text.slice(0, 4000)},
         ];
-        const titleConfig = Object.assign(configForProfile(profile), {
+        const titleConfig = Object.assign(configForProfile(profile, entryOf(session)), {
             maxTokens: 64,
             temperature: 0.3,
             thinking: false,
             reasoningEffort: '',
         });
         Promise.resolve(backend.AISendChat(id, titleConfig, requestMessages, [], 0)).catch(() => {
-            if (titleJob && titleJob.id === id) titleJob = null;
+            if (titleJob && titleJob.id === id) {
+                titleJob = null;
+                drainTitleQueue();
+            }
         });
         return true;
     }
@@ -2639,14 +2774,32 @@ export function createAIPanel(options) {
     function sessionEntryStatus(session, archived) {
         if (!session || archived || session.archivedAt) return '';
         if (sessionNeedsAttention(session)) return 'pending';
-        if (stream && stream.sessionId === session.id) return 'running';
-        if (session.unread === 'done' || session.unread === 'error') return session.unread;
+        if (streams.has(session.id)) return 'running';
+        // 后台命令可能比本轮活得更久：即使没有流，作业还在跑也要在列表上标出来
+        if (sessionHasLiveBgJob(session.id)) return 'running';
+        // 后台命令可能比本轮活得更久：即使没有流，作业还在跑也要在列表上标出来
+        if (sessionHasLiveBgJob(session.id)) return 'running';
+        if (session.unread === 'done' || session.unread === 'error') {
+            // 正在看这个会话（面板打开且就是当前会话）时没有「未查看」可言：磁盘重读、
+            // 另一窗口写入都可能把未读标记带回来，显示出来就是用户盯着的条目上挂绿点，
+            // 得再点一次才会消失。这里直接不显示。
+            if (isOpen() && currentSession() === session) return '';
+            return session.unread;
+        }
         return '';
     }
 
     // 后台结束的会话标一个「未查看」；落盘进 meta，重启后仍然保留。
     function setSessionUnread(session, kind) {
         if (!session || session.archivedAt) return;
+        // 面板开着且正看着这个会话：用户当场就看到了结果，不该留未读标记。
+        if (isOpen() && currentSession() === session) {
+            if (session.unread) {
+                session.unread = '';
+                persistSessions();
+            }
+            return;
+        }
         const next = kind === 'error' ? 'error' : 'done';
         if (session.unread === next) return;
         session.unread = next;
@@ -3849,7 +4002,7 @@ export function createAIPanel(options) {
         // 消息变少（/compact、编辑重发、清空）时旧窗口索引失效，重新计算。
         if (state && len < state.len) state = null;
         if (!state) {
-            const need = Math.max(AI_RENDER_INITIAL_TOKENS, activeContextWindow());
+            const need = Math.max(AI_RENDER_INITIAL_TOKENS, contextWindowOf(session));
             state = {start: windowStartFrom(session, len, need), len};
             renderWindows.set(session.id, state);
         }
@@ -4005,7 +4158,17 @@ export function createAIPanel(options) {
     }
 
     function renderMessages(keepScroll) {
+        renderMessagesInner(keepScroll);
+        // 消息流变了：结构面板的会话大纲要跟着更新（新增轮次 / 切换会话 / 压缩 / 编辑重发）
+        notifyStructure();
+        scheduleOutlineSync();
+    }
+
+    function renderMessagesInner(keepScroll) {
         if (!el.messages) return;
+        // 重绘会换掉消息节点，用量浮层的锚点随即失效
+        closeTurnUsagePop();
+        syncStreamView();
         const session = currentSession();
         // 全量重建会把 scrollTop 钳到 0；keepScroll=true 时记录并在重建后恢复，
         // 否则像切换计划模式这类重渲染会把当前对话弹到顶部。
@@ -4015,7 +4178,7 @@ export function createAIPanel(options) {
         renderTodos();
         updateChangesUI();
         if (!session) return;
-        if (!activeProfile() && !session.messages.length) {
+        if (!profileOf(session) && !session.messages.length) {
             el.messages.appendChild(emptyState('no-profile'));
             updateContextCount();
             updateScrollButton();
@@ -4036,11 +4199,12 @@ export function createAIPanel(options) {
         groups.forEach((group, groupIndex) => {
             renderTurn(group, session, groupIndex === groups.length - 1);
         });
-        if (stream && stream.sessionId === session.id) {
+        const live = streamOf(session.id);
+        if (live) {
             // 流式状态条钉在消息区最底部（任务清单卡片上方）：看板娘 + 甜澄漫游中 + 实时计时
             const bar = document.createElement('div');
             bar.className = 'ai-streaming-bar';
-            bar.dataset.processStart = String(Number(stream.startedAt) || 0);
+            bar.dataset.processStart = String(Number(live.startedAt) || 0);
             const mascot = document.createElement('img');
             mascot.className = 'ai-process-mascot';
             mascot.src = '/brand/mascot.png';
@@ -4054,7 +4218,7 @@ export function createAIPanel(options) {
             dots.innerHTML = '<i></i><i></i><i></i>';
             const timer = document.createElement('span');
             timer.className = 'ai-process-timer';
-            timer.textContent = aiFormatLiveDuration(Math.max(0, Date.now() - (Number(stream.startedAt) || 0)));
+            timer.textContent = aiFormatLiveDuration(Math.max(0, Date.now() - (Number(live.startedAt) || 0)));
             bar.append(mascot, label, dots, timer);
             el.messages.appendChild(bar);
             ensureProcessTicker();
@@ -4112,16 +4276,16 @@ export function createAIPanel(options) {
         return Number(group.user.turnStartedAt) || Number(group.user.ts) || 0;
     }
 
-    function turnDurationMs(group, finalItem, streamingFinal) {
-        if (streamingFinal && stream) return Math.max(0, Date.now() - (Number(stream.startedAt) || turnStartMs(group)));
+    function turnDurationMs(group, finalItem, live) {
+        if (live && finalItem) return Math.max(0, Date.now() - (Number(live.startedAt) || turnStartMs(group)));
         if (finalItem && finalItem.message.turnMs) return finalItem.message.turnMs;
         return 0;
     }
 
-    function processFoldLabel(group, finalItem, turnRunning) {
-        const ms = turnRunning && stream
-            ? Math.max(0, Date.now() - (Number(stream.startedAt) || turnStartMs(group)))
-            : turnDurationMs(group, finalItem, false);
+    function processFoldLabel(group, finalItem, turnRunning, live) {
+        const ms = turnRunning && live
+            ? Math.max(0, Date.now() - (Number(live.startedAt) || turnStartMs(group)))
+            : turnDurationMs(group, finalItem, null);
         const duration = ms ? '，用时 ' + aiFormatDuration(ms) : '';
         if (turnRunning) return '处理中' + duration;
         if (!finalItem) return '未完成' + duration;
@@ -4267,22 +4431,29 @@ export function createAIPanel(options) {
         const turnOptions = extraOptions || {};
         if (group.user) renderMessage(group.user, group.startIndex, session, host, turnOptions);
         const finalItem = turnFinalItem(group);
-        // 本轮文件改动汇总卡固定在轮次末尾（final answer 之后），不进过程折叠区
-        const summaryItem = group.items.length && group.items[group.items.length - 1].message.kind === 'changes-summary'
-            ? group.items[group.items.length - 1]
-            : null;
+        // 本轮文件改动汇总卡固定在轮次末尾（final answer 之后），不进过程折叠区。
+        // 取组内最后一张汇总卡，而不是只认「组内最后一项」——重放的历史数据里
+        // 卡片后面可能还跟着收尾消息，硬绑最后一项会让卡片在重开对话后消失。
+        let summaryItem = null;
+        for (let i = group.items.length - 1; i >= 0; i--) {
+            if (group.items[i].message.kind === 'changes-summary') {
+                summaryItem = group.items[i];
+                break;
+            }
+        }
         const processAll = (finalItem ? group.items.filter((item) => item !== finalItem) : group.items.slice())
-            .filter((item) => item !== summaryItem);
-        const turnRunning = !!(stream && stream.sessionId === session.id && isLastGroup);
-        const streamingFinal = turnRunning && finalItem && stream.assistant === finalItem.message;
+            .filter((item) => item.message.kind !== 'changes-summary');
+        const live = streamOf(session.id);
+        const turnRunning = !!(live && isLastGroup);
+        const streamingFinal = turnRunning && finalItem && live.assistant === finalItem.message;
         // 最终回答是否有正文可展示（流式/出错/停止都算；纯工具调用的 done 不算）。
         const finalHasBody = !!(finalItem && (finalItem.message.content || finalItem.message.status !== 'done'));
         // 最终回答的思考链平时挂在「最后一个 items 段」的折叠体里；轮次进行中若最终回答本身
         // 不渲染（纯工具调用、等待终端执行/审批），也必须挂过去，否则思考链会在工具执行期间消失。
         const finalReasoning = !!(finalItem && finalItem.message.reasoning && settings.aiShowThinking !== false &&
             (!turnRunning || !finalHasBody));
-        const duration = turnRunning && stream
-            ? Math.max(0, Date.now() - (Number(stream.startedAt) || turnStartMs(group)))
+        const duration = turnRunning && live
+            ? Math.max(0, Date.now() - (Number(live.startedAt) || turnStartMs(group)))
             : turnDurationMs(group, finalItem, false);
         // 按「已回答的提问卡」把过程内容切成多段：提问卡按时间序插在段之间（每段一个折叠行）。
         // 否则提问卡会被抽到全部过程之后，看起来始终钉在本轮底部、不被后续内容推上去。
@@ -4321,7 +4492,7 @@ export function createAIPanel(options) {
             const fold = document.createElement('div');
             fold.className = 'ai-process' + (turnRunning ? ' streaming' : '');
             fold.dataset.processKey = key;
-            if (turnRunning) fold.dataset.processStart = String(Number(stream.startedAt) || turnStartMs(group));
+            if (turnRunning) fold.dataset.processStart = String(Number(live.startedAt) || turnStartMs(group));
             // 轮次已结束：丢掉「处理中点过折叠条」留下的记忆，回到完成后默认值。
             if (!turnRunning && processFoldTouched.has(key)) {
                 processFoldTouched.delete(key);
@@ -4342,7 +4513,7 @@ export function createAIPanel(options) {
             const label = document.createElement('span');
             label.className = 'ai-process-label';
             // 流式时计时器在底部状态条（.ai-streaming-bar），fold 头只显示状态文本
-            label.textContent = turnRunning ? '处理中' : processFoldLabel(group, finalItem, turnRunning);
+            label.textContent = turnRunning ? '处理中' : processFoldLabel(group, finalItem, turnRunning, live);
             head.append(chev, label);
             let body = null;
             const ensureBody = () => {
@@ -4379,8 +4550,8 @@ export function createAIPanel(options) {
             if (showFinal) renderMessage(finalItem.message, finalItem.index, session, host,
                 Object.assign({}, turnOptions, {hideThinking: !streamingFinal}));
         }
-        if (summaryItem && (!turnRunning || !stream || stream.assistant !== summaryItem.message)) {
-            host.appendChild(renderChangesSummaryCard(summaryItem.message, session));
+        if (summaryItem && (!turnRunning || !live || live.assistant !== summaryItem.message)) {
+            host.appendChild(changesSummaryBlock(summaryItem.message, session));
         }
     }
 
@@ -4388,14 +4559,36 @@ export function createAIPanel(options) {
 
     const AI_CHANGES_SUMMARY_VISIBLE = 3;
 
-    // 轮次结束（finishStream）时聚合本轮时间窗内的 recordChange 记录，追加汇总卡消息。
-    function appendChangesSummary(session, startedAt) {
+    // 轮次结束（finishStream）时聚合本轮新增的 recordChange 记录，追加汇总卡消息。
+    // 用「轮开始时的 changes 快照」做切分，而不是比较时间戳：审批/写入耗时长、
+    // 系统时钟回拨或跨轮复用时，时间窗会把本轮记录整段过滤掉，卡片就静默消失。
+    function changesSnapshot(session) {
+        const list = Array.isArray(session && session.changes) ? session.changes : [];
+        const last = list.length ? list[list.length - 1] : null;
+        return {index: list.length, time: Number(last && last.time) || 0};
+    }
+
+    function appendChangesSummary(session, mark) {
         if (!session) return;
-        const since = Number(startedAt) || 0;
+        const list = Array.isArray(session.changes) ? session.changes : [];
+        const index = Math.max(0, Math.round(Number(mark && mark.index) || 0));
+        const since = Number(mark && mark.time) || 0;
+        // 索引可用时按位置切分（最准）；记录被上限裁剪过时退回按时间切分。
+        let start = 0;
+        let useIndex = false;
+        if (index > 0 && index <= list.length) {
+            const boundary = list[index - 1];
+            // 校验边界记录没被裁剪挪位：时间对得上才认索引。
+            if (!since || (boundary && Number(boundary.time) === since)) {
+                start = index;
+                useIndex = true;
+            }
+        }
         const merged = new Map();
-        for (const change of (session.changes || [])) {
+        for (let i = start; i < list.length; i++) {
+            const change = list[i];
             if (!change) continue;
-            if (since && Number(change.time) < since) continue;
+            if (!useIndex && since && Number(change.time) <= since) continue;
             const relPath = aiTextOf(change.relPath) || aiTextOf(change.path);
             if (!relPath) continue;
             const prev = merged.get(relPath) || {relPath, path: aiTextOf(change.path), added: 0, removed: 0};
@@ -4415,11 +4608,10 @@ export function createAIPanel(options) {
         });
     }
 
+    // 只返回卡片本身：外层 .ai-msg 壳由调用方提供（轮尾 / 消息渲染各一处），
+    // 避免重放时套两层 .ai-msg 导致缩进与宽度和其它消息不一致。
     function renderChangesSummaryCard(message, session) {
         const changes = (message.changes && Array.isArray(message.changes.files)) ? message.changes.files : [];
-        const wrap = document.createElement('div');
-        wrap.className = 'ai-msg assistant';
-        if (session) wrap.dataset.session = session.id;
         const card = document.createElement('div');
         card.className = 'ai-changes-card';
         const totalAdded = changes.reduce((sum, file) => sum + file.added, 0);
@@ -4449,7 +4641,8 @@ export function createAIPanel(options) {
         head.append(icon, title, stat, reviewBtn);
         card.appendChild(head);
         // 超过 3 个文件默认折叠，靠「再显示 N 个文件」展开
-        const foldKey = 'changes:' + (message._mid || message.ts || changes.length);
+        // 折叠状态按会话隔离：不同会话的汇总卡可能共用同一个消息序号
+        const foldKey = 'changes:' + ((session && session.id) || '') + ':' + (message._mid || message.ts || changes.length);
         const expanded = changesSummaryFold.has(foldKey) ? changesSummaryFold.get(foldKey) : false;
         const list = document.createElement('div');
         list.className = 'ai-changes-card-list';
@@ -4484,13 +4677,21 @@ export function createAIPanel(options) {
             more.addEventListener('click', () => {
                 const next = !expanded;
                 changesSummaryFold.set(foldKey, next);
-                const cardHost = wrap.parentNode;
+                const cardHost = card.parentNode;
                 const fresh = renderChangesSummaryCard(message, session);
-                if (cardHost) cardHost.replaceChild(fresh, wrap);
+                if (cardHost) cardHost.replaceChild(fresh, card);
             });
             card.appendChild(more);
         }
-        wrap.appendChild(card);
+        return card;
+    }
+
+    // 轮尾/重放共用的外壳：保证两种渲染路径的层叠与缩进完全一致。
+    function changesSummaryBlock(message, session) {
+        const wrap = document.createElement('div');
+        wrap.className = 'ai-msg assistant';
+        if (session) wrap.dataset.session = session.id;
+        wrap.appendChild(renderChangesSummaryCard(message, session));
         return wrap;
     }
 
@@ -4529,9 +4730,9 @@ export function createAIPanel(options) {
     }
 
     function ensureProcessTicker() {
-        if (processTicker || !stream) return;
+        if (processTicker || !anyStreaming()) return;
         processTicker = setInterval(() => {
-            if (!stream || !isOpen()) {
+            if (!anyStreaming() || !isOpen()) {
                 stopProcessTicker();
                 return;
             }
@@ -5645,29 +5846,12 @@ export function createAIPanel(options) {
         }
         wrap.classList.toggle('error', message.status === 'error');
 
+        // 用量不再单独占一行：并进操作行的「用量」徽标（点开是本轮明细）
         if (!streaming) appendActions(wrap, message, Number(wrap.dataset.aiIdx), currentSession());
-        updateUsage(wrap, message);
-    }
-
-    function updateUsage(wrap, message) {
-        let usage = wrap.querySelector('.ai-usage');
-        const show = settings.aiShowUsage !== false && message.usage && (message.usage.totalTokens || message.usage.promptTokens || message.usage.completionTokens);
-        if (!show) {
-            if (usage) usage.remove();
-            return;
-        }
-        if (!usage) {
-            usage = document.createElement('div');
-            usage.className = 'ai-usage';
-            wrap.appendChild(usage);
-        }
-        usage.textContent = 'tokens：输入 ' + (message.usage.promptTokens || 0) +
-            ' · 输出 ' + (message.usage.completionTokens || 0) +
-            ' · 合计 ' + (message.usage.totalTokens || 0);
     }
 
     async function acceptPlan(session, message, families) {
-        if (!session || stream || !session.planMode || !message || !message.planMode) return;
+        if (!session || streamOf(session.id) || !session.planMode || !message || !message.planMode) return;
         if (currentScopeOf(session) === 'read') {
             flash('当前为「只读访问」，执行阶段无法修改文件；请先在下方切换权限', true);
             return;
@@ -5711,6 +5895,8 @@ export function createAIPanel(options) {
         const sessionNow = session || currentSession();
         const lastAssistant = sessionNow ? lastAssistantIndex(sessionNow) : -1;
         const lastUser = sessionNow ? lastUserIndex(sessionNow) : -1;
+        // 只有「这条消息所属会话」在生成时才收起改写类操作：其他会话在跑不影响这里。
+        const sessionBusy = !!(sessionNow && streamOf(sessionNow.id));
         const icon = (path) => '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' + path + '</svg>';
         const icons = {
             copy: icon('<rect x="5.2" y="5.2" width="7.6" height="7.6" rx="1.4"/><path d="M3.6 10.2V3.9c0-.7.6-1.3 1.3-1.3h6.3"/>'),
@@ -5718,6 +5904,8 @@ export function createAIPanel(options) {
             regenerate: icon('<path d="M12.6 6.4A5 5 0 1 1 3.4 9.6"/><path d="M12.8 3.2v3.4H9.4"/>'),
             retry: icon('<path d="M12.6 6.4A5 5 0 1 1 3.4 9.6"/><path d="M12.8 3.2v3.4H9.4"/>'),
             rewind: icon('<path d="M6.2 4.4L2.8 7.8l3.4 3.4"/><path d="M3 7.8h6.2a4 4 0 1 1 0 8H6.6"/>'),
+            branch: icon('<circle cx="4.6" cy="3.4" r="1.7"/><circle cx="4.6" cy="12.6" r="1.7"/><circle cx="11.5" cy="6.4" r="1.7"/><path d="M4.6 5.1v5.8"/><path d="M4.6 8.9c0-1.7 1.3-2.5 3-2.5h2.2"/>'),
+            database: icon('<ellipse cx="8" cy="4.2" rx="4.5" ry="1.7"/><path d="M3.5 4.2v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V4.2"/><path d="M3.5 7.9v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V7.9"/>'),
         };
         const add = (act, label, disabled) => {
             const button = document.createElement('button');
@@ -5732,22 +5920,179 @@ export function createAIPanel(options) {
         };
         if (message.role === 'user') {
             add('copy', '复制');
-            if (index === lastUser && !stream) add('edit', '编辑重发');
+            if (index === lastUser && !sessionBusy) add('edit', '编辑重发');
         } else {
             add('copy', '复制');
             if (message.status === 'error') {
-                if (!stream) add('retry', '重试');
-            } else if (index === lastAssistant && !stream) {
+                if (!sessionBusy) add('retry', '重试');
+            } else if (index === lastAssistant && !sessionBusy) {
                 add('regenerate', '重新生成');
             }
-            if (!stream && !oneShot && index < sessionNow.messages.length - 1) {
+            if (!sessionBusy && !compactOf(sessionNow.id) && index < sessionNow.messages.length - 1) {
                 add('rewind', '回退到此轮（丢弃之后的消息）');
+            }
+            // 回合收尾信息：分支 / 本轮用量 / 耗时。生成中与失败轮不显示（还没得看、也没意义）
+            const finished = message.status !== 'streaming' && message.status !== 'error';
+            if (finished) {
+                if (!sessionBusy) add('branch', '在新对话中分支');
+                if (settings.aiShowUsage !== false && turnUsageTotal(message) > 0) {
+                    actions.appendChild(turnUsageChip(message, icons));
+                }
+                const clock = turnClockLabel(message);
+                if (clock) {
+                    const duration = document.createElement('span');
+                    duration.className = 'ai-msg-duration';
+                    duration.textContent = clock;
+                    duration.title = '本轮耗时';
+                    actions.appendChild(duration);
+                }
             }
         }
     }
 
+    // 本轮用量合计（totalTokens 缺失时用输入 + 输出兜底）
+    function turnUsageTotal(message) {
+        const usage = message && message.usage;
+        if (!usage) return 0;
+        const prompt = Number(usage.promptTokens) || 0;
+        const completion = Number(usage.completionTokens) || 0;
+        return Math.max(0, Number(usage.totalTokens) || (prompt + completion));
+    }
+
+    // 本轮耗时 → 00:34 / 1:02:03（不足 1 秒不显示）
+    function turnClockLabel(message) {
+        const ms = Math.max(0, Number(message && message.turnMs) || 0);
+        if (ms < 1000) return '';
+        const total = Math.round(ms / 1000);
+        const hours = Math.floor(total / 3600);
+        const minutes = Math.floor((total % 3600) / 60);
+        const seconds = total % 60;
+        const pad = (n) => String(n).padStart(2, '0');
+        return hours > 0 ? (hours + ':' + pad(minutes) + ':' + pad(seconds)) : (pad(minutes) + ':' + pad(seconds));
+    }
+
+    function turnUsageChip(message, icons) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'ai-msg-usage';
+        button.dataset.aiAct = 'usage';
+        button.title = '查看本轮用量明细';
+        button.setAttribute('aria-label', '本轮用量');
+        const glyph = document.createElement('span');
+        glyph.className = 'ai-msg-usage-icon';
+        glyph.innerHTML = (icons && icons.database) || '';
+        const text = document.createElement('span');
+        text.textContent = '用量 ' + aiFormatCompactTokens(turnUsageTotal(message)) + ' tok';
+        button.append(glyph, text);
+        return button;
+    }
+
+    // ---------- 本轮用量浮层 ----------
+
+    let turnUsagePop = null;
+    let turnUsageAnchor = null;
+    let turnUsageDismiss = null;
+
+    function closeTurnUsagePop() {
+        if (turnUsageDismiss) {
+            const dispose = turnUsageDismiss;
+            turnUsageDismiss = null;
+            dispose();
+        }
+        if (turnUsagePop) {
+            turnUsagePop.remove();
+            turnUsagePop = null;
+        }
+        turnUsageAnchor = null;
+    }
+
+    function showTurnUsagePop(anchor, message) {
+        closeTurnUsagePop();
+        if (!anchor || !message) return;
+        const usage = message.usage || {};
+        const prompt = Math.max(0, Number(usage.promptTokens) || 0);
+        const cached = Math.max(0, Number(usage.cachedTokens) || 0);
+        const cacheWrite = Math.max(0, Number(usage.cacheWriteTokens) || 0);
+        const completion = Math.max(0, Number(usage.completionTokens) || 0);
+        const total = turnUsageTotal(message);
+        const uncached = Math.max(0, prompt - cached);
+        const hitRate = prompt > 0 && cached > 0 ? Math.min(100, cached / prompt * 100) : -1;
+
+        const pop = document.createElement('div');
+        pop.className = 'ai-turn-usage';
+        const head = document.createElement('div');
+        head.className = 'ai-turn-usage-head';
+        const title = document.createElement('span');
+        title.className = 'ai-turn-usage-title';
+        const glyph = document.createElement('span');
+        glyph.className = 'ai-turn-usage-icon';
+        glyph.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="8" cy="4.2" rx="4.5" ry="1.7"/><path d="M3.5 4.2v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V4.2"/><path d="M3.5 7.9v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V7.9"/></svg>';
+        title.append(glyph, document.createTextNode('本轮用量'));
+        const sum = document.createElement('b');
+        sum.textContent = aiFormatExactCount(total) + ' tok';
+        head.append(title, sum);
+        pop.appendChild(head);
+
+        const rows = document.createElement('div');
+        rows.className = 'ai-turn-usage-rows';
+        const row = (label, value, mono) => {
+            const line = document.createElement('div');
+            line.className = 'ai-turn-usage-row';
+            const name = document.createElement('span');
+            name.textContent = label;
+            const val = document.createElement('span');
+            val.className = 'ai-turn-usage-value' + (mono ? ' num' : '');
+            val.textContent = value;
+            val.title = value;
+            line.append(name, val);
+            rows.appendChild(line);
+        };
+        const provider = [message.modelAccount, message.model].filter(Boolean).join(' / ');
+        row('提供方 / 模型', provider || '—');
+        row('缓存命中', hitRate >= 0 ? hitRate.toFixed(1) + '%' : '—');
+        row('未缓存输入', aiFormatExactCount(uncached) + ' tok', true);
+        row('缓存读取', aiFormatExactCount(cached) + ' tok', true);
+        row('缓存写入', aiFormatExactCount(cacheWrite) + ' tok', true);
+        row('输出', aiFormatExactCount(completion) + ' tok', true);
+        pop.appendChild(rows);
+        document.body.appendChild(pop);
+
+        const rect = anchor.getBoundingClientRect();
+        const width = pop.offsetWidth || 300;
+        const height = pop.offsetHeight || 200;
+        const left = Math.min(Math.max(8, rect.left - 6), Math.max(8, window.innerWidth - width - 8));
+        let top = rect.top - height - 8;
+        if (top < 8) top = Math.min(rect.bottom + 8, Math.max(8, window.innerHeight - height - 8));
+        pop.style.left = Math.round(left) + 'px';
+        pop.style.top = Math.round(top) + 'px';
+        turnUsagePop = pop;
+        turnUsageAnchor = anchor;
+
+        // 面板滚动 / 换会话 / 点别处 / Esc 都收起；滚轮滚动时浮层会脱锚，直接关。
+        const onDown = (e) => {
+            if (pop.contains(e.target)) return;
+            if (e.target && e.target.closest && e.target.closest('[data-ai-act="usage"]')) return;
+            closeTurnUsagePop();
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') closeTurnUsagePop();
+        };
+        const onScroll = () => closeTurnUsagePop();
+        document.addEventListener('mousedown', onDown, true);
+        document.addEventListener('keydown', onKey, true);
+        window.addEventListener('scroll', onScroll, true);
+        window.addEventListener('resize', onScroll);
+        turnUsageDismiss = () => {
+            document.removeEventListener('mousedown', onDown, true);
+            document.removeEventListener('keydown', onKey, true);
+            window.removeEventListener('scroll', onScroll, true);
+            window.removeEventListener('resize', onScroll);
+        };
+    }
+
     function isStreamingMessage(session, index) {
-        return !!(stream && stream.sessionId === session.id && index === session.messages.length - 1);
+        const live = session ? streamOf(session.id) : null;
+        return !!(live && index === session.messages.length - 1);
     }
 
     function lastAssistantIndex(session) {
@@ -5763,6 +6108,90 @@ export function createAIPanel(options) {
             if (message.role === 'user' && !message.systemNote) return i;
         }
         return -1;
+    }
+
+    // ---------- 结构面板的「会话结构」（用户消息定位条） ----------
+    // 结构面板在「内容区只有 AI 助手」时，或用户在两者间切换时，展示当前会话的用户消息。
+    // 这里只提供数据与跳转能力，渲染在 session-outline.js / structure.js。
+
+    const OUTLINE_MAX_ITEMS = 400;
+    let outlineActiveIndex = -1;
+    let outlineFrame = 0;
+    let outlineTimer = 0;
+
+    function sessionOutlineSnapshot() {
+        const session = currentSession();
+        if (!session) return {sessionId: '', items: [], activeIndex: -1};
+        const built = buildSessionOutlineItems(session.messages, {max: OUTLINE_MAX_ITEMS});
+        return {
+            sessionId: session.id,
+            total: built.total,
+            truncated: built.truncated,
+            items: built.items,
+            activeIndex: outlineActiveIndex,
+        };
+    }
+
+    // 视口顶部所在的那一轮：scrollTop 落在某条用户消息之内时就认为定位到它
+    function outlineActiveFromView() {
+        if (!el.messages) return -1;
+        const nodes = el.messages.querySelectorAll('.ai-msg.user:not(.archived):not(.ai-app-msg):not(.model-switch)');
+        if (!nodes.length) return -1;
+        const top = el.messages.getBoundingClientRect().top;
+        const pick = (node) => {
+            const idx = Number(node.dataset.aiIdx);
+            return Number.isFinite(idx) ? idx : -1;
+        };
+        for (const node of nodes) {
+            if (node.getBoundingClientRect().bottom > top + 4) return pick(node);
+        }
+        return pick(nodes[nodes.length - 1]);
+    }
+
+    function scheduleOutlineSync() {
+        if (outlineFrame) return;
+        outlineFrame = requestAnimationFrame(() => {
+            outlineFrame = 0;
+            const next = outlineActiveFromView();
+            if (next === outlineActiveIndex) return;
+            outlineActiveIndex = next;
+            notifyStructure();
+        });
+    }
+
+    // 结构面板要跟着变的时机（开合 / 显示方式 / 消息变化）统一从这里通知
+    function notifyStructure() {
+        if (!onPanelStateChange) return;
+        clearTimeout(outlineTimer);
+        outlineTimer = setTimeout(() => {
+            try {
+                onPanelStateChange();
+            } catch (e) {}
+        }, 140);
+    }
+
+    // 跳到某一轮用户消息：目标在窗口之外时先把更早的消息放进来
+    function jumpToSessionMessage(index) {
+        const session = currentSession();
+        const idx = Math.round(Number(index));
+        if (!session || !Number.isFinite(idx) || idx < 0 || idx >= session.messages.length) return false;
+        const state = renderWindowState(session);
+        if (idx < state.start) {
+            state.start = Math.max(0, idx - 8);
+            state.len = session.messages.length;
+            renderWindows.set(session.id, state);
+            renderMessages(true);
+        }
+        const node = el.messages ? el.messages.querySelector('.ai-msg[data-ai-idx="' + idx + '"]') : null;
+        if (!node) return false;
+        if (node.scrollIntoView) node.scrollIntoView({block: 'center', behavior: 'smooth'});
+        node.classList.remove('ai-msg-flash');
+        void node.offsetWidth;
+        node.classList.add('ai-msg-flash');
+        setTimeout(() => node.classList.remove('ai-msg-flash'), 1600);
+        outlineActiveIndex = idx;
+        notifyStructure();
+        return true;
     }
 
     function turnStartAt(session, assistantIndex) {
@@ -5906,11 +6335,9 @@ export function createAIPanel(options) {
 
     async function contextSummaryText() {
         const session = currentSession();
-        const profile = activeProfile();
+        const profile = profileOf(session);
         const bundle = await assembleSystemContext(session, attachments);
-        lastSystemPrompt = bundle.text;
-        lastContextMeta = bundle.meta;
-        systemPromptEstimateAt = Date.now();
+        rememberPrompt(session && session.id, bundle);
         const apiMessages = buildApiMessages(session, null, bundle.text);
         let chars = 0;
         let cjk = 0;
@@ -5922,7 +6349,7 @@ export function createAIPanel(options) {
         const tokens = estimateApiMessagesTokens(apiMessages);
         const imageStats = aiImageStats(apiMessages);
         const totalTokens = tokens;
-        const windowSize = activeContextWindow();
+        const windowSize = contextWindowOf(session);
         const percent = windowSize > 0 ? (totalTokens / windowSize * 100) : 0;
         const userCount = session ? session.messages.filter((m) => m.role === 'user' && !m.systemNote).length : 0;
         const assistantCount = session ? session.messages.filter((m) => m.role === 'assistant').length : 0;
@@ -5970,7 +6397,7 @@ export function createAIPanel(options) {
     function updateContextCount() {
         if (el.contextCount) {
             const session = currentSession();
-            const messages = buildApiMessages(session, null, lastSystemPrompt);
+            const messages = buildApiMessages(session, null, promptTextOf(session && session.id));
             const chars = messages.reduce((sum, message) => sum + aiTextOf(message.content).length, 0);
             const extra = attachments.reduce((sum, item) => sum + aiTextOf(item.content).length, 0);
             const imageCount = aiImageStats(messages).count + attachments.filter((item) => item.kind === 'image').length;
@@ -5983,27 +6410,30 @@ export function createAIPanel(options) {
     // 重开面板 / 切会话 / 注入开关变化后，按当前环境重建系统提示词并刷新占用估算。
     // 生成中不重建：本轮请求用的是 stream.systemPrompt，避免覆盖为下一轮的估算。
     function refreshSystemPromptEstimate(force) {
-        if (stream || oneShot || !isOpen()) return Promise.resolve();
         const session = currentSession();
         if (!session) return Promise.resolve();
-        if (!force && Date.now() - systemPromptEstimateAt < 2000) return Promise.resolve();
-        if (systemPromptEstimateJob) return systemPromptEstimateJob;
         const sessionId = session.id;
-        systemPromptEstimateJob = Promise.resolve()
+        // 本会话正在生成/压缩时跳过：本轮用的是它自己的快照，不会被这次估算覆盖
+        if (streamOf(sessionId) || compactOf(sessionId) || !isOpen()) return Promise.resolve();
+        if (!force && Date.now() - promptCachedAt(sessionId) < 2000) return Promise.resolve();
+        // in-flight 也按会话去重：A 的估算在飞不该让 B 直接复用它
+        const running = promptJobs.get(sessionId);
+        if (running) return running;
+        const job = Promise.resolve()
             .then(() => assembleSystemContext(session, attachments))
             .then((bundle) => {
-                if (stream || oneShot) return;
-                if (currentSession() && currentSession().id !== sessionId) return;
-                lastSystemPrompt = bundle.text;
-                lastContextMeta = bundle.meta;
-                systemPromptEstimateAt = Date.now();
+                if (streamOf(sessionId) || compactOf(sessionId)) return;
+                rememberPrompt(sessionId, bundle);
+                const viewing = currentSession();
+                if (!viewing || viewing.id !== sessionId) return;
                 updateContextCount();
             })
             .catch(() => {})
             .then(() => {
-                systemPromptEstimateJob = null;
+                if (promptJobs.get(sessionId) === job) promptJobs.delete(sessionId);
             });
-        return systemPromptEstimateJob;
+        promptJobs.set(sessionId, job);
+        return job;
     }
 
     // ---------- Composer 统计行 / 上下文弹层 ----------
@@ -6266,18 +6696,16 @@ export function createAIPanel(options) {
         const seq = ++ctxPopSeq;
         const session = currentSession();
         if (!session || !el.ctxPop || el.ctxPop.classList.contains('hidden')) return;
-        let systemText = lastSystemPrompt || AI_DEFAULT_SYSTEM_PROMPT;
+        let systemText = promptTextOf(session.id);
         if (refreshSystem) {
             try {
                 const bundle = await assembleSystemContext(session, attachments);
-                lastSystemPrompt = bundle.text;
-                lastContextMeta = bundle.meta;
-                systemPromptEstimateAt = Date.now();
+                rememberPrompt(session.id, bundle);
                 systemText = bundle.text;
             } catch (e) {}
         }
         if (seq !== ctxPopSeq || currentSession() !== session || el.ctxPop.classList.contains('hidden')) return;
-        const windowSize = activeContextWindow();
+        const windowSize = contextWindowOf(session);
         const messages = buildApiMessages(session, null, systemText);
         let systemTokens = 0;
         let messageTokens = 0;
@@ -7602,8 +8030,8 @@ export function createAIPanel(options) {
         // 列表条目的「待确认」状态跟着审批走（用户可能正在看别的会话）。
         renderSessionList();
         // 状态栏徽标：先亮「待确认」，数字是本条补丁的统计（尚未落盘）
-        liveWriteEntry(info);
-        emitWriteStatus(writeStatusPayload('pending', liveWrite, {added: approval.added, removed: approval.removed}));
+        const pendingEntry = liveWriteEntry(session, info);
+        emitWriteStatus(writeStatusPayload('pending', pendingEntry, {added: approval.added, removed: approval.removed}), session && session.id);
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });
@@ -7636,28 +8064,80 @@ export function createAIPanel(options) {
     }
 
     function bgLiveFinish(jobId, code) {
-        const live = bgJobLive.get(jobId);
-        if (!live || !live.message || !live.message.bg) return;
-        const bg = live.message.bg;
+        const key = String(jobId || '');
+        const live = bgJobLive.get(key);
+        const entry = bgJobIndex.get(key);
+        // bgJobLive 只在首次收到 cmd-out 时由 bgLiveAppend 创建；完全没有输出的作业
+        //（如 sleep 2; exit 0）从出生到结束都没有该条目，旧实现直接 return 导致卡片
+        // 永远停在 running。这里退回 bgJobIndex（作业启动时已登记）取消息对象。
+        const target = (live && live.message && live.message.bg)
+            ? live
+            : (entry && entry.message && entry.message.bg
+                ? {session: entry.session, message: entry.message}
+                : null);
+        if (!target) return;
+        const bg = target.message.bg;
+        // 退出码可能以字符串到达（cmd-exit 广播 / 后端返回值），统一换算成数字再判 -1
+        const codeNum = (code == null || code === '') ? null : Number(code);
         if (bg.state === 'running') {
-            bg.state = code === -1 ? 'stopped' : 'exited';
-            bg.code = code;
+            bg.state = codeNum === -1 ? 'stopped' : 'exited';
+            bg.code = codeNum;
         } else {
-            bg.code = code;
+            bg.code = codeNum;
         }
-        if (live.timer) {
+        if (live && live.timer) {
             clearTimeout(live.timer);
             live.timer = 0;
         }
-        refreshToolWrap(live.session, live.message);
-        refreshHeadChips();
-        notifyBgListeners(jobId);
+        refreshToolWrap(target.session, target.message);
+        notifyBackgroundActivity();
+        notifyBgListeners(key);
     }
 
     // check_command / stop_command 的结果同步回作业卡片状态
     function syncBgCardState(jobId, st) {
         if (!st || st.state !== 'exited') return;
         bgLiveFinish(jobId, st.code);
+    }
+
+    // 「后台终端」弹层对账：running 只来自内存里的 message.bg.state，靠 cmd-exit 事件推进。
+    // 事件一旦错过（修复前结束的作业、或事件早于登记到达），卡片会永久停在「后台运行中…」，
+    // 而事件不会重放。打开弹层时按需向后端确认一次真实状态。
+    // 注意：不写 bgJobCursors —— 那是 check_command 的增量游标，读走会吞掉模型端未读输出。
+    let bgReconcileAt = 0;
+    async function reconcileBgJobs() {
+        if (!backend.AICommandStatus) return;
+        const now = Date.now();
+        if (now - bgReconcileAt < 1000) return;
+        bgReconcileAt = now;
+        const pending = [];
+        let changed = false;
+        for (const [jobId, entry] of bgJobIndex) {
+            if (bgJobStateOf(entry) === 'running') pending.push(jobId);
+        }
+        for (const jobId of pending) {
+            let st = null;
+            try {
+                st = await backend.AICommandStatus(jobId, bgJobCursors.get(jobId) || 0);
+            } catch (e) {
+                continue; // 查询失败保持原状，下次打开弹层再试
+            }
+            if (!st) continue;
+            if (st.state === 'exited') {
+                syncBgCardState(jobId, st);
+            } else if (st.state === 'notfound') {
+                // 应用重启后作业表已清空：收敛为已停止，避免永久转圈
+                const entry = bgJobIndex.get(jobId);
+                const bg = entry && entry.message && entry.message.bg;
+                if (bg && bg.state === 'running') {
+                    bg.state = 'stopped';
+                    bg.code = -1;
+                    refreshToolWrap(entry.session, entry.message);
+                    changed = true;
+                }
+            }
+        }
+        if (changed) notifyBackgroundActivity();
     }
 
     // run_command / background_command 共用审批：项目规则 → 危险命令单次确认 → 会话/项目放行
@@ -7750,9 +8230,15 @@ export function createAIPanel(options) {
     const AI_CLASSIFIER_CACHE_TTL = 10 * 60 * 1000;
     const AI_CLASSIFIER_TIMEOUT = 12000;
 
+    // 自动审批分类器：**串行队列**（参考 harness 的做法）。
+    // 同一时间只跑一个模型请求，避免并发把接口打爆 / 触发限流；后来的请求排队等待，
+    // 而不是像以前那样直接返回「分类器正忙」把决定权甩回人工。
+    // 每个请求带发起会话：用户手动停止生成时，只撤销该会话的分类请求（排队中 / 在飞）。
     let classifierJob = null;
     let classifierSeq = 0;
+    const classifierQueue = [];
     const classifierCache = new Map();
+    const classifierInflight = new Map(); // key -> job：同一命令重复请求合并成一次模型调用
 
     function parseClassifierVerdict(buffer) {
         const match = String(buffer || '').match(/\{[\s\S]*?\}/);
@@ -7766,14 +8252,77 @@ export function createAIPanel(options) {
         }
     }
 
+    // 结算一个分类请求：唤醒全部等待方、写缓存（撤销/失败不写）、放行队列。
+    function settleClassifierJob(job, verdict, options) {
+        if (!job || job.settled) return;
+        job.settled = true;
+        if (job.timer) clearTimeout(job.timer);
+        job.timer = 0;
+        if (classifierInflight.get(job.key) === job) classifierInflight.delete(job.key);
+        if (classifierJob === job) classifierJob = null;
+        const cache = !(options && options.cache === false) && verdict && job.key;
+        if (cache) {
+            classifierCache.set(job.key, {verdict, at: Date.now()});
+            if (classifierCache.size > AI_CLASSIFIER_CACHE_LIMIT) {
+                const first = classifierCache.keys().next();
+                if (!first.done) classifierCache.delete(first.value);
+            }
+        }
+        for (const resolve of job.waiters.splice(0)) {
+            try { resolve(verdict); } catch (e) {}
+        }
+        if (!(options && options.skipPump)) pumpClassifierQueue();
+    }
+
     function resolveClassifierJob(job, verdict) {
-        if (!job || !job.resolve) return;
-        job.resolve(verdict);
+        settleClassifierJob(job, verdict);
+    }
+
+    // 启动队列里的下一个请求（一次只发一个）。
+    function pumpClassifierQueue() {
+        if (classifierJob) return;
+        while (classifierQueue.length) {
+            const job = classifierQueue.shift();
+            if (!job) continue;
+            if (job.settled) continue;
+            if (job.cancelled) {
+                settleClassifierJob(job, {allow: false, reason: '已取消分类，改由人工确认'}, {cache: false, skipPump: true});
+                continue;
+            }
+            classifierJob = job;
+            noteForSession(job.sessionId, 'AI 分类器判定中：' + job.command.replace(/\s+/g, ' ').slice(0, 80));
+            job.timer = setTimeout(() => {
+                try { if (backend.AIStop) backend.AIStop(job.id); } catch (e) {}
+                settleClassifierJob(job, {allow: false, reason: '分类器超时'});
+            }, AI_CLASSIFIER_TIMEOUT);
+            Promise.resolve(backend.AISendChat(job.id, job.cfg, job.messages, [], 0)).catch(() => {
+                settleClassifierJob(job, {allow: false, reason: '分类器请求失败'});
+            });
+            return;
+        }
+    }
+
+    // 用户停止某个会话的生成：撤销它排队中与在飞的分类请求（工具随后走人工确认）。
+    function cancelClassifierJobs(sessionId) {
+        if (!sessionId) return;
+        for (let i = classifierQueue.length - 1; i >= 0; i--) {
+            const job = classifierQueue[i];
+            if (!job || job.sessionId !== sessionId) continue;
+            classifierQueue.splice(i, 1);
+            job.cancelled = true;
+            settleClassifierJob(job, {allow: false, reason: '生成已停止，改由人工确认'}, {cache: false, skipPump: true});
+        }
+        const running = classifierJob;
+        if (running && running.sessionId === sessionId) {
+            running.cancelled = true;
+            try { if (backend.AIStop) backend.AIStop(running.id); } catch (e) {}
+            settleClassifierJob(running, {allow: false, reason: '生成已停止，改由人工确认'}, {cache: false});
+        }
     }
 
     // 分类器请求模型：设置了专用模型引用（设置 → AI → 权限 → 高级配置）且仍存在时
-    // 用它的完整连接信息（账号连接 + 条目模型参数），否则跟随当前模型。
-    function classifierModelRef() {
+    // 用它的完整连接信息（账号连接 + 条目模型参数），否则跟随「发起命令的会话」的模型。
+    function classifierModelRef(session) {
         const ref = resolveModelRef(config.autoClassifierModel, config.profiles);
         if (ref) {
             const sep = ref.indexOf('|');
@@ -7781,23 +8330,29 @@ export function createAIPanel(options) {
             const entry = account ? modelEntryOf(account, ref.slice(sep + 1)) : null;
             if (account && entry) return {account, entry};
         }
-        return {account: activeProfile(), entry: activeModelEntry()};
+        return {account: profileOf(session), entry: entryOf(session)};
     }
 
     function classifyCommandForAuto(session, command, cwd) {
         const fallback = {allow: false, reason: '分类器不可用'};
         if (config.autoClassifier !== true || !backend.AISendChat) return Promise.resolve(fallback);
-        const modelRef = classifierModelRef();
+        const modelRef = classifierModelRef(session);
         if (!modelRef || !modelRef.account || !modelRef.entry) return Promise.resolve(fallback);
-        if (classifierJob) return Promise.resolve({allow: false, reason: '分类器正忙'});
         const key = aiTextOf(cwd) + '\u0000' + commandText(command);
         const cached = classifierCache.get(key);
         if (cached && Date.now() - cached.at < AI_CLASSIFIER_CACHE_TTL) return Promise.resolve(cached.verdict);
-        showNote('AI 分类器判定中：' + commandText(command).replace(/\s+/g, ' ').slice(0, 80));
-        const id = (session && session.id ? session.id : 'session') + '#classifier-' + (++classifierSeq);
-        const job = {id, buffer: '', resolve: null, timer: 0};
-        classifierJob = job;
-        const requestMessages = [
+        // 同一条命令已经在判定：共用一次模型调用，只是多挂一个等待方
+        const inflight = classifierInflight.get(key);
+        if (inflight) return new Promise((resolve) => { inflight.waiters.push(resolve); });
+        const sessionId = (session && session.id) || '';
+        const id = (sessionId || 'session') + '#classifier-' + (++classifierSeq);
+        const cfg = Object.assign(configForModel(modelRef.account, modelRef.entry), {
+            maxTokens: 120,
+            temperature: 0,
+            thinking: false,
+            reasoningEffort: '',
+        });
+        const messages = [
             {role: 'system', content: AI_CLASSIFIER_PROMPT},
             {role: 'user', content: JSON.stringify({
                 command: commandText(command).slice(0, 2000),
@@ -7805,31 +8360,20 @@ export function createAIPanel(options) {
                 workspace: aiDisplayRootLabel(getScopeRoot()),
             })},
         ];
-        const cfg = Object.assign(configForModel(modelRef.account, modelRef.entry), {
-            maxTokens: 120,
-            temperature: 0,
-            thinking: false,
-            reasoningEffort: '',
-        });
-        return new Promise((resolve) => {
-            job.resolve = (verdict) => {
-                if (classifierJob === job) classifierJob = null;
-                clearTimeout(job.timer);
-                classifierCache.set(key, {verdict, at: Date.now()});
-                if (classifierCache.size > AI_CLASSIFIER_CACHE_LIMIT) {
-                    const first = classifierCache.keys().next();
-                    if (!first.done) classifierCache.delete(first.value);
-                }
-                resolve(verdict);
-            };
-            job.timer = setTimeout(() => {
-                try { if (backend.AIStop) backend.AIStop(id); } catch (e) {}
-                resolveClassifierJob(job, {allow: false, reason: '分类器超时'});
-            }, AI_CLASSIFIER_TIMEOUT);
-            Promise.resolve(backend.AISendChat(id, cfg, requestMessages, [], 0)).catch(() => {
-                resolveClassifierJob(job, {allow: false, reason: '分类器请求失败'});
-            });
-        });
+        const job = {
+            id, key, sessionId, cfg, messages,
+            command: commandText(command),
+            buffer: '',
+            waiters: [],
+            timer: 0,
+            settled: false,
+            cancelled: false,
+        };
+        classifierInflight.set(key, job);
+        classifierQueue.push(job);
+        const promise = new Promise((resolve) => { job.waiters.push(resolve); });
+        pumpClassifierQueue();
+        return promise;
     }
 
     function markCommandAutoApproved(session, toolMessage, command, cwd, toolName, source, detail) {
@@ -7966,8 +8510,10 @@ export function createAIPanel(options) {
         renderSessionList();
     }
 
-    function cancelPendingApprovals(reason) {
+    // sessionId 提供时只取消该会话的待审批：多会话并发生成时停 A 不能连坐 B。
+    function cancelPendingApprovals(reason, sessionId) {
         for (const [key, entry] of pendingApprovals) {
+            if (sessionId && !(entry.session && entry.session.id === sessionId)) continue;
             entry.approval.state = 'cancelled';
             entry.toolMessage.status = 'done';
             entry.toolMessage.content = reason || '审批已取消';
@@ -7978,7 +8524,7 @@ export function createAIPanel(options) {
             }
             refreshToolWrap(entry.session, entry.toolMessage);
         }
-        if (pendingApprovals.size) pendingApprovals.clear();
+        if (!sessionId && pendingApprovals.size) pendingApprovals.clear();
         persistSessions();
         updateComposerTakeover(true);
         renderSessionList();
@@ -8025,8 +8571,9 @@ export function createAIPanel(options) {
         renderSessionList();
     }
 
-    function cancelPendingEnvCreations(reason) {
+    function cancelPendingEnvCreations(reason, sessionId) {
         for (const [key, entry] of pendingEnvCreations) {
+            if (sessionId && !(entry.session && entry.session.id === sessionId)) continue;
             if (entry.toolMessage.envAsk) entry.toolMessage.envAsk.state = 'cancelled';
             entry.toolMessage.status = 'done';
             entry.toolMessage.content = reason || '变量创建已取消';
@@ -8034,7 +8581,7 @@ export function createAIPanel(options) {
             entry.resolve({approved: false, cancelled: true});
             refreshToolWrap(entry.session, entry.toolMessage);
         }
-        if (pendingEnvCreations.size) pendingEnvCreations.clear();
+        if (!sessionId && pendingEnvCreations.size) pendingEnvCreations.clear();
         persistSessions();
         updateComposerTakeover(true);
         renderSessionList();
@@ -8125,7 +8672,7 @@ export function createAIPanel(options) {
         if (data.stop && entry.stream) {
             entry.stream.stopped = true;
             setTimeout(() => {
-                if (stream === entry.stream) stopGeneration();
+                if (streams.get(entry.stream.sessionId) === entry.stream) stopGeneration(entry.stream);
             }, 0);
         }
     }
@@ -8213,8 +8760,9 @@ export function createAIPanel(options) {
         });
     }
 
-    function cancelPendingAsks(reason) {
+    function cancelPendingAsks(reason, sessionId) {
         for (const [key, entry] of pendingAsks) {
+            if (sessionId && !(entry.session && entry.session.id === sessionId)) continue;
             clearAskTimers(entry);
             removeAskDraft(key);
             entry.ask.state = 'cancelled';
@@ -8229,7 +8777,7 @@ export function createAIPanel(options) {
             entry.resolve(reason || '用户未回答');
             refreshToolWrap(entry.session, entry.toolMessage);
         }
-        if (pendingAsks.size) pendingAsks.clear();
+        if (!sessionId && pendingAsks.size) pendingAsks.clear();
         persistSessions();
         updateComposerTakeover();
         renderSessionList();
@@ -8309,19 +8857,68 @@ export function createAIPanel(options) {
     // ---- 实时写入状态（状态栏徽标） ----
     // 只在写操作应用前后各推一次；同一轮内同一文件的多次改动按累计值上报，
     // 与轮末「已编辑 N 个文件」汇总卡口径一致。外部编辑器 / git 的改动不会触发。
-    function emitWriteStatus(payload) {
+    // 按会话隔离（同 dsh 的「写入属于发起它的会话」）：状态栏只显示当前查看会话的写入，
+    // 后台会话的写入不会闪现在你正在看的对话上；切回该会话时恢复它自己的状态。
+    const liveWrites = new Map();   // sessionId -> {relPath, path, added, removed}
+    const writeBadges = new Map();  // sessionId -> 最近一次 payload
+
+    function viewedSessionId() {
+        const session = currentSession();
+        return session ? session.id : '';
+    }
+
+    // 状态栏的「瞬时态」（done / failed / denied）由 main.js 自己 5 秒后隐藏；
+    // 切会话时只在「写入还没结束」或「刚刚结束」时回放，避免把上一分钟的旧徽标又闪一次。
+    const WRITE_BADGE_REPLAY_MS = 5000;
+
+    function emitWriteStatus(payload, sessionId) {
         if (!payload) return;
+        const owner = sessionId || '';
+        if (owner) writeBadges.set(owner, {payload, at: Date.now()});
+        // 只有「发起写入的会话」正被查看时才更新状态栏；后台写入只记账不打扰
+        if (owner && owner !== viewedSessionId()) return;
         for (const fn of writeStatusListeners) {
             try { fn(payload); } catch (e) {}
         }
     }
 
-    function liveWriteEntry(info) {
+    // 切会话时把状态栏切到目标会话自己的写入状态（没有就回到 idle）
+    function syncWriteBadgeForView() {
+        const owner = viewedSessionId();
+        const record = owner ? writeBadges.get(owner) : null;
+        const live = record && record.payload && (record.payload.state === 'pending' || record.payload.state === 'running');
+        const recent = record && Date.now() - (Number(record.at) || 0) < WRITE_BADGE_REPLAY_MS;
+        const next = (live || recent) ? record.payload : {state: 'idle'};
+        for (const fn of writeStatusListeners) {
+            try { fn(next); } catch (e) {}
+        }
+    }
+
+    function liveWriteOf(sessionId) {
+        const id = sessionId || '';
+        if (!id) return null;
+        let entry = liveWrites.get(id);
+        if (!entry) {
+            entry = {relPath: '', path: '', added: 0, removed: 0};
+            liveWrites.set(id, entry);
+        }
+        return entry;
+    }
+
+    function liveWriteEntry(session, info) {
         const relPath = aiTextOf(info && info.relPath) || aiTextOf(info && info.path);
         if (!relPath) return null;
-        if (liveWrite.relPath !== relPath) liveWrite = {relPath, path: info.path || '', added: 0, removed: 0};
-        liveWrite.path = info.path || liveWrite.path;
-        return liveWrite;
+        const id = (session && session.id) || '';
+        const entry = liveWriteOf(id);
+        if (!entry) return null;
+        if (entry.relPath !== relPath) {
+            entry.relPath = relPath;
+            entry.path = info.path || '';
+            entry.added = 0;
+            entry.removed = 0;
+        }
+        entry.path = info.path || entry.path;
+        return entry;
     }
 
     function writeStatusPayload(state, entry, extra) {
@@ -8335,8 +8932,10 @@ export function createAIPanel(options) {
         }, extra || {});
     }
 
-    function resetLiveWrite() {
-        liveWrite = {relPath: '', path: '', added: 0, removed: 0};
+    function resetLiveWrite(sessionId) {
+        const id = sessionId || '';
+        if (id) liveWrites.delete(id);
+        else liveWrites.clear();
     }
 
     function recordChange(session, info) {
@@ -8403,7 +9002,7 @@ export function createAIPanel(options) {
             toolMessage.status = 'done';
             toolMessage.content = '项目权限规则禁止写入该文件';
             // 状态栏徽标：被规则拦下也提示一次，随后自动隐藏
-            emitWriteStatus(writeStatusPayload('denied', liveWriteEntry(info)));
+            emitWriteStatus(writeStatusPayload('denied', liveWriteEntry(session, info)), session && session.id);
             persistApprovalMutation(session, toolMessage);
             refreshToolWrap(session, toolMessage);
             return '项目权限规则禁止写入：' + info.relPath + '（规则 ' + decision.rule + '）';
@@ -8437,13 +9036,13 @@ export function createAIPanel(options) {
                     : '用户放弃了本次更改，文件未修改。';
             }
         }
-        const writeEntry = liveWriteEntry(info);
+        const writeEntry = liveWriteEntry(session, info);
         if (writeEntry) {
             writeEntry.added += Math.max(0, Math.round(Number(info.added) || 0));
             writeEntry.removed += Math.max(0, Math.round(Number(info.removed) || 0));
         }
         // 「写入中」：SaveFile 前后各推一次，状态栏据此走 待确认 → 写入中 → 已修改
-        emitWriteStatus(writeStatusPayload('running', writeEntry));
+        emitWriteStatus(writeStatusPayload('running', writeEntry), session && session.id);
         try {
             if (info.newFile && backend.AIEnsureDir) {
                 // 新文件可能位于尚不存在的目录（如 .cadt/）：SaveFile 只写文件、不建父目录。
@@ -8456,11 +9055,11 @@ export function createAIPanel(options) {
                 toolMessage.approval.error = String((e && e.message) || e);
                 persistApprovalMutation(session, toolMessage);
             }
-            emitWriteStatus(writeStatusPayload('failed', writeEntry, {error: String((e && e.message) || e)}));
+            emitWriteStatus(writeStatusPayload('failed', writeEntry, {error: String((e && e.message) || e)}), session && session.id);
             throw e;
         }
         recordChange(session, info);
-        emitWriteStatus(writeStatusPayload('done', writeEntry));
+        emitWriteStatus(writeStatusPayload('done', writeEntry), session && session.id);
         notifyFileChanged(info.path);
         return '已应用更改：' + info.relPath + '（+' + info.added + ' −' + info.removed + '）';
     }
@@ -8976,12 +9575,12 @@ export function createAIPanel(options) {
                 refreshToolWrap(ctx.session, ctx.toolMessage);
                 // 状态栏徽标：补丁是多文件动作，按计划合计上报（relPath 用补丁摘要）
                 const patchRelPath = approvalRef.summary || preview.summary || '补丁';
-                const patchEntry = liveWriteEntry({relPath: patchRelPath, path: preview.root || root || ''});
+                const patchEntry = liveWriteEntry(ctx.session, {relPath: patchRelPath, path: preview.root || root || ''});
                 if (patchEntry) {
                     patchEntry.added += Math.max(0, Math.round(Number(preview.added) || 0));
                     patchEntry.removed += Math.max(0, Math.round(Number(preview.removed) || 0));
                 }
-                emitWriteStatus(writeStatusPayload('running', patchEntry));
+                emitWriteStatus(writeStatusPayload('running', patchEntry), ctx.session && ctx.session.id);
                 let result;
                 try {
                     result = await backend.PatchApply(approvalRef.planId, selected, null, mode);
@@ -8990,7 +9589,7 @@ export function createAIPanel(options) {
                     attempt.count += 1;
                     attempt.lastCode = 'PATCH_APPLY_IO';
                     patchAttempts.set(hash, attempt);
-                    emitWriteStatus(writeStatusPayload('failed', patchEntry, {error: msg}));
+                    emitWriteStatus(writeStatusPayload('failed', patchEntry, {error: msg}), ctx.session && ctx.session.id);
                     return patchErrorText('PATCH_APPLY_IO', '写入失败', msg, false);
                 }
                 if (ctx.toolMessage.approval) {
@@ -9017,7 +9616,7 @@ export function createAIPanel(options) {
                         rollbackFailed ? 'failed' : 'done',
                         {relPath: patchRelPath, path: patchEntry ? patchEntry.path : (preview.root || root || ''), added: appliedAdded, removed: appliedRemoved},
                         rollbackFailed ? {error: '回滚失败，文件可能需要手动检查'} : null
-                    ));
+                    ), ctx.session && ctx.session.id);
                 }
                 if (result.code === 'PATCH_ROLLBACK_FAILED') {
                     attempt.count += 1;
@@ -9214,8 +9813,11 @@ export function createAIPanel(options) {
                 ctx.toolMessage.bgLog = '';
                 bgJobCursors.set(job.jobId, 0);
                 // 头部「终端」chip 与内容区标签页的数据源（运行期）
-                bgJobIndex.set(job.jobId, {session: ctx.session, message: ctx.toolMessage, command, cwd, startedAt: Date.now()});
-                refreshHeadChips();
+                bgJobIndex.set(job.jobId, {
+                    session: ctx.session, rootSessionId: rootSessionIdOf(ctx.session),
+                    message: ctx.toolMessage, command, cwd, startedAt: Date.now(),
+                });
+                notifyBackgroundActivity();
                 // 实时输出：cmd-out 广播 → 卡片；面板关闭时只更新 bgLog，切回可见即恢复
                 if (commandOutput) {
                     commandOutput(job.jobId, {
@@ -9284,9 +9886,12 @@ export function createAIPanel(options) {
                 if (!backend.AIScheduleCreate) throw new Error('当前版本不支持定时任务');
                 // 目标会话：显式 sessionId 优先；否则默认绑定当前会话（到点唤醒本对话）；newSession=true 才每次新建
                 const explicitTarget = aiTextOf(input.sessionId).trim();
+                // 默认绑定「发起这次调用的会话」而不是当前查看的会话：后台会话建的定时任务
+                // 不该被塞到用户正看着的另一个对话里。
+                const callerSession = (ctx && ctx.session) || currentSession();
                 const resolvedTarget = input.newSession === true
                     ? ''
-                    : (explicitTarget || (currentSession() ? currentSession().id : ''));
+                    : (explicitTarget || (callerSession ? callerSession.id : ''));
                 const created = await backend.AIScheduleCreate({
                     name: aiTextOf(input.name).trim(),
                     kind: aiTextOf(input.kind).trim() || 'once',
@@ -9750,11 +10355,17 @@ export function createAIPanel(options) {
 
     // ---------- 流式对话 ----------
 
-    function setStreamingUI(active) {
-        if (el.stop) el.stop.classList.toggle('hidden', !active);
-        if (el.send) el.send.classList.toggle('hidden', !!active);
+    // composer 的「发送 / 停止」始终只看当前查看会话自己的流：
+    // 别的会话在生成不影响这里（每个会话一条独立流），因此无需外部传入 active。
+    function setStreamingUI() {
+        syncStreamView();
+        const viewing = currentSession();
+        const compact = compactOf(viewing && viewing.id);
+        const busy = !!stream || !!compact;
+        if (el.stop) el.stop.classList.toggle('hidden', !busy);
+        if (el.send) el.send.classList.toggle('hidden', busy);
         if (el.input) {
-            el.input.placeholder = active
+            el.input.placeholder = busy
                 ? '输入消息：Enter 排队，Ctrl+Enter 插话'
                 : '发消息或粘贴图片；/ 调用指令，@ 提及文件';
         }
@@ -9762,9 +10373,9 @@ export function createAIPanel(options) {
         updateComposerTakeover();
         if (stream) {
             // 提示本轮实际使用的模型；对话中切换模型要到下一条消息才生效
-            const running = (stream.profileCfg && stream.profileCfg.model) || (activeModelEntry() || {}).model || '';
+            const running = (stream.profileCfg && stream.profileCfg.model) || (entryOf(currentSession()) || {}).model || '';
             if (el.hint) el.hint.textContent = '生成中 · Enter 排队 · Ctrl+Enter 插话' + (running ? ' · ' + running : '');
-        } else if (oneShot) {
+        } else if (compact) {
             if (el.hint) el.hint.textContent = '正在压缩上下文…';
         }
         renderMessageQueue();
@@ -9772,54 +10383,62 @@ export function createAIPanel(options) {
 
     function updateSendState() {
         if (!el.send) return;
-        const hasProfile = !!activeProfile();
-        const busy = !!stream || !!oneShot;
+        syncStreamView();
+        const hasProfile = !!profileOf(currentSession());
+        const viewingId = (currentSession() || {}).id;
+        const busy = !!stream || !!compactOf(viewingId);
         const session = currentSession();
         const archived = !!(session && session.archivedAt);
         const loadFailed = !!(session && session._loadError);
         const hasText = !!(el.input && el.input.value.trim());
         const hasImages = attachments.some((item) => item.kind === 'image');
-        const imageEntry = hasImages ? activeModelEntry() : null;
+        const imageEntry = hasImages ? entryOf(currentSession()) : null;
         const imageBlocked = !!imageEntry && imageEntry.modalities && imageEntry.modalities.image === false;
         el.send.disabled = !hasProfile || busy || archived || loadFailed || imageBlocked || (!hasText && !hasImages);
         if (el.stop) el.stop.classList.toggle('hidden', !busy);
         if (el.send) el.send.classList.toggle('hidden', busy);
         if (!busy && el.hint) {
+            // 本会话空闲但别的会话在跑：给出提示，但发送按钮仍然是「发送」
+            const others = streams.size;
             el.hint.textContent = loadFailed
                 ? '会话正文读取失败，已禁止追加；可清空该会话或检查 ai-sessions 目录'
                 : (archived ? '会话已归档，取消归档后可继续'
                     : (imageBlocked ? '当前模型未勾选图像输入：请移除图片或在模型设置中开启'
-                        : (hasProfile ? '' : '未配置 AI，请先在设置中配置')));
+                        : (hasProfile ? (others ? '其他会话正在生成（' + others + ' 个）· Enter 发送到本会话' : '') : '未配置 AI，请先在设置中配置')));
         }
     }
 
-    function scheduleStreamRender() {
-        if (!stream || stream.renderTimer) return;
-        stream.renderTimer = setTimeout(() => {
-            if (!stream) return;
-            stream.renderTimer = 0;
+    function scheduleStreamRender(target) {
+        const s = target || syncStreamView();
+        if (!s || s.renderTimer) return;
+        s.renderTimer = setTimeout(() => {
+            s.renderTimer = 0;
             if (!isOpen()) return;
             const session = currentSession();
-            if (!session || session.id !== stream.sessionId) return;
-            const index = session.messages.indexOf(stream.assistant);
+            if (!session || session.id !== s.sessionId) return;
+            const index = session.messages.indexOf(s.assistant);
             if (index < 0) return;
             let wrap = el.messages.querySelector('.ai-msg.assistant[data-ai-idx="' + index + '"]');
             if (!wrap) return;
-            updateAssistantElement(wrap, stream.assistant, true);
+            updateAssistantElement(wrap, s.assistant, true);
             positionOverlays();
             if (stickBottom) scrollToBottom(false);
             else updateScrollButton();
         }, 80);
     }
 
-    function newAssistantMessage(profile) {
-        const entry = activeModelEntry();
+    function newAssistantMessage(profile, entry) {
+        // 不传 entry 时按当前会话解析（后台会话调用点都显式传）
+        const resolved = entry === undefined ? entryOf(currentSession()) : entry;
+        const entryRef = resolved;
         return {
             role: 'assistant',
             content: '',
             reasoning: '',
             thinkingSignature: '',
-            model: entry && entry.model ? entry.model : (profile && profile.name ? profile.name : ''),
+            model: entryRef && entryRef.model ? entryRef.model : (profile && profile.name ? profile.name : ''),
+            // 记录当轮账号名：每轮用量浮层要显示「提供方 / 模型」，切模型后老消息仍要显示对的账号
+            modelAccount: profile && profile.name ? profile.name : '',
             ts: Date.now(),
             status: 'streaming',
             usage: null,
@@ -9861,13 +10480,15 @@ export function createAIPanel(options) {
         const value = String(text == null ? '' : text).trim();
         const imageAttachments = attachments.filter((item) => item.kind === 'image').map(aiNormalizeImage).filter(Boolean);
         const textAttachments = attachments.filter((item) => item.kind !== 'image');
-        if ((!value && !imageAttachments.length) || stream || oneShot) return false;
+        if (!value && !imageAttachments.length) return false;
         if (value.length > AI_CHAT_INPUT_LIMIT) {
             flash('消息过长（上限 ' + AI_CHAT_INPUT_LIMIT + ' 字符）', true);
             return false;
         }
         const session = currentSession();
         if (!session) return false;
+        // 只有「本会话」在生成 / 压缩时才拒绝；别的会话在跑不影响这里（各自独立）。
+        if (streamOf(session.id) || compactOf(session.id)) return false;
         if (session.archivedAt) {
             flash('该会话已归档，请先在会话菜单中取消归档', true);
             return false;
@@ -9876,7 +10497,8 @@ export function createAIPanel(options) {
             const current = currentWorkspacePath();
             if (current) session.workspace = current;
         }
-        const profile = activeProfile();
+        const profile = profileOf(session);
+        const entry = entryOf(session);
         if (!profile) {
             renderMessages();
             updateSendState();
@@ -9888,8 +10510,9 @@ export function createAIPanel(options) {
         }
 
         let cut = truncateAt;
-        if (cut == null && pendingEdit && pendingEdit.index != null) cut = pendingEdit.index;
-        const windowSize = activeContextWindow();
+        if (cut == null && pendingEdit && pendingEdit.index != null &&
+            (!pendingEdit.sessionId || pendingEdit.sessionId === session.id)) cut = pendingEdit.index;
+        const windowSize = contextWindowOf(session);
         try {
             const previewBundle = await assembleSystemContext(session, textAttachments);
             const previewMessages = buildApiMessages(session, cut != null && cut >= 0 ? cut : null, previewBundle.text);
@@ -9924,24 +10547,29 @@ export function createAIPanel(options) {
         }
         session.messages.push(userMessage);
         updateSessionTitleFromText(session, value || '图片对话');
+        // 用户在这个会话里说话了：之前后台结束留下的未读标记立刻作废。
+        clearSessionUnread(session);
         renderSessionList();
+        // 这条消息用哪个模型，就把它固定成该会话自己的选择（其他会话不受影响）
+        pinSessionModel(session, profile, entry);
         queueLogSave(session);
-        session.profileId = profile.id;
         const scope = currentScopeOf(session);
         session.scope = scope;
-        const assistant = newAssistantMessage(profile);
+        const assistant = newAssistantMessage(profile, entry);
         assistant.planMode = !!session.planMode;
         session.messages.push(assistant);
         session.round = (Number(session.round) || 0) + 1;
         const baseRound = session.round;
 
-        stream = {
+        const run = attachStream({
             sessionId: session.id,
             baseRound,
             roundNo: 0,
             roundId: session.id + '#' + baseRound + '-0',
             assistant,
             startedAt: turnStartedAt,
+            // 本轮改动记录的起点：收尾时据此切出「本轮」写过的文件。
+            changesMark: changesSnapshot(session),
             thinkStartedAt: 0,
             roundStartedAt: 0,
             firstTokenAt: 0,
@@ -9950,20 +10578,22 @@ export function createAIPanel(options) {
             stopped: false,
             toolCalls: new Map(),
             tools: toolsForScope(scope, !!session.planMode),
-            profileCfg: configForProfile(profile),
+            profileCfg: configForProfile(profile, entry),
             systemPrompt: AI_DEFAULT_SYSTEM_PROMPT,
             baseSystemPrompt: AI_DEFAULT_SYSTEM_PROMPT,
             scope,
             plan: !!session.planMode,
-        };
+        });
         stickBottom = true;
         if (el.input) {
             el.input.value = '';
             resizeInput();
         }
         hideSlash();
+        // 会话列表立刻出现「生成中」标记（按会话独立显示，其他会话的流不受影响）
+        renderSessionList();
         renderMessages();
-        setStreamingUI(true);
+        setStreamingUI();
         positionOverlays();
         // 先把用户消息与占位 assistant 落盘：即使流事件丢失、应用崩溃或磁盘重读打断，
         // 会话也不会只剩一个空壳（定时任务/后台注入尤其明显）。
@@ -9974,33 +10604,33 @@ export function createAIPanel(options) {
         try {
             bundle = await assembleSystemContext(session, attachmentList);
         } catch (e) {
-            showNote('上下文注入失败：' + ((e && e.message) || e), true);
+            noteForSession(session.id, '上下文注入失败：' + ((e && e.message) || e), true);
         }
-        lastSystemPrompt = bundle.text;
-        lastContextMeta = bundle.meta;
-        systemPromptEstimateAt = Date.now();
+        rememberPrompt(session.id, bundle);
         attachments = [];
         attachSeq = 0;
         renderAttachments();
         updateContextCount();
-        if (!stream || stream.sessionId !== session.id || stream.stopped) return true;
-        stream.baseSystemPrompt = bundle.text;
-        stream.systemPrompt = bundle.text;
-        startRound();
+        if (streams.get(session.id) !== run || run.stopped) return true;
+        run.baseSystemPrompt = bundle.text;
+        run.systemPrompt = bundle.text;
+        startRound(run);
         return true;
     }
 
-    function startRound() {
-        const s = stream;
+    function startRound(target) {
+        const s = target || syncStreamView();
         if (!s) return;
+        // 已被同一会话的新请求顶替，或该会话的流已注销：不再续轮
+        if (streams.get(s.sessionId) !== s) return;
         const session = sessionById(s.sessionId);
         if (!session) {
-            finishStream();
+            finishStream(s);
             return;
         }
         if (s.stopped) {
             if (s.assistant.status === 'streaming') s.assistant.status = 'stopped';
-            finishStream();
+            finishStream(s);
             return;
         }
         // 对齐 harness：无硬性轮数上限。每 AI_TOOL_ROUND_LIMIT 轮注入一次轻提醒，
@@ -10014,7 +10644,7 @@ export function createAIPanel(options) {
                 ts: Date.now(),
                 systemNote: true,
             });
-            showNote('工具轮次已达 ' + s.roundNo + '，长任务可继续…');
+            noteForSession(s.sessionId, '工具轮次已达 ' + s.roundNo + '，长任务可继续…');
         }
         s.roundNo += 1;
         s.roundId = session.id + '#' + s.baseRound + '-' + s.roundNo;
@@ -10032,7 +10662,7 @@ export function createAIPanel(options) {
         if (s.assistant && s.profileCfg && s.profileCfg.model) s.assistant.model = s.profileCfg.model;
         const index = session.messages.indexOf(s.assistant);
         if (index < 0) {
-            finishStream();
+            finishStream(s);
             return;
         }
         if (isOpen() && currentSession() === session) {
@@ -10044,20 +10674,21 @@ export function createAIPanel(options) {
             const result = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, s.tools, config.retryMax);
             if (result && typeof result.then === 'function') {
                 result.catch((e) => {
-                    if (stream !== s) return;
-                    finishStreamError((e && e.message) || String(e || '请求失败'));
+                    if (streams.get(s.sessionId) !== s) return;
+                    finishStreamError((e && e.message) || String(e || '请求失败'), s);
                 });
             }
         } catch (e) {
-            finishStreamError((e && e.message) || String(e || '请求失败'));
+            finishStreamError((e && e.message) || String(e || '请求失败'), s);
         }
     }
 
-    function finishStreamError(message) {
-        if (!stream) return;
-        stream.assistant.status = 'error';
-        stream.assistant.error = String(message || '请求失败');
-        finishStream();
+    function finishStreamError(message, target) {
+        const current = target || syncStreamView();
+        if (!current) return;
+        current.assistant.status = 'error';
+        current.assistant.error = String(message || '请求失败');
+        finishStream(current);
     }
 
     const TOAST_ICONS = {
@@ -10183,14 +10814,16 @@ export function createAIPanel(options) {
         s.roundStartedAt = 0;
     }
 
-    function finishStream() {
-        const current = stream;
+    function finishStream(target) {
+        // 只收尾指定的那条流：别的会话可能还在生成，不能碰它们的注册与 UI。
+        const current = target || syncStreamView();
         if (!current) return;
         if (current.renderTimer) {
             clearTimeout(current.renderTimer);
             current.renderTimer = 0;
         }
         current.finished = true;
+        const wasViewed = !!(currentSession() && currentSession().id === current.sessionId);
         commitThinkTime(current);
         commitRoundTiming(current);
         if (current.assistant.status === 'streaming') current.assistant.status = 'done';
@@ -10204,17 +10837,19 @@ export function createAIPanel(options) {
             }
         }
         notifyTurnFinished(session, current.assistant, current.stopped);
-        const shouldFlush = interjectPending || (!current.stopped && current.assistant.status === 'done');
-        interjectPending = false;
-        stream = null;
-        stopProcessTicker();
-        // 本轮结束：状态栏写入徽标收尾（「已修改」的延迟隐藏由状态栏自己控制）
-        resetLiveWrite();
-        emitWriteStatus({state: 'idle'});
+        const shouldFlush = interjectPending.has(current.sessionId) || (!current.stopped && current.assistant.status === 'done');
+        interjectPending.delete(current.sessionId);
+        detachStream(current);
+        if (!anyStreaming()) {
+            stopProcessTicker();
+            // 本轮结束：状态栏写入徽标收尾（只有本窗口再无任何流时才收尾，避免抹掉其他会话的写入态）
+            resetLiveWrite(current.sessionId);
+            emitWriteStatus({state: 'idle'}, current.sessionId);
+        }
         // 本轮文件改动汇总卡（Qoder 风格）：在落盘前追加，保证重放后仍显示
-        appendChangesSummary(session, current.startedAt);
+        appendChangesSummary(session, current.changesMark);
         // 用户在别的会话或面板关着时结束：条目上留一个「已完成未查看」，切回来（或打开面板）才清掉。
-        if (session && !current.stopped && (currentSession() !== session || !isOpen())) {
+        if (session && !current.stopped && (!wasViewed || !isOpen())) {
             if (current.assistant.status === 'done') setSessionUnread(session, 'done');
             else if (current.assistant.status === 'error') setSessionUnread(session, 'error');
         }
@@ -10222,15 +10857,18 @@ export function createAIPanel(options) {
         renderSessionList();
         queueLogSave(session);
         if (session) maybeAutoTitle(session);
-        if (session && currentSession() === session && isOpen()) {
+        if (session && wasViewed && isOpen()) {
+            // 正在看的这一轮结束了才重建消息区；后台会话只更新列表与未读标记。
             renderMessages(true);
         }
-        setStreamingUI(false);
-        updateContextCount();
-        // 本轮发送时 lastSystemPrompt 含当次附件；结束后按下一轮重新估算（附件已清空）。
-        refreshSystemPromptEstimate(true);
-        updateScrollButton();
-        updateComposerTakeover(true);
+        if (wasViewed) {
+            setStreamingUI();
+            updateContextCount();
+            // 本轮发送时的提示词含当次附件；结束后按下一轮重新估算（附件已清空）。
+            refreshSystemPromptEstimate(true);
+            updateScrollButton();
+            updateComposerTakeover(true);
+        }
         if (shouldFlush) {
             if (session) flushMessageQueue(session.id);
             const viewing = currentSession();
@@ -10240,7 +10878,7 @@ export function createAIPanel(options) {
         if (session && !current.stopped && current.assistant.status === 'done') {
             autoCompactCount.delete(session.id);
             setTimeout(() => {
-                if (!stream && !oneShot && !currentQueueItems().length) maybeAutoCompact(session);
+                if (!anyStreaming() && !oneShot && !currentQueueItems().length) maybeAutoCompact(session);
             }, 0);
         }
     }
@@ -10253,10 +10891,10 @@ export function createAIPanel(options) {
     }
 
     async function handleToolRound(s, calls, argErrors) {
-        if (stream !== s) return;
+        if (streams.get(s.sessionId) !== s) return;
         const session = sessionById(s.sessionId);
         if (!session) {
-            finishStream();
+            finishStream(s);
             return;
         }
         commitThinkTime(s);
@@ -10278,7 +10916,7 @@ export function createAIPanel(options) {
         const startToolHeartbeat = () => {
             if (toolHeartbeat || !backend.AITouchStream) return;
             toolHeartbeat = setInterval(() => {
-                if (stream !== s) {
+                if (streams.get(s.sessionId) !== s) {
                     stopToolHeartbeat();
                     return;
                 }
@@ -10296,7 +10934,7 @@ export function createAIPanel(options) {
         startToolHeartbeat();
         const allowedTools = new Set((s.tools || toolsForScope(s.scope, s.plan)).map((tool) => tool.name));
         for (const call of calls) {
-            if (stream !== s || s.stopped) {
+            if (streams.get(s.sessionId) !== s || s.stopped) {
                 saveToolTiming();
                 return;
             }
@@ -10329,7 +10967,7 @@ export function createAIPanel(options) {
                 const parsed = call.arguments ? JSON.parse(call.arguments) : {};
                 result = await executeTool(call.name, parsed, {session, toolMessage, stream: s});
             } catch (e) {
-                if (stream === s) {
+                if (streams.get(s.sessionId) === s) {
                     toolMessage.status = 'error';
                     toolMessage.content = '工具执行失败：' + ((e && e.message) || e);
                     if (call.name === 'spawn_agent' && toolMessage.agent && toolMessage.agent.state === 'running') {
@@ -10338,7 +10976,7 @@ export function createAIPanel(options) {
                     }
                 }
             }
-            if (stream !== s || s.stopped) {
+            if (streams.get(s.sessionId) !== s || s.stopped) {
                 saveToolTiming();
                 return;
             }
@@ -10355,23 +10993,23 @@ export function createAIPanel(options) {
             persistSessions();
             refreshToolWrap(session, toolMessage);
         }
-        if (stream !== s || s.stopped) {
+        if (streams.get(s.sessionId) !== s || s.stopped) {
             saveToolTiming();
             return;
         }
         // 轮次轻提醒统一在 startRound 注入；工具循环不再有硬性上限。
-        const profile = activeProfile();
-        const assistant = newAssistantMessage(profile);
+        const profile = profileOf(session);
+        const assistant = newAssistantMessage(profile, entryOf(session));
         assistant.planMode = !!s.plan;
         session.messages.push(assistant);
         s.assistant = assistant;
         s.thinkStartedAt = 0;
         if (isOpen() && currentSession() === session) {
             renderMessages(true);
-            setStreamingUI(true);
+            setStreamingUI();
         }
         saveToolTiming();
-        startRound();
+        startRound(s);
     }
 
     // 请求重试提示：显示在流式状态条内（429/5xx/网络错误指数退避时），收到数据后清除
@@ -10417,21 +11055,29 @@ export function createAIPanel(options) {
         if (titleJob && payload && payload.id === titleJob.id) {
             if (name === 'ai-chunk' && payload.delta) titleJob.buffer += payload.delta;
             else if (name === 'ai-done') finishTitleJob();
-            else if (name === 'ai-error') titleJob = null;
+            else if (name === 'ai-error') {
+                titleJob = null;
+                drainTitleQueue();
+            }
             return;
         }
         if (oneShot && payload && payload.id === oneShot.id) {
             if (name === 'ai-chunk' && payload.delta) {
                 oneShot.buffer += payload.delta;
-                if (el.hint) el.hint.textContent = '正在压缩上下文… 已生成 ' + oneShot.buffer.length + ' 字符';
+                const viewing = currentSession();
+                if (el.hint && viewing && viewing.id === oneShot.sessionId) {
+                    el.hint.textContent = '正在压缩上下文… 已生成 ' + oneShot.buffer.length + ' 字符';
+                }
             } else if (name === 'ai-done') {
                 finishCompact(payload);
             } else if (name === 'ai-error') {
                 const message = String(payload.message || '请求失败');
+                const compactedId = oneShot.sessionId;
+                const viewed = !!(currentSession() && currentSession().id === compactedId);
                 oneShot = null;
-                setStreamingUI(false);
+                setStreamingUI();
                 updateSendState();
-                showNote('压缩失败：' + message, true);
+                if (viewed) showNote('压缩失败：' + message, true);
             }
             return;
         }
@@ -10443,28 +11089,38 @@ export function createAIPanel(options) {
                 return;
             }
         }
-        if (!stream || !payload || payload.id !== stream.roundId) return;
-        const current = stream;
+        if (!payload || !payload.id) return;
+        // 按轮次 id 精确路由到所属会话的流：多会话并发生成时各走各的，互不抢事件。
+        let current = null;
+        for (const candidate of streams.values()) {
+            if (candidate.roundId === payload.id) {
+                current = candidate;
+                break;
+            }
+        }
+        if (!current) return;
+        // 只更新「当前查看会话」可见的流式状态条 / 提示条
+        const onScreen = !!(currentSession() && currentSession().id === current.sessionId);
         switch (name) {
             case 'ai-retry': {
-                showRetryNote(payload);
+                if (onScreen) showRetryNote(payload);
                 break;
             }
             case 'ai-chunk':
                 if (payload.delta) {
-                    clearRetryNote();
+                    if (onScreen) clearRetryNote();
                     markFirstToken(current);
                     current.assistant.content += payload.delta;
-                    scheduleStreamRender();
+                    scheduleStreamRender(current);
                 }
                 break;
             case 'ai-think':
                 if (payload.delta) {
-                    clearRetryNote();
+                    if (onScreen) clearRetryNote();
                     markFirstToken(current);
                     if (!current.thinkStartedAt) current.thinkStartedAt = Date.now();
                     current.assistant.reasoning += payload.delta;
-                    scheduleStreamRender();
+                    scheduleStreamRender(current);
                 }
                 break;
             case 'ai-toolcall': {
@@ -10481,7 +11137,7 @@ export function createAIPanel(options) {
                 break;
             }
             case 'ai-done': {
-                clearRetryNote();
+                if (onScreen) clearRetryNote();
                 if (current.renderTimer) {
                     clearTimeout(current.renderTimer);
                     current.renderTimer = 0;
@@ -10491,7 +11147,7 @@ export function createAIPanel(options) {
                 if (payload.usage) current.assistant.usage = payload.usage;
                 if (payload.finishReason === 'stopped') {
                     current.assistant.status = 'stopped';
-                    finishStream();
+                    finishStream(current);
                     return;
                 }
                 const argErrors = new Map();
@@ -10510,7 +11166,7 @@ export function createAIPanel(options) {
                     current.assistant.toolCalls = calls;
                     const session = sessionById(current.sessionId);
                     const idx = session ? session.messages.indexOf(current.assistant) : -1;
-                    const wrap = idx >= 0 ? el.messages.querySelector('.ai-msg.assistant[data-ai-idx="' + idx + '"]') : null;
+                    const wrap = idx >= 0 && onScreen ? el.messages.querySelector('.ai-msg.assistant[data-ai-idx="' + idx + '"]') : null;
                     if (wrap) updateAssistantElement(wrap, current.assistant, false);
                     handleToolRound(current, calls, argErrors);
                     return;
@@ -10525,53 +11181,56 @@ export function createAIPanel(options) {
                     if (session) {
                         const idx = session.messages.indexOf(current.assistant);
                         if (idx >= 0) session.messages.splice(idx, 1);
-                        const profile = activeProfile();
-                        const assistant = newAssistantMessage(profile);
+                        const profile = profileOf(session);
+                        const assistant = newAssistantMessage(profile, entryOf(session));
                         session.messages.push(assistant);
                         current.assistant = assistant;
                         current.emptyRetried = true;
                         current.thinkStartedAt = 0;
                         current.firstTokenAt = 0;
                         current.roundStartedAt = Date.now();
-                        showNote('模型返回了空回复，已自动重试…');
+                        if (onScreen) showNote('模型返回了空回复，已自动重试…');
                         persistSessions();
                         if (isOpen() && currentSession() === session) renderMessages(true);
-                        setStreamingUI(true);
-                        startRound();
+                        setStreamingUI();
+                        startRound(current);
                         return;
                     }
                 }
                 current.assistant.status = 'done';
-                finishStream();
+                finishStream(current);
                 break;
             }
             case 'ai-error':
-                clearRetryNote();
-                finishStreamError(payload.message || '请求失败');
+                if (onScreen) clearRetryNote();
+                finishStreamError(payload.message || '请求失败', current);
                 break;
             default:
                 break;
         }
     }
 
-    function stopGeneration() {
-        if (!stream) {
-            if (oneShot) cancelOneShot();
+    function stopGeneration(target) {
+        const current = target || syncStreamView();
+        if (!current) {
+            const viewing = currentSession();
+            if (compactOf(viewing && viewing.id)) cancelOneShot();
             return;
         }
-        const current = stream;
         const sessionId = current.sessionId;
         current.stopped = true;
         stopSubAgentsOf(sessionId);
-        cancelPendingApprovals('用户已停止生成，写操作已取消');
-        cancelPendingAsks('用户已停止生成，问题未回答');
-        cancelPendingEnvCreations('用户已停止生成，变量创建已取消');
+        // 排队的 / 在飞的自动审批分类请求也一并撤销：工具会转人工确认，不会白等 12 秒
+        cancelClassifierJobs(sessionId);
+        cancelPendingApprovals('用户已停止生成，写操作已取消', sessionId);
+        cancelPendingAsks('用户已停止生成，问题未回答', sessionId);
+        cancelPendingEnvCreations('用户已停止生成，变量创建已取消', sessionId);
         try {
             if (backend.AIStop) backend.AIStop(sessionId);
         } catch (e) {}
         // 后端若没有及时回 ai-done，兜底结束，避免界面一直卡在“生成中”。
         setTimeout(() => {
-            if (stream !== current) return;
+            if (streams.get(sessionId) !== current) return;
             const session = sessionById(sessionId);
             if (session) {
                 for (const message of session.messages) {
@@ -10583,7 +11242,7 @@ export function createAIPanel(options) {
             }
             if (current.assistant.status === 'streaming') current.assistant.status = 'stopped';
             if (session && currentSession() === session) renderMessages(true);
-            finishStream();
+            finishStream(current);
         }, 1200);
     }
 
@@ -10707,7 +11366,8 @@ export function createAIPanel(options) {
     function setPlanMode(on, announce, force) {
         const session = currentSession();
         if (!session) return false;
-        if ((stream || oneShot) && force !== true) {
+        syncStreamView();
+        if ((stream || compactOf(session.id)) && force !== true) {
             if (announce !== false) flash('生成中不能切换计划模式', true);
             return false;
         }
@@ -10782,13 +11442,14 @@ export function createAIPanel(options) {
     // 单行模型 chip：图标 + 模型名 + 推理等级 + 展开箭头（不显示「模型 / 推理等级」文字标签）
     function renderModelChip() {
         if (!el.modelChip) return;
-        const profile = activeProfile();
+        // chip 是「这个会话」的模型，不是窗口默认
+        const profile = profileOf(currentSession());
         if (!profile) {
             el.modelChip.textContent = '选择模型';
             el.modelChip.title = '未配置模型，点击打开设置';
             return;
         }
-        const entry = activeModelEntry();
+        const entry = entryOf(currentSession());
         const model = (entry && entry.model) || profile.name || '未命名模型';
         const effort = effortLabel(profile, entry);
         el.modelChip.innerHTML = '';
@@ -10865,12 +11526,17 @@ export function createAIPanel(options) {
     function switchProfile(id) {
         const profile = config.profiles.find((item) => item.id === id);
         if (!profile) return;
-        const prevProfile = activeProfile();
-        const prevEntry = activeModelEntry();
-        config.activeProfileId = id;
+        const session = currentSession();
+        const prev = sessionModelRef(session);
+        const prevProfile = prev.profile;
+        const prevEntry = prev.entry;
         const entry = modelEntryOf(profile, profile.lastModelId);
+        // 窗口默认（新会话继承）与当前会话的选择一起写
+        config.activeProfileId = id;
         config.activeModelId = entry ? entry.id : '';
+        pinSessionModel(session, profile, entry);
         saveAIConfig();
+        if (session) persistSessions();
         renderProfileSelect();
         refreshSettingsPane();
         updateComposerState();
@@ -10886,12 +11552,17 @@ export function createAIPanel(options) {
         if (!profile) return;
         const entry = (profile.models || []).find((item) => item.id === entryId);
         if (!entry) return;
-        const prevProfile = activeProfile();
-        const prevEntry = activeModelEntry();
+        const session = currentSession();
+        const prev = sessionModelRef(session);
+        const prevProfile = prev.profile;
+        const prevEntry = prev.entry;
+        // 只改当前会话 + 记成窗口默认；其他会话各自保留自己的模型
         config.activeProfileId = accountId;
         config.activeModelId = entry.id;
         profile.lastModelId = entry.id;
+        pinSessionModel(session, profile, entry);
         saveAIConfig();
+        if (session) persistSessions();
         renderProfileSelect();
         refreshSettingsPane();
         updateComposerState();
@@ -10904,8 +11575,8 @@ export function createAIPanel(options) {
     }
 
     function setReasoningLevel(level) {
-        const profile = activeProfile();
-        const entry = activeModelEntry();
+        const profile = profileOf(currentSession());
+        const entry = entryOf(currentSession());
         if (!profile || !entry) return;
         if (profile.provider !== 'anthropic') {
             entry.reasoningEffort = ['low', 'medium', 'high'].includes(level) ? level : '';
@@ -10972,6 +11643,10 @@ export function createAIPanel(options) {
             return;
         }
         const rect = el.modelChip.getBoundingClientRect();
+        // 选择器展示 / 勾选的都是「当前会话」的模型（各会话独立）
+        const sessionRef = sessionModelRef(currentSession());
+        const activeAccountId = (sessionRef.profile && sessionRef.profile.id) || '';
+        const activeEntryId = (sessionRef.entry && sessionRef.entry.id) || '';
         const picker = document.createElement('div');
         picker.className = 'ai-model-picker';
         modelPickerEl = picker;
@@ -11025,7 +11700,7 @@ export function createAIPanel(options) {
                 head.append(headName, headTag);
                 group.appendChild(head);
                 for (const entry of entries) {
-                    const isActive = account.id === config.activeProfileId && entry.id === config.activeModelId;
+                    const isActive = account.id === activeAccountId && entry.id === activeEntryId;
                     const item = document.createElement('button');
                     item.type = 'button';
                     item.className = 'ai-model-picker-item' + (isActive ? ' active' : '');
@@ -11069,8 +11744,8 @@ export function createAIPanel(options) {
         }
 
         function renderLevels() {
-            const account = activeProfile();
-            const entry = activeModelEntry();
+            const account = profileOf(currentSession());
+            const entry = entryOf(currentSession());
             levelRow.innerHTML = '';
             if (!account || !entry) return;
             const lab = document.createElement('span');
@@ -11402,7 +12077,7 @@ export function createAIPanel(options) {
     function runGitAction(action) {
         const meta = GIT_ACTIONS.find((item) => item.id === action);
         if (!meta) return;
-        if (stream || oneShot) {
+        if (syncStreamView() || compactOf((currentSession() || {}).id)) {
             flash('AI 正在生成，请等本轮结束后再执行 Git 操作', true);
             return;
         }
@@ -11495,7 +12170,7 @@ export function createAIPanel(options) {
         if (!item) return false;
         if (item.kind === 'image') {
             // 模型条目未勾选图像输入时拒绝附加（粘贴 / 拖拽 / 文件对话框统一走这里）
-            const entry = activeModelEntry();
+            const entry = entryOf(currentSession());
             if (entry && entry.modalities && entry.modalities.image === false) {
                 flash('当前模型（' + (entry.model || '未命名') + '）未勾选图像输入，可在模型设置中开启', true);
                 return false;
@@ -11825,6 +12500,53 @@ export function createAIPanel(options) {
         }
     }
 
+    // data URL → File：右键菜单粘贴到的图片由后端以 data URL 返回，复用粘贴/拖拽的压缩管线。
+    function dataUrlToFile(dataUrl, name) {
+        const raw = String(dataUrl || '');
+        const comma = raw.indexOf(',');
+        if (comma < 0) return null;
+        const header = raw.slice(0, comma);
+        const mime = (header.slice(header.indexOf(':') + 1).split(';')[0] || 'image/png').trim() || 'image/png';
+        let binary = '';
+        try {
+            binary = atob(raw.slice(comma + 1));
+        } catch (e) {
+            return null;
+        }
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        if (!bytes.length) return null;
+        try {
+            return new File([bytes], name || '粘贴的图片', {type: mime});
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // 右键菜单的「粘贴」拿不到 paste 事件（菜单点击不会触发剪贴板事件），
+    // 图片只能请后端回读系统剪贴板，再走和 Ctrl+V 一样的附件流程。
+    async function pasteImageFromClipboard() {
+        if (!backend.GetClipboardImage) return false;
+        let dataUrl = '';
+        try {
+            dataUrl = String((await backend.GetClipboardImage()) || '');
+        } catch (e) {
+            return false;
+        }
+        if (!dataUrl) return false;
+        const file = dataUrlToFile(dataUrl, '粘贴的图片.png');
+        if (!file) return false;
+        try {
+            const prepared = await prepareImageAttachment(file);
+            prepared.kind = 'image';
+            prepared.label = prepared.name;
+            return addAttachment(prepared);
+        } catch (err) {
+            flash('图片处理失败：' + ((err && err.message) || err), true);
+            return false;
+        }
+    }
+
     async function pasteIntoEditable(target) {
         let text = '';
         try {
@@ -11835,7 +12557,11 @@ export function createAIPanel(options) {
                 text = await navigator.clipboard.readText();
             } catch (e) {}
         }
-        if (!text) return;
+        if (!text) {
+            // 剪贴板里没有文字：按图片粘贴（Ctrl+V 走 paste 事件，菜单粘贴只能这样回读）。
+            await pasteImageFromClipboard();
+            return;
+        }
         target.focus();
         // execCommand('insertText') 会进 undo 栈（菜单粘贴也能 Ctrl+Z 撤销）；不可用时回退 setRangeText
         let ok = false;
@@ -11907,9 +12633,8 @@ export function createAIPanel(options) {
     }
 
     function regenerateLast() {
-        if (stream) return;
         const session = currentSession();
-        if (!session) return;
+        if (!session || streamOf(session.id)) return;
         const assistantIndex = lastAssistantIndex(session);
         if (assistantIndex < 0) return;
         const userIndex = lastUserIndex(session);
@@ -11932,7 +12657,7 @@ export function createAIPanel(options) {
     function rewindToMessage(session, index) {
         const target = session || currentSession();
         if (!target) return;
-        if (stream && stream.sessionId === target.id) {
+        if (streams.has(target.id)) {
             flash('请先停止当前会话的生成', true);
             return;
         }
@@ -11965,10 +12690,61 @@ export function createAIPanel(options) {
         }, '回退', '回退到该轮');
     }
 
+    // 在当前轮收尾处分叉出一条新对话：把 [0..index] 的历史复制过去，再切到新会话。
+    // 原会话完全不动（和「回退」相反），适合「从这里换条路试试」。
+    function branchSessionAt(session, index) {
+        const source = session || currentSession();
+        if (!source) return;
+        if (streams.has(source.id)) {
+            flash('请先停止当前会话的生成再分支', true);
+            return;
+        }
+        if (oneShot && oneShot.sessionId === source.id) {
+            flash('该会话正在压缩上下文，请先停止', true);
+            return;
+        }
+        const messages = source.messages || [];
+        if (!Number.isInteger(index) || index < 0 || index >= messages.length) return;
+        if (!messages[index] || messages[index].role !== 'assistant') return;
+        let copied;
+        try {
+            copied = JSON.parse(JSON.stringify(messages.slice(0, index + 1)));
+        } catch (e) {
+            flash('分支失败：' + ((e && e.message) || e), true);
+            return;
+        }
+        // 纯 UI 注记（改动汇总卡）不带过去；万一残留生成态也按已完成处理
+        const branchMessages = copied
+            .filter((item) => item && item.kind !== 'changes-summary')
+            .map((item) => (item.status === 'streaming' ? Object.assign({}, item, {status: 'done'}) : item));
+        const branch = createSessionData();
+        branch.title = (source.title || '会话') + ' · 分支';
+        branch.workspace = source.workspace || currentWorkspacePath();
+        branch.scope = source.scope || 'read';
+        branch.profileId = source.profileId || '';
+        branch.systemPrompt = source.systemPrompt || '';
+        branch.promptTemplateId = source.promptTemplateId || '';
+        if (source.summary) {
+            try {
+                branch.summary = JSON.parse(JSON.stringify(source.summary));
+            } catch (e) {}
+        }
+        branch.messages = branchMessages;
+        branch.updatedAt = Date.now();
+        saveComposerDraft(currentSession() && currentSession().id);
+        pendingEdit = null;
+        sessions.push(branch);
+        config.activeSessionId = branch.id;
+        persistSessions();
+        logActivity('ai.session', branch.id, {op: 'branch', title: branch.title, from: source.id}, {actor: 'user', source: 'user'});
+        renderSessionList();
+        switchSession(branch.id);
+        flash('已在新对话中分支（复制 ' + branchMessages.length + ' 条消息）');
+    }
+
     function editLast() {
-        if (stream) return;
         const session = currentSession();
-        if (!session) return;
+        if (!session || streamOf(session.id)) return;
         const userIndex = lastUserIndex(session);
         if (userIndex < 0) return;
         const message = session.messages[userIndex];
@@ -11976,7 +12752,7 @@ export function createAIPanel(options) {
         el.input.value = message.content;
         attachments = attachmentsFromImages(message.images);
         renderAttachments();
-        pendingEdit = {index: userIndex};
+        pendingEdit = {index: userIndex, sessionId: session.id};
         resizeInput();
         updateSendState();
         if (el.hint) el.hint.textContent = '编辑中：发送将从这条消息重新开始';
@@ -12018,6 +12794,21 @@ export function createAIPanel(options) {
             e.stopPropagation();
             return;
         }
+        // 本轮用量徽标：开关浮层（不算 .ai-msg-action，单独处理）
+        const usageChip = e.target.closest('[data-ai-act="usage"]');
+        if (usageChip) {
+            e.preventDefault();
+            e.stopPropagation();
+            const usageWrap = usageChip.closest('.ai-msg');
+            const usageIndex = usageWrap ? Number(usageWrap.dataset.aiIdx) : -1;
+            const usageSession = currentSession();
+            const usageMessage = usageSession && usageIndex >= 0 ? usageSession.messages[usageIndex] : null;
+            if (usageMessage) {
+                if (turnUsagePop && turnUsageAnchor === usageChip) closeTurnUsagePop();
+                else showTurnUsagePop(usageChip, usageMessage);
+            }
+            return;
+        }
         const button = e.target.closest('.ai-msg-action');
         if (!button) return;
         const wrap = button.closest('.ai-msg');
@@ -12032,9 +12823,38 @@ export function createAIPanel(options) {
         else if (action === 'regenerate') regenerateLast();
         else if (action === 'retry') retryLast();
         else if (action === 'rewind') rewindToMessage(session, index);
+        else if (action === 'branch') branchSessionAt(session, index);
     }
 
     // ---------- 会话管理 ----------
+
+    // 每个会话各自的输入草稿：输入框里的文字与附件都属于「当前会话」，
+    // 切到别的会话要各自保留、互不夹带（否则在 A 粘的图片 / 写了一半的话会被发到 B）。
+    const drafts = new Map(); // sessionId -> {text, attachments}
+
+    function saveComposerDraft(sessionId) {
+        if (!sessionId) return;
+        const text = el.input ? String(el.input.value || '') : '';
+        const items = attachments.slice();
+        if (!text.trim() && !items.length) {
+            drafts.delete(sessionId);
+            return;
+        }
+        drafts.set(sessionId, {text, attachments: items});
+    }
+
+    function loadComposerDraft(sessionId) {
+        const draft = sessionId ? drafts.get(sessionId) : null;
+        attachments = draft ? draft.attachments.slice() : [];
+        if (el.input) el.input.value = draft ? draft.text : '';
+        resizeInput();
+        renderAttachments();
+        hideSlash();
+    }
+
+    function dropComposerDraft(sessionId) {
+        if (sessionId) drafts.delete(sessionId);
+    }
 
     function switchSession(id) {
         const target = sessions.find((s) => s.id === id);
@@ -12043,15 +12863,28 @@ export function createAIPanel(options) {
         // 软切换：目标会话属于另一个工作区，新窗口会带着该会话启动，本窗口保持原状态。
         if (sync === 'window') return;
         if (sync === 'assigned') persistSessions();
+        const previous = currentSession();
+        if (previous && previous.id !== id) saveComposerDraft(previous.id);
         config.activeSessionId = id;
         saveAIConfig();
         clearSessionUnread(target);
         logActivity('ai.session', id, {op: 'switch', title: target.title || ''}, {actor: 'user', source: 'user'});
         stickBottom = true;
         pendingEdit = null;
+        // 输入框 / 附件换成目标会话自己的草稿（各会话互不夹带）
+        loadComposerDraft(id);
         renderSessionList();
+        syncStreamView();
         renderMessages();
         updateComposerState();
+        // 目标会话自己的流决定「发送 / 停止」与占位文案，其他会话在跑不干扰
+        setStreamingUI();
+        // 状态栏写入徽标也切到目标会话自己的（后台会话的写入不在这里闪）
+        syncWriteBadgeForView();
+        // 头部弹层（智能体团队 / 后台终端）是「上个会话的」列表：切会话就收起来
+        if (chipsPopKind) hideChipsPop();
+        // 头部弹层（智能体团队 / 后台终端）是「上个会话的」列表：切会话就收起来
+        if (chipsPopKind) hideChipsPop();
         refreshSystemPromptEstimate(true);
         setTimeout(() => flushMessageQueue(id), 0);
     }
@@ -12075,15 +12908,20 @@ export function createAIPanel(options) {
             }
         }
         const session = createSessionData();
+        saveComposerDraft(current && current.id);
         pendingEdit = null;
         sessions.push(session);
         config.activeSessionId = session.id;
+        loadComposerDraft(session.id);
         persistSessions();
         logActivity('ai.session', session.id, {op: 'create', title: session.title || ''}, {actor: 'user', source: 'user'});
         renderSessionList();
         if (sessionListEl) sessionListEl.scrollTop = 0;
+        syncStreamView();
         renderMessages();
         updateComposerState();
+        setStreamingUI();
+        syncWriteBadgeForView();
         if (el.input) el.input.focus();
     }
 
@@ -12141,7 +12979,7 @@ export function createAIPanel(options) {
     function archiveSession(target, archived) {
         const session = target && target.id ? target : currentSession();
         if (!session) return;
-        if (stream && stream.sessionId === session.id) {
+        if (streams.has(session.id)) {
             flash('请先停止当前会话的生成', true);
             return;
         }
@@ -12194,7 +13032,7 @@ export function createAIPanel(options) {
     function deleteSession(target) {
         const session = target && target.id ? target : currentSession();
         if (!session) return;
-        if (stream && stream.sessionId === session.id) {
+        if (streams.has(session.id)) {
             flash('请先停止当前会话的生成', true);
             return;
         }
@@ -12206,6 +13044,9 @@ export function createAIPanel(options) {
             sessions = sessions.filter((s) => s.id !== session.id);
             commandApprovalRules.delete(session.id);
             pendingModelSwitches.delete(session.id);
+            dropComposerDraft(session.id);
+            forgetPrompt(session.id);
+            interjectPending.delete(session.id);
             stopSubAgentsOf(session.id);
             clearQueueForSession(session.id);
             logActivity('ai.session', session.id, {op: 'delete', title: session.title || ''}, {actor: 'user', source: 'user'});
@@ -13028,14 +13869,13 @@ export function createAIPanel(options) {
 
     function estimateCurrentTokens() {
         const session = currentSession();
-        const profile = activeProfile();
-        const messages = buildApiMessages(session, null, lastSystemPrompt);
+        const messages = buildApiMessages(session, null, promptTextOf(session && session.id));
         let tokens = estimateApiMessagesTokens(messages);
         for (const item of attachments) {
             tokens += item.kind === 'image' ? aiEstimateImageTokens(item) : aiEstimateTokens(aiTextOf(item.content));
         }
         tokens += toolsTokenEstimate(session);
-        const windowSize = activeContextWindow();
+        const windowSize = contextWindowOf(session);
         return {tokens, windowSize, percent: windowSize > 0 ? tokens / windowSize : 0};
     }
 
@@ -13089,7 +13929,7 @@ export function createAIPanel(options) {
                 showNote(text, isError);
             }
         };
-        if (stream) {
+        if (anyStreaming()) {
             if (!auto) notify('请先停止当前生成，再压缩上下文。', true);
             return false;
         }
@@ -13098,7 +13938,7 @@ export function createAIPanel(options) {
             return false;
         }
         const session = (options && options.session) || currentSession();
-        const profile = activeProfile();
+        const profile = profileOf(session);
         if (!session || !profile) {
             if (!auto) notify('请先配置 AI 并创建会话。', true);
             return false;
@@ -13117,10 +13957,10 @@ export function createAIPanel(options) {
         }
         const id = session.id + '#compact-' + Date.now() + '-' + (++compactSeq);
         // 记下触发快照：压缩会砍掉几十上百条消息，事后必须能回答「凭什么压的」。
-        const triggerWindow = activeContextWindow();
+        const triggerWindow = contextWindowOf(session);
         const triggerThreshold = aiClamp(Number(config.autoCompactThreshold) || 0.8, 0.5, 0.95);
         const triggerEstimate = estimateCurrentTokens().tokens;
-        const triggerEntry = activeModelEntry();
+        const triggerEntry = entryOf(session);
         oneShot = {
             id, kind: 'compact', sessionId: session.id, buffer: '', startedAt: Date.now(), auto,
             trigger: {
@@ -13139,7 +13979,7 @@ export function createAIPanel(options) {
             {role: 'system', content: AI_COMPACT_SYSTEM_PROMPT},
             {role: 'user', content: '请压缩以下对话记录：\n\n' + compactTranscript(session)},
         ];
-        Promise.resolve(backend.AISendChat(id, configForProfile(profile), messages, [], config.retryMax)).catch((e) => {
+        Promise.resolve(backend.AISendChat(id, configForProfile(profile, entryOf(session)), messages, [], config.retryMax)).catch((e) => {
             if (!oneShot || oneShot.id !== id) return;
             const message = (e && e.message) || String(e);
             const wasAuto = oneShot.auto;
@@ -13162,17 +14002,17 @@ export function createAIPanel(options) {
         const target = session || currentSession();
         if (!target) return false;
         if (!config.autoCompact) return false;
-        if (stream || oneShot) return false;
+        if (anyStreaming() || oneShot) return false;
         if (target.archivedAt) return false;
         // 用户正在被提问 / 计划待批准时不要抢走 composer
         if (currentPendingAskEntry() || planApprovalMessage(target)) return false;
         if ((target.messages || []).length <= 6) return false;
-        const profile = activeProfile();
+        const profile = profileOf(target);
         if (!profile) return false;
-        const windowSize = activeContextWindow();
+        const windowSize = contextWindowOf(target);
         if (windowSize <= 0) return false;
         const threshold = aiClamp(Number(config.autoCompactThreshold) || 0.8, 0.5, 0.95);
-        const bundle = lastSystemPrompt || AI_DEFAULT_SYSTEM_PROMPT;
+        const bundle = promptTextOf(target.id);
         const apiMessages = buildApiMessages(target, null, bundle);
         let tokens = estimateApiMessagesTokens(apiMessages);
         tokens += toolsTokenEstimate(target);
@@ -13202,9 +14042,11 @@ export function createAIPanel(options) {
         setStreamingUI(false);
         updateSendState();
         if (!session) return;
+        const viewed = !!(currentSession() && currentSession().id === session.id);
         const text = String(current.buffer || '').trim();
         if (!text) {
-            showNote('压缩失败：模型没有返回摘要。', true);
+            if (viewed) showNote('压缩失败：模型没有返回摘要。', true);
+            else notifyDesktop({kind: 'error', title: '自动压缩失败', body: (session.title || '会话') + ' · 模型没有返回摘要', sessionId: session.id});
             return;
         }
         let cutoff = Math.max(0, session.messages.length - 6);
@@ -13223,9 +14065,11 @@ export function createAIPanel(options) {
         persistSessions();
         queueLogSave(session);
         if (isOpen() && currentSession() === session) renderMessages(true);
-        updateContextCount();
-        updateComposerTakeover(true);
-        showNote('已压缩上下文：摘要 ' + text.length + ' 字符，保留最近 ' + session.messages.length + ' 条，归档 ' + archived.length + ' 条。');
+        if (viewed) {
+            updateContextCount();
+            updateComposerTakeover(true);
+            showNote('已压缩上下文：摘要 ' + text.length + ' 字符，保留最近 ' + session.messages.length + ' 条，归档 ' + archived.length + ' 条。');
+        }
         flushMessageQueue(session.id);
     }
 
@@ -13242,7 +14086,7 @@ export function createAIPanel(options) {
     }
 
     async function runInitAgentsMd() {
-        if (stream || oneShot) {
+        if (syncStreamView() || compactOf((currentSession() || {}).id)) {
             showNote('请先停止当前生成，再生成 AGENTS.md。', true);
             return;
         }
@@ -13485,12 +14329,12 @@ export function createAIPanel(options) {
     }
 
     function clearCurrentSession() {
-        if (stream || oneShot) {
+        const session = currentSession();
+        if (!session) return;
+        if (streamOf(session.id) || compactOf(session.id)) {
             showNote('请先停止当前生成，再清空会话。', true);
             return;
         }
-        const session = currentSession();
-        if (!session) return;
         askConfirm('清空当前会话的全部消息？', () => {
             session.messages = [];
             commandApprovalRules.delete(session.id);
@@ -13507,6 +14351,13 @@ export function createAIPanel(options) {
             renderMessages();
             updateComposerState();
         }, '清空', '清空会话');
+    }
+
+    // 后台会话（没被查看）的流事件不要往当前消息区塞提示，否则会串台。
+    function noteForSession(sessionId, text, isError) {
+        const viewing = currentSession();
+        if (viewing && sessionId && viewing.id !== sessionId) return;
+        showNote(text, isError);
     }
 
     function showNote(text, isError) {
@@ -13572,6 +14423,7 @@ export function createAIPanel(options) {
         refreshDockFill();
         updateModeButtons();
         positionOverlays();
+        notifyStructure();
         setTimeout(() => {
             onLayout();
             if (stickBottom) scrollToBottom(false);
@@ -13677,16 +14529,40 @@ export function createAIPanel(options) {
         // 生成中绝不替换 sessions 数组：新会话的 user/占位 assistant 只存在内存里（磁盘可能还是空会话），
         // 替换后 stream 指向被丢弃的对象，后续 ai-chunk/ai-done 全部落空，消息丢失。
         // 典型触发：定时任务 open() 触发的磁盘重读恰好在 submitText 之后完成。
-        if (stream || oneShot) return;
+        if (anyStreaming() || oneShot) return;
+        // 磁盘可能落后于内存（上一轮收尾追加的消息还在写盘队列里）：此时用磁盘覆盖内存
+        // 会让「本轮文件改动汇总卡」这类轮尾追加的内容在重开面板后凭空消失。
+        // 只对当前会话做保护，且仅在内存消息更全时保留内存版本，并把差异补写回磁盘。
+        const active = currentSession();
+        const diskActive = active ? next.find((session) => session.id === active.id) : null;
+        if (diskActive && Array.isArray(active.messages) && active.messages.length > diskActive.messages.length) {
+            diskActive.messages = active.messages;
+            diskActive.archived = active.archived;
+            diskActive._mids = active._mids;
+            diskActive._archivedMids = active._archivedMids;
+            diskActive.changes = active.changes;
+            diskActive.todos = active.todos;
+            diskActive.summary = active.summary;
+            // 让下一次持久化整份重写，把内存里领先磁盘的消息补齐。
+            diskActive._needsRewrite = true;
+        }
         sessions = next;
         if (!sessions.some((session) => session.id === config.activeSessionId)) {
             config.activeSessionId = sessions[0] ? sessions[0].id : '';
+        }
+        // 磁盘重读会把别处写下的「已完成未查看」带回来，而用户此刻正看着这个会话：
+        // 不清掉就会出现「明明在看却一直挂绿点，点一下才恢复」的现象。
+        if (isOpen()) {
+            const viewing = sessions.find((session) => session.id === config.activeSessionId);
+            if (viewing && viewing.unread) viewing.unread = '';
         }
         renderSessionList();
         renderProfileSelect();
         renderMessages(true);
         updateComposerState();
         refreshSystemPromptEstimate(true);
+        // 上一步保留了内存里更全的会话时，立刻补写磁盘，避免下次读盘又回到旧内容。
+        if (diskActive && diskActive._needsRewrite) persistSessions();
     }
 
     function reloadStoredAIState() {
@@ -13706,7 +14582,7 @@ export function createAIPanel(options) {
             renderSessionList();
             return;
         }
-        if (stream || oneShot || pendingEdit) return;
+        if (anyStreaming() || oneShot || pendingEdit) return;
         sessionStore.flush()
             .then(() => sessionStore.loadAll((raw) => normalizeSession(raw, 0)))
             .then((loaded) => {
@@ -13721,7 +14597,7 @@ export function createAIPanel(options) {
         const show = floatWindow ? true : (typeof force === 'boolean' ? force : !isOpen());
         if (show) {
             if (!floatWindow) {
-                if (stream || oneShot) renderSessionList();
+                if (anyStreaming() || oneShot) renderSessionList();
                 else reloadStoredAIState();
             }
             if (window.innerWidth < 900 && settings.showSidebar && typeof opts.collapseSidebar === 'function') {
@@ -13749,6 +14625,7 @@ export function createAIPanel(options) {
             if (dockParent) dockParent.classList.remove('ai-dock-fill');
             hideSlash();
             hideCtxPop();
+            closeTurnUsagePop();
             closeAIDialog();
             if (panelLightbox) panelLightbox.close();
         }
@@ -13759,6 +14636,7 @@ export function createAIPanel(options) {
         updateEntryButtons();
         updateContextCount();
         onLayout();
+        notifyStructure();
     }
 
     function toggle(force) {
@@ -15103,7 +15981,8 @@ export function createAIPanel(options) {
             handleSlashText(trimmed);
             return;
         }
-        if (stream || oneShot) {
+        // 只有本会话在生成 / 压缩时才并入排队；别的会话在跑不影响本会话直接发送。
+        if (syncStreamView() || compactOf((currentSession() || {}).id)) {
             enqueueComposerMessage();
             return;
         }
@@ -15148,7 +16027,7 @@ export function createAIPanel(options) {
             }
         }
         if (e.key !== 'Enter') return;
-        if (stream || oneShot) {
+        if (syncStreamView() || compactOf((currentSession() || {}).id)) {
             if (e.shiftKey || e.altKey) return;
             e.preventDefault();
             if (e.ctrlKey || e.metaKey) {
@@ -15284,6 +16163,7 @@ export function createAIPanel(options) {
                 stickBottom = distance <= 80;
                 updateScrollButton();
                 if (el.messages.scrollTop <= 24) loadEarlierMessages();
+                scheduleOutlineSync();
             });
         }
         panel.addEventListener('contextmenu', (e) => {
@@ -15299,6 +16179,15 @@ export function createAIPanel(options) {
             }
             if (e.target.closest && e.target.closest('select')) return;
             e.preventDefault();
+        });
+        // 关窗 / 重载前把还没落盘的会话再冲一次：工具结果、轮次收尾这些消息都是异步追加的，
+        // 用户刚看到结果就退出时不能只留在内存里（磁盘模式才有意义，legacy 走 localStorage）。
+        window.addEventListener('pagehide', () => {
+            if (!sessionsLoaded || effectiveStorageMode() !== 'disk') return;
+            try {
+                persistSessions();
+                if (sessionStore && sessionStore.flush) sessionStore.flush();
+            } catch (e) {}
         });
         if (el.scrollBtn) el.scrollBtn.addEventListener('click', () => scrollToBottom(true));
         if (el.input) {
@@ -15316,7 +16205,8 @@ export function createAIPanel(options) {
             });
         }
         if (el.send) el.send.addEventListener('click', submitFromComposer);
-        if (el.stop) el.stop.addEventListener('click', stopGeneration);
+        // 注意：不能直接传函数引用，click 会把 MouseEvent 当第一个参数（会被当成要停止的流）
+        if (el.stop) el.stop.addEventListener('click', () => stopGeneration());
         panel.querySelectorAll('.ai-resize').forEach((handle) => {
             handle.addEventListener('pointerdown', (e) => startResize(e, handle.dataset.aiResize));
         });
@@ -15507,11 +16397,11 @@ export function createAIPanel(options) {
         updateComposerTakeover(true);
         renderSessionList();
         // 状态栏徽标：补丁待确认（多文件，数字取计划合计；relPath 为补丁摘要）
-        liveWriteEntry({relPath: approval.relPath, path: approval.root});
-        emitWriteStatus(writeStatusPayload('pending', liveWrite, {
+        const patchPending = liveWriteEntry(session, {relPath: approval.relPath, path: approval.root});
+        emitWriteStatus(writeStatusPayload('pending', patchPending, {
             added: Math.max(0, Math.round(Number(preview.added) || 0)),
             removed: Math.max(0, Math.round(Number(preview.removed) || 0)),
-        }));
+        }), session && session.id);
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });
@@ -15521,29 +16411,75 @@ export function createAIPanel(options) {
         const toolMessage = entry.toolMessage;
         const approval = entry.approval;
         const preview = approval.preview || {files: []};
-        el.takeover.dataset.takeoverKey = 'patch:' + (toolMessage.toolCallId || aiNowId('patch-'));
+        const files = preview.files || [];
+        const takeoverKey = 'patch:' + (toolMessage.toolCallId || aiNowId('patch-'));
+        el.takeover.dataset.takeoverKey = takeoverKey;
+        // 与单文件审批一致：临时收起只影响显示，审批本身不取消
+        if (approvalTakeoverKey !== takeoverKey) {
+            approvalTakeoverKey = takeoverKey;
+            approvalTakeoverCollapsed = false;
+        }
         el.takeover.textContent = '';
+        if (approvalTakeoverCollapsed) {
+            const bar = document.createElement('button');
+            bar.type = 'button';
+            bar.className = 'ai-takeover-bar';
+            const barIcon = document.createElement('span');
+            barIcon.className = 'ai-takeover-icon';
+            barIcon.innerHTML = iconSvg('diff', 13);
+            const barText = document.createElement('span');
+            barText.className = 'ai-takeover-bar-text';
+            barText.textContent = '补丁待审批 · ' + (approval.summary || '未命名') + '（点击展开）';
+            const barStat = document.createElement('span');
+            barStat.className = 'ai-approval-stat';
+            barStat.append(el0('span', 'add', '+' + (preview.added || 0)), el0('span', 'del', '−' + (preview.removed || 0)));
+            const chev = document.createElement('span');
+            chev.className = 'ai-takeover-collapse';
+            chev.innerHTML = AI_CHEVRON_SVG;
+            bar.append(barIcon, barText, barStat, chev);
+            bar.addEventListener('click', () => {
+                approvalTakeoverCollapsed = false;
+                updateComposerTakeover(true);
+            });
+            el.takeover.appendChild(bar);
+            return;
+        }
         const card = document.createElement('div');
         card.className = 'ai-takeover-card ai-patch-takeover';
         const head = document.createElement('div');
         head.className = 'ai-takeover-head';
         const icon = document.createElement('span');
         icon.className = 'ai-takeover-icon';
-        icon.innerHTML = iconSvg('save', 13);
+        icon.innerHTML = iconSvg('diff', 13);
         const title = document.createElement('span');
         title.className = 'ai-takeover-title';
         title.textContent = '补丁审批 · ' + (approval.summary || '未命名');
+        title.title = (approval.summary || '') + (approval.root ? '（目标：' + approval.root + '）' : '');
         const stat = document.createElement('span');
         stat.className = 'ai-takeover-stat';
-        stat.textContent = '+' + (preview.added || 0) + ' −' + (preview.removed || 0) + ' · ' + (preview.files || []).length + ' 文件';
-        head.append(icon, title, stat);
+        stat.append(
+            el0('span', 'add', '+' + (preview.added || 0)),
+            el0('span', 'del', '−' + (preview.removed || 0)),
+            el0('span', 'files', files.length + ' 文件'),
+        );
+        // 临时收起：折叠整卡为细条，方便继续查看上方消息；审批本身不受影响
+        const collapse = document.createElement('button');
+        collapse.type = 'button';
+        collapse.className = 'ai-takeover-collapse';
+        collapse.title = '临时收起（审批保留，点击细条恢复）';
+        collapse.innerHTML = AI_CHEVRON_SVG;
+        collapse.addEventListener('click', () => {
+            approvalTakeoverCollapsed = true;
+            updateComposerTakeover(true);
+        });
+        head.append(icon, title, stat, collapse);
         card.appendChild(head);
 
         const body = document.createElement('div');
         body.className = 'ai-takeover-body';
         const list = document.createElement('div');
         list.className = 'ai-patch-filelist';
-        for (const f of preview.files || []) {
+        for (const f of files) {
             const row = document.createElement('label');
             row.className = 'ai-patch-filerow ' + (f.status || '');
             const box = document.createElement('input');
@@ -15563,11 +16499,14 @@ export function createAIPanel(options) {
             path.textContent = f.relPath;
             const statEl = document.createElement('span');
             statEl.className = 'ai-patch-stat';
-            statEl.textContent = '+' + f.added + ' −' + f.removed;
+            statEl.append(el0('span', 'add', '+' + (f.added || 0)), el0('span', 'del', '−' + (f.removed || 0)));
             const badge = document.createElement('span');
             badge.className = 'ai-patch-badge ' + (f.status || '');
             badge.textContent = {ok: '可应用', conflict: '冲突', blocked: '不可用', unsupported: '不支持'}[f.status] || f.status;
-            row.append(box, path, statEl, badge);
+            row.append(box, path);
+            if (f.kind === 'add') row.appendChild(el0('span', 'ai-patch-kind', '新建'));
+            else if (f.kind === 'delete') row.appendChild(el0('span', 'ai-patch-kind danger', '删除'));
+            row.append(statEl, badge);
             if (f.reason) row.title = f.reason;
             list.appendChild(row);
             if (f.reason) {
@@ -15580,7 +16519,7 @@ export function createAIPanel(options) {
         body.appendChild(list);
 
         const modeRow = document.createElement('div');
-        modeRow.className = 'ai-approval-remember';
+        modeRow.className = 'ai-approval-remember ai-patch-moderow';
         const modeLabel = document.createElement('label');
         const modeText = document.createElement('span');
         modeText.textContent = '应用模式：';
@@ -15605,6 +16544,19 @@ export function createAIPanel(options) {
 
         const foot = document.createElement('div');
         foot.className = 'ai-takeover-foot ai-approval-takeover-foot';
+        // 详情入口：打开 .patch 的补丁视图（逐文件状态、逐行 diff、撤销都在那边）
+        const detail = document.createElement('button');
+        detail.type = 'button';
+        detail.className = 'dlg-btn';
+        detail.textContent = '查看详情';
+        detail.disabled = !approval.patchPath;
+        detail.title = approval.patchPath
+            ? '在新标签页打开补丁视图：逐文件状态、逐行 diff，应用后可随时撤销\n' + approval.patchPath
+            : '补丁文件路径缺失，无法打开详情';
+        detail.addEventListener('click', () => {
+            if (approval.patchPath) openPath(approval.patchPath);
+        });
+        foot.appendChild(detail);
         const actions = document.createElement('div');
         actions.className = 'ai-approval-actions';
         const deny = document.createElement('button');
@@ -15615,7 +16567,7 @@ export function createAIPanel(options) {
         const apply = document.createElement('button');
         apply.type = 'button';
         apply.className = 'dlg-btn primary';
-        const okCount = (preview.files || []).filter((f) => f.status === 'ok' && approval.selected.includes(f.relPath)).length;
+        const okCount = files.filter((f) => f.status === 'ok' && approval.selected.includes(f.relPath)).length;
         apply.textContent = '应用（' + okCount + ' 个' + (approval.mode === 'partial' ? '，其余跳过' : '') + '）';
         apply.disabled = okCount === 0;
         apply.addEventListener('click', () => decideApproval(toolMessage, true, ''));
@@ -15640,12 +16592,25 @@ export function createAIPanel(options) {
         container.appendChild(meta);
 
         const res = approval.result;
+        // 已裁决后仍可跳回补丁视图：逐文件状态、逐行 diff、撤销都在那边
+        const appendDetailLink = (applied) => {
+            if (!approval.patchPath) return;
+            const more = el0('div', 'ai-approval-more');
+            const link = el0('button', 'patch-link', applied ? '在补丁视图中查看 / 撤销' : '在补丁视图中查看详情');
+            link.type = 'button';
+            link.title = approval.patchPath;
+            link.addEventListener('click', () => openPath(approval.patchPath));
+            more.appendChild(link);
+            container.appendChild(more);
+        };
         if (approval.state === 'denied') {
             container.appendChild(el0('div', 'ai-approval-result denied', '已放弃，文件未修改'));
+            appendDetailLink(false);
             return;
         }
         if (approval.state === 'cancelled') {
             container.appendChild(el0('div', 'ai-approval-result cancelled', '审批已取消'));
+            appendDetailLink(false);
             return;
         }
         if (!res) {
@@ -15667,6 +16632,7 @@ export function createAIPanel(options) {
             }).join('\n');
             container.appendChild(list);
         }
+        appendDetailLink(res.applied > 0);
     }
 
     function el0(tag, cls, text) {
@@ -15982,7 +16948,7 @@ export function createAIPanel(options) {
     }
 
     function planApprovalMessage(session) {
-        if (!session || stream || oneShot || !session.planMode) return null;
+        if (!session || streamOf(session.id) || compactOf(session.id) || !session.planMode) return null;
         const index = lastAssistantIndex(session);
         if (index < 0 || index !== session.messages.length - 1) return null;
         const message = session.messages[index];
@@ -16407,6 +17373,7 @@ export function createAIPanel(options) {
 
     function renderMessageQueue() {
         if (!el.queue) return;
+        syncStreamView();
         const items = currentQueueItems();
         const session = currentSession();
         const plan = session ? planApprovalMessage(session) : null;
@@ -16465,7 +17432,7 @@ export function createAIPanel(options) {
             interject.addEventListener('click', () => {
                 const index = messageQueue.indexOf(item);
                 if (index < 0) return;
-                if (!stream || stream.sessionId !== item.sessionId) {
+                if (!streams.has(item.sessionId)) {
                     flushMessageQueue(item.sessionId);
                     return;
                 }
@@ -16473,7 +17440,7 @@ export function createAIPanel(options) {
                 messageQueue.unshift(item);
                 renderMessageQueue();
                 flash('插话已排队，正在停止当前回复…');
-                interjectPending = true;
+                interjectPending.add(item.sessionId);
                 stopGeneration();
             });
             const remove = document.createElement('button');
@@ -16489,7 +17456,7 @@ export function createAIPanel(options) {
             row.append(badge, text, edit, interject, remove);
             el.queue.appendChild(row);
         }
-        if (el.hint && (stream || oneShot)) {
+        if (el.hint && (stream || compactOf((currentSession() || {}).id))) {
             el.hint.textContent = items.length
                 ? '已排队 ' + items.length + ' 条 · Enter 继续排队 · Ctrl+Enter 插话'
                 : '生成中 · Enter 排队 · Ctrl+Enter 插话';
@@ -16498,7 +17465,7 @@ export function createAIPanel(options) {
     }
 
     function enqueueComposerMessage() {
-        if (!stream && !oneShot) return false;
+        if (!syncStreamView() && !compactOf((currentSession() || {}).id)) return false;
         const text = el.input ? String(el.input.value || '').trim() : '';
         if (text.startsWith('/')) {
             handleSlashText(text);
@@ -16522,13 +17489,13 @@ export function createAIPanel(options) {
         }
         const item = captureComposerMessage();
         if (!item) return;
-        if (oneShot) {
+        if (compactOf(session.id)) {
             messageQueue.push(item);
             renderMessageQueue();
             flash('正在压缩上下文，消息已排队');
             return;
         }
-        if (!stream || stream.sessionId !== session.id) {
+        if (!streams.has(session.id)) {
             messageQueue.push(item);
             renderMessageQueue();
             flushMessageQueue(session.id);
@@ -16537,17 +17504,20 @@ export function createAIPanel(options) {
         messageQueue.unshift(item);
         renderMessageQueue();
         flash('插话已排队，正在停止当前回复…');
-        interjectPending = true;
+        interjectPending.add(session.id);
         stopGeneration();
     }
 
     async function flushMessageQueue(sessionId) {
-        if (!sessionId || stream || oneShot) return;
+        if (!sessionId || streams.has(sessionId) || compactOf(sessionId)) return;
         const session = currentSession();
         if (!session || session.id !== sessionId || session.archivedAt) return;
         if (currentPendingAskEntry() || planApprovalMessage(session)) return;
         const index = messageQueue.findIndex((item) => item.sessionId === sessionId);
         if (index < 0) return;
+        // 输入区还有没发出去的内容（草稿 / 附件）时先不动排队：等这一条发完再冲刷，
+        // 否则会把用户正在写的东西顶掉（历史上就是直接覆盖的）。
+        if ((el.input && el.input.value.trim()) || attachments.length) return;
         const item = messageQueue[index];
         messageQueue.splice(index, 1);
         renderMessageQueue();
@@ -16571,6 +17541,7 @@ export function createAIPanel(options) {
         for (let i = messageQueue.length - 1; i >= 0; i--) {
             if (messageQueue[i].sessionId === sessionId) messageQueue.splice(i, 1);
         }
+        interjectPending.delete(sessionId);
         renderMessageQueue();
     }
 
@@ -16645,8 +17616,8 @@ export function createAIPanel(options) {
     whenSessionsReady();
 
     // ---- 子代理（spawn_agent）----
-    // 主流零回归：主 stream 单例语义不动；子代理用独立流对象挂在 subAgents 注册表，
-    // handleEvent 按轮次 id 前缀路由（不查主 stream）。子对话不持久化：
+    // 主对话按会话各自一条流（streams 注册表）；子代理用独立流对象挂在 subAgents 注册表，
+    // handleEvent 按轮次 id 前缀路由（先查子代理，再按 roundId 查主流的所属会话）。子对话不持久化：
     // 转录存内存 subAgentTranscripts（按每次派出的唯一 key 键），卡片只留小元数据 + 摘要。
 
     const AI_SUB_LIMIT_DEFAULT = 20;
@@ -16752,9 +17723,55 @@ export function createAIPanel(options) {
         return (bg && bg.state) || 'unknown';
     }
 
+    // 头部两个入口与 dsh 一致：只展示「当前会话」的后台任务 / 子代理。
+    // 子代理的会话对象带 rootSessionId，因此子代理里启动的后台命令归到根会话名下。
+    function rootSessionIdOf(session) {
+        if (!session) return '';
+        return session.rootSessionId || session.parentSessionId || session.id || '';
+    }
+
+    function hudSessionId() {
+        const session = currentSession();
+        return session ? session.id : '';
+    }
+
+    function bgEntryOwnerId(entry) {
+        if (!entry) return '';
+        return entry.rootSessionId || rootSessionIdOf(entry.session);
+    }
+
+    function isBgEntryOfHud(entry) {
+        const id = hudSessionId();
+        return !!id && bgEntryOwnerId(entry) === id;
+    }
+
+    function hudBgEntries() {
+        return [...bgJobIndex.values()].filter(isBgEntryOfHud);
+    }
+
+    // 某个会话是否还有正在跑的后台命令（会话列表的运行中标记用）
+    function sessionHasLiveBgJob(sessionId) {
+        if (!sessionId) return false;
+        for (const entry of bgJobIndex.values()) {
+            if (bgEntryOwnerId(entry) !== sessionId) continue;
+            if (bgJobStateOf(entry) === 'running') return true;
+        }
+        return false;
+    }
+
+    // 某个会话是否还有正在跑的后台命令（会话列表的运行中标记用）
+    function sessionHasLiveBgJob(sessionId) {
+        if (!sessionId) return false;
+        for (const entry of bgJobIndex.values()) {
+            if (bgEntryOwnerId(entry) !== sessionId) continue;
+            if (bgJobStateOf(entry) === 'running') return true;
+        }
+        return false;
+    }
+
     function runningBgCount() {
         let n = 0;
-        for (const entry of bgJobIndex.values()) {
+        for (const entry of hudBgEntries()) {
             if (bgJobStateOf(entry) === 'running') n++;
         }
         return n;
@@ -16763,8 +17780,11 @@ export function createAIPanel(options) {
     function listAgentsForHud() {
         const out = [];
         const seen = new Set();
+        const ownerId = hudSessionId();
+        const belongs = (owner) => !ownerId || !owner || owner === ownerId;
         for (const sub of subAgents.values()) {
             seen.add(sub.key);
+            if (!belongs(sub.rootSessionId || sub.parentSessionId)) continue;
             out.push({toolCallId: sub.key, key: sub.key, subId: sub.id, name: sub.name, task: sub.task,
                 depth: sub.depth, state: 'running', startedAt: sub.startedAt,
                 sessionTitle: sessionTitleOf(sub.parentSessionId)});
@@ -16772,6 +17792,7 @@ export function createAIPanel(options) {
         for (const [key, meta] of agentRegistry) {
             if (seen.has(key)) continue;
             seen.add(key);
+            if (!belongs(meta.rootSessionId || meta.parentSessionId)) continue;
             out.push({...meta, toolCallId: key, key, sessionTitle: sessionTitleOf(meta.parentSessionId)});
         }
         // 重启后兜底：当前会话持久化的 spawn_agent meta（转录已不在内存）
@@ -16804,11 +17825,18 @@ export function createAIPanel(options) {
         chip.classList.toggle('ai-chip-live', running > 0);
     }
 
+    // 后台作业 / 子代理状态变化：刷新头部角标，并让「会话列表的运行中标记」跟上。
+    function notifyBackgroundActivity() {
+        refreshHeadChips();
+        renderSessionList();
+    }
+
     function refreshHeadChips() {
         const agents = listAgentsForHud();
         const runningAgents = agents.filter((a) => a.state === 'running').length;
+        const jobs = hudBgEntries();
         setChipCount(el.chipAgents, agents.length, runningAgents);
-        setChipCount(el.chipTerms, bgJobIndex.size, runningBgCount());
+        setChipCount(el.chipTerms, jobs.length, runningBgCount());
     }
 
     function updateHeadHud() {
@@ -16918,7 +17946,7 @@ export function createAIPanel(options) {
                 el.chipsPop.appendChild(row);
             }
         } else {
-            const jobs = [...bgJobIndex.values()].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+            const jobs = hudBgEntries().sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
             for (const entry of jobs) {
                 rows++;
                 const state = bgJobStateOf(entry);
@@ -16965,6 +17993,14 @@ export function createAIPanel(options) {
         renderChipsPop(kind);
         el.chipsPop.classList.remove('hidden');
         positionChipsPop(chip);
+        // 弹层打开时对账后台作业状态：错过的 cmd-exit 不会重放，避免永久显示运行中
+        if (kind === 'terms') {
+            reconcileBgJobs().then(() => {
+                if (chipsPopKind !== 'terms') return;
+                renderChipsPop('terms');
+                positionChipsPop(chip);
+            }).catch(() => {});
+        }
     }
 
     // ---- 子代理详情视图（替代面板消息区，返回按钮回到主代理） ----
@@ -17191,6 +18227,11 @@ export function createAIPanel(options) {
     hudReady = true;
     updateHeadHud();
 
+    // 子代理的父会话（嵌套时取中间那层；找不到就回落当前会话）
+    function parentSessionOfSub(sub) {
+        return sessionById(sub && sub.parentSessionId) || sessionById(sub && sub.rootSessionId) || currentSession();
+    }
+
     async function runSubAgent(ctx, input) {
         if (!backend.AISendChat) throw new Error('当前版本不支持子代理');
         const name = aiTextOf(input.name).trim() || '子代理';
@@ -17210,7 +18251,12 @@ export function createAIPanel(options) {
             while (activeSubCount() >= limit) await aiDelay(300);
         }
         const parentSession = ctx.session;
-        const profile = activeProfile();
+        // 子代理归属到「根会话」：头部智能体团队 / 后台终端按会话展示时，
+        // 嵌套子代理派出的任务也算在最初那个会话名下。
+        const rootSessionId = rootSessionIdOf(parentSession);
+        // 子代理继承「发起它的会话」的模型，而不是窗口默认
+        const profile = profileOf(parentSession);
+        const entry = entryOf(parentSession);
         if (!profile) throw new Error('无可用 AI 配置');
         const toolMessage = ctx.toolMessage;
         const sub = {
@@ -17219,6 +18265,7 @@ export function createAIPanel(options) {
             toolCallId: toolMessage.toolCallId || aiNowId('agent-'),
             depth,
             parentSessionId: parentSession.id,
+            rootSessionId,
             parentToolMessage: toolMessage,
             name: name.slice(0, 16),
             task,
@@ -17246,6 +18293,8 @@ export function createAIPanel(options) {
         sub.session = {
             id: sub.id,
             title: '',
+            parentSessionId: parentSession.id,
+            rootSessionId,
             workspace: parentSession.workspace || '',
             profileId: parentSession.profileId,
             systemPrompt: parentSession.systemPrompt || '',
@@ -17260,7 +18309,9 @@ export function createAIPanel(options) {
             archived: [],
             round: 0,
         };
-        const assistant = newAssistantMessage(profile);
+        sub.profile = profile;
+        sub.entry = entry;
+        const assistant = newAssistantMessage(profile, entry);
         sub.session.messages.push(assistant);
         sub.flow = {
             sessionId: sub.id,
@@ -17276,18 +18327,18 @@ export function createAIPanel(options) {
             finished: false,
             stopped: false,
             toolCalls: new Map(),
-            profileCfg: configForProfile(profile),
+            profileCfg: configForProfile(profile, entry),
             systemPrompt: subSystemPromptFor(depth),
             usage: null,
         };
         subAgents.set(sub.id, sub);
         agentRegistry.set(sub.key, {
             subId: sub.id, key: sub.key, toolCallId: sub.toolCallId, depth,
-            parentSessionId: sub.parentSessionId,
+            parentSessionId: sub.parentSessionId, rootSessionId,
             name: sub.name, task: sub.task, state: 'running', startedAt: sub.startedAt,
             rounds: 0, ms: 0, tokens: 0, summary: '',
         });
-        refreshHeadChips();
+        notifyBackgroundActivity();
         persistSessions();
         refreshToolWrap(parentSession, toolMessage);
         runSubRound(sub);
@@ -17386,7 +18437,7 @@ export function createAIPanel(options) {
             finalizeSubAgent(sub, s.stopped ? 'stopped' : sub.state);
             return;
         }
-        const assistant = newAssistantMessage(activeProfile());
+        const assistant = newAssistantMessage(sub.profile || profileOf(parentSessionOfSub(sub)), sub.entry || entryOf(parentSessionOfSub(sub)));
         sub.session.messages.push(assistant);
         s.assistant = assistant;
         s.thinkStartedAt = 0;
@@ -17517,7 +18568,8 @@ export function createAIPanel(options) {
 
     function stopSubAgentsOf(sessionId) {
         for (const sub of [...subAgents.values()]) {
-            if (sub.parentSessionId !== sessionId || sub.state !== 'running') continue;
+            const owner = sub.rootSessionId || sub.parentSessionId;
+            if (owner !== sessionId || sub.state !== 'running') continue;
             sub.flow.stopped = true;
             try {
                 if (backend.AIStop) backend.AIStop(sub.id);
@@ -17591,8 +18643,8 @@ export function createAIPanel(options) {
                 throw new Error('目标会话属于其他工作区，请到对应工作区的窗口处理');
             }
             // 窗口正在生成时延迟重试，避免打断当前轮次（最多约 30 秒）
-            for (let i = 0; i < 10 && (stream || oneShot); i++) await aiDelay(3000);
-            if (stream || oneShot) throw new Error('当前窗口正在生成，未能注入');
+            for (let i = 0; i < 10 && (streamOf(session.id) || compactOf(session.id)); i++) await aiDelay(3000);
+            if (streamOf(session.id) || compactOf(session.id)) throw new Error('当前会话正在生成，未能注入');
             const sent = await sendAppMessage({kind: 'schedule', label: '定时任务 · ' + name, content: prefix + '\n' + prompt});
             if (!sent) throw new Error('消息未能发送（无可用配置或面板正忙）');
             flash('定时任务「' + name + '」已触发（第 ' + (fire.runNo || 1) + ' 次）');
@@ -17695,10 +18747,13 @@ export function createAIPanel(options) {
             messages: (s.messages || []).length,
             active: s.id === (config && config.activeSessionId),
         })),
+        // 结构面板的「会话结构」数据源：当前会话里的用户消息（用户消息定位条）
+        bridgeSessionOutline: () => sessionOutlineSnapshot(),
+        bridgeJumpToMessage: (index) => jumpToSessionMessage(index),
         bridgeGetState: () => {
             const session = currentSession();
-            const profile = activeProfile();
-            const entry = activeModelEntry();
+            const profile = profileOf(session);
+            const entry = entryOf(session);
             return {
                 open: isOpen(),
                 mode,

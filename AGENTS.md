@@ -36,6 +36,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `src/main.js`：界面主体（标签页、设置、编辑器、菜单、CSV 表格、Markdown 预览）——最大的单文件，改动务必先定位函数再动手
 - `src/formats.js`：格式驱动层（parse / stringify 双向转换，插件格式也走这里）
 - `src/structure.js`：17 种语言的结构/大纲解析（纯函数，无 DOM 依赖）
+- `src/session-outline.js`：结构面板的「会话结构」渲染（用户消息定位条）。数据与跳转由 `ai-panel.js` 的 `bridgeSessionOutline` / `bridgeJumpToMessage` 提供，这里只画行与处理点击/键盘
 - `src/explorer.js`：文件树（惰性加载 + 内存缓存 + 自动刷新）
 - `src/run.js`：运行代码（扩展名 → 运行配方、命令模板 / 自检脚本 / 项目确认、stdin、dirty 决策、输出面板与 ANSI / `path:line:col` 跳转、AI 分析提示词）；`src/run.test.mjs` 覆盖纯函数
 - `src/patch-view.js`：补丁视图（文件卡 / hunk / 模式切换 / 应用 / 撤销），只做渲染，解析与写入全走 Go
@@ -54,7 +55,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 ### `docs/`
 - `packaging.md`（打包与发布）、`plugins/`、`skills/`、`samples/`、`screenshots/`、`icons/`、`legal/`
 - `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`）
-- `unfinished-plans/`：未开工/进行中的方案（目前：`structure-cleanup.md`）；`ai-patch-approval.md`、`run-code.md` 已实施完并移入 `finished-plans/`
+- `unfinished-plans/`：未开工/进行中的方案（目前：`structure-cleanup.md`、`mcp-client.md`）；`ai-patch-approval.md`、`run-code.md` 已实施完并移入 `finished-plans/`
 - `icon-guidelines.md`
 - `reports/optimization-proposals.md`：体积与性能优化提案（含实测体积基线）
 

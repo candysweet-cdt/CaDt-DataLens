@@ -1366,6 +1366,12 @@ func (a *App) GetClipboardText() (string, error) {
 	return runtime.ClipboardGetText(a.ctx)
 }
 
+// GetClipboardImage 把剪贴板里的图片读成 PNG data URL（空串表示没有图片）。
+// 编辑器/AI 输入框的右键菜单「粘贴」拿不到 paste 事件，只能由后端回读系统剪贴板。
+func (a *App) GetClipboardImage() (string, error) {
+	return clipboardImageDataURL()
+}
+
 func (a *App) OpenInNewWindows(paths []string) error {
 	_ = a.SetOpenMode("window")
 	exe, err := os.Executable()

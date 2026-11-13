@@ -13,6 +13,8 @@ export function createContextMenu() {
     let panels = [root];
     let isOpen = false;
     let openOptions = {};
+    // 最近一次按下 / 右键的目标：open() 时作为菜单锚点，用来判断滚动是否与菜单有关。
+    let lastPointerTarget = null;
 
     function closeDeeper(depth) {
         while (panels.length > depth + 1) {
@@ -167,14 +169,21 @@ export function createContextMenu() {
         close();
         isOpen = true;
         openOptions = options || {};
+        // 锚点：显式传了 anchor 就用它，否则退回「刚刚按下的元素」。
+        openOptions._origin = openOptions.anchor || lastPointerTarget;
+        lastPointerTarget = null;
         render(root, items, 0);
         place(root, x == null ? 24 : x, y == null ? 24 : y);
     }
 
     document.addEventListener('pointerdown', (e) => {
+        lastPointerTarget = e.target;
         if (!isOpen) return;
         if (e.target.closest && e.target.closest('.ctx-menu')) return;
         close();
+    }, true);
+    document.addEventListener('contextmenu', (e) => {
+        lastPointerTarget = e.target;
     }, true);
     window.addEventListener('keydown', (e) => {
         if (!isOpen) return;
@@ -188,9 +197,17 @@ export function createContextMenu() {
     window.addEventListener('resize', close);
     document.addEventListener('scroll', (e) => {
         if (!isOpen) return;
-        if (e.target && e.target.closest && e.target.closest('.ctx-menu')) return;
+        const target = e.target;
+        if (target && target.closest && target.closest('.ctx-menu')) return;
         // AI 流式输出会自动滚动消息区；面板内菜单不应因此被关闭
-        if (openOptions.ignoreScrollWithin && e.target && e.target.closest && e.target.closest(openOptions.ignoreScrollWithin)) return;
+        if (openOptions.ignoreScrollWithin && target && target.closest && target.closest(openOptions.ignoreScrollWithin)) return;
+        // 只有「滚动到菜单锚点所在的那个容器」才关菜单：别处的滚动（AI 面板输出、
+        // 侧边栏、另一个编辑器分组……）跟这个菜单没关系，不该把它关掉。
+        const origin = openOptions._origin;
+        if (origin && origin.nodeType === 1 && target && target.nodeType === 1) {
+            if (target === origin || (target.contains && target.contains(origin))) close();
+            return;
+        }
         close();
     }, true);
 

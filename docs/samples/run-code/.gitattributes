@@ -1,0 +1,9 @@
+# Shell 脚本必须是 LF：CRLF 会让 Git Bash 把行尾当成命令的一部分
+*.sh text eol=lf
+# 其余样例统一 LF；批处理由 cmd.exe 自行兼容
+*.py text eol=lf
+*.c text eol=lf
+*.cpp text eol=lf
+*.rs text eol=lf
+*.java text eol=lf
+Makefile text eol=lf

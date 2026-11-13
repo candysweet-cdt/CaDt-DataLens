@@ -19,6 +19,7 @@
 | `text/` | 文本/代码扩展各一份：txt、log、conf、html、htm、css、js、ts、py、sh、bat、ps1、go、java、kt、lua、sql；`go.mod` / `go.sum`、`main.cpp`、`Program.cs`、`lib.rs`、`index.php`、`Dockerfile`、`Makefile`、`CMakeLists.txt`、`.gitignore` 演示对应语言的代码视图语法高亮；`config.toml`、`app.properties`、`settings.ini`、`device.cfg` 以树视图打开；`markdown-demo.md` 演示预览、代码块高亮和数学公式 |
 | `binary/` | PNG、JPEG/JPG/JFIF、GIF、BMP、WebP、ICO、TIF/TIFF、AVIF；`magic-image.dat` 是改扩展名的 PNG，用于测试文件头识别；`sample.bin` 是包含控制字节的任意数据，会按二进制十六进制视图展示 |
 | `patch/` | 三份 `.patch` 示例：整体成功、允许部分成功、全部失败；配套 `demo/` 目标工程、`pristine/` 初始副本与一键重置脚本（`reset-samples.ps1` / `.sh`） |
+| `run-code/` | 运行代码（F5 / Ctrl+F5）的可执行样例：14 种语言的 hello、cwd / 参数 / stdin / 报错跳转 / GBK / ANSI / 截断 / 停止等场景，以及 node / go / rust / python / make 五个可探测的小项目；见目录内 `README.md` |
 
 ## 说明
 

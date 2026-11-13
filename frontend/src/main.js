@@ -1495,6 +1495,8 @@ const mockBackend = {
     async SaveDataURL(path) { window.__mockSaved = path; return path; },
     async CopyFileTo(srcPath) { return srcPath; },
     async GetClipboardText() { return window.__mockClipboard || ''; },
+    // mock：浏览器调试时没有系统剪贴板图片，用 window.__mockClipboardImage 模拟 data URL。
+    async GetClipboardImage() { return window.__mockClipboardImage || ''; },
     async ForceClose() { window.__mockForceClosed = (window.__mockForceClosed || 0) + 1; },
     async WebSearch(query, maxResults) {
         window.__mockWebSearch = {query, maxResults};
@@ -2547,6 +2549,8 @@ const els = {
     sbModeTree: document.getElementById('sb-mode-tree'),
     structurePanel: document.getElementById('structure-panel'),
     structureBody: document.getElementById('structure-body'),
+    structureTitle: document.querySelector('#structure-panel .sb-title'),
+    structureSource: document.getElementById('structure-source'),
     structureRefresh: document.getElementById('structure-refresh'),
     structureCollapse: document.getElementById('structure-collapse'),
     structureExport: document.getElementById('structure-export'),
@@ -3270,7 +3274,7 @@ const themes = [
     {id: 'night', name: 'Night', group: 'classic', bg: '#16181f', accent: '#7aa2f7'},
     {id: 'pixyll', name: 'Pixyll', group: 'classic', bg: '#fdfbf7', accent: '#c24266'},
     {id: 'whitey', name: 'Whitey', group: 'classic', bg: '#ffffff', accent: '#2b6cb0'},
-    {id: 'harness', name: 'Harness', group: 'harness', bg: '#ffffff', accent: '#4d6bfe'},
+    {id: 'harness', name: 'Harness', group: 'harness', bg: '#ffffff', accent: '#4176e6'},
 ];
 const uiFonts = [
     {id: 'inter', name: 'Inter', family: '"Inter"'},
@@ -3340,6 +3344,8 @@ const defaultSettings = {
     openMode: 'tab',
     sidebarMode: 'tree',
     sidebarView: 'files',
+    // 结构面板在「文件 + AI 助手」同时存在时的来源偏好（file / session）
+    structureSource: 'file',
     showSidebar: false,
     csvTableMigrated: false,
     keyWidth: 160,
@@ -3387,7 +3393,7 @@ const defaultSettings = {
     aiChatFontCjk: 'follow',
     aiChatCodeFont: 'follow',
     aiShowThinking: true,
-    aiShowUsage: false,
+    aiShowUsage: true,
     aiAssistantCard: false,
     aiInlineWidgets: true,
     aiMaxSessions: 50,
@@ -3453,6 +3459,7 @@ settings.autoSave = !!settings.autoSave;
 if (settings.openMode !== 'window') settings.openMode = 'tab';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 if (!['files', 'git', 'structure', 'chats'].includes(settings.sidebarView)) settings.sidebarView = 'files';
+if (settings.structureSource !== 'session') settings.structureSource = 'file';
 settings.showSidebar = !!settings.showSidebar;
 settings.treeGuides = !!settings.treeGuides;
 settings.treeCounts = !!settings.treeCounts;
@@ -3518,7 +3525,7 @@ for (const key of ['aiChatFontEn', 'aiChatFontCjk', 'aiChatCodeFont']) {
     if (typeof settings[key] !== 'string' || !settings[key]) settings[key] = 'follow';
 }
 settings.aiShowThinking = settings.aiShowThinking !== false;
-settings.aiShowUsage = settings.aiShowUsage === true;
+settings.aiShowUsage = settings.aiShowUsage !== false;
 settings.aiAssistantCard = settings.aiAssistantCard === true;
 // AI 回答里把 svg / html 围栏渲染成可视化卡片（默认开；关闭后按普通代码块显示）
 settings.aiInlineWidgets = settings.aiInlineWidgets !== false;
@@ -9418,11 +9425,15 @@ function refreshPatchMarkers(doc) {
 
 function createDocEditor(doc) {
     if (doc.editor) return;
+    // 浏览器 / 后台终端视图没有 doc.editor，用 doc.pane 判断是否已建过；
+    // 否则每次激活都会再建一套面板，旧面板就留在编辑器里叠着。
     if (doc.browser) {
+        if (doc.pane) return;
         createBrowserView(doc);
         return;
     }
     if (doc.bgTerm) {
+        if (doc.pane) return;
         createBgTermView(doc);
         return;
     }
@@ -11834,6 +11845,7 @@ function updateDocChrome() {
     renderTabs();
     if (aiPanel) aiPanel.refreshDockFill();
     syncAllBrowserTabs();
+    refreshStructureSources();
 }
 
 function showWelcome() {
@@ -11876,6 +11888,7 @@ function showWelcome() {
     syncExplorerActive();
     if (structurePanel) structurePanel.setDoc(null);
     if (aiPanel) aiPanel.refreshDockFill();
+    refreshStructureSources();
 }
 
 let activateToken = 0;
@@ -14601,6 +14614,7 @@ function applySidebarUI() {
     const filesVisible = !!settings.showSidebar && currentSidebarView() === 'files';
     if (explorer) explorer.setVisible(filesVisible);
     if (structurePanel) structurePanel.setVisible(!!settings.showSidebar && currentSidebarView() === 'structure');
+    refreshStructureSources();
     requestAnimationFrame(() => {
         if (!editor) return;
         try {
@@ -14934,6 +14948,8 @@ function initAIPanel() {
                 if (terminalUI.open) fitActiveTerm();
             } catch (e) {}
         },
+        // 面板开合 / 显示方式 / 消息流变化：结构面板据此决定显示文件结构还是会话结构
+        onPanelStateChange: () => refreshStructureSources(),
     });
     window.__lens.aiPanel = aiPanel;
     // 状态栏「AI 写入」徽标：订阅面板的写操作事件（事件驱动，不轮询磁盘）
@@ -15059,13 +15075,86 @@ function initStructurePanel() {
         },
         onJump: (node) => jumpToStructureNode(node),
         parseAsync: (name, text, doc) => parseStructureCached(name, text, doc),
+        onSessionJump: (index) => {
+            if (aiPanel && typeof aiPanel.bridgeJumpToMessage === 'function') aiPanel.bridgeJumpToMessage(index);
+        },
     });
     if (els.structureExport) {
         els.structureExport.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14M5.5 8.5h11.5M8 12.5h9M10.5 16.5h6.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
         els.structureExport.addEventListener('click', () => showStructureExportMenu());
     }
+    if (els.structureSource) {
+        els.structureSource.innerHTML = iconSvg('file', 14);
+        els.structureSource.addEventListener('click', toggleStructureSource);
+    }
+    // 会话结构模式下「刷新」要重新向 AI 面板取一次快照（面板内部的 refresh 只重渲染已有数据）
+    if (els.structureRefresh) {
+        els.structureRefresh.addEventListener('click', () => {
+            if (structurePanel && structurePanel.getSource() === 'session') refreshStructureSources();
+        });
+    }
+    structurePanel.setSource(settings.structureSource);
     structurePanel.setDoc(file);
     applySidebarUI();
+    refreshStructureSources();
+}
+
+// ---- 结构面板的两个来源：文件结构 / 会话结构（用户消息定位条） ----
+// 内容区只有文件            → 只显示文件结构
+// 内容区只有 AI 助手        → 只显示当前会话的结构（全屏，或停靠且没打开文件时 AI 占满内容区）
+// 两者都在                  → 默认文件结构，面板头部图标可在两者间切换（偏好存 settings）
+function structureSources() {
+    const aiOpen = !!(aiPanel && aiPanel.isOpen && aiPanel.isOpen());
+    const aiMode = aiPanel && aiPanel.getMode ? aiPanel.getMode() : '';
+    // 悬浮窗在另一个窗口里，本窗口内容区没有 AI，也就没有可定位的会话结构
+    const aiVisible = aiOpen && aiMode !== 'float';
+    const hasFile = !!file;
+    const aiOnly = aiVisible && (aiMode === 'fullscreen' || !hasFile);
+    return {file: hasFile && !aiOnly, session: aiVisible};
+}
+
+function structureOutlineSnapshot() {
+    try {
+        if (aiPanel && typeof aiPanel.bridgeSessionOutline === 'function') return aiPanel.bridgeSessionOutline();
+    } catch (e) {}
+    return null;
+}
+
+function syncStructureChrome(effective, sources) {
+    const sessionMode = effective === 'session';
+    if (els.structureTitle) els.structureTitle.textContent = sessionMode ? '会话结构' : '结构';
+    if (els.structureSource) {
+        const both = sources.file && sources.session;
+        els.structureSource.classList.toggle('hidden', !both);
+        els.structureSource.classList.toggle('active', sessionMode);
+        els.structureSource.innerHTML = iconSvg(sessionMode ? 'feedback' : 'file', 14);
+        els.structureSource.setAttribute('aria-pressed', String(sessionMode));
+        els.structureSource.title = sessionMode
+            ? '当前：会话结构（点击切到文件结构）'
+            : '当前：文件结构（点击切到会话结构）';
+    }
+    // 复制/导出与「全部折叠」只对文件结构有意义
+    if (els.structureExport) els.structureExport.classList.toggle('hidden', sessionMode);
+    if (els.structureCollapse) els.structureCollapse.classList.toggle('hidden', sessionMode);
+    if (els.structureRefresh) els.structureRefresh.title = sessionMode ? '刷新会话结构' : '刷新结构';
+}
+
+function refreshStructureSources() {
+    if (!structurePanel) return '';
+    const src = structureSources();
+    const effective = structurePanel.setSources(src);
+    structurePanel.setSessionOutline(src.session ? structureOutlineSnapshot() : null);
+    syncStructureChrome(effective, src);
+    return effective;
+}
+
+function toggleStructureSource() {
+    if (!structurePanel) return;
+    const next = structurePanel.getSource() === 'session' ? 'file' : 'session';
+    settings.structureSource = next;
+    try { localStorage.setItem(settingsKey, JSON.stringify(settings)); } catch (e) {}
+    const effective = structurePanel.setSource(next);
+    syncStructureChrome(effective, structureSources());
 }
 
 // 结构面板的结构化复制 / 导出：文本格式与「结构化目录」一致

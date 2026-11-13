@@ -26,6 +26,7 @@ const (
 // appBuiltinSkillDirs 随 exe 分发、在 AI 面板「技能管理」中显示为「内置」的技能目录。
 // 首次列出技能时按应用版本释放到 <应用数据>/builtin-skills/，供 read_file 读取 references 等附属文件。
 var appBuiltinSkillDirs = []string{
+	"cadt-file-layout",
 	"reverse-engineer-anything",
 	"chinese-formal-document-format",
 }

@@ -24,6 +24,36 @@ function metaSignature(meta) {
     return JSON.stringify(Object.assign({}, meta, {updatedAt: 0}));
 }
 
+// 消息指纹：追加式日志只按 _mid 比对公共前缀，消息落盘后被就地改写（工具 running→done、
+// 审批 pending→approved、子代理/后台作业收敛…）不会触发重写，重启重放就会读到旧状态
+// ——最典型的表现是工具明明执行成功，重启后却成了「执行被中断」。
+// 这里只对会被就地改写的字段取轻量指纹（不序列化正文，工具轮次里每轮都要算），
+// 持久化时发现指纹变了就从该消息处截断重写。
+export function messageFingerprint(message) {
+    if (!message || typeof message !== 'object') return '';
+    const approval = message.approval && typeof message.approval === 'object' ? message.approval : null;
+    const ask = message.ask && typeof message.ask === 'object' ? message.ask : null;
+    const envAsk = message.envAsk && typeof message.envAsk === 'object' ? message.envAsk : null;
+    const agent = message.agent && typeof message.agent === 'object' ? message.agent : null;
+    const bg = message.bg && typeof message.bg === 'object' ? message.bg : null;
+    return [
+        textOf(message.role),
+        textOf(message.status),
+        message.interrupted === true ? 1 : 0,
+        textOf(message.content).length,
+        textOf(message.error).length,
+        approval ? textOf(approval.state) + ':' + textOf(approval.source) + ':' + textOf(approval.remember) : '',
+        ask ? textOf(ask.state) + ':' + textOf(ask.source) + ':' + textOf(ask.answer).length : '',
+        envAsk ? textOf(envAsk.state) : '',
+        agent ? textOf(agent.state) + ':' + (Number(agent.rounds) || 0) + ':' + textOf(agent.summary).length : '',
+        bg ? textOf(bg.state) + ':' + (bg.code == null ? '' : Number(bg.code)) : '',
+        Array.isArray(message.images) ? message.images.length : 0,
+        Number(message.turnMs) || 0,
+        Number(message.thinkMs) || 0,
+        Number(message.finishedAt) || 0,
+    ].join('|');
+}
+
 // ---------- 事件编码 ----------
 
 export function encodeSessionHeader(session) {
@@ -201,6 +231,7 @@ export function buildSessionMeta(session) {
         workspace: textOf(session && session.workspace),
         scope: ['read', 'edit', 'auto', 'full'].includes(session && session.scope) ? session.scope : 'read',
         profileId: textOf(session && session.profileId),
+        modelId: textOf(session && session.modelId),
         systemPrompt: textOf(session && session.systemPrompt),
         promptTemplateId: textOf(session && session.promptTemplateId),
         planMode: !!(session && session.planMode),
@@ -258,6 +289,22 @@ export function createSessionDiskStore(options) {
         return genId('m-');
     }
 
+    // 已落盘消息的指纹表（mid → 指纹）。按 mid 存，不随消息下标变化而错位。
+    function fingerprintsOf(session) {
+        if (!(session._fps instanceof Map)) session._fps = new Map();
+        return session._fps;
+    }
+
+    function resetFingerprints(session, list) {
+        const fps = new Map();
+        for (const message of list || []) {
+            const mid = textOf(message && message._mid);
+            if (mid) fps.set(mid, messageFingerprint(message));
+        }
+        session._fps = fps;
+        return fps;
+    }
+
     // 写盘失败时把日志记账恢复到写前状态，保证下一次持久化会重试这批消息。
     function snapshotLogState(session) {
         return {
@@ -266,6 +313,7 @@ export function createSessionDiskStore(options) {
             logCreated: !!session._logCreated,
             logMeta: session._logMeta ? Object.assign({}, session._logMeta) : session._logMeta,
             needsRewrite: !!session._needsRewrite,
+            fps: session._fps instanceof Map ? new Map(session._fps) : null,
         };
     }
 
@@ -275,6 +323,7 @@ export function createSessionDiskStore(options) {
         session._logCreated = state.logCreated;
         session._logMeta = state.logMeta;
         session._needsRewrite = state.needsRewrite;
+        session._fps = state.fps;
     }
 
     // 追加式日志不会自动覆盖已落盘的消息。消息首次落盘后被就地修改（审批对象的
@@ -358,6 +407,8 @@ export function createSessionDiskStore(options) {
             const event = encodeMessageEvent(message, session._mids[index] || textOf(message && message._mid), false);
             if (event) events.push(event);
         });
+        // 整份重写后磁盘内容与内存一致：指纹表按当前消息重建。
+        resetFingerprints(session, messages);
         return events;
     }
 
@@ -439,11 +490,17 @@ export function createSessionDiskStore(options) {
             session._logMeta = Object.assign({}, logMeta, patch);
         }
         let common = 0;
-        while (common < mids.length && common < messages.length && textOf(messages[common] && messages[common]._mid) === mids[common]) {
+        const fps = fingerprintsOf(session);
+        // 前缀要 mid 与指纹都对上才算「已落盘」：就地改过状态的消息会让前缀在这里断开，
+        // 下面 truncate 后按当前内容重追加（见 messageFingerprint 的说明）。
+        while (common < mids.length && common < messages.length &&
+               textOf(messages[common] && messages[common]._mid) === mids[common] &&
+               fps.get(mids[common]) === messageFingerprint(messages[common])) {
             common++;
         }
         if (common < mids.length) {
             events.push(encodeTruncateEvent(common));
+            for (let i = common; i < mids.length; i++) if (mids[i]) fps.delete(mids[i]);
             mids.length = common;
         }
         for (let i = common; i < messages.length; i++) {
@@ -456,11 +513,13 @@ export function createSessionDiskStore(options) {
                 message._mid = mid;
             }
             mids[i] = mid;
+            fps.set(mid, messageFingerprint(message));
             const event = encodeMessageEvent(message, mid, false);
             if (event) events.push(event);
         }
         try {
             session._mids = mids;
+            session._fps = fps;
             if (events.length) {
                 ensureHeaderEvent(session, events);
                 await backend.AISessionAppend(session.id, encodeSessionLines(events));
@@ -508,14 +567,18 @@ export function createSessionDiskStore(options) {
             }
             const mids = midsNow;
             const archivedMids = archivedMidsNow;
+            const fps = fingerprintsOf(session);
             await prepareImages(session, snapshot);
             const events = [];
             let common = 0;
-            while (common < mids.length && common < snapshot.length && textOf(snapshot[common] && snapshot[common]._mid) === mids[common]) {
+            while (common < mids.length && common < snapshot.length &&
+                   textOf(snapshot[common] && snapshot[common]._mid) === mids[common] &&
+                   fps.get(mids[common]) === messageFingerprint(snapshot[common])) {
                 common++;
             }
             if (common < mids.length) {
                 events.push(encodeTruncateEvent(common));
+                for (let i = common; i < mids.length; i++) if (mids[i]) fps.delete(mids[i]);
                 mids.length = common;
             }
             for (let i = common; i < snapshot.length; i++) {
@@ -527,6 +590,7 @@ export function createSessionDiskStore(options) {
                     message._mid = mid;
                 }
                 mids[i] = mid;
+                fps.set(mid, messageFingerprint(message));
                 const event = encodeMessageEvent(message, mid, false);
                 if (event) events.push(event);
             }
@@ -553,6 +617,7 @@ export function createSessionDiskStore(options) {
             try {
                 session._mids = [];
                 session._archivedMids = [];
+                session._fps = new Map();
                 const events = [encodeSessionHeader(session)];
                 if (session.summary) events.push(encodeMetaEvent({summary: session.summary}));
                 await backend.AISessionRewrite(session.id, encodeSessionLines(events));
@@ -619,6 +684,8 @@ export function createSessionDiskStore(options) {
             // 归一化可能丢掉无效消息，_mids 必须按归一化后的消息顺序重建，否则索引错位会触发重复追加。
             session._mids = (session.messages || []).map((message) => textOf(message && message._mid));
             session._archivedMids = (session.archived || []).map((message) => textOf(message && message._mid));
+            // 刚读出来的消息就是磁盘状态，指纹按当前内容建立基线。
+            resetFingerprints(session, session.messages);
             session._logMeta = {title: textOf(meta.title), workspace: textOf(meta.workspace)};
             session._logCreated = !!replay.header;
             session._needsRewrite = !!session._recovered || (session.messages || []).length !== replay.messages.length;

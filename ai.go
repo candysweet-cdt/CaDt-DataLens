@@ -125,6 +125,9 @@ type aiUsage struct {
 	CompletionTokens int `json:"completionTokens,omitempty"`
 	TotalTokens      int `json:"totalTokens,omitempty"`
 	CachedTokens     int `json:"cachedTokens,omitempty"`
+	// CacheWriteTokens 只对 Anthropic 有值（cache_creation_input_tokens）：写进提示缓存的量，
+	// 与「缓存读取」分开统计，前端每轮用量浮层会单独列一行。
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
 }
 
 type aiDonePayload struct {
@@ -1157,7 +1160,7 @@ func streamOpenAISSE(body io.Reader, id string, emit aiEmitter, touch func()) er
 		}
 		doneSent = true
 		payload := aiDonePayload{Id: id, FinishReason: finishReason}
-		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.CachedTokens > 0 {
+		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.CachedTokens > 0 || usage.CacheWriteTokens > 0 {
 			payload.Usage = &usage
 		}
 		emit(aiEventDone, payload)
@@ -1251,7 +1254,7 @@ func streamAnthropicSSE(body io.Reader, id string, emit aiEmitter, touch func())
 			FinishReason:      finishReason,
 			ThinkingSignature: signature.String(),
 		}
-		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.CachedTokens > 0 {
+		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.CachedTokens > 0 || usage.CacheWriteTokens > 0 {
 			payload.Usage = &usage
 		}
 		emit(aiEventDone, payload)
@@ -1274,6 +1277,7 @@ func streamAnthropicSSE(body io.Reader, id string, emit aiEmitter, touch func())
 				u := envelope.Message.Usage
 				usage.PromptTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 				usage.CachedTokens = u.CacheReadInputTokens
+				usage.CacheWriteTokens = u.CacheCreationInputTokens
 			}
 		case "content_block_start":
 			if block := envelope.ContentBlock; block != nil {
@@ -1329,6 +1333,7 @@ func streamAnthropicSSE(body io.Reader, id string, emit aiEmitter, touch func())
 					u := envelope.Usage
 					usage.PromptTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 					usage.CachedTokens = u.CacheReadInputTokens
+					usage.CacheWriteTokens = u.CacheCreationInputTokens
 				}
 				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 			}

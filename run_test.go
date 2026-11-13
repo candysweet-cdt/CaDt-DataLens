@@ -376,12 +376,22 @@ func TestRunInputValidation(t *testing.T) {
 	if err := app.RunInput(id, "hello"); err != nil {
 		t.Errorf("正常输入不应报错：%v", err)
 	}
-	// 没人读管道 → pump 会阻塞在 Write，队列应当报满而不是卡住调用方
-	for i := 0; i < runInputQueue+8; i++ {
-		_ = app.RunInput(id, "x")
+	// 没人读管道 → pump 写满管道缓冲后会阻塞在 Write，输入只能堆在队列里。
+	// 用写满上限的输入快速填死管道（Windows 默认 4 KB、Linux 64 KB），
+	// 不再依赖「pump 还没被调度所以队列先满」这种时序运气。
+	maxLine := strings.Repeat("x", runInputMax)
+	var fullErr error
+	for i := 0; i < 200; i++ {
+		if err := app.RunInput(id, maxLine); err != nil {
+			fullErr = err
+			break
+		}
 	}
-	if err := app.RunInput(id, "overflow"); err == nil {
-		t.Error("输入队列满应返回错误，不能阻塞 UI")
+	if fullErr == nil {
+		t.Fatal("输入队列满应返回错误，不能阻塞 UI")
+	}
+	if !strings.Contains(fullErr.Error(), "队列已满") {
+		t.Fatalf("队列满时错误应说明队列已满，实际：%v", fullErr)
 	}
 	if err := app.RunEndInput(id); err != nil {
 		t.Errorf("关闭输入端失败：%v", err)

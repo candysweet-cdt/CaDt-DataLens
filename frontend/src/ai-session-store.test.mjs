@@ -349,6 +349,57 @@ test('disk store: normalized-out messages trigger a rewrite before appending', a
     assert.ok(!backend._logs.get('s1').includes('"content":""'), '被归一化丢掉的消息应从日志里清掉');
 });
 
+test('disk store: tool message updated in place is re-written to disk', async () => {
+    const backend = fakeBackend();
+    const store = createSessionDiskStore({backend});
+    const tool = {role: 'tool', name: 'screenshot', content: '', status: 'running', ts: 2};
+    const session = newSession({messages: [{role: 'user', content: 'run', ts: 1}, tool]});
+    await store.persistSession(session);
+    await store.flush();
+    assert.ok(backend._logs.get('s1').includes('"status":"running"'), '运行中的工具消息应已落盘');
+    // 工具执行完成：消息对象被就地改写，不新增消息——重启重放不能还读到 running。
+    tool.status = 'done';
+    tool.content = '截图已保存';
+    await store.persistSession(session);
+    await store.flush();
+    const loaded = await store.loadAll(null);
+    assert.equal(loaded[0].messages.length, 2);
+    assert.equal(loaded[0].messages[1].status, 'done');
+    assert.equal(loaded[0].messages[1].content, '截图已保存');
+    // 内容没再变时不应重复追加事件。
+    const before = backend._logs.get('s1');
+    await store.persistSession(loaded[0]);
+    await store.flush();
+    assert.equal(backend._logs.get('s1'), before, '无变化时不应重复写事件');
+});
+
+test('disk store: approval state updated in place is re-written to disk', async () => {
+    const backend = fakeBackend();
+    const store = createSessionDiskStore({backend});
+    const tool = {
+        role: 'tool',
+        name: 'run_command',
+        content: '等待审批…',
+        status: 'pending',
+        ts: 2,
+        approval: {state: 'pending', command: 'npm test'},
+    };
+    const session = newSession({messages: [{role: 'user', content: 'test', ts: 1}, tool]});
+    await store.persistSession(session);
+    await store.flush();
+    tool.approval.state = 'approved';
+    tool.approval.source = 'user';
+    tool.status = 'done';
+    tool.content = '全部通过';
+    await store.persistSession(session);
+    await store.flush();
+    const loaded = await store.loadAll(null);
+    const replayed = loaded[0].messages[1];
+    assert.equal(replayed.status, 'done');
+    assert.equal(replayed.approval.state, 'approved');
+    assert.equal(replayed.approval.source, 'user');
+});
+
 test('disk store: recovered transient messages are rewritten before appending', async () => {
     const backend = fakeBackend();
     const store = createSessionDiskStore({backend});

@@ -319,6 +319,7 @@ func TestAIStreamAnthropic(t *testing.T) {
 		t.Fatalf("done = %#v", donePayload)
 	}
 	if donePayload.Usage == nil || donePayload.Usage.PromptTokens != 18 || donePayload.Usage.CachedTokens != 4 ||
+		donePayload.Usage.CacheWriteTokens != 2 ||
 		donePayload.Usage.CompletionTokens != 7 || donePayload.Usage.TotalTokens != 25 {
 		t.Fatalf("usage = %#v", donePayload.Usage)
 	}
