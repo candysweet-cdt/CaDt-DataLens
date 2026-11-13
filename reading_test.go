@@ -1,6 +1,6 @@
 package main
 
-// 阅读模式扫描/排序/字数测试（docs/reading-mode.md §17.1）。
+// 阅读模式扫描/排序/字数测试（docs/finished-plans/reading-mode.md §17.1）。
 
 import (
 	"crypto/sha256"

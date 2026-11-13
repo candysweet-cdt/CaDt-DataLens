@@ -1,6 +1,6 @@
 package main
 
-// 阅读模式 EPUB 解析（docs/reading-mode.md §10.5）：
+// 阅读模式 EPUB 解析（docs/finished-plans/reading-mode.md §10.5）：
 // container.xml → OPF → metadata/manifest/spine；解压 manifest 资源到
 // appdata/reading-cache/epub-<sha1>/，XHTML 交给前端 DOMParser + DOMPurify 渲染。
 // 安全：拒绝路径逃逸、限制条目数/体积、DRM 拒绝、缓存 LRU 清理。零新依赖。

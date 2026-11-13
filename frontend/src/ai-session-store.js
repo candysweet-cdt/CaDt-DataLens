@@ -207,6 +207,7 @@ export function buildSessionMeta(session) {
         browserTabId: textOf(session && session.browserTabId),
         round: Number(session && session.round) || 0,
         archivedAt: Number(session && session.archivedAt) || 0,
+        pinned: !!(session && session.pinned),
         messageCount: Array.isArray(session && session.messages) ? session.messages.length : 0,
         archivedCount: Array.isArray(session && session.archived) ? session.archived.length : 0,
         logFile: textOf(session && session.logFile),
@@ -274,6 +275,21 @@ export function createSessionDiskStore(options) {
         session._needsRewrite = state.needsRewrite;
     }
 
+    // 追加式日志不会自动覆盖已落盘的消息。消息首次落盘后被就地修改（审批对象的
+    // pending → approved/denied/failed、自动放行来源等）时调用这里：把该消息从
+    // 「已持久化前缀」里摘出，下一次 persistSession 会在它的位置断开公共前缀，
+    // 发 truncate 截掉旧事件后按当前状态重追加，避免 JSONL 永远留着旧状态
+    // （如分类器放行来源、用户裁定结果丢失，或残留「pending」）。
+    function invalidateMessage(session, message) {
+        if (!session || session._loadError) return;
+        if (!message || typeof message !== 'object' || message.status === 'streaming') return;
+        if (!Array.isArray(session.messages) || !Array.isArray(session._mids)) return;
+        const index = session.messages.indexOf(message);
+        if (index < 0 || index >= session._mids.length) return; // 从未落盘的消息无需失效
+        const mid = textOf(message._mid);
+        if (mid && session._mids[index] === mid) session._mids[index] = '';
+    }
+
     async function saveImageFile(sessionId, image) {
         if (!image || typeof image !== 'object') return;
         if (!image.data || image.file) return;
@@ -332,11 +348,12 @@ export function createSessionDiskStore(options) {
         session._logMeta = {title: textOf(session.title), workspace: textOf(session.workspace)};
         if (session.summary) events.push(encodeMetaEvent({summary: session.summary}));
         archived.forEach((message, index) => {
-            const event = encodeMessageEvent(message, session._archivedMids[index], true);
+            // mids 条目可能被 invalidateMessage 清空：回退到消息自带的 _mid，整份重写时不能丢消息。
+            const event = encodeMessageEvent(message, session._archivedMids[index] || textOf(message && message._mid), true);
             if (event) events.push(event);
         });
         messages.forEach((message, index) => {
-            const event = encodeMessageEvent(message, session._mids[index], false);
+            const event = encodeMessageEvent(message, session._mids[index] || textOf(message && message._mid), false);
             if (event) events.push(event);
         });
         return events;
@@ -649,6 +666,7 @@ export function createSessionDiskStore(options) {
     return {
         loadAll,
         persistSession,
+        invalidateMessage,
         archiveSession,
         resetSession,
         rewriteSession,

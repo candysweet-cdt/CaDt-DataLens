@@ -1,4 +1,4 @@
-// 阅读状态持久化（docs/reading-mode.md §8.1）：
+// 阅读状态持久化（docs/finished-plans/reading-mode.md §8.1）：
 // localStorage key "datalens-reading-state"，版本化；进度/书签/统计不进设置。
 // storage 可注入（Node --test 用内存 mock）。
 

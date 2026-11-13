@@ -269,6 +269,7 @@
                         <button type="button" class="snav-item snav-child" data-pane="context">上下文注入</button>
                         <button type="button" class="snav-item snav-child" data-pane="preferences">用户偏好</button>
                         <button type="button" class="snav-item snav-child" data-pane="schedules">定时任务</button>
+                        <button type="button" class="snav-item snav-child" data-pane="permissions">权限</button>
                     </div>
                 </div>
                 <div id="snav-formats" class="snav-group expanded">
@@ -292,6 +293,7 @@
                     <button type="button" class="snav-item" data-pane="envvars">环境变量</button>
                     <button type="button" class="snav-item" data-pane="plugins">插件</button>
                     <button type="button" class="snav-item" data-pane="developer">开发者</button>
+                    <button type="button" class="snav-item" data-pane="activity">操作记录</button>
                     <button type="button" class="snav-item" data-pane="about">关于我们</button>
                 </div>
                 <div class="settings-content">
@@ -539,16 +541,16 @@
                     </div>
                     <div class="settings-pane hidden" data-pane="models">
                         <div class="fmt-pane-title">模型</div>
-                        <div class="fmt-pane-sub">已配置模型与 API 凭据；API Key 只保存在本机 localStorage，不写入日志或应用数据目录。</div>
-                        <div class="settings-section-title">已配置模型</div>
+                        <div class="fmt-pane-sub">每个账号（API Key）可配置多个模型，模型条目各自设置窗口与输入能力；API Key 只保存在本机，不写入日志。</div>
+                        <div class="settings-section-title">模型账号</div>
                         <div class="ai-model-toolbar">
-                            <button type="button" id="ai-model-create" class="dlg-btn primary">新建模型</button>
+                            <button type="button" id="ai-model-create" class="dlg-btn primary">新建账号</button>
                             <span class="ai-model-toolbar-label">预设</span>
                             <select id="ai-opt-preset" class="opt-select"></select>
                             <button type="button" id="ai-opt-preset-add" class="dlg-btn">添加预设</button>
                         </div>
                         <div id="ai-model-list" class="ai-model-list"></div>
-                        <div class="fmt-hint hint-indent">点击卡片「编辑」打开配置；新建和编辑使用独立弹层，保存后生效。</div>
+                        <div class="fmt-hint hint-indent">点击卡片「编辑」打开账号与模型列表；新建和编辑使用独立弹层，保存后生效。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="ai">
                         <div class="fmt-pane-title">AI 助手</div>
@@ -893,6 +895,79 @@
                         </div>
                         <div class="fmt-hint">scope（触发轮次权限）仅对「每次新建会话」的任务生效；edit 档任务触发时若无人处理写审批会一直挂起，建议触发时保持在电脑前。</div>
                     </div>
+                    <div class="settings-pane hidden" data-pane="permissions">
+                        <div class="fmt-pane-title">权限</div>
+                        <div class="fmt-pane-sub">自动审批的判定顺序、项目级规则与最近审批记录。规则会写入工作区 <code>.cadt/permissions.json</code>，可随仓库共享。</div>
+                        <div class="settings-section-title">模式与判定顺序</div>
+                        <div class="fmt-hint">任何档位都先看项目 <b>deny</b> 规则；危险命令（rm -rf、git reset --hard、git clean -f、强推、丢弃工作区等）在非完全权限档一律单次确认，不提供长期放行。「自动审批」档：只读命令与已知命令族直接执行，工作区写入自动应用（未保存修改与风险路径除外），其余命令逐条审批。</div>
+                        <div class="settings-section-title">自动审批分类器</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-auto-classifier">
+                                规则无法判定时由 AI 分类器判断
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">关闭（默认）：未命中只读 / 命令族 / 规则时直接弹审批。开启后额外请求一次模型判定，失败、超时或信息不足都回退为人工审批；判定结果按命令缓存 10 分钟。每次触发都会在消息流推送系统提示（判定中 / 放行原因 / 转人工），工具卡同步显示「等待 AI 分类器判定…」。分类器默认请求当前会话使用的模型，可在下方「高级配置」里固定为指定模型。</div>
+                        <details class="ai-perm-advanced">
+                            <summary>高级配置</summary>
+                            <div class="popover-row">
+                                <span class="popover-label">分类器模型</span>
+                                <select id="ai-opt-classifier-model" class="opt-select"></select>
+                            </div>
+                            <div class="fmt-hint hint-indent">从模型配置列表中选择分类器专用的请求模型（含该配置的 provider / 地址 / 密钥 / 代理）。默认「跟随当前模型」；所选配置被删除后自动回退为跟随当前模型。只读命令、已知命令族与规则命中的命令不会触发分类器请求。</div>
+                        </details>
+                        <div class="settings-section-title">项目规则</div>
+                        <div class="fmt-hint hint-indent">表格里可直接增删规则；判定顺序 deny → ask → allow。<code>Bash(git status:*)</code> 的 <code>:*</code> 为前缀，<code>Write(docs/**)</code> 的 <code>*</code> 为通配，<code>Web(domain:example.com)</code> 匹配域名。</div>
+                        <div id="ai-opt-perm-table" class="ai-perm-table"></div>
+                        <div class="ai-perm-add">
+                            <select id="ai-opt-perm-add-kind" class="opt-select">
+                                <option value="command">Bash</option>
+                                <option value="write">Write</option>
+                                <option value="web">Web</option>
+                            </select>
+                            <select id="ai-opt-perm-add-behavior" class="opt-select">
+                                <option value="deny">deny</option>
+                                <option value="ask">ask</option>
+                                <option value="allow">allow</option>
+                            </select>
+                            <input id="ai-opt-perm-add-pattern" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="如 git status:* / docs/** / domain:example.com">
+                            <button type="button" id="ai-opt-perm-add-btn" class="dlg-btn">添加</button>
+                        </div>
+                        <details class="ai-perm-advanced">
+                            <summary>高级：文本编辑</summary>
+                            <div class="fmt-hint hint-indent">一行一条，<code>#</code> 开头为注释；保存后与表格同步。</div>
+                            <div class="ai-perm-grid">
+                                <label class="ai-perm-field">允许 allow
+                                    <textarea id="ai-opt-perm-allow" class="ai-settings-input" spellcheck="false" placeholder="Bash(git status:*)"></textarea>
+                                </label>
+                                <label class="ai-perm-field">询问 ask
+                                    <textarea id="ai-opt-perm-ask" class="ai-settings-input" spellcheck="false" placeholder="Bash(npm install:*)"></textarea>
+                                </label>
+                                <label class="ai-perm-field">拒绝 deny
+                                    <textarea id="ai-opt-perm-deny" class="ai-settings-input" spellcheck="false" placeholder="Bash(git push --force:*)"></textarea>
+                                </label>
+                            </div>
+                        </details>
+                        <div class="popover-row">
+                            <span class="popover-label">规则文件</span>
+                            <span id="ai-opt-perm-path" class="ai-approved-path">—</span>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label"></span>
+                            <div class="ai-settings-key">
+                                <button type="button" id="ai-opt-perm-save" class="dlg-btn primary">保存文本规则</button>
+                                <button type="button" id="ai-opt-perm-reload" class="dlg-btn">重新加载</button>
+                            </div>
+                        </div>
+                        <div class="settings-section-title">本会话授权</div>
+                        <div id="ai-opt-perm-session" class="ai-approved-list ai-perm-list-box"></div>
+                        <div class="popover-row">
+                            <span class="popover-label"></span>
+                            <button type="button" id="ai-opt-perm-session-clear" class="dlg-btn">清除本会话授权</button>
+                        </div>
+                        <div class="settings-section-title">最近审批</div>
+                        <div id="ai-opt-perm-log" class="ai-approved-list ai-perm-log ai-perm-list-box"></div>
+                    </div>
                     <div class="settings-pane hidden" data-pane="formats">
                         <div class="fmt-pane-title">通用数据格式</div>
                         <div class="fmt-pane-sub">所有格式的编码、缩进、保存换行与默认视图总览</div>
@@ -1061,6 +1136,53 @@
                         </div>
                         <div class="fmt-hint hint-indent">在底部面板中显示（与终端共用容器，可来回切换），实时输出调试、信息、警告与错误；面板右上角按钮可在独立窗口中打开。</div>
                     </div>
+                    <div class="settings-pane hidden" data-pane="activity">
+                        <div class="fmt-pane-title">操作记录</div>
+                        <div class="fmt-pane-sub">谁在什么时候做了什么（本机存储，可导出与清空）</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="opt-activity-log" checked>
+                                启用操作记录
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">仅记录操作与设置变更，不记录文件内容与密钥；日志只存本机应用数据目录（activity/*.jsonl，按月分文件）。</div>
+                        <div class="popover-row">
+                            <span class="popover-label">保留月数</span>
+                            <input type="number" id="opt-activity-retention" class="ai-settings-input ai-font-size-num" min="1" max="60" step="1" value="12">
+                            <button type="button" id="opt-open-activity" class="dlg-btn">打开记录目录</button>
+                            <button type="button" id="opt-export-activity-json" class="dlg-btn">导出 JSON</button>
+                            <button type="button" id="opt-export-activity-csv" class="dlg-btn">导出 CSV</button>
+                            <button type="button" id="opt-clear-activity" class="dlg-btn">清空…</button>
+                        </div>
+                        <div class="settings-section-title">记录</div>
+                        <div class="activity-filters">
+                            <select id="activity-filter-domain" class="opt-select">
+                                <option value="">全部动作</option>
+                                <option value="file">文件</option>
+                                <option value="tab">标签页</option>
+                                <option value="workspace">工作区</option>
+                                <option value="view">视图</option>
+                                <option value="settings">设置</option>
+                                <option value="plugin">插件</option>
+                                <option value="ai">AI</option>
+                                <option value="app">应用</option>
+                                <option value="activity">记录管理</option>
+                            </select>
+                            <select id="activity-filter-actor" class="opt-select">
+                                <option value="">全部来源</option>
+                                <option value="user">用户</option>
+                                <option value="ai">AI</option>
+                                <option value="system">系统</option>
+                            </select>
+                            <input type="text" id="activity-filter-keyword" class="activity-filter-input" placeholder="关键字（动作 / 对象 / 详情）">
+                            <button type="button" id="activity-refresh" class="dlg-btn">刷新</button>
+                        </div>
+                        <div class="plugin-list-box activity-list-box">
+                            <div class="activity-list" id="activity-list"></div>
+                        </div>
+                        <div class="fmt-hint" id="activity-list-status">—</div>
+                        <button type="button" id="activity-more" class="dlg-btn hidden">加载更早记录</button>
+                    </div>
                     <div class="settings-pane hidden" data-pane="about">
                         <div class="about-body">
                             <div class="about-banner">
@@ -1099,6 +1221,7 @@
                 </button>
             </div>
             <div class="dialog-body ai-model-editor-body">
+                        <div class="settings-section-title">账号连接</div>
                         <div class="popover-row">
                             <span class="popover-label">名称</span>
                             <input id="ai-opt-name" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off">
@@ -1118,14 +1241,7 @@
                             <span class="popover-label">API Key</span>
                             <div class="ai-settings-key">
                                 <input id="ai-opt-apikey" class="ai-settings-input" type="password" spellcheck="false" autocomplete="off">
-                                <button type="button" id="ai-opt-key-toggle" class="dlg-btn" title="显示 / 隐藏">显示</button>
-                            </div>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">模型</span>
-                            <div class="ai-settings-key">
-                                <input id="ai-opt-model" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="deepseek-flash">
-                                <button type="button" id="ai-opt-models" class="dlg-btn">获取列表</button>
+                                <button type="button" id="ai-opt-key-toggle" class="dlg-btn">显示</button>
                             </div>
                         </div>
                         <div class="popover-row">
@@ -1133,11 +1249,39 @@
                             <input type="range" id="ai-opt-temp" min="0" max="2" step="0.1" value="0.7">
                             <span id="ai-opt-temp-val" class="popover-value">0.7</span>
                         </div>
-                        <div class="popover-row">
-                            <span class="popover-label">最大输出</span>
-                            <input id="ai-opt-maxtokens" class="ai-settings-input" type="number" min="1" max="393216" step="1">
-                            <span class="popover-value">tokens</span>
+                        <div class="settings-section-title">模型（<span id="ai-opt-model-count">1</span>）</div>
+                        <div id="ai-opt-entries" class="ai-entries-strip"></div>
+                        <div class="ai-entries-actions">
+                            <button type="button" id="ai-opt-entry-add" class="dlg-btn">添加模型</button>
+                            <button type="button" id="ai-opt-entry-del" class="dlg-btn">删除当前模型</button>
                         </div>
+                        <div class="popover-row">
+                            <span class="popover-label">模型 ID</span>
+                            <div class="ai-settings-key">
+                                <input id="ai-opt-model" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="deepseek-flash">
+                                <button type="button" id="ai-opt-models" class="dlg-btn">获取列表</button>
+                            </div>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">上下文窗口</span>
+                            <input id="ai-opt-context" class="ai-settings-input" type="text" inputmode="numeric" spellcheck="false" autocomplete="off">
+                            <span class="popover-value">支持 256K / 1M</span>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">输出窗口</span>
+                            <input id="ai-opt-maxtokens" class="ai-settings-input" type="text" inputmode="numeric" spellcheck="false" autocomplete="off">
+                            <span class="popover-value">支持 8K / 1M</span>
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">输入能力</span>
+                            <div class="ai-modality-checks" id="ai-opt-modalities">
+                                <label><input type="checkbox" data-modality="text">文本</label>
+                                <label><input type="checkbox" data-modality="image">图像</label>
+                                <label><input type="checkbox" data-modality="video">视频</label>
+                                <label><input type="checkbox" data-modality="audio">音频</label>
+                            </div>
+                        </div>
+                        <div class="fmt-hint hint-indent">视频 / 音频暂不支持发送，勾选仅作为模型能力标记；未勾选图像时附件按钮将禁用。窗口字段对每个模型单独生效。</div>
                         <div id="ai-opt-reasoning-group" class="hidden">
                             <div class="popover-row">
                                 <span class="popover-label">推理强度</span>
@@ -1162,12 +1306,7 @@
                                 <input id="ai-opt-budget" class="ai-settings-input" type="number" min="1024" max="393215" step="256">
                                 <span class="popover-value">tokens</span>
                             </div>
-                            <div class="fmt-hint hint-indent">仅 Anthropic 原生；开启后请求省略 temperature。预算须小于最大输出，调整时会自动修正。</div>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">上下文窗口</span>
-                            <input id="ai-opt-context" class="ai-settings-input" type="number" min="2048" max="1048576" step="1024">
-                            <span class="popover-value">tokens</span>
+                            <div class="fmt-hint hint-indent">仅 Anthropic 原生；开启后请求省略 temperature。预算须小于输出窗口，调整时会自动修正。</div>
                         </div>
                         <div class="popover-row">
                             <span class="popover-label">连接</span>
@@ -1525,7 +1664,19 @@
             <div class="ai-resize ai-resize-br" data-ai-resize="br"></div>
             <div class="ai-head" id="ai-head">
                 <div class="ai-head-row ai-head-title-row">
-                    <span class="ai-title">AI 助手</span>
+                    <span class="ai-title" id="ai-session-title">AI 助手</span>
+                    <div class="ai-head-chips" id="ai-head-chips">
+                        <button type="button" id="ai-chip-agents" class="ai-chip" title="智能体团队（子代理运行状态）" aria-haspopup="true">
+                            <span class="ai-chip-icon"></span>
+                            <span class="ai-chip-label">智能体团队</span>
+                            <span class="ai-chip-count hidden"></span>
+                        </button>
+                        <button type="button" id="ai-chip-terms" class="ai-chip" title="后台终端（AI 启动的后台命令）" aria-haspopup="true">
+                            <span class="ai-chip-icon"></span>
+                            <span class="ai-chip-label">终端</span>
+                            <span class="ai-chip-count hidden"></span>
+                        </button>
+                    </div>
                     <div class="ai-head-actions">
                         <button type="button" id="ai-new-session" class="ai-icon-btn" title="新建会话（当前工作区）">
                             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.3 2.7h6.3a1.7 1.7 0 0 1 1.7 1.7v4.8a1.7 1.7 0 0 1-1.7 1.7H6.3L3.6 13.4V4.4a1.7 1.7 0 0 1 1.7-1.7z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M8.4 5v3.6M6.6 6.8h3.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
@@ -1542,6 +1693,9 @@
                                 <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="8.4" height="7.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/><rect x="6.4" y="6.4" width="7.2" height="6.4" rx="1" fill="var(--panel)" stroke="currentColor" stroke-width="1.1"/></svg>
                             </button>
                         </div>
+                        <button type="button" id="ai-side-btn" class="ai-icon-btn" title="AI 面板换到另一侧（停靠分屏时生效）">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M6.2 3v10" stroke="currentColor" stroke-width="1.1"/><path d="M9.6 6.6 11.4 8.4 9.6 10.2" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
                         <button type="button" id="ai-changes" class="ai-chip-btn hidden" title="本会话的工作区文件改动">变更 <span id="ai-changes-count">0</span></button>
                         <button type="button" id="ai-more" class="ai-icon-btn" title="更多工具与设置">
                             <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="8" r="1.15" fill="currentColor"/><circle cx="8" cy="8" r="1.15" fill="currentColor"/><circle cx="12" cy="8" r="1.15" fill="currentColor"/></svg>
@@ -1553,6 +1707,8 @@
                 </div>
             </div>
             <div id="ai-changes-pop" class="ai-popover hidden"></div>
+            <div id="ai-chips-pop" class="ai-popover hidden"></div>
+            <div id="ai-agent-view" class="ai-agent-view hidden"></div>
             <div id="ai-messages" class="ai-messages" role="log" aria-live="polite"></div>
             <button type="button" id="ai-scroll-btn" class="ai-scroll-btn hidden" title="回到底部">
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.6v8M4.6 8.4L8 11.8l3.4-3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>

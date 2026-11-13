@@ -3,11 +3,13 @@ import './style.css';
 import './reading.css';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
-import {aceModeFor, detectFormat, formats, isSupportedFile, pluginFormats} from './formats.js';
+import {aceModeFor, detectFormat, formats, isKnownCodeFileName, isSupportedFile, pluginFormats} from './formats.js';
 import {createExplorer} from './explorer.js';
 import {createStructurePanel, parseStructure} from './structure.js';
 import {createContextMenu} from './contextmenu.js';
+import {copyImageBlobToClipboard} from './image-clipboard.js';
 import {createDebugConsole} from './debugconsole.js';
+import {createActivityLog} from './activity-log.js';
 import {iconSvg, renderMenuIcon} from './icons.js';
 import {createPalette} from './palette.js';
 import {createAIPanel} from './ai-panel.js';
@@ -2598,15 +2600,17 @@ const APP_SETTING_RULES = {
     sidebarWidth: {type: 'number', min: 160, max: 500},
     terminalHeight: {type: 'number', min: 120, max: 480},
     aiPanelWidth: {type: 'number', min: 280, max: 800},
+    aiPanelSide: {type: 'enum', values: ['right', 'left']},
 };
 
 const APP_ACTIONS = [
-    'get_state', 'open_file', 'open_folder', 'activate_tab', 'close_tab', 'reopen_closed_tab', 'move_tab',
+    'get_state', 'screenshot', 'open_file', 'open_folder', 'activate_tab', 'close_tab', 'reopen_closed_tab', 'move_tab',
     'set_view', 'goto_line', 'toggle_sidebar', 'set_sidebar_view', 'toggle_terminal', 'toggle_ai_panel',
     'toggle_fullscreen', 'toggle_always_on_top', 'set_theme', 'open_settings', 'set_setting',
     'ai_new_session', 'ai_switch_session', 'flash', 'refresh_explorer', 'type_text', 'press_key',
     'open_browser_tab', 'close_browser_tab',
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal',
+    'get_activity',
 ];
 
 function appActionDocInfo(doc) {
@@ -3044,6 +3048,36 @@ async function runAppAction(action, params, scope) {
             applySettings();
             return {key, value: settings[key]};
         }
+        case 'get_activity': {
+            // 操作留痕只读查询：帮用户回忆「刚才做了什么」与排障。
+            if (!backend.ActivityRead) throw new Error('当前版本不支持操作记录');
+            const query = {
+                limit: Math.min(500, Math.max(1, Math.round(Number(p.limit) || 50))),
+                sinceTs: Number(p.sinceTs) || 0,
+                beforeTs: Number(p.beforeTs) || 0,
+                actions: Array.isArray(p.actions) ? p.actions.filter((a) => typeof a === 'string' && a) : [],
+                actor: String(p.actor || ''),
+                keyword: String(p.keyword || ''),
+            };
+            let parsed;
+            try {
+                parsed = JSON.parse(await backend.ActivityRead(JSON.stringify(query)));
+            } catch (e) {
+                throw new Error('操作记录读取失败：' + ((e && e.message) || e));
+            }
+            const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+            if (!entries.length) {
+                return '最近没有匹配的操作记录（功能开关在 设置 → 操作记录；仅记录操作摘要，不记录内容）';
+            }
+            const lines = entries.map((entry) => {
+                const time = new Date(entry.ts || 0).toLocaleTimeString();
+                const target = entry.target ? ' → ' + entry.target : '';
+                const detail = entry.detail && Object.keys(entry.detail).length ? ' ' + JSON.stringify(entry.detail) : '';
+                return '[' + time + '] ' + (entry.actor || '?') + '/' + (entry.source || '?') + ' ' +
+                    (entry.action || '?') + target + detail;
+            });
+            return lines.join('\n') + (parsed.truncated ? '\n（结果超出上限被截断；可用 limit / sinceTs / keyword 缩小范围）' : '');
+        }
         case 'ai_new_session': {
             if (!aiPanel || !aiPanel.bridgeNewSession) throw new Error('AI 面板未初始化');
             const session = await aiPanel.bridgeNewSession({title: p.title, message: p.message});
@@ -3098,6 +3132,13 @@ async function runAppAction(action, params, scope) {
             target.dispatchEvent(new KeyboardEvent('keydown', init));
             target.dispatchEvent(new KeyboardEvent('keyup', init));
             return {dispatched: key, target: target.id || target.name || target.tagName || 'body'};
+        }
+        case 'screenshot': {
+            // 截取应用主窗口（含 WebView2 与内嵌浏览器）；由 ai-panel 转成图片消息附加给模型
+            if (!backend.CaptureAppScreenshot) throw new Error('截图通道不可用（请重新构建或更新应用）');
+            const image = await backend.CaptureAppScreenshot();
+            if (!image || image.length < 50) throw new Error('截图数据为空');
+            return {image, mime: 'image/png', name: '应用截图'};
         }
         default:
             throw new Error('未知动作「' + action + '」');
@@ -3178,7 +3219,16 @@ const formatDefs = [
     {id: 'toml', name: 'TOML'},
     {id: 'ini', name: 'INI/Properties'},
     {id: 'markdown', name: 'Markdown'},
-    {id: 'text', name: '纯文本'},
+    // 代码语言组（formats.js 里与 text 拆开）：indent/view 为该组默认值
+    {id: 'python', name: 'Python', indent: '4', view: 'code'},
+    {id: 'golang', name: 'Go', indent: 'tab', view: 'code'},
+    {id: 'web', name: 'Web 前端', indent: '2', view: 'code'},
+    {id: 'clang', name: 'C/C++', indent: '4', view: 'code'},
+    {id: 'jvm', name: 'Java/Kotlin/C#', indent: '4', view: 'code'},
+    {id: 'shell', name: 'Shell/Batch', indent: '4', view: 'code'},
+    {id: 'script', name: 'Ruby/PHP/Lua 等', indent: '4', view: 'code'},
+    {id: 'sql', name: 'SQL', indent: '4', view: 'code'},
+    {id: 'text', name: '纯文本', view: 'code'},
 ];
 
 function allFormatDefs() {
@@ -3188,9 +3238,9 @@ function allFormatDefs() {
 function defaultFormatSettings() {
     return Object.fromEntries(formatDefs.map((f) => [f.id, {
         encoding: 'auto',
-        indent: '2',
+        indent: f.indent || '2',
         eol: 'follow',
-        view: f.id === 'csv' ? 'table' : f.id === 'markdown' ? 'preview' : f.id === 'text' ? 'code' : 'tree',
+        view: f.id === 'csv' ? 'table' : f.id === 'markdown' ? 'preview' : f.view || 'tree',
     }]));
 }
 const defaultSettings = {
@@ -3261,7 +3311,7 @@ const defaultSettings = {
     writingFocus: true,
     writingDailyGoal: 0,
     formatSettings: defaultFormatSettings(),
-    // 阅读模式（docs/reading-mode.md §14.1）
+    // 阅读模式（docs/finished-plans/reading-mode.md §14.1）
     readingFont: 'songti',
     readingFontSize: 19,
     readingLineHeight: 1.9,
@@ -3276,6 +3326,9 @@ const defaultSettings = {
     readingRestoreSession: true,
     readingTtsRate: 1,
     readingTtsAutoNext: true,
+    // 操作留痕（docs/unfinished-plans/operation-audit-log.md）
+    activityLog: true,
+    activityRetentionMonths: 12,
 };
 let settings = JSON.parse(JSON.stringify(defaultSettings));
 try {
@@ -3350,6 +3403,8 @@ settings.sidebarFont = Math.min(20, Math.max(10, settings.sidebarFont));
 settings.aiPanelOpen = !!settings.aiPanelOpen;
 settings.aiPanelWidth = Math.min(640, Math.max(280, Number(settings.aiPanelWidth) || 380));
 settings.aiFloatMode = ['dock', 'fullscreen'].includes(settings.aiFloatMode) ? settings.aiFloatMode : 'dock';
+// AI 面板停靠侧（dock 分屏模式下与内容区互换左右）
+settings.aiPanelSide = settings.aiPanelSide === 'left' ? 'left' : 'right';
 settings.aiSendKey = settings.aiSendKey === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
 settings.aiChatFont = Math.min(32, Math.max(10, Number(settings.aiChatFont) || 13));
 for (const key of ['aiChatFontEn', 'aiChatFontCjk', 'aiChatCodeFont']) {
@@ -3388,6 +3443,57 @@ if (!['table', 'tree', 'text'].includes(settings.formatSettings.csv.view)) {
 }
 if (!['split', 'preview', 'code', 'text'].includes(settings.formatSettings.markdown.view)) {
     settings.formatSettings.markdown.view = 'preview';
+}
+
+// ===== 操作留痕（docs/unfinished-plans/operation-audit-log.md）=====
+// 只记状态改变类操作摘要；文件正文/剪贴板/密钥永不落盘，开关在设置 → 操作记录。
+const activityLog = createActivityLog({
+    backend,
+    settings: () => settings,
+    relativize: (p) => actRel(p),
+});
+
+// actRel 工作区内转相对路径（正斜杠）；工作区外保留用户主动打开的绝对路径。
+function actRel(path) {
+    const raw = String(path || '');
+    if (!raw) return '';
+    try {
+        const root = workspaceFolder || (explorer && explorer.getRoot ? explorer.getRoot() : '');
+        if (root) {
+            const rel = relativePathFrom(raw, root);
+            if (rel) return rel;
+        }
+    } catch (e) {}
+    return raw;
+}
+
+// 设置变更留痕：与上次 applySettings 的快照对比；逐键记 ≤8 条，超出合并为一条汇总。
+let lastSettingsSnapshot = null;
+
+function diffSettingsForLog(prev, next) {
+    const keys = new Set([...Object.keys(prev || {}), ...Object.keys(next || {})]);
+    const changed = [];
+    for (const key of keys) {
+        const before = prev ? prev[key] : undefined;
+        if (Object.is(before, next[key]) && typeof before === typeof next[key]) continue;
+        if (JSON.stringify(before) === JSON.stringify(next[key])) continue;
+        changed.push({key, from: before, to: next[key]});
+    }
+    return changed;
+}
+
+function logSettingsChange(snapshot) {
+    if (lastSettingsSnapshot === null) return;
+    const changed = diffSettingsForLog(lastSettingsSnapshot, snapshot);
+    if (changed.length === 1) {
+        activityLog.log('settings.change', changed[0].key, {from: changed[0].from, to: changed[0].to});
+    } else if (changed.length > 1 && changed.length <= 8) {
+        for (const item of changed) {
+            activityLog.log('settings.change', item.key, {from: item.from, to: item.to});
+        }
+    } else if (changed.length > 8) {
+        activityLog.log('settings.change', '', {count: changed.length, keys: changed.map((c) => c.key).join(',')});
+    }
 }
 
 function getFormatSettings(id) {
@@ -3446,6 +3552,12 @@ const elsSettings = {
     developerMode: document.getElementById('opt-developer-mode'),
     openLogs: document.getElementById('opt-open-logs'),
     logPath: document.getElementById('opt-log-path'),
+    activityLog: document.getElementById('opt-activity-log'),
+    activityRetention: document.getElementById('opt-activity-retention'),
+    openActivity: document.getElementById('opt-open-activity'),
+    exportActivityJson: document.getElementById('opt-export-activity-json'),
+    exportActivityCsv: document.getElementById('opt-export-activity-csv'),
+    clearActivity: document.getElementById('opt-clear-activity'),
 };
 
 function fillFontSelect(select, list) {
@@ -3719,6 +3831,9 @@ function applySettings() {
     if (els.sidebar && settings.sidebarWidth) {
         els.sidebar.style.width = settings.sidebarWidth + 'px';
     }
+    // AI 面板停靠侧（dock 分屏与内容区互换；ai-panel.js 的 applyPanelSide 同步按钮态）
+    const topRowEl = document.getElementById('top-row');
+    if (topRowEl) topRowEl.classList.toggle('ai-left', settings.aiPanelSide === 'left');
     if (els.gitCommitArea) {
         if (settings.gitCommitAreaHeight) {
             els.gitCommitArea.style.height = settings.gitCommitAreaHeight + 'px';
@@ -3757,6 +3872,8 @@ function applySettings() {
     if (elsSettings.treeExpand) elsSettings.treeExpand.value = settings.treeExpandDefault;
     elsSettings.showBanners.checked = !!settings.showBanners;
     elsSettings.openMode.value = settings.openMode;
+    if (elsSettings.activityLog) elsSettings.activityLog.checked = settings.activityLog !== false;
+    if (elsSettings.activityRetention) elsSettings.activityRetention.value = String(settings.activityRetentionMonths || 12);
     document.documentElement.dataset.tabClose = settings.tabCloseMode;
     if (elsSettings.tabClose) elsSettings.tabClose.value = settings.tabCloseMode;
     if (elsSettings.dblClickClose) elsSettings.dblClickClose.checked = !!settings.dblClickClose;
@@ -3804,6 +3921,11 @@ function applySettings() {
     }
     try {
         localStorage.setItem(settingsKey, JSON.stringify(settings));
+    } catch (e) {}
+    // 设置变更留痕：首次调用（启动恢复）只建快照，不记变更。
+    try {
+        logSettingsChange(JSON.parse(JSON.stringify(settings)));
+        lastSettingsSnapshot = JSON.parse(JSON.stringify(settings));
     } catch (e) {}
     if (settings.autoSave && dirty && !settings.readOnlyMode) scheduleAutoSave();
     else cancelAutoSave();
@@ -3898,6 +4020,7 @@ function selectSettingsPane(pane) {
     else if (String(pane).startsWith('lang-')) renderLangPane(pane.slice(5));
     else if (pane === 'plugins') renderPluginsPane();
     else if (pane === 'envvars') renderEnvVarsPane();
+    else if (pane === 'activity') renderActivityPane();
     if (pane === 'ai' || pane === 'models' || pane === 'context' || pane === 'preferences') {
         if (!aiPanel) initAIPanel();
         if (aiPanel && typeof aiPanel.refreshSettings === 'function') {
@@ -4926,6 +5049,7 @@ function setupPluginsSettings() {
             if (installed) {
                 await reloadPluginErrors('');
                 flash('已添加插件：' + installed.name);
+                activityLog.log('plugin.change', installed.id || installed.name, {op: 'install-folder'});
             }
         } catch (e) {
             flash('添加插件失败：' + e, true);
@@ -4939,6 +5063,7 @@ function setupPluginsSettings() {
             if (installed) {
                 await reloadPluginErrors('');
                 flash('已导入插件：' + installed.name);
+                activityLog.log('plugin.change', installed.id || installed.name, {op: 'install-zip'});
             }
         } catch (e) {
             flash('导入插件失败：' + e, true);
@@ -4965,6 +5090,7 @@ function setupPluginsSettings() {
                             await reloadPluginErrors('');
                             renderPluginsPane();
                             flash('已安装插件：' + installed.name);
+                            activityLog.log('plugin.change', (installed && (installed.id || installed.name)) || url, {op: 'install-url'});
                         } catch (e) {
                             flash('安装失败：' + e, true);
                         }
@@ -5092,6 +5218,7 @@ async function renderPluginsPane() {
                 try {
                     await backend.SetPluginEnabled(p.id, cb.checked);
                     await reloadPluginErrors('');
+                    activityLog.log('plugin.change', p.id, {op: cb.checked ? 'enable' : 'disable'});
                 } catch (e) {
                     flash('切换失败：' + e, true);
                 }
@@ -5120,6 +5247,7 @@ async function renderPluginsPane() {
                     await backend.DeletePlugin(p.id);
                     await reloadPluginErrors('');
                     flash('插件已删除：' + p.name);
+                    activityLog.log('plugin.change', p.id, {op: 'uninstall'});
                 } catch (e) {
                     flash('删除失败：' + e, true);
                 }
@@ -5296,6 +5424,7 @@ function renderPluginMarketList(listEl, items) {
                         await reloadPluginErrors('');
                         renderPluginsPane();
                         flash('已安装插件：' + (installed.name || m.name));
+                        activityLog.log('plugin.change', (installed.id || installed.name || m.url), {op: 'install-url'});
                     } catch (e) {
                         install.disabled = false;
                         install.textContent = '安装';
@@ -5681,7 +5810,7 @@ const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
 
 function viewOptionsFor(fmt, doc) {
-    if (doc && doc.browser) return [];
+    if (doc && (doc.browser || doc.bgTerm)) return [];
     if (fmt && fmt.image) return IMAGE_VIEWS;
     if (fmt && fmt.id === 'bytes') return BINARY_VIEWS;
     if (isHtmlDoc(doc)) return HTML_VIEWS;
@@ -5694,6 +5823,16 @@ function viewOptionsFor(fmt, doc) {
 function isSqlSupportedDoc(doc) {
     const id = doc && doc.format && doc.format.id;
     return id === 'csv' || id === 'jsonl';
+}
+
+// 旧版本把 sql 当视图模式持久化过；SQL 现在是覆盖层，恢复时归一为底层视图
+function normalizeLegacySqlMode(doc) {
+    if (doc && doc.mode === 'sql') {
+        doc.mode = doc.sqlPrevMode || 'text';
+        doc.sqlActive = false;
+        if (doc.pane) doc.pane.classList.remove('sql-active');
+    }
+    return (doc && doc.mode) || 'tree';
 }
 
 function viewDisabled(mode) {
@@ -5713,6 +5852,23 @@ function viewDisabledTitle(mode) {
     if (mode === 'preview' && file && file.large) return '大文件不支持预览';
     if (mode === 'sql') return 'SQL 查询仅支持 CSV / TSV / JSONL';
     return '当前文件只支持代码视图';
+}
+
+// text 组是兜底组（纯文本 + CMake/Make/Dockerfile/Git 规则等特殊文件名），
+// 状态栏按 ace 语法模式细化显示，不再一律叫「纯文本」
+const TEXT_MODE_NAMES = {
+    cmake: 'CMake', dockerfile: 'Dockerfile', makefile: 'Makefile',
+    diff: 'Diff', protobuf: 'Protobuf', graphqlschema: 'GraphQL', gitignore: 'Git 规则',
+};
+
+function formatDisplayName(doc) {
+    if (doc && doc.format && doc.format.id === 'text' && doc.name) {
+        try {
+            const mode = aceModeFor(doc.name, doc.format).split('/').pop();
+            if (TEXT_MODE_NAMES[mode]) return TEXT_MODE_NAMES[mode];
+        } catch (e) {}
+    }
+    return (doc && doc.format && doc.format.name) || '';
 }
 
 function viewLabel(mode) {
@@ -5740,19 +5896,34 @@ const editorLocale = {
 };
 
 // 兜底：Ace 只读提示的内核文案是英文，观察器改写成中文（若语言包已生效则不会命中）。
+// 注意：hoverTooltip 会把消息 <div> 作为子节点插入，addedNode 通常是内层 div 而不是
+// .ace_tooltip 容器本身，所以这里要向上找容器。
 const readonlyTipObserver = new MutationObserver((muts) => {
     for (const m of muts) {
         for (const node of m.addedNodes) {
-            if (node.nodeType === 1 && node.classList.contains('ace_tooltip') && node.textContent === 'Editing is disabled') {
-                node.textContent = '只读模式下无法编辑';
+            if (node.nodeType !== 1) continue;
+            const tip = node.classList.contains('ace_tooltip')
+                ? node
+                : (node.parentElement ? node.parentElement.closest('.ace_tooltip') : null);
+            if (tip && tip.textContent === 'Editing is disabled') {
+                tip.textContent = '只读模式下无法编辑';
             }
         }
     }
 });
 readonlyTipObserver.observe(document.body, {childList: true, subtree: true});
 
+// 治本：把只读提示的中文文案直接注册进 Ace 的 nls（单参数为消息表）。
+// jsoneditor 的语言包不进 Ace nls，二进制 / 文本等只读编辑器此前一直是英文；
+// 这里注册后所有 Ace 实例生效，观察器仅作兜底。
+try {
+    if (window.ace && ace.config && typeof ace.config.setMessages === 'function') {
+        ace.config.setMessages({'editor.tooltip.disable-editing': '只读模式下无法编辑'});
+    }
+} catch (e) {}
+
 // 共享 Markdown 渲染层（frontend/src/markdown.js）：主界面与阅读模式共用，
-// sanitize 规则单一来源（docs/reading-mode.md §10.2）。mermaid 脚本加载仍在 main.js。
+// sanitize 规则单一来源（docs/finished-plans/reading-mode.md §10.2）。mermaid 脚本加载仍在 main.js。
 let markdownRenderer;
 const sharedMarkdown = createMarkdownRenderer({
     mdLineNumbers: () => settings.mdLineNumbers,
@@ -5980,7 +6151,8 @@ function renderViewMenu() {
     for (const [mode, label] of viewOptionsFor(file && file.format, file)) {
         const disabled = viewDisabled(mode);
         footPopover.appendChild(popItem(label, {
-            current: mode === 'split' ? splitActive : (!splitActive && currentMode === mode),
+            current: mode === 'split' ? splitActive
+                : (mode === 'sql' ? !!(file && file.sqlActive) : (!splitActive && currentMode === mode)),
             disabled,
             disabledTitle: viewDisabledTitle(mode),
             onClick: () => { switchMode(mode); closeFootPopover(); },
@@ -6707,7 +6879,7 @@ function renderFormatPane(id) {
     const hint = document.createElement('div');
     hint.className = 'fmt-hint';
     hint.textContent = '编码 / 缩进 / 保存换行对之后打开或保存的文件生效；默认视图对当前同类文件立即生效。';
-    if (id === 'text') hint.textContent += ' txt/log/conf 默认文本视图，代码类扩展名按代码视图打开。';
+    if (id === 'text') hint.textContent += ' txt/log/conf 默认按所在扩展名打开；CMake / Dockerfile / Git 规则等特殊文件名按代码视图打开。';
     pane.appendChild(hint);
 }
 
@@ -6930,7 +7102,7 @@ function renderEditorLayout() {
             dirty = !!fd.dirty;
             // file 对齐到新活动 doc 时必须同步 currentMode，否则残留上一个 doc 的
             // 视图模式（browser doc 关闭后状态栏/工具条会卡在「网页视图」）
-            currentMode = fd.mode || 'tree';
+            currentMode = normalizeLegacySqlMode(fd);
         }
     }
     if (file) {
@@ -7025,6 +7197,7 @@ function buildGroup(parent, gid) {
 const VIEW_ICONS = {
     tree: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M1.5 3.2h11M1.5 7h7.6M1.5 10.8h4.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/></svg>',
     table: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M1.5 5.6h11M5.3 2.2v9.6M9 2.2v9.6" stroke="currentColor" stroke-width="1" fill="none"/></svg>',
+    sql: '<svg viewBox="0 0 14 14" aria-hidden="true"><ellipse cx="7" cy="3.2" rx="4.7" ry="1.8" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M2.3 3.2v7.6c0 1 2.1 1.8 4.7 1.8s4.7-.8 4.7-1.8V3.2" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M2.3 7c0 1 2.1 1.8 4.7 1.8s4.7-.8 4.7-1.8" stroke="currentColor" stroke-width="1.1" fill="none"/></svg>',
     code: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M4.4 3.6 1.7 7l2.7 3.4M9.6 3.6 12.3 7l-2.7 3.4M7.9 2.4 6.1 11.6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
     text: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 1.6h5.6L11.4 4v8.4H3z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/><path d="M5 7.2h4M5 9.6h4" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
     preview: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
@@ -7059,14 +7232,16 @@ function buildGroupTools(gid) {
         if (viewDisabledFor(doc, mode)) continue;
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'tb-view' + (activeMode === mode ? ' active' : '');
+        // SQL 是覆盖层：选中态独立于当前视图（开着才亮），底层视图按钮保持自己的选中态
+        const on = mode === 'sql' ? !!doc.sqlActive : (activeMode === mode);
+        btn.className = 'tb-view' + (on ? ' active' : '');
         btn.dataset.mode = mode;
         btn.title = label;
         btn.innerHTML = VIEW_ICONS[mode] || '';
         btn.addEventListener('click', async () => {
             if (file !== doc) await activateDoc(doc);
-            if (mode === 'split') {
-                if (!doc.splitActive) switchMode('split');
+            if (mode === 'sql') {
+                switchMode('sql');
             } else if (doc.splitActive || currentMode !== mode) {
                 switchMode(mode);
             }
@@ -7095,7 +7270,8 @@ function syncTabViewTools() {
         const doc = g ? (docs.find((d) => d.id === g.activeId) || groupDocs(g)[0]) : null;
         const activeMode = doc ? (doc.splitActive ? 'split' : doc.mode) : '';
         for (const btn of wrap.querySelectorAll('.tb-view[data-mode]')) {
-            btn.classList.toggle('active', btn.dataset.mode === activeMode);
+            const isSql = btn.dataset.mode === 'sql';
+            btn.classList.toggle('active', isSql ? !!(doc && doc.sqlActive) : btn.dataset.mode === activeMode);
         }
     }
 }
@@ -7121,12 +7297,20 @@ function focusGroupById(gid) {
     if (d && file !== d) activateDoc(d);
 }
 
+function bgTermTabIcon() {
+    const span = document.createElement('span');
+    span.className = 'tab-icon';
+    span.innerHTML = iconSvg('terminal', 13);
+    return span;
+}
+
 function buildGroupTab(g, doc, strip) {
     const tab = document.createElement('div');
     tab.className = 'tab' + (doc.id === g.activeId ? ' active' : '') + (doc.dirty ? ' dirty' : '');
     tab.dataset.docId = String(doc.id);
     tab.title = doc.path || doc.name;
-    const icon = createFileIcon(doc.name, 'tab-icon');
+    // 后台终端标签页用 terminal 图标（非文件，没有扩展名图标）
+    const icon = doc.bgTerm ? bgTermTabIcon() : createFileIcon(doc.name, 'tab-icon');
     const dot = document.createElement('span');
     dot.className = 'tab-dot';
     const name = document.createElement('span');
@@ -7460,8 +7644,8 @@ function updateStatus() {
     scheduleSessionSave();
     syncTabViewTools();
     const fmt = file.format;
-    const view = file.splitActive ? viewLabel('split') : viewLabel(currentMode);
-    els.stMode.textContent = fmt.name + ' · ' + view + (file.large || file.binary || settings.readOnlyMode ? ' · 只读' : '');
+    const view = file.splitActive ? viewLabel('split') : viewLabel(file.sqlActive ? 'sql' : currentMode);
+    els.stMode.textContent = formatDisplayName(file) + ' · ' + view + (file.large || file.binary || settings.readOnlyMode ? ' · 只读' : '');
     if (file.browser) {
         const url = String(file.browserUrl || '');
         els.stMode.textContent = '网页 · ' + (url === 'about:blank' ? '空白页' : (url.length > 60 ? url.slice(0, 60) + '…' : url));
@@ -8398,6 +8582,157 @@ function markDocDirty(doc) {
 
 // ---- 浏览器使用标签页：内容区内嵌 WebView2（browser-use） ----
 
+// 地址栏目标解析：协议原样；Windows 绝对/UNC 路径转 file://；其余补 https://
+function browserTargetUrl(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    if (/^[a-zA-Z]:[\\/]/.test(raw)) return encodeURI('file:///' + raw.replace(/\\/g, '/'));
+    if (raw.startsWith('\\\\')) return encodeURI('file:' + raw.replace(/\\/g, '/'));
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return raw;
+    return 'https://' + raw;
+}
+
+// 地址栏里优先用户正在输入的内容，否则用当前页面地址
+function browserAddressOf(doc) {
+    const typed = doc.browserAddr ? String(doc.browserAddr.value || '').trim() : '';
+    if (typed) return typed;
+    const current = String(doc.browserUrl || '').trim();
+    return current && current !== 'about:blank' ? current : '';
+}
+
+function openBrowserExternally(doc) {
+    const target = browserAddressOf(doc);
+    if (!target) {
+        flash('地址栏为空，先输入网址或文件路径', true);
+        return;
+    }
+    const url = browserTargetUrl(target);
+    if (!url) return;
+    if (rt && rt.BrowserOpenURL) rt.BrowserOpenURL(url);
+    else window.open(url, '_blank', 'noopener');
+}
+
+function showBrowserMoreMenu(doc, anchor) {
+    if (!ctxMenu) return;
+    const target = browserAddressOf(doc);
+    const url = target ? browserTargetUrl(target) : '';
+    const rect = anchor.getBoundingClientRect();
+    ctxMenu.open([
+        {label: '用默认浏览器打开', icon: 'browser', disabled: !url, action: () => openBrowserExternally(doc)},
+        {label: '复制网页地址', icon: 'copy', disabled: !target, action: () => copyText(target, '网页地址')},
+        {label: '在新标签页中打开', icon: 'new-window', disabled: !url, action: () => openBrowserTab(url, doc.browserProfile)},
+        {sep: true},
+        {label: '刷新页面', icon: 'refresh', action: () => backend.BrowserReload(doc.id).catch(() => {})},
+        {label: '停止加载', icon: 'close', disabled: !doc.loading, action: () => backend.BrowserStop(doc.id).catch(() => {})},
+    ], rect.left, rect.bottom + 4, {onClose: () => syncBrowserTab(doc)});
+    // 菜单已进 DOM：作废显隐缓存，让同步逻辑把原生控件先藏起来（否则菜单会被它盖住）
+    doc.browserApplied = null;
+    syncBrowserTab(doc);
+}
+
+// ---------- 浏览器视口尺寸（用户菜单或 AI browser_resize 工具控制） ----------
+// fit = 随标签页撑满（默认）；fixed = 固定宽高居中显示。.browser-surface 是唯一
+// 真源：ResizeObserver 会把新尺寸同步到原生 WebView2（syncBrowserTab）。
+
+const BROWSER_VIEWPORT_PRESETS = [
+    {label: '1280 × 720（桌面）', width: 1280, height: 720},
+    {label: '1440 × 900（桌面）', width: 1440, height: 900},
+    {label: '375 × 812（iPhone）', width: 375, height: 812},
+    {label: '768 × 1024（iPad）', width: 768, height: 1024},
+];
+
+// 解析「宽×高」文本（支持 × x * 与逗号分隔），非法返回 null
+function parseBrowserViewportText(text) {
+    const match = String(text || '').trim().match(/^(\d{1,5})\s*[×xX*,:，]\s*(\d{1,5})$/);
+    if (!match) return null;
+    const width = Math.round(Number(match[1]));
+    const height = Math.round(Number(match[2]));
+    if (width < 200 || width > 8000 || height < 200 || height > 8000) return null;
+    return {mode: 'fixed', width, height};
+}
+
+function applyBrowserViewport(doc) {
+    if (!doc || !doc.browserEl) return;
+    const surface = doc.browserEl;
+    const vp = doc.browserViewport;
+    if (!vp || vp.mode !== 'fixed' || !(vp.width > 0) || !(vp.height > 0)) {
+        surface.classList.remove('browser-surface-fixed');
+        surface.style.width = '';
+        surface.style.height = '';
+        surface.style.flex = '';
+        surface.style.margin = '';
+    } else {
+        surface.classList.add('browser-surface-fixed');
+        surface.style.width = Math.round(vp.width) + 'px';
+        surface.style.height = Math.round(vp.height) + 'px';
+        surface.style.flex = 'none';
+        surface.style.margin = 'auto';
+    }
+    updateBrowserViewportBtn(doc);
+    syncBrowserTab(doc);
+}
+
+function setBrowserViewport(doc, viewport) {
+    if (!doc || !doc.browserEl) return false;
+    doc.browserViewport = viewport && viewport.mode === 'fixed' && viewport.width > 0 && viewport.height > 0
+        ? {mode: 'fixed', width: Math.round(viewport.width), height: Math.round(viewport.height)}
+        : {mode: 'fit'};
+    applyBrowserViewport(doc);
+    return true;
+}
+
+function browserViewportLabel(doc) {
+    const vp = doc.browserViewport;
+    if (!vp || vp.mode !== 'fixed' || !(vp.width > 0)) return '自适应';
+    return Math.round(vp.width) + '×' + Math.round(vp.height);
+}
+
+function updateBrowserViewportBtn(doc) {
+    if (!doc || !doc.browserViewportBtn) return;
+    doc.browserViewportBtn.textContent = browserViewportLabel(doc);
+    doc.browserViewportBtn.title = '视口尺寸：' + browserViewportLabel(doc) + '（点击切换预设或自定义）';
+}
+
+function showBrowserViewportMenu(doc, anchor) {
+    if (!ctxMenu) return;
+    const rect = anchor.getBoundingClientRect();
+    const vp = doc.browserViewport;
+    const isFit = !vp || vp.mode !== 'fixed';
+    const items = [{label: '自适应容器', checked: isFit, action: () => setBrowserViewport(doc, {mode: 'fit'})}, {sep: true}];
+    for (const preset of BROWSER_VIEWPORT_PRESETS) {
+        const active = !isFit && Math.round(vp.width) === preset.width && Math.round(vp.height) === preset.height;
+        items.push({
+            label: preset.label,
+            checked: active,
+            action: () => setBrowserViewport(doc, {mode: 'fixed', width: preset.width, height: preset.height}),
+        });
+    }
+    items.push({sep: true});
+    items.push({label: '自定义尺寸…', action: () => showBrowserViewportDialog(doc)});
+    ctxMenu.open(items, rect.left, rect.bottom + 4, {onClose: () => syncBrowserTab(doc)});
+    doc.browserApplied = null;
+    syncBrowserTab(doc);
+}
+
+function showBrowserViewportDialog(doc) {
+    const vp = doc.browserViewport && doc.browserViewport.mode === 'fixed' ? doc.browserViewport : {width: 1280, height: 800};
+    openNameDialog({
+        title: '自定义视口尺寸',
+        label: '宽 × 高（像素，如 1280×800）',
+        value: Math.round(vp.width) + '×' + Math.round(vp.height),
+        placeholder: '1280×800',
+        okLabel: '应用',
+        onSubmit: async (value) => {
+            const parsed = parseBrowserViewportText(value);
+            if (!parsed) {
+                throw new Error('格式应为「宽×高」，宽高各 200–8000 像素');
+            }
+            setBrowserViewport(doc, parsed);
+            flash('浏览器视口已设为 ' + parsed.width + '×' + parsed.height);
+        },
+    });
+}
+
 function createBrowserView(doc) {
     const pane = document.createElement('div');
     pane.className = 'jsoneditor-pane active browser-pane';
@@ -8418,23 +8753,31 @@ function createBrowserView(doc) {
     const backBtn = mkBtn('back', '后退', () => backend.BrowserGoBack(doc.id).catch(() => {}));
     const fwdBtn = mkBtn('forward', '前进', () => backend.BrowserGoForward(doc.id).catch(() => {}));
     const reloadBtn = mkBtn('refresh', '刷新', () => backend.BrowserReload(doc.id).catch(() => {}));
+    // 左侧浏览器图标：交给系统默认浏览器打开当前地址/文件；右侧「更多」：复制地址、新标签页、刷新等
+    const externalBtn = mkBtn('browser', '用默认浏览器打开', () => openBrowserExternally(doc));
+    const moreBtn = mkBtn('more', '更多操作', () => showBrowserMoreMenu(doc, moreBtn));
     const addr = document.createElement('input');
     addr.className = 'browser-addr';
     addr.type = 'text';
     addr.spellcheck = false;
-    addr.placeholder = '输入网址后回车（默认 https://）';
+    addr.placeholder = '输入网址或文件路径后回车（默认 https://）';
     addr.value = doc.browserUrl && doc.browserUrl !== 'about:blank' ? doc.browserUrl : '';
     addr.addEventListener('keydown', (e) => {
         if (e.key !== 'Enter') return;
         e.preventDefault();
         const target = addr.value.trim();
         if (!target) return;
-        const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(target) || /^(about|data|mailto):/i.test(target);
-        const url = hasScheme ? target : 'https://' + target;
+        const url = browserTargetUrl(target);
+        if (!url) return;
         doc.browserUrl = url;
         backend.BrowserNavigate(doc.id, url).catch((err) => flash('导航失败：' + err, true));
     });
-    toolbar.append(backBtn, fwdBtn, reloadBtn, addr);
+    // 视口尺寸按钮：预设（桌面/手机/平板）+ 自定义宽高；AI browser_resize 走同一入口
+    const viewportBtn = document.createElement('button');
+    viewportBtn.type = 'button';
+    viewportBtn.className = 'browser-btn browser-viewport-btn';
+    viewportBtn.addEventListener('click', () => showBrowserViewportMenu(doc, viewportBtn));
+    toolbar.append(backBtn, fwdBtn, reloadBtn, externalBtn, addr, viewportBtn, moreBtn);
     const surface = document.createElement('div');
     surface.className = 'browser-surface';
     const empty = document.createElement('div');
@@ -8445,9 +8788,13 @@ function createBrowserView(doc) {
     pane.appendChild(view);
     doc.pane = pane;
     doc.browserEl = surface;
+    doc.browserEmpty = empty;
     doc.browserAddr = addr;
     doc.browserBackBtn = backBtn;
     doc.browserFwdBtn = fwdBtn;
+    doc.browserViewportBtn = viewportBtn;
+    if (!doc.browserViewport) doc.browserViewport = {mode: 'fit'};
+    updateBrowserViewportBtn(doc);
     if (typeof ResizeObserver === 'function') {
         doc.browserRO = new ResizeObserver(() => syncBrowserTab(doc));
         doc.browserRO.observe(surface);
@@ -8469,14 +8816,23 @@ function browserSurfaceRect(doc) {
     };
 }
 
-// WebView2 是原生窗口，永远盖在主 WebView 之上：对话框/分栏蒙版/非活动标签都必须隐藏它
+// WebView2 是原生窗口，永远盖在主 WebView 之上：对话框/菜单/面板等浮层打开时必须隐藏它
+const BROWSER_POPUP_SELECTORS = [
+    '.dialog:not(.hidden)',
+    '.ai-model-editor-mask:not(.hidden)',
+    '.ctx-menu:not(.hidden)',
+    '#menubar .menu.open',
+    '#palette-mask:not(.hidden)',
+    '#ai-panel.ai-fullscreen:not(.hidden)',
+];
+
 function browserVisibleFor(doc) {
     if (doc !== file) return false;
-    for (const dlg of document.querySelectorAll('.dialog, .ai-model-editor-mask')) {
-        if (!dlg.classList.contains('hidden')) return false;
+    for (const sel of BROWSER_POPUP_SELECTORS) {
+        if (document.querySelector(sel)) return false;
     }
     const mask = document.getElementById('split-mask');
-    if (mask && !mask.classList.contains('hidden')) return false;
+    if (mask && mask.style.display === 'block') return false;
     return true;
 }
 
@@ -8489,10 +8845,17 @@ function syncBrowserTab(doc) {
         browserSyncPending = false;
         if (!docs.includes(doc) || !doc.browserEl) return;
         const rect = browserSurfaceRect(doc);
-        if (!rect || !browserVisibleFor(doc)) {
+        const visible = !!rect && browserVisibleFor(doc);
+        const last = doc.browserApplied;
+        // 轮询同步会反复进来：状态没变就别再跨进程调后端
+        if (!visible) {
+            if (last && !last.visible) return;
+            doc.browserApplied = {visible: false};
             backend.BrowserSetVisible(doc.id, false).catch(() => {});
             return;
         }
+        if (last && last.visible && last.x === rect.x && last.y === rect.y && last.w === rect.w && last.h === rect.h) return;
+        doc.browserApplied = {visible: true, x: rect.x, y: rect.y, w: rect.w, h: rect.h};
         backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h).catch(() => {});
     }, 0);
 }
@@ -8519,6 +8882,10 @@ function createDocEditor(doc) {
     if (doc.editor) return;
     if (doc.browser) {
         createBrowserView(doc);
+        return;
+    }
+    if (doc.bgTerm) {
+        createBgTermView(doc);
         return;
     }
     const fmt = doc.format;
@@ -8638,6 +9005,7 @@ function createDocEditor(doc) {
             ed.aceEditor.setHighlightIndentGuides(!!settings.codeGuides);
         } catch (e) {}
     }
+    setupTreeContextMenu(doc);
     doc.mode = splitRequested ? 'split' : previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : binaryMode ? 'binary' : startMode;
     doc.text = ed.getText();
     // 打开/恢复/重载属于程序化全文替换：清掉码字观察基线，下一次观察以当前内容重新起算
@@ -8680,8 +9048,8 @@ function createCsvTableView(doc) {
     const hint = document.createElement('span');
     hint.className = 'csv-table-hint';
     hint.textContent = doc.large
-        ? '文件超过 10 MB，表格只读；可拖表头边缘调列宽；Ctrl+滚轮缩放'
-        : '点击表头排序；点击单元格编辑；右键表头看列统计；拖表头边缘调列宽；Ctrl+滚轮缩放';
+        ? '文件超过 10 MB，表格只读'
+        : '';
     const statsBtn = document.createElement('button');
     statsBtn.type = 'button';
     statsBtn.className = 'csv-stats-btn';
@@ -10708,16 +11076,14 @@ function disposeSqlDoc(doc) {
     } catch (e) {}
 }
 
+// SQL 查询是可开关的覆盖层（类似搜索栏）：打开时盖在当前视图上，视图选中态不变；
+// 关闭时直接移除覆盖层，底层视图原样恢复，无需重新解析。
 function enterSqlView(doc) {
     if (!doc || !isSqlSupportedDoc(doc) || !doc.editor) return;
-    doc.sqlPrevMode = currentMode === 'sql' ? (doc.sqlPrevMode || 'code') : currentMode;
-    doc.sqlSourceMode = doc.sqlPrevMode;
-    for (const cls of ['table-active', 'preview-active', 'image-active', 'binary-active', 'render-active', 'split-active', 'svg-render-active']) {
-        doc.pane.classList.remove(cls);
-    }
+    if (doc.splitActive) exitSplitView(doc);
+    doc.sqlSourceMode = currentMode;
     doc.pane.classList.add('sql-active');
-    doc.mode = 'sql';
-    currentMode = 'sql';
+    doc.sqlActive = true;
     createSqlView(doc);
     updateStatus();
     updateSearchState();
@@ -10728,30 +11094,95 @@ function enterSqlView(doc) {
     }, 0);
 }
 
-function leaveSqlView(doc, mode) {
-    if (!doc || !doc.pane) return;
+function closeSqlView(doc) {
+    if (!doc || !doc.sqlActive || !doc.pane) return;
     doc.pane.classList.remove('sql-active');
-    if (mode === 'sql') return;
-    // 先把编辑器恢复成源格式文本（树视图用 stringify 还原），再走通用视图切换，
-    // 避免「树视图 → SQL → 树视图」被当成 CSV/JSONL 文本重新解析。
-    try {
-        const text = currentSqlSourceText(doc);
-        doc.loading = true;
-        doc.editor.setMode('text');
-        doc.editor.setText(text);
-        doc.text = text;
-    } catch (e) {
-        console.warn('leave sql view failed', e);
-    } finally {
-        doc.loading = false;
+    doc.sqlActive = false;
+    updateStatus();
+    updateSearchState();
+}
+
+// ---------- 树视图右键菜单：展开 / 折叠当前节点、全部展开 / 收起、复制树 ----------
+
+// 全部展开会一次性渲染整棵树（jsoneditor 无虚拟滚动）：大文件几万节点时会卡几秒，
+// 展开后界面也长时间卡顿。超过阈值先确认，并提示可右键逐层展开。
+const TREE_EXPAND_WARN_NODES = 12000;
+
+function estimateJsonNodes(value, budget) {
+    let count = 0;
+    const stack = [value];
+    while (stack.length) {
+        const cur = stack.pop();
+        count++;
+        if (count > budget) return count;
+        if (cur && typeof cur === 'object') {
+            if (Array.isArray(cur)) {
+                for (const item of cur) stack.push(item);
+            } else {
+                for (const key in cur) {
+                    if (Object.prototype.hasOwnProperty.call(cur, key)) stack.push(cur[key]);
+                }
+            }
+        }
     }
-    currentMode = 'text';
-    doc.mode = 'text';
-    if (mode !== 'text') switchMode(mode);
-    else {
-        updateStatus();
-        updateSearchState();
+    return count;
+}
+
+function expandAllWithGuard(doc) {
+    const ed = doc && doc.editor;
+    if (!ed) return;
+    let nodes = 0;
+    try { nodes = estimateJsonNodes(ed.get(), 200000); } catch (e) { nodes = 0; }
+    const run = () => { try { ed.expandAll(); } catch (err) {} };
+    if (!nodes || nodes <= TREE_EXPAND_WARN_NODES) {
+        run();
+        return;
     }
+    openCloseConfirm(
+        '「' + (doc.name || '当前文件') + '」约含 ' + nodes.toLocaleString() + ' 个节点，全部展开需要一次性渲染整棵树，会卡顿数秒，展开后浏览 / 编辑也会明显变慢。可改用树视图右键「展开该节点」逐层展开。仍要全部展开吗？',
+        run, '全部展开', '全部展开');
+}
+
+// jsoneditor 每个节点渲染成两层：外层「状态行」（直系 td 含 contextmenu 按钮，
+// 子节点嵌在内嵌 values 表里）+ 内层「字段行」（直系第一个 td 就是本节点的
+// 展开/收起按钮）。右键可能落在这两层任意元素上，这里统一解析出本节点按钮。
+
+function jsonTreeNodeToggle(target) {
+    const tr = target && target.closest ? target.closest('tr') : null;
+    if (!tr || !tr.closest('.jsoneditor-tree')) return null;
+    const fieldRow = tr.querySelector(':scope > td > table.jsoneditor-values > tbody > tr')
+        || tr;
+    const btn = fieldRow.querySelector(':scope > td > button.jsoneditor-expanded, :scope > td > button.jsoneditor-collapsed');
+    return btn
+        ? {btn, expanded: btn.classList.contains('jsoneditor-expanded')}
+        : null;
+}
+
+function openTreeContextMenu(e, doc) {
+    if (!ctxMenu || !doc || !doc.editor) return;
+    const node = jsonTreeNodeToggle(e.target);
+    const ed = doc.editor;
+    ctxMenu.open([
+        {label: '展开该节点', icon: 'chevron-down', disabled: !node || node.expanded, action: () => node.btn.click()},
+        {label: '折叠该节点', icon: 'chevron-up', disabled: !node || !node.expanded, action: () => node.btn.click()},
+        {sep: true},
+        {label: '全部展开', shortcut: 'Ctrl+Shift+=', action: () => expandAllWithGuard(doc)},
+        {label: '全部收起', shortcut: 'Ctrl+Shift+-', action: () => { try { ed.collapseAll(); } catch (err) {} }},
+        {sep: true},
+        {label: '复制树', action: () => { try { copyText(ed.getText(), '树内容'); } catch (err) {} }},
+    ], e.clientX, e.clientY);
+}
+
+function setupTreeContextMenu(doc) {
+    if (!doc || !doc.editor || !doc.editor.container || doc.editor.container.dataset.treeCtxBound) return;
+    const container = doc.editor.container;
+    container.dataset.treeCtxBound = '1';
+    container.addEventListener('contextmenu', (e) => {
+        if (!e.target || !e.target.closest || !e.target.closest('.jsoneditor-tree')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        openTreeContextMenu(e, doc);
+    });
 }
 
 function createDoc(data) {
@@ -10797,7 +11228,9 @@ function createDoc(data) {
         }
     }
     const ext = String(data.name || '').split('.').pop().toLowerCase();
-    const plainTextView = format.id === 'text' && plainTextExtensions.has(ext) && !data.large;
+    // CMakeLists.txt / Makefile / .gitignore 等已知文件名按代码视图打开（带语法高亮），不算纯文本
+    const plainTextView = format.id === 'text' && plainTextExtensions.has(ext)
+        && !isKnownCodeFileName(data.name) && !data.large;
     const preferredMode = plainTextView ? 'text' : format.preview
         ? (['split', 'preview', 'code', 'text'].includes(fs.view) ? fs.view : 'preview')
         : format.table
@@ -10900,6 +11333,7 @@ function showWelcome() {
 }
 
 let activateToken = 0;
+const lastTabSwitchLog = {id: null, at: 0};
 
 async function activateDoc(doc) {
     if (!doc) return;
@@ -10924,7 +11358,7 @@ async function activateDoc(doc) {
     snapshotActiveDoc();
     file = doc;
     dirty = !!doc.dirty;
-    currentMode = doc.mode || 'tree';
+    currentMode = normalizeLegacySqlMode(doc);
     els.welcome.classList.add('hidden');
     els.editor.classList.remove('hidden');
     if (!els.editor.querySelector('.egroup[data-gid="' + g.id + '"]')) renderEditorLayout();
@@ -10952,6 +11386,12 @@ async function activateDoc(doc) {
     }
     syncExplorerActive();
     if (structurePanel) structurePanel.setDoc(doc);
+    // 操作留痕：标签切换，同一标签 2s 内去重（避免连点噪音）。
+    const now = Date.now();
+    if (lastTabSwitchLog.id !== doc.id || now - lastTabSwitchLog.at > 2000) {
+        lastTabSwitchLog = {id: doc.id, at: now};
+        activityLog.log('tab.switch', doc.name, {});
+    }
     if (doc.staleOnDisk && !doc.dirty) {
         doc.staleOnDisk = false;
         reloadActive({quiet: true});
@@ -10988,6 +11428,9 @@ function requestCloseDoc(doc) {
 function closeDocNow(doc, remember = true) {
     const idx = docs.indexOf(doc);
     if (idx < 0) return;
+    // 操作留痕：脏标签关闭 = 放弃修改（保存后的关闭到这里 dirty 已清零）。
+    if (doc.dirty) activityLog.log('tab.closeDirty', doc.name, {discarded: true});
+    else activityLog.log('tab.close', doc.name, {});
     disposeSqlDoc(doc);
     const wasActive = doc === file;
     if (doc.path && remember) {
@@ -10996,6 +11439,11 @@ function closeDocNow(doc, remember = true) {
     }
     if (doc.browser && backend.BrowserClose) {
         backend.BrowserClose(doc.id).catch(() => {});
+    }
+    // 后台终端标签页：只断开输出订阅，作业继续在后台运行
+    if (doc.bgTerm && doc.bgTermUnsub) {
+        doc.bgTermUnsub();
+        doc.bgTermUnsub = null;
     }
     docs.splice(idx, 1);
     if (doc.editor) {
@@ -11018,10 +11466,11 @@ function closeDocNow(doc, remember = true) {
         focusedGroupId = null;
         editor = null;
         showWelcome();
-        saveSessionNow();
+        // 用户主动关掉最后一个标签：允许写入空快照
+        saveSessionNow({allowEmpty: true});
         return;
     }
-    scheduleSessionSave();
+    scheduleSessionSave({allowEmpty: true});
     if (wasActive) {
         editor = null;
         file = null;
@@ -11065,6 +11514,7 @@ function closeDocsWithConfirm(list, message) {
 function reopenClosedTab() {
     const entry = closedTabs.pop();
     if (!entry) return;
+    activityLog.log('tab.reopen', entry.name, {});
     openPath(entry.path);
 }
 
@@ -11246,16 +11696,6 @@ async function copySelectionRich() {
 }
 
 // copyImageBlobToClipboard 把图片 Blob 写入剪贴板（image/png）。
-async function copyImageBlobToClipboard(blob) {
-    if (!navigator.clipboard || !window.ClipboardItem) return false;
-    try {
-        await navigator.clipboard.write([new ClipboardItem({'image/png': blob})]);
-        return true;
-    } catch (e) {
-        return false;
-    }
-}
-
 // svgToPngBlob 把 SVG 文本转成 2x 尺寸的 PNG Blob。
 function svgToPngBlob(svgText) {
     return new Promise((resolve, reject) => {
@@ -11594,6 +12034,7 @@ async function runPasteItems(clip, destDir, names) {
             activeChanged = activeChanged || flags.activeChanged;
             rootChanged = rootChanged || flags.rootChanged;
             if (explorer) explorer.removePath(result.path);
+            activityLog.log('file.move', destDir, {from: actRel(result.path), count: results.length});
         }
         const moved = new Set(results.map((result) => result.path));
         const remaining = clip.items.filter((item) => !moved.has(item.path));
@@ -11651,6 +12092,7 @@ async function moveEntriesByDrag(items, destDir) {
         try {
             const newPath = await backend.MoveEntry(item.path, destDir, item.name);
             results.push({...item, newPath});
+            activityLog.log('file.move', destDir, {from: actRel(item.path), count: movable.length});
         } catch (e) {
             errors.push({item, error: (e && e.message) || String(e)});
         }
@@ -11910,6 +12352,10 @@ function deleteExplorerEntries(targets) {
                 explorer.setCutPaths(fileClipboard && fileClipboard.cut ? fileClipboard.items.map((item) => item.path) : []);
                 explorer.refresh();
             }
+            // 操作留痕：逐项记录（回收站可撤销，故记路径而非仅计数）。
+            for (const item of deleted) {
+                activityLog.log('file.delete', item.path, {count: deleted.length, toRecycle: true});
+            }
         }
         if (failures.length) {
             flash('删除失败：' + failures[0] + (failures.length > 1 ? '（另有 ' + (failures.length - 1) + ' 项失败）' : ''), true);
@@ -11929,7 +12375,10 @@ function openRenameEntryDialog(info) {
         onSubmit: async (name) => {
             if (!backend.RenameEntry) throw new Error('当前版本不支持重命名');
             const newPath = await backend.RenameEntry(info.path, name);
-            if (newPath && newPath !== info.path) applyRenamedPath(info.path, newPath);
+            if (newPath && newPath !== info.path) {
+                applyRenamedPath(info.path, newPath);
+                activityLog.log('file.rename', newPath, {from: actRel(info.path)});
+            }
         },
     });
 }
@@ -12203,7 +12652,7 @@ function closeReadingForEditor() {
 function initContextMenus() {
     ctxMenu = createContextMenu();
     palette = createPalette({mask: els.paletteMask, input: els.paletteInput, list: els.paletteList, getActions: paletteActions});
-    // ---- 阅读模式（docs/reading-mode.md）：视图容器 + 控制器，只读 ----
+    // ---- 阅读模式（docs/finished-plans/reading-mode.md）：视图容器 + 控制器，只读 ----
     const readingContainer = document.getElementById('reading-view');
     if (readingContainer) {
         readingMode = createReadingMode({
@@ -12312,6 +12761,11 @@ async function openPathsHere(paths) {
             docs.push(doc);
             addDocToFocusedGroup(doc);
             rememberRecentOpen(doc.path, doc.name, false);
+            activityLog.log('file.open', doc.path, {
+                format: (doc.format && doc.format.id) || '',
+                size: data.size || 0,
+                batch: list.length > 1 ? list.length : undefined,
+            });
             target = doc;
             lastNew = doc;
         } catch (e) {
@@ -13462,6 +13916,7 @@ function openFolderWorkspace(dir) {
     renderWorkspaceCrumbs();
     refreshGitStatus();
     if (aiPanel && aiPanel.refreshSessionList) aiPanel.refreshSessionList();
+    activityLog.log('workspace.open', dir, {}, {noRel: true});
     flash('已打开文件夹：' + (baseNameOf(dir) || dir));
 }
 
@@ -13489,7 +13944,7 @@ async function openFolderSmart(dir) {
 
 function closeFolder() {
     if (!workspaceFolder) return;
-    saveSessionNow();
+    saveSessionNow({allowEmpty: true});
     workspaceFolder = null;
     if (explorer) explorer.setRoot(null);
     syncWorkspaceWatcher();
@@ -13670,6 +14125,8 @@ function initAIPanel() {
         settings,
         fonts: {latin: uiFonts, cjk: cjkFonts, mono: editorFonts},
         saveSettings: applySettings,
+        activity: activityLog,
+        openTermTab: openBgTermTab,
         runAppAction,
         hostAppActions: () => APP_ACTIONS,
         browserHost: {
@@ -13689,6 +14146,12 @@ function initAIPanel() {
                 if (doc) closeDocNow(doc, false);
                 return {closed: true};
             },
+            applyViewport: (id, viewport) => {
+                const doc = docs.find((d) => d.id === id && d.browser);
+                if (!doc || !doc.browserEl) return {applied: false};
+                const ok = setBrowserViewport(doc, viewport);
+                return {applied: ok, viewport: browserViewportLabel(doc)};
+            },
         },
         flash,
         copyText,
@@ -13705,6 +14168,7 @@ function initAIPanel() {
             openSettings(pane);
         },
         setDragCursor,
+        openVirtualDoc,
         commandOutput: (id, handlers) => {
             const off = () => {
                 cmdOutHandlers.delete(id);
@@ -14056,6 +14520,7 @@ function newDocumentWith(baseName, content) {
     doc.untitled = true;
     doc.dirty = true;
     docs.push(doc);
+    activityLog.log('tab.open', name, {format: (doc.format && doc.format.id) || ''});
     activateDoc(doc);
 }
 
@@ -14249,6 +14714,8 @@ async function saveDoc(doc, opts = {}) {
         text = fmt.stringify(value);
     }
     let path = doc.path;
+    const origPath = path || '';
+    const hadPath = !!path;
     if (opts.saveAs || !path) {
         if (opts.auto) return false;
         path = await backend.SaveFileDialog(doc.name || '未命名.json');
@@ -14263,6 +14730,14 @@ async function saveDoc(doc, opts = {}) {
         doc.name = path.split(/[\\/]/).pop();
         doc.untitled = false;
         doc.mode = savedMode;
+        // 操作留痕：另存为 / 首次落盘（新建）/ 普通保存三类；自动保存不记。
+        if (opts.saveAs) {
+            activityLog.log('file.saveAs', path, {from: actRel(origPath), bytes: text.length});
+        } else if (!hadPath) {
+            activityLog.log('file.create', path, {bytes: text.length});
+        } else if (!opts.auto) {
+            activityLog.log('file.save', path, {bytes: text.length, mode: 'save'});
+        }
         doc.text = snapshot;
         doc.bases[savedMode] = snapshot;
         doc.savedText = snapshot;
@@ -14411,6 +14886,228 @@ if (elsSettings.openLogs) {
         }
     });
 }
+
+// ===== 设置页：操作记录（docs/unfinished-plans/operation-audit-log.md §6.4）=====
+
+const activityView = {entries: [], truncated: false, oldestTs: 0, loading: false};
+const ACTIVITY_PAGE_SIZE = 200;
+
+function activityFilterOf() {
+    const domain = document.getElementById('activity-filter-domain');
+    const actor = document.getElementById('activity-filter-actor');
+    const keyword = document.getElementById('activity-filter-keyword');
+    return {
+        actions: domain && domain.value ? [domain.value] : [],
+        actor: actor && actor.value ? actor.value : '',
+        keyword: keyword ? keyword.value.trim() : '',
+    };
+}
+
+async function renderActivityPane(opts = {}) {
+    const listEl = document.getElementById('activity-list');
+    const statusEl = document.getElementById('activity-list-status');
+    const moreBtn = document.getElementById('activity-more');
+    if (!listEl || activityView.loading) return;
+    if (!backend.ActivityRead) {
+        listEl.textContent = '';
+        const empty = document.createElement('div');
+        empty.className = 'activity-empty';
+        empty.textContent = '当前版本不支持操作记录（旧版后端）';
+        listEl.appendChild(empty);
+        return;
+    }
+    activityView.loading = true;
+    try {
+        const query = {limit: ACTIVITY_PAGE_SIZE, ...activityFilterOf()};
+        if (opts.append && activityView.oldestTs > 0) query.beforeTs = activityView.oldestTs;
+        const parsed = JSON.parse(await backend.ActivityRead(JSON.stringify(query)));
+        const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+        activityView.entries = opts.append ? activityView.entries.concat(entries) : entries;
+        activityView.truncated = !!parsed.truncated;
+        const last = activityView.entries[activityView.entries.length - 1];
+        activityView.oldestTs = last && last.ts ? last.ts : 0;
+        renderActivityList(listEl);
+        if (statusEl) {
+            statusEl.textContent = activityView.entries.length
+                ? '已加载 ' + activityView.entries.length + ' 条（新→旧）' + (activityView.truncated ? '；可能还有更早记录' : '')
+                : '暂无记录（功能未开启或近期没有操作）';
+        }
+        if (moreBtn) moreBtn.classList.toggle('hidden', !activityView.entries.length || !activityView.truncated);
+    } catch (e) {
+        if (statusEl) statusEl.textContent = '读取失败：' + ((e && e.message) || e);
+    } finally {
+        activityView.loading = false;
+    }
+}
+
+const ACTIVITY_ACTOR_LABEL = {user: '用户', ai: 'AI', system: '系统'};
+
+function activityTimeText(ts) {
+    const d = new Date(ts || 0);
+    if (!d.getTime()) return '—';
+    const pad = (n) => String(n).padStart(2, '0');
+    return (d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+function renderActivityList(listEl) {
+    listEl.textContent = '';
+    if (!activityView.entries.length) {
+        const empty = document.createElement('div');
+        empty.className = 'activity-empty';
+        empty.textContent = '暂无记录';
+        listEl.appendChild(empty);
+        return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const entry of activityView.entries) {
+        frag.appendChild(buildActivityRow(entry));
+    }
+    listEl.appendChild(frag);
+}
+
+function buildActivityRow(entry) {
+    const row = document.createElement('div');
+    row.className = 'activity-row';
+
+    const time = document.createElement('span');
+    time.className = 'act-time';
+    time.textContent = activityTimeText(entry.ts);
+
+    const badge = document.createElement('span');
+    badge.className = 'act-badge act-badge-' + (ACTIVITY_ACTOR_LABEL[entry.actor] ? entry.actor : 'system');
+    badge.textContent = ACTIVITY_ACTOR_LABEL[entry.actor] || '系统';
+
+    const action = document.createElement('span');
+    action.className = 'act-action';
+    action.textContent = entry.action || '?';
+
+    const target = document.createElement('span');
+    target.className = 'act-target';
+    target.textContent = entry.target || '';
+    target.title = entry.target || '';
+
+    row.append(time, badge, action, target);
+
+    const detailText = entry.detail && Object.keys(entry.detail).length ? JSON.stringify(entry.detail) : '';
+    if (detailText) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'act-detail-btn dlg-btn';
+        toggle.textContent = '详情';
+        const detail = document.createElement('div');
+        detail.className = 'act-detail hidden';
+        detail.textContent = detailText;
+        toggle.addEventListener('click', () => {
+            detail.classList.toggle('hidden');
+            toggle.textContent = detail.classList.contains('hidden') ? '详情' : '收起';
+        });
+        row.appendChild(toggle);
+        row.appendChild(detail);
+    }
+    return row;
+}
+
+function activityExportQuery() {
+    return {limit: 500, ...activityFilterOf()};
+}
+
+function activityCsvCell(value) {
+    const text = String(value == null ? '' : value);
+    return '"' + text.replace(/"/g, '""') + '"';
+}
+
+async function exportActivityRecords(kind) {
+    if (!backend.ActivityRead) return flash('当前版本不支持操作记录', true);
+    if (!backend.SaveFileDialog || !backend.SaveFile) return flash('当前版本不支持导出', true);
+    try {
+        const parsed = JSON.parse(await backend.ActivityRead(JSON.stringify(activityExportQuery())));
+        const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+        if (!entries.length) return flash('没有可导出的记录（当前筛选条件下）', true);
+        const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+        if (kind === 'csv') {
+            const rows = [['时间', '来源', '判定来源', '动作', '对象', '详情']];
+            for (const e of entries) {
+                rows.push([
+                    new Date(e.ts || 0).toLocaleString(),
+                    ACTIVITY_ACTOR_LABEL[e.actor] || e.actor || '',
+                    e.source || '',
+                    e.action || '',
+                    e.target || '',
+                    e.detail && Object.keys(e.detail).length ? JSON.stringify(e.detail) : '',
+                ]);
+            }
+            const csv = '\ufeff' + rows.map((row) => row.map(activityCsvCell).join(',')).join('\r\n');
+            const path = await backend.SaveFileDialog('activity-' + stamp + '.csv');
+            if (path) await backend.SaveFile(path, csv, 'crlf', true, 'utf-8');
+        } else {
+            const json = JSON.stringify({exportedAt: Date.now(), count: entries.length, entries}, null, 2);
+            const path = await backend.SaveFileDialog('activity-' + stamp + '.json');
+            if (path) await backend.SaveFile(path, json, 'lf', false, 'utf-8');
+        }
+        flash('已导出 ' + entries.length + ' 条记录');
+    } catch (e) {
+        flash('导出失败：' + ((e && e.message) || e), true);
+    }
+}
+
+if (elsSettings.activityLog) {
+    elsSettings.activityLog.addEventListener('change', () => {
+        settings.activityLog = elsSettings.activityLog.checked;
+        applySettings();
+        flash(settings.activityLog ? '操作记录已开启' : '操作记录已关闭，不再新增记录');
+    });
+}
+if (elsSettings.activityRetention) {
+    elsSettings.activityRetention.addEventListener('change', () => {
+        const n = Math.round(Number(elsSettings.activityRetention.value) || 12);
+        settings.activityRetentionMonths = Math.min(60, Math.max(1, n));
+        applySettings();
+    });
+}
+if (elsSettings.openActivity) {
+    elsSettings.openActivity.addEventListener('click', async () => {
+        if (!backend.ActivityPath || !backend.ShowInFolder) return flash('当前版本不支持', true);
+        try {
+            await backend.ShowInFolder(await backend.ActivityPath());
+        } catch (e) {
+            flash('打开记录目录失败：' + ((e && e.message) || e), true);
+        }
+    });
+}
+if (elsSettings.exportActivityJson) {
+    elsSettings.exportActivityJson.addEventListener('click', () => exportActivityRecords('json'));
+}
+if (elsSettings.exportActivityCsv) {
+    elsSettings.exportActivityCsv.addEventListener('click', () => exportActivityRecords('csv'));
+}
+if (elsSettings.clearActivity) {
+    elsSettings.clearActivity.addEventListener('click', () => {
+        if (!backend.ActivityClear) return flash('当前版本不支持操作记录', true);
+        openCloseConfirm('将删除全部操作记录（包括按月分文件与滚动分段），只保留一条「已清空」标记。确定继续吗？', async () => {
+            try {
+                await backend.ActivityClear();
+                flash('操作记录已清空');
+                renderActivityPane();
+            } catch (e) {
+                flash('清空失败：' + ((e && e.message) || e), true);
+            }
+        }, '清空', '清空操作记录');
+    });
+}
+{
+    const domainSel = document.getElementById('activity-filter-domain');
+    const actorSel = document.getElementById('activity-filter-actor');
+    const keywordInput = document.getElementById('activity-filter-keyword');
+    const refreshBtn = document.getElementById('activity-refresh');
+    const moreBtn = document.getElementById('activity-more');
+    if (domainSel) domainSel.addEventListener('change', () => renderActivityPane());
+    if (actorSel) actorSel.addEventListener('change', () => renderActivityPane());
+    if (keywordInput) keywordInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') renderActivityPane();
+    });
+    if (refreshBtn) refreshBtn.addEventListener('click', () => renderActivityPane());
+    if (moreBtn) moreBtn.addEventListener('click', () => renderActivityPane({append: true}));
+}
 const debugConsoleBtn = document.getElementById('opt-debug-console');
 if (debugConsoleBtn) debugConsoleBtn.addEventListener('click', () => toggleDockView('debug'));
 elsSettings.openMode.addEventListener('change', () => {
@@ -14524,6 +15221,12 @@ if (rt) {
         const maximised = await rt.WindowIsMaximised();
         maxBtn.innerHTML = iconSvg(maximised ? 'restore' : 'maximize', 12);
         maxBtn.title = maximised ? '还原' : '最大化';
+        // Wails 运行时的边缘 resize 检测不判断最大化状态：无边框窗口最大化后
+        // 鼠标靠近左右两侧仍会亮起调整宽度光标。最大化时直接关掉检测，
+        // 还原（含 Win+方向键贴靠，经 resize 事件回到这里）再恢复。
+        try {
+            if (window.wails && window.wails.flags) window.wails.flags.enableResize = !maximised;
+        } catch (e) {}
     };
     document.getElementById('wc-min').addEventListener('click', () => rt.WindowMinimise());
     maxBtn.addEventListener('click', async () => {
@@ -14652,10 +15355,23 @@ function formatDocument() {
     }
     markDocDirty(doc);
     updateStatus();
+    activityLog.log('file.format', doc.path, {kind: 'format'});
     if (currentMode === 'table') renderCsvTableView(doc);
 }
 
+// switchMode 外壳负责操作留痕（view.switch）；实际切换在 applySwitchMode。
 function switchMode(mode) {
+    const fromMode = currentMode;
+    const docBefore = file;
+    const wasSplit = !!(docBefore && docBefore.splitActive);
+    applySwitchMode(mode);
+    const splitChanged = !!(file && file.splitActive) !== wasSplit;
+    if (currentMode !== fromMode || splitChanged) {
+        activityLog.log('view.switch', currentMode, {from: fromMode});
+    }
+}
+
+function applySwitchMode(mode) {
     if (!editor) return;
     const doc = file;
     if (mode === 'split') {
@@ -14663,15 +15379,14 @@ function switchMode(mode) {
         return;
     }
     if (doc && doc.splitActive) exitSplitView(doc);
-    if (currentMode === mode) return;
     if (mode === 'sql') {
-        enterSqlView(doc);
+        // SQL 是覆盖层：再点一次（或菜单再次选择）关闭，回到原视图
+        if (doc && doc.sqlActive) closeSqlView(doc);
+        else enterSqlView(doc);
         return;
     }
-    if (currentMode === 'sql') {
-        leaveSqlView(doc, mode);
-        return;
-    }
+    if (doc && doc.sqlActive) closeSqlView(doc);
+    if (currentMode === mode) return;
     if (mode === 'image') {
         if (doc && doc.image) enterImageView(doc);
         return;
@@ -14825,6 +15540,7 @@ const findMarkerLimit = 2000;
 
 function findTarget() {
     if (!file || !file.editor) return null;
+    if (file.sqlActive) return null; // SQL 覆盖层打开时不可用编辑器查找
     if (currentMode === 'code') {
         const ace = file.editor.aceEditor;
         return ace ? {type: 'ace', ace} : null;
@@ -16107,7 +16823,8 @@ function quickSwitchSubItems(level) {
         const splitActive = !!file.splitActive;
         return viewOptionsFor(file.format, file).map(([mode, label]) => ({
             label,
-            checked: mode === 'split' ? splitActive : (!splitActive && currentMode === mode),
+            checked: mode === 'split' ? splitActive
+                : (mode === 'sql' ? !!file.sqlActive : (!splitActive && currentMode === mode)),
             disabled: viewDisabled(mode),
             action: () => switchMode(mode),
         }));
@@ -16595,28 +17312,56 @@ function serializeSession() {
     };
 }
 
-function scheduleSessionSave() {
-    clearTimeout(sessionTimer);
-    sessionTimer = setTimeout(saveSessionNow, 500);
+function auxWindowNoSession() {
+    return !!(window.__aiFloatWindow || window.__consoleWindowMode);
 }
 
-function saveSessionNow() {
+function scheduleSessionSave(options) {
+    if (auxWindowNoSession()) return;
+    clearTimeout(sessionTimer);
+    sessionTimer = setTimeout(() => saveSessionNow(options), 500);
+}
+
+function saveSessionNow(options) {
+    if (auxWindowNoSession()) return false;
     sessionTimer = 0;
     try {
         const sess = serializeSession();
         if (sess) {
+            const tabs = countSessionTabs(sess);
+            if (!tabs && !(options && options.allowEmpty)) {
+                const prev = readSession();
+                if (countSessionTabs(prev) > 0 &&
+                    sessionPathKey(prev && prev.workspace) === sessionPathKey(sess.workspace)) {
+                    // 启动恢复、工作区预热等过程性保存不能把上一次的标签页抹成空快照
+                    logFrontend('info', '会话保存跳过：空快照未覆盖 ' + countSessionTabs(prev) + ' 个标签页');
+                    return false;
+                }
+            }
             localStorage.setItem(sessionKey, JSON.stringify(sess));
             writeWorkspaceSession(sess);
         } else {
             localStorage.removeItem(sessionKey);
         }
-    } catch (e) {}
+        return true;
+    } catch (e) { return false; }
+}
+
+function countSessionTabs(sess) {
+    let n = 0;
+    for (const group of (sess && Array.isArray(sess.groups) ? sess.groups : [])) {
+        n += group && Array.isArray(group.paths) ? group.paths.length : 0;
+    }
+    return n;
 }
 
 // 关闭窗口时兜底保存一次，避免刚打开文件夹就退出时丢失（防抖还没触发）。
 // AI 悬浮窗与调试控制台共享同一 localStorage，不能让它们覆盖主窗口的会话。
 window.addEventListener('pagehide', () => {
-    if (window.__aiFloatWindow || window.__consoleWindowMode) return;
+    if (auxWindowNoSession()) return;
+    // 操作留痕：退出前记一条并冲刷攒批（尽力而为，异步写入不保证完成）。
+    activityLog.log('app.exit', '', {}, {actor: 'system', source: 'system'});
+    activityLog.flush();
     if (!docs.length && !workspaceFolder) return;
     saveSessionNow();
 });
@@ -16641,6 +17386,7 @@ function deserializeSplitSession(node, idxToGid) {
 }
 
 async function restoreSession(sess) {
+    if (auxWindowNoSession()) return false;
     try {
         if (sess.workspace && !workspaceFolder) openFolderWorkspace(sess.workspace);
         knownDocViews = new Map();
@@ -16675,6 +17421,8 @@ async function restoreSession(sess) {
             if (first) await activateDoc(first);
         }
         renderEditorLayout();
+        const want = countSessionTabs(sess);
+        logFrontend('info', '会话恢复：保存 ' + want + ' 个标签页，实际打开 ' + docs.length + ' 个文件');
         flash('已恢复上次会话');
     } catch (e) {
         logFrontend('warn', '会话恢复失败：' + (e && e.message || e));
@@ -17283,7 +18031,8 @@ function menuItems(kind) {
             const splitActive = !!(file && file.splitActive);
             items.push(...viewOptionsFor(file && file.format, file).map(([mode, label]) => ({
                 label,
-                checked: mode === 'split' ? splitActive : (!splitActive && currentMode === mode),
+                checked: mode === 'split' ? splitActive
+                    : (mode === 'sql' ? !!(file && file.sqlActive) : (!splitActive && currentMode === mode)),
                 disabled: viewDisabled(mode),
                 action: () => switchMode(mode),
             })));
@@ -17300,7 +18049,7 @@ function menuItems(kind) {
                 {label: '自动换行', checked: !!settings.codeWrap, action: toggleCodeWrap},
                 {label: '写作模式', checked: !!settings.writingMode, action: toggleWritingMode},
                 {label: '阅读模式', checked: !!(readingMode && readingMode.isActive()), action: () => readingMode && readingMode.toggle()},
-                {label: '展开全部', shortcut: 'Ctrl+Shift+=', disabled: !tree, action: () => editor && editor.expandAll()},
+                {label: '展开全部', shortcut: 'Ctrl+Shift+=', disabled: !tree, action: () => file && expandAllWithGuard(file)},
                 {label: '收起全部', shortcut: 'Ctrl+Shift+-', disabled: !tree, action: () => editor && editor.collapseAll()},
                 {sep: true},
                 {label: '全屏', checked: !!rtFullscreen, action: toggleFullscreen},
@@ -17799,7 +18548,7 @@ window.addEventListener('keydown', (e) => {
         if (!editor || currentMode !== 'tree' || !file || file.format.rawOnly) return;
         const plus = e.key === '+' || e.key === '=' || e.code === 'NumpadAdd';
         if (e.shiftKey) {
-            if (plus) editor.expandAll();
+            if (plus) expandAllWithGuard(file);
             else editor.collapseAll();
         } else {
             toggleFocusedNode(plus ? 'expand' : 'collapse');
@@ -17856,13 +18605,17 @@ if (rt) {
     rt.EventsOn('browser-nav', (data) => {
         const doc = docs.find((d) => d.id === (data && data.id));
         if (!doc) return;
-        doc.loading = !!data.loading;
+        if (data.loading !== undefined) doc.loading = !!data.loading;
+        if (doc.browserEmpty) {
+            doc.browserEmpty.remove();
+            doc.browserEmpty = null;
+        }
         if (data.url) doc.browserUrl = data.url;
         if (doc.browserAddr && document.activeElement !== doc.browserAddr) {
             doc.browserAddr.value = data.url && data.url !== 'about:blank' ? data.url : '';
         }
-        if (doc.browserBackBtn) doc.browserBackBtn.disabled = !data.canGoBack;
-        if (doc.browserFwdBtn) doc.browserFwdBtn.disabled = !data.canGoForward;
+        if (doc.browserBackBtn && data.canGoBack !== undefined) doc.browserBackBtn.disabled = !data.canGoBack;
+        if (doc.browserFwdBtn && data.canGoForward !== undefined) doc.browserFwdBtn.disabled = !data.canGoForward;
         if (data.title) updateBrowserTitle(doc, data.title);
     });
     rt.EventsOn('browser-title', (data) => {
@@ -17874,6 +18627,10 @@ if (rt) {
         if (doc) flash('浏览器进程异常，标签页可能需要重新打开', true);
     });
     window.addEventListener('resize', syncAllBrowserTabs);
+    // 菜单/命令面板/AI 面板全屏等浮层没有统一的开关事件：定时兜底同步内嵌浏览器的显隐
+    setInterval(() => {
+        if (file && file.browser) syncBrowserTab(file);
+    }, 250);
     rt.EventsOn('term-out', (data) => {
         const s = terminalUI.sessions.get(data.id);
         if (s) s.term.write(data.data);
@@ -18783,6 +19540,10 @@ function openBrowserTab(url, profileKey) {
     if (backend.BrowserOpen) {
         backend.BrowserOpen(doc.id, target, doc.browserProfile || 'tab-' + doc.id).then((info) => {
             if (info && info.title) updateBrowserTitle(doc, info.title);
+            if (doc.browserEmpty) {
+                doc.browserEmpty.remove();
+                doc.browserEmpty = null;
+            }
             syncBrowserTab(doc);
         }).catch((e) => {
             const stack = String((e && e.stack) || '').split(String.fromCharCode(10)).slice(0, 4).join(' | ');
@@ -18793,6 +19554,211 @@ function openBrowserTab(url, profileKey) {
         flash('当前环境不支持内嵌浏览器', true);
     }
     return doc;
+}
+
+// ===== 后台终端标签页（AI background_command 作业在内容区的视图）=====
+// 数据来自 aiPanel 桥接（bridgeBgJob / bridgeOnBgUpdate / bridgeStopBgJob）；
+// 上栏命令信息、下栏实时输出，中间分割线可拖拽（比例存 localStorage）；关闭标签不影响作业。
+
+const BGTERM_SPLIT_KEY = 'datalens-bgterm-split';
+
+function bgTermSplitRatio() {
+    const raw = Number(localStorage.getItem(BGTERM_SPLIT_KEY));
+    if (!Number.isFinite(raw) || raw < 0.15 || raw > 0.85) return 0.34;
+    return raw;
+}
+
+function bgTermTabName(command) {
+    const line = String(command || '').split('\n', 1)[0].replace(/\s+/g, ' ').trim();
+    if (!line) return '后台终端';
+    return line.length > 28 ? line.slice(0, 28) + '…' : line;
+}
+
+function openBgTermTab(info) {
+    const jobId = String((info && info.jobId) || '');
+    if (!jobId) return null;
+    const existing = docs.find((d) => d.bgTerm === jobId);
+    if (existing) {
+        activateDoc(existing);
+        return existing;
+    }
+    const doc = {
+        id: 'bgterm-' + jobId,
+        path: null,
+        name: bgTermTabName(info && info.command),
+        content: '',
+        size: 0,
+        eol: 'lf',
+        hasBom: false,
+        large: false,
+        enc: 'utf-8',
+        format: {id: 'bgterm', name: '后台终端', extensions: [], aceMode: 'text', rawOnly: true},
+        bgTerm: jobId,
+        bgTermCommand: String((info && info.command) || ''),
+        mode: 'bgterm',
+        treeAvailable: false,
+        dirty: false,
+        untitled: false,
+        bases: {},
+        savedText: '',
+    };
+    docs.push(doc);
+    addDocToFocusedGroup(doc);
+    activateDoc(doc);
+    return doc;
+}
+
+function bgTermStateLabel(state, code) {
+    if (state === 'running') return '运行中';
+    if (state === 'exited') return '已退出（' + (code == null ? '?' : code) + '）';
+    if (state === 'stopped') return '已停止';
+    if (state === 'notfound') return '不存在';
+    return state || '未知';
+}
+
+function createBgTermView(doc) {
+    const pane = document.createElement('div');
+    pane.className = 'jsoneditor-pane active bgterm-pane';
+    els.editor.appendChild(pane);
+
+    // 上栏：命令 + 元信息 + 停止
+    const info = document.createElement('div');
+    info.className = 'bgterm-info';
+    const cmdRow = document.createElement('div');
+    cmdRow.className = 'bgterm-cmd-row';
+    const cmdLabel = document.createElement('span');
+    cmdLabel.className = 'bgterm-label';
+    cmdLabel.textContent = '命令';
+    const cmd = document.createElement('pre');
+    cmd.className = 'bgterm-cmd';
+    cmd.textContent = doc.bgTermCommand || '（读取中…）';
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'dlg-btn bgterm-copy';
+    copyBtn.textContent = '复制';
+    copyBtn.addEventListener('click', () => copyText(doc.bgTermCommand || '', '命令'));
+    cmdRow.append(cmdLabel, cmd, copyBtn);
+
+    const metaRow = document.createElement('div');
+    metaRow.className = 'bgterm-meta-row';
+    const stateBadge = document.createElement('span');
+    stateBadge.className = 'bgterm-state';
+    const metaText = document.createElement('span');
+    metaText.className = 'bgterm-meta';
+    const stopBtn = document.createElement('button');
+    stopBtn.type = 'button';
+    stopBtn.className = 'dlg-btn bgterm-stop';
+    stopBtn.textContent = '停止';
+    metaRow.append(stateBadge, metaText, stopBtn);
+    info.append(cmdRow, metaRow);
+
+    // 中间分割线：拖拽调整上下比例
+    const split = document.createElement('div');
+    split.className = 'bgterm-split';
+    split.title = '拖动调整上下高度';
+
+    // 下栏：输出
+    const out = document.createElement('pre');
+    out.className = 'bgterm-out empty';
+    out.textContent = '（暂无输出；作业产生输出后会实时显示在这里）';
+
+    pane.append(info, split, out);
+    doc.pane = pane;
+    doc.bgTermEl = out;
+    doc.bgTermStateEl = stateBadge;
+    doc.bgTermMetaEl = metaText;
+
+    doc.bgTermRatio = bgTermSplitRatio();
+    info.style.flexBasis = (doc.bgTermRatio * 100) + '%';
+    let dragging = false;
+    const onMove = (e) => {
+        if (!dragging || !pane.isConnected) return;
+        const rect = pane.getBoundingClientRect();
+        if (!rect.height) return;
+        const ratio = Math.min(0.85, Math.max(0.15, (e.clientY - rect.top) / rect.height));
+        doc.bgTermRatio = ratio;
+        info.style.flexBasis = (ratio * 100) + '%';
+    };
+    const onUp = () => {
+        if (!dragging) return;
+        dragging = false;
+        document.body.classList.remove('bgterm-dragging');
+        try { localStorage.setItem(BGTERM_SPLIT_KEY, String(doc.bgTermRatio)); } catch (e) {}
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+    };
+    split.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        dragging = true;
+        document.body.classList.add('bgterm-dragging');
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+    });
+
+    stopBtn.addEventListener('click', async () => {
+        if (!aiPanel || !aiPanel.bridgeStopBgJob) return flash('当前版本不支持停止后台命令', true);
+        stopBtn.disabled = true;
+        try {
+            await aiPanel.bridgeStopBgJob(doc.bgTerm);
+            flash('已发送停止指令');
+        } catch (e) {
+            flash('停止失败：' + ((e && e.message) || e), true);
+        } finally {
+            stopBtn.disabled = false;
+        }
+    });
+
+    const render = () => {
+        const snapshot = aiPanel && aiPanel.bridgeBgJob ? aiPanel.bridgeBgJob(doc.bgTerm) : null;
+        if (!snapshot) {
+            stateBadge.textContent = '已丢失';
+            stateBadge.className = 'bgterm-state st-lost';
+            metaText.textContent = '作业句柄不在本运行期（应用重启后无法查看实时输出）';
+            stopBtn.classList.add('hidden');
+            return;
+        }
+        if (snapshot.command && !doc.bgTermCommand) {
+            doc.bgTermCommand = snapshot.command;
+            cmd.textContent = snapshot.command;
+        }
+        const state = snapshot.state || 'unknown';
+        stateBadge.textContent = bgTermStateLabel(state, snapshot.code);
+        stateBadge.className = 'bgterm-state st-' + state;
+        const bits = [];
+        if (snapshot.cwd) bits.push('目录 ' + snapshot.cwd);
+        bits.push('jobId ' + doc.bgTerm);
+        if (snapshot.startedAt) bits.push('启动 ' + new Date(snapshot.startedAt).toLocaleTimeString());
+        metaText.textContent = bits.join(' · ');
+        stopBtn.classList.toggle('hidden', state !== 'running');
+        const text = String(snapshot.log || '');
+        // 用户往上翻历史时不强制拉回底部
+        const nearBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 60;
+        if (text) {
+            out.textContent = text;
+            out.classList.remove('empty');
+            if (nearBottom) out.scrollTop = out.scrollHeight;
+        } else {
+            out.textContent = '（暂无输出；作业产生输出后会实时显示在这里）';
+            out.classList.add('empty');
+        }
+        renderBgTermTabTitle(doc, snapshot.command);
+    };
+
+    if (aiPanel && aiPanel.bridgeOnBgUpdate) {
+        doc.bgTermUnsub = aiPanel.bridgeOnBgUpdate((jobId) => {
+            if (jobId !== doc.bgTerm || !doc.pane || !doc.pane.isConnected) return;
+            render();
+        });
+    }
+    render();
+}
+
+function renderBgTermTabTitle(doc, command) {
+    const name = bgTermTabName(command || doc.bgTermCommand);
+    if (name && name !== doc.name) {
+        doc.name = name;
+        renderTabs();
+    }
 }
 
 // ===== git 浅集成 =====
@@ -19051,6 +20017,8 @@ async function maybeRunConvertJob() {
         document.body.classList.add('ai-float-window');
         document.title = 'AI 助手 · CaDt-DataLens';
     }
+    // 操作留痕：主窗口启动标记（悬浮窗/独立控制台/转换模式不记）。
+    activityLog.log('app.start', '', {mock: hasWails ? undefined : true}, {actor: 'system', source: 'system'});
     refreshDeveloperMode();
     refreshLogPath();
     if (backend.GetOpenMode) {

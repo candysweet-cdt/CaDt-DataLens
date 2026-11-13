@@ -1,6 +1,6 @@
 package main
 
-// 阅读模式 DOCX 解析（docs/reading-mode.md §10.4）：
+// 阅读模式 DOCX 解析（docs/finished-plans/reading-mode.md §10.4）：
 // 只解 word/document.xml 与 docProps/core.xml 的文本/标题/表格文本，图片给占位。
 // 只读：不修改源文件，不抽取图片。零新依赖（archive/zip + encoding/xml）。
 

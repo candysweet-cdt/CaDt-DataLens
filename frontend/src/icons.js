@@ -33,13 +33,17 @@ const rawIcons = {
     'agents': '<circle cx="4" cy="4.6" r="2.1"/><circle cx="12" cy="4.6" r="2.1"/><circle cx="8" cy="11.8" r="2.1"/><path d="M5.7 6.1l1.5 3.6M10.3 6.1l-1.5 3.6M6.1 4.6h3.8"/>',
     'gear': '<path d="M6.9 1.8h2.2l.4 1.8c.5.2 1 .4 1.4.7l1.7-.6 1.1 1.9-1.3 1.2c.1.5.1 1 0 1.5l1.3 1.2-1.1 1.9-1.7-.6c-.4.3-.9.5-1.4.7l-.4 1.8H6.9l-.4-1.8c-.5-.2-1-.4-1.4-.7l-1.7.6-1.1-1.9 1.3-1.2c-.1-.5-.1-1 0-1.5l-1.3-1.2 1.1-1.9 1.7.6c.4-.3.9-.5 1.4-.7l.4-1.8z"/><circle cx="8" cy="8" r="2"/>',
     'refresh': '<path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7"/><path d="M13.3 1.7v3h-3"/>',
+    'play': '<path fill="currentColor" stroke="none" d="M5.3 3.5l7 4.5-7 4.5V3.5z"/>',
+    'pause': '<rect x="4.6" y="3.5" width="2.3" height="9" rx="0.6" fill="currentColor" stroke="none"/><rect x="9.1" y="3.5" width="2.3" height="9" rx="0.6" fill="currentColor" stroke="none"/>',
     'shield': '<path d="M8 1.9l5 1.9v3.6c0 3.1-2 5.2-5 6.6-3-1.4-5-3.5-5-6.6V3.8l5-1.9z"/>',
     'shield-plus': '<path d="M8 1.9l5 1.9v3.6c0 3.1-2 5.2-5 6.6-3-1.4-5-3.5-5-6.6V3.8l5-1.9z"/><path d="M8 5.7v3.4M6.3 7.4h3.4"/>',
     'zap': '<path d="M8.7 1.9L4 8.3h3.1l-.8 5.8 4.7-6.4H7.9l.8-5.8z"/>',
+    'sparkles': '<path d="M6.2 2.3c.5 2.4 1.7 3.6 4.1 4.1-2.4.5-3.6 1.7-4.1 4.1-.5-2.4-1.7-3.6-4.1-4.1 2.4-.5 3.6-1.7 4.1-4.1z"/><path d="M11.6 9.6c.3 1.5 1 2.2 2.5 2.5-1.5.3-2.2 1-2.5 2.5-.3-1.5-1-2.2-2.5-2.5 1.5-.3 2.2-1 2.5-2.5z"/>',
     'trash': '<path d="M2.8 4.4h10.4M6.4 4.4V3.1c0-.4.3-.7.7-.7h1.8c.4 0 .7.3.7.7v1.3M4.4 4.4l.6 8.3c0 .6.5 1.1 1.1 1.1h3.8c.6 0 1.1-.5 1.1-1.1l.6-8.3"/><path d="M6.7 7v3.8M9.3 7v3.8"/>',
     'eraser': '<path d="M9.5 2.7l3.8 3.8-6 6H4.5L2.6 10.6l6.9-6.9z"/><path d="M6.1 6.2l3.7 3.7"/><path d="M2.6 13.6h8.6"/>',
     'terminal': '<rect x="1.9" y="2.8" width="12.2" height="10.4" rx="1.4"/><path d="M4.5 6.3l2.3 2-2.3 2"/><path d="M8.6 10.6h3"/>',
     'browser': '<rect x="2.1" y="2.8" width="11.8" height="10.4" rx="1.2"/><path d="M2.1 5.4h11.8"/><path d="M4.2 4.1h.1M5.8 4.1h.1M7.4 4.1h.1"/>',
+    'more': '<circle cx="3.4" cy="8" r="1.15" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="1.15" fill="currentColor" stroke="none"/><circle cx="12.6" cy="8" r="1.15" fill="currentColor" stroke="none"/>',
     'camera': '<path d="M2.6 5.4h2.1l.8-1.4h5l.8 1.4h2.1v6.5c0 .6-.5 1.1-1.1 1.1H3.7c-.6 0-1.1-.5-1.1-1.1V5.4z"/><circle cx="8" cy="8.7" r="2"/>',
     'cursor': '<path fill="currentColor" stroke="none" d="M4.6 2.6l6.6 6.6-3 .3 1.7 3.7-1.5.5-1.8-3.9-2 1.4V2.6z"/>',
     'keyboard': '<rect x="1.9" y="4.2" width="12.2" height="7.6" rx="1.2"/><path d="M4.1 6.3h.1M6.1 6.3h.1M8 6.3h.1M9.9 6.3h.1M11.8 6.3h.1"/><path d="M5 9.9h6"/>',
@@ -71,6 +75,7 @@ const rawIcons = {
     'feedback': '<path d="M2.6 4.2c0-.7.6-1.3 1.3-1.3h8.2c.7 0 1.3.6 1.3 1.3v5.4c0 .7-.6 1.3-1.3 1.3H7.6l-3.3 2.8v-2.8H3.9c-.7 0-1.3-.6-1.3-1.3V4.2z"/>',
     'info': '<circle cx="8" cy="8" r="5.6"/><path d="M8 7.4v3.4"/><path d="M8 5.2v.1"/>',
     'star': '<path fill="currentColor" stroke="none" d="M8 1.9l1.9 3.9 4.2.6-3.1 2.9.9 4.2L8 11.4l-3.9 2.1.9-4.2L1.9 6.4l4.2-.6L8 1.9z"/>',
+    'pin': '<path fill="currentColor" stroke="none" d="M10.6 1.7l3.7 3.7-2.4.7-1.8 1.8.3 2.8-1.3 1.3-2.5-2.5-3.9 3.9-.8-.8 3.9-3.9-2.5-2.5 1.3-1.3 2.8.3 1.8-1.8.4-2.6z"/>',
 };
 
 // 注册表整体导出（冻结）：供图标表页/测试枚举展示，业务代码请用 iconSvg()。

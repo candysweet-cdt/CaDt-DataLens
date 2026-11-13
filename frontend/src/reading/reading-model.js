@@ -1,4 +1,4 @@
-// 阅读模式纯函数模型（docs/reading-mode.md §2/§4/§5/§8）：
+// 阅读模式纯函数模型（docs/finished-plans/reading-mode.md §2/§4/§5/§8）：
 // TOC 构建、排序、单元 ID、进度算法、joinSoftLines、失效恢复。
 // 无 DOM 依赖，Node --test 可直接跑（reading-model.test.mjs）。
 

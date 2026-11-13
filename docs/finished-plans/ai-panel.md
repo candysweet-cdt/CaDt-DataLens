@@ -19,14 +19,14 @@
 - 会话管理：从面板头部移出，改为左侧活动栏「AI 会话」视图（`Alt+8`）；列表显示标题、消息数、最近活动时间，当前会话高亮；支持新建、切换、重命名、导出、删除（行内 ⋯ 或右键菜单）。面板头部只保留标题、新建会话、显示方式、变更、⋯、关闭；悬浮窗因没有左侧边栏，会话操作保留在 ⋯ 菜单。
 - 轮次计时与过程折叠：每轮用户消息到最终回答之间的思考、工具调用和中间说明收进 `.ai-process` 折叠行（「已完成，用时 7 分 26 秒」）；流式中默认展开并每秒更新用时，完成后默认收起，点击展开；最终回答始终显示在折叠行之外；耗时随会话持久化（`turnStartedAt` / `turnMs` / `finishedAt`）。
 - 流式状态条：看板娘 +「甜澄漫游中」+ 实时计时，始终位于消息区文档末尾（**非 sticky**，内容不足时 `margin-top:auto` 贴底）；工具卡片原位更新（如 diff 展开、结果回填）后，若处于跟随底部状态会自动滚到文档末尾，避免卡片变高把状态条顶出视口（手动上滚时不打扰）。
-- 图片粘贴：composer 支持 Ctrl+V 粘贴剪贴板图片，自动压缩（≤1600px）、最多 6 张、缩略图/预览/移除；图片随 user 消息以多模态内容发送（OpenAI `image_url` / Anthropic base64 image）；图片-only 消息可直接发送。
+- 图片粘贴：composer 支持 Ctrl+V 粘贴剪贴板图片，自动压缩（≤1600px）、最多 6 张、缩略图/预览/移除；图片随 user 消息以多模态内容发送（OpenAI `image_url` / Anthropic base64 image）；图片-only 消息可直接发送。预览对话框可进入**面板内全屏查看**（`frontend/src/image-lightbox.js`，查看层只铺满 AI 面板，滚轮缩放 / 拖动平移 / 双击原始大小）。
 - 对话日志：默认每轮自动保存 Markdown 到应用数据目录 `ai-logs/`，图片落到 `ai-logs/images/` 并在日志中引用；设置 AI 页可开关、查看路径、打开目录；侧栏会话菜单与面板 `⋯` 均可打开日志目录；日志不含 API Key。
 - 内容宽度（停靠 / 全屏通用）：AI 面板打开时状态栏显示「AI 宽度」按钮，可选自动（默认）/ 跟随 / 720 / 860 / 920 / 1100 / 1300px，消息区、composer、统计行与 todos 按该宽度居中；设置存入 `datalens-settings.aiFullscreenWidth`，默认自动。
 
 ## 0.1 2026-11-10 Agent 能力补齐
 
 - 会话归档：会话菜单新增「归档会话 / 取消归档」；归档会话从活动列表移入可折叠「已归档」区，保留查看、重命名、导出与取消归档；归档会话禁止继续发送/压缩，且不会被会话数量上限优先淘汰。持久化字段 `archivedAt`。
-- 内置技能：随包内置 `code-review`（只读代码审查）、`json-toolkit`（JSON/JSONL/YAML/TOML/CSV 校验与修改）、`release-notes`（更新日志/发布说明）、`cadt-datalens`（命令行打开文件/跳转行:列）、`cadt-ui`（app_control 动作表）、`web-research`（联网检索）、`docx` / `pdf`（文档处理）、`skill-creator`（技能创作）、`plugin-creator`（插件开发）十个技能；技能列表、`/skill`、`skill_use` 与技能管理统一可见，支持启用/禁用；同名用户技能优先覆盖内置。
+- 内置技能：随包内置 `code-review`（只读代码审查）、`json-toolkit`（JSON/JSONL/YAML/TOML/CSV 校验与修改）、`release-notes`（更新日志/发布说明）、`cadt-datalens`（命令行打开文件/跳转行:列）、`cadt-ui`（app_control 动作表）、`web-research`（联网检索）、`docx` / `pdf`（文档处理）、`skill-creator`（技能创作）、`plugin-creator`（插件开发）、`answer-me-with-html`（把复杂回答做成单页图文 HTML 并在内嵌浏览器打开）十一个技能；技能列表、`/skill`、`skill_use` 与技能管理统一可见，支持启用/禁用；同名用户技能优先覆盖内置。
 - 通知：任务完成、任务失败、AI 提问时显示应用内 toast（可点击跳到对应会话）；窗口失焦时应用内通道还会让任务栏闪烁并可播放提示音；系统级 Windows Toast 独立开关。设置 → AI 助手 → 通知可分别开关应用内通知、系统通知、完成/失败/提问事件与失焦提醒。
 - AskQuestion：新增 `ask_user` 工具，一次最多 5 个问题；每题可单选或多选（多选题选项前带勾选框图标），可标记推荐项；面板默认在选项后追加一个「自己输入」项（`allow_custom=false` 时才关闭，默认开）。接管卡底部为「跳过」+「提交/继续」（原「停止本轮」已移除）：点「跳过」不回答问题但不中断本轮，以 `skipped` 状态把「用户选择不回答」作为工具结果交回模型，卡片显示「已跳过」。提问和计划批准会接管底部 composer（不再插入消息流），回答后恢复输入框并在转录中保留只读问答记录。设置项：超时时长（不超时/30 秒/1 分钟/5 分钟/10 分钟/30 分钟）与超时处理（按 AI 推荐项继续 / 继续阻塞等待 / 直接停止本轮 / 交给 AI 决定）。超时停止会结束本轮；超时继续会把结果作为工具结果交回模型。`ask_user` 另支持逐次覆盖超时：可选参数 `timeoutSec`（秒，`0` = 本次不限时，范围 0–3600）与 `timeoutAction`（`recommended` / `wait` / `abort` / `ai_decide`），只影响本次提问，不写回设置；两者省略时沿用设置。实现见 `resolveAskTimeout`（ai-panel.js），实际生效值记录在 `ask.timeoutSec` / `ask.timeoutAction`；本次为定制时 `ask.timeoutCustom` 为 true，composer 倒计时会附加「（本次自定义 N 秒）」。
 - Plan 模式：composer 新增「计划」胶囊，`/plan` 进入、`/plan off` 退出，`/plan <指令>` 进入并直接开始规划；计划模式下不提供 `write_file` / `edit_file`，提示词要求只读探索并输出 Markdown 计划。计划完成后在底部 composer 接管处显示计划预览与「继续规划 / 执行计划」；执行时自动退出计划模式并发送批准指令；只读访问权限下会提示先切换到「每次询问」或更高权限。计划模式状态随会话持久化。
@@ -270,7 +270,7 @@ runTurn(session, userMsg):
 | `read_file(path, offset?)` | `OpenFile(path,'auto')` → Content 切片，**单次 ≤64KB**，二进制/超 10MB 拒绝 | 读取+ | 免 |
 | `search_text(query)` | `SearchWorkspace(scopeRoot, query, false, 200)` | 读取+ | 免 |
 | `web_search(query, maxResults?)` | 后端 `WebSearch`：Bing RSS 搜索，返回标题 / URL / 摘要 / 日期；默认 8 条、最多 10 条 | 读取+ / 计划模式 | 免 |
-| `web_fetch(url, maxChars?)` | 后端 `WebFetch`：抓取公网 HTML / 文本 / JSON / XML → 标题 + 正文纯文本 + 页面链接；默认 12000 字、最多 60000；拒绝本机 / 内网 / 二进制 | 读取+ / 计划模式 | 免 |
+| `web_fetch(url, maxChars?)` | 后端 `WebFetch`：抓取公网 HTML / 文本 / JSON / XML → 标题 + 正文纯文本 + 页面链接；默认 12000 字、最多 60000；拒绝本机 / 内网 / 二进制 | 读取+ / 计划模式 | 默认免；命中项目 `Web(...)` 规则时 deny 拒绝、ask 弹审批卡 |
 | `memory_list()` | `AIEnsureDir` 后 `ReadDir(dir, 200)`：文件名+大小+修改时间 | 读取+ | 免 |
 | `memory_read(name)` | 记忆目录 + `OpenFile`（≤64KB） | 读取+ | 免 |
 | `memory_write(name, content)` | 记忆目录 + `SaveFile`（文件名白名单校验，见 §15） | 读取+ | 免（**显示写入卡片**） |
@@ -281,8 +281,8 @@ runTurn(session, userMsg):
 | `write_file(path, content)` | `SaveFile(path, content, '', false, 'utf-8')`（新建文件） | 编辑 | **是** |
 | `edit_file(path, oldString, newString)` | `OpenFile` → 唯一性校验（多处命中=错误回给模型）→ 替换 → `SaveFile` **保留原 eol/bom/enc** | 编辑 | **是** |
 | `todo_write(todos[])` | 纯前端状态 → §11 | 编辑 | 免 |
-| `run_command(command, cwd?, timeoutMs?)` | 后端 `AIRunShellCommand`：shell 优先级 **Git Bash → PowerShell 7 → Windows PowerShell → cmd**；默认 30s、上限 120s；stdout/stderr 各截断 16KB | 每次询问 / 自动审批 / 完全权限（计划模式不可用） | 每次询问**是**（逐条，命令 + cwd；可勾选本会话相同/同类命令放行）；自动审批仅风险命令**是**；完全权限免 |
-| `background_command(command, cwd?)` | 后端 `AICommandStart`：后台启动长驻/耗时命令，立即返回 `jobId`（`bg-<序号>`）；输出按行缓冲（每作业 256 KB 环形，超限丢弃最早）并照常广播 `cmd-out` | 每次询问 / 自动审批 / 完全权限（计划模式不可用） | 每次询问**是**（与 run_command 同一审批卡，启动时审一次）；自动审批白名单命令免；完全权限免 |
+| `run_command(command, cwd?, timeoutMs?)` | 后端 `AIRunShellCommand`：shell 优先级 **Git Bash → PowerShell 7 → Windows PowerShell → cmd**；默认 30s、上限 120s；stdout/stderr 各截断 16KB | 每次询问 / 自动审批 / 完全权限（计划模式不可用） | 每次询问**是**（逐条，命令 + cwd；可勾选本会话相同/同类命令放行）；自动审批：只读命令与已知命令族免、危险命令确认一次、其余按项目规则 / 分类器 / 逐条审批；完全权限免 |
+| `background_command(command, cwd?)` | 后端 `AICommandStart`：后台启动长驻/耗时命令，立即返回 `jobId`（`bg-<序号>`）；输出按行缓冲（每作业 256 KB 环形，超限丢弃最早）并照常广播 `cmd-out` | 每次询问 / 自动审批 / 完全权限（计划模式不可用） | 每次询问**是**（与 run_command 同一审批卡，启动时审一次）；自动审批：只读命令 / 已知命令族 / 规则放行，危险命令确认一次；完全权限免 |
 | `check_command(jobId)` | 后端 `AICommandStatus`：返回 running / exited / notfound、退出码、时长与自上次查询的**增量输出**（单次 ≤64KB，结果截断 16KB） | 同上 | 免 |
 | `stop_command(jobId)` | 后端 `AICommandStop`：终止作业（taskkill 杀整棵进程树），返回最终退出码与已捕获全部输出 | 同上 | 免 |
 | `schedule_create(name?, kind, at?/delayMinutes?/intervalMinutes?/cron?, prompt, sessionId?, scope?, maxRuns?)` | 后端 `AIScheduleCreate`：创建定时任务（once / interval / cron，prompt ≤8KB；scope 仅对「每次新建会话」生效） | 读取+（计划模式不可用） | 免 |
@@ -310,11 +310,19 @@ runTurn(session, userMsg):
 
 ## 9. 审批流（工作区写操作）
 
-0. AI 发起 `run_command` / `background_command`（每次询问 / 自动审批档）→ 插入命令审批卡片：显示完整命令与工作目录，按钮 **执行 / 放弃**；自动审批档白名单命令直接执行，完全权限档直接执行。后台命令启动时审批一次，之后查状态 / 停止不再审批。工具结果返回 shell 名称、退出码、stdout/stderr、耗时；超时标记「已终止」并保留已捕获输出。命令卡默认收起为一行「run_command + 命令 + 状态」，点击展开完整输出，输出区带独立背景色。
-   - **本会话允许相同命令**：完整命令字符串 + cwd（规范化后）完全一致才自动执行。
-   - **本会话允许同类命令**：仅对白名单开发命令显示，签名 = 可执行文件 + 子命令（如 `git status`、`go test`、`npm run build`）；要求同 cwd、单条简单命令（无管道、重定向、命令串联、`$()`/反引号），并排除危险参数（`-exec`、`--output`、`-o`、`--prefix`、`-C` 等）。
-   - 授权只存内存 `Map<sessionId, rules>`，不写会话 JSONL/meta；重启应用、重新加载对话或清空会话即失效。解释器（`powershell`/`pwsh`/`cmd`/`bash`/`python`/`node` 等）与 `rm`/`cat` 等无同类放行，只能相同命令或逐条审批。
+0. AI 发起 `run_command` / `background_command` → 统一权限决策链（`frontend/src/ai-permissions.js` 的 `decidePermission` + `ai-command-rules.js` 的静态分析）：**项目 deny → 危险命令单次确认 → 项目 ask → 会话/项目 allow → 模式默认**（完全权限 / 自动审批 / 逐次询问）。插入命令审批卡片：显示完整命令与工作目录，按钮 **执行 / 放弃**。后台命令启动时审批一次，之后查状态 / 停止不再审批。工具结果返回 shell 名称、退出码、stdout/stderr、耗时；超时标记「已终止」并保留已捕获输出。命令卡默认收起为一行「run_command + 命令 + 状态」，点击展开完整输出，输出区带独立背景色。
+   - **只读命令静态分析**（`analyzeReadOnlyCommand`）：按 argv 级别判断约 60 条只读命令（`ls` / `cat` / `grep` / `rg` / `find` / `head` / `tail` / `wc` / `du` / `df` / `diff` / `stat` / `pwd` / `echo`…）与 Git 只读子命令（status/diff/log/show/blame/rev-parse…）；写入型参数（`sort -o`、`find -exec`、`rg --pre`、`hostname NAME`、`date -s`、`git branch NAME` 等）会让整条命令回退审批。含重定向、命令替换、反引号、换行或单个 `&` 一律不自动放行；复合命令（`&&` / `||` / `;` / `|`）逐段判定，`cd` 出现在复合命令里不自动放行。
+   - **危险命令单次确认**（`analyzeDangerousCommand`）：`rm -rf`、`rmdir /s`、`del /s`、`git reset --hard`、`git clean -f`、`git push --force/--mirror/--delete`、`git checkout/restore` 丢弃工作区、`git stash clear`、`git branch -D`、`rmdir /s`、`shutdown`、`robocopy /mir` 等。非完全权限档一律弹卡，卡片显示红色风险提示，**不提供「本会话 / 本项目允许」**；完全权限档直接执行。
+   - **本会话允许相同命令 / 同类命令**：完整命令 + cwd 完全一致；同类签名 = 可执行文件 + 子命令（如 `git status`、`go test`、`npm run build`），要求同 cwd、单条简单命令并排除危险参数（`-exec`、`--output`、`-o`、`--prefix`、`-C` 等）。
+   - **本项目允许同类命令 / 此文件**：写入 `<工作区>/.cadt/permissions.json`（`command.allow` / `write.allow`），随仓库共享；设置 → AI → 权限 页提供规则表格（按 deny → ask → allow 分组，可直接增删；文本编辑保留为「高级」模式），最近审批记录每行可一键「+allow / +ask / +deny」生成规则；本会话授权可单条删除或「存入项目」。规则的读-改-写在前端串行执行，连续操作不会互相覆盖。
+   - 会话授权只存内存 `Map<sessionId, rules>`，不写会话 JSONL/meta；重启应用、重新加载对话或清空会话即失效。解释器（`powershell`/`pwsh`/`cmd`/`bash`/`python`/`node` 等）与 `rm` / `cat` 等无同类签名，只能相同命令或逐条审批。
    - 同类白名单：`git`（status/diff/log/show/rev-parse/ls-files/blame/grep/shortlog/describe/whatchanged/merge-base/name-rev/for-each-ref）、`go`（test/build/vet/list/env/version/doc）、`npm`/`pnpm`（test/run &lt;script&gt;/ls/view/outdated）、`dotnet`（build/test/list）、`cargo`（check/build/test/clippy/metadata）。构建类命令可能产生构建产物。
+   - 纯导航/回显命令 `pwd` / `cd` / `chdir` / `echo` 无需逐条审批（自动审批档直接执行，每次询问档可勾选同类放行），参数不限；前提仍是单条简单命令。
+   - 终端每次调用都是独立进程、以 `cwd` 参数为工作目录：`cd` 不会保留到后续命令，系统提示词与工具描述都要求模型直接传 `cwd`，不要用 `cd` / `pwd` / `echo %CD%` 探测目录。
+   - **审批留痕**：命令 / 写入执行完成后，工具卡会标注来源——`自动放行：只读命令 / 已知命令族 / AI 分类器 / 本会话授权 / 项目规则 / 完全权限`，或 `你已批准`（含「本会话同类命令已记住」等后缀）；`approval.actor` + `autoRule` 随会话 JSONL 持久化，旧会话按旧语义推断。设置 → 权限 → 最近审批同时记录用户批准 / 拒绝（来源「用户批准」）。
+   - **自动审批分类器**（设置 → AI → 权限，默认关）：规则无法判定时把命令交给一次轻量模型判定（只输出 allow/ask），失败、超时、信息不足一律回退人工审批；结果按命令 + cwd 缓存 10 分钟。触发时工具卡显示「等待 AI 分类器判定…」，消息流推送系统提示（判定中 / 放行原因 / 转人工），审批记录里记 `source=classifier`。
+   - **计划批准预授权**：计划卡片会从计划正文的代码块里提取同类命令签名（最多 6 条），批准时可勾选写入本会话规则，减少执行期弹卡。
+
 1. AI 发起 `write_file`/`edit_file` → 该工具轮**挂起**，面板内插入审批卡片：
    - 头部：工具名 + 目标路径 + ±行数；`edit_file` 显示**未保存修改警告**（若文件在编辑器中且 dirty）
    - diff 视图：前端 ~40 行 LCS 行 diff（对齐 gitinfo `computeLineMarks` 思路），+绿 −红 上下文灰，新文件全绿
@@ -323,7 +331,9 @@ runTurn(session, userMsg):
 3. 应用记录进会话 `changes[]`（§12）。
 4. 审批等待无超时（用户决策）；「停止」按钮可中止等待。
 
-> 自动审批档：工作区写操作跳过审批卡直接应用，工具卡显示「已按自动审批应用更改」，diff 仍可展开复查；目标文件在编辑器中存在未保存修改，或路径属于 `AGENTS.md` / `.cadt/` / `.agents/` / `.git/` 时自动退回逐次审批。终端命令只有白名单内的低风险命令自动执行，其余仍弹出命令审批卡。
+> 自动审批档：工作区写操作跳过审批卡直接应用，工具卡显示「已按自动审批应用更改」，diff 仍可展开复查；目标文件在编辑器中存在未保存修改，或路径属于 `AGENTS.md` / `.cadt/` / `.agents/` / `.git/` 时自动退回逐次审批。终端命令只有只读命令、已知命令族与规则放行的命令自动执行；危险命令只确认一次，其余仍弹出命令审批卡。
+>
+> 网络请求：项目规则里的 `Web(domain:...)` 可对 `web_fetch` 生效——deny 直接拒绝，ask 弹出同一审批卡（「网络请求」卡片），allow 不额外询问；没有匹配规则时行为不变。
 
 ---
 
@@ -333,7 +343,7 @@ runTurn(session, userMsg):
 |---|---|---|
 | **只读访问**（默认） | list_dir / read_file / search_text / web_search / web_fetch / memory_* / preference_*（写删计划模式不可用）+ `skill_use` + `schedule_list`（schedule_create / delete / toggle 计划模式不可用） | 范围根 = `workspaceFolder`，无工作区时 = 当前文件所在目录；免审批但每次调用显示卡片 |
 | **每次询问** | 只读工具 + write_file / edit_file / todo_write / run_command / background_command（+ check_command / stop_command）+ 页面点击/输入 | 工作区写操作全部审批、终端命令逐条审批；首次切换 flash 规则说明 |
-| **自动审批** | 与「每次询问」相同 | 工作区写操作自动应用（目标文件有未保存修改，或路径属于 `AGENTS.md` / `.cadt/` / `.agents/` / `.git/` 时仍审批）；白名单内的低风险命令自动执行，其余命令逐条审批；不允许工作区外路径 |
+| **自动审批** | 与「每次询问」相同 | 工作区写操作自动应用（目标文件有未保存修改，或路径属于 `AGENTS.md` / `.cadt/` / `.agents/` / `.git/` 时仍审批）；只读命令与已知命令族自动执行，危险命令单次确认，其余按规则 / 分类器 / 逐条审批；不允许工作区外路径 |
 | **完全权限** | 每次询问全部工具 + 工作区外路径 + 命令免审批 + browser_evaluate | 启用前有二次确认（风险说明弹窗）；破坏性操作需自行向用户说明 |
 
 - scopeRoot 显示在 composer 上方（缩略 + tooltip 全路径）。
@@ -626,7 +636,7 @@ Go 新增仅 `ai.go`（流式 + AIMemoryDir 一个小方法）；其余全复用
 19. **Token 为估算值**：不引入 tokenizer 依赖，按字符近似（标注「估算」）；展示 API usage 实际值时区分标注；超限拦截预留 10% 余量避免误杀。
 20. **/compact 信息损失**：摘要不可逆（原文进 archived 仅查看不回灌）；压缩前二次确认，可取消；连续压缩会产生「摘要的摘要」，提示用户。
 21. **/init 写盘**：与 AI 写文件同一审批通道（用户主动触发也走审批卡片），工作区外不可用。
-22. **终端本会话放行边界**：只存内存、不落盘；相同命令要求命令 + cwd 完全一致；同类命令只认白名单签名、同 cwd、无管道/重定向/命令串联，解释器命令不支持同类放行；重启、重新加载或清空会话即失效。
+22. **终端命令授权边界**：会话规则只存内存、不落盘；相同命令要求命令 + cwd 完全一致；同类命令只认白名单签名、同 cwd、无管道/重定向/命令串联，解释器命令不支持同类放行；重启、重新加载或清空会话即失效。项目规则落 `<工作区>/.cadt/permissions.json`（`version` + `command`/`write`/`web` × `allow`/`ask`/`deny`），按 deny → ask → allow 判定；危险命令不写入任何长期放行。自动审批分类器默认关闭，开启后失败/超时一律回退人工审批。
 17. **悬浮/吸附是应用内浮层**：非独立 OS 窗口（不能拖出应用外；Wails v2 多窗口受限），层级需与菜单/对话框/右键菜单协调（面板 z-index 低于模态对话框）；拖拽用 pointer events + setPointerCapture，避免与文本选区冲突。
 18. **停靠↔吸附切换抖动**：同一 DOM 重定位时流式渲染不中断（事件按 id 路由与 DOM 无关，已天然解耦）。
 

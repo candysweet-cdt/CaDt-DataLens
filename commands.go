@@ -63,7 +63,10 @@ func killProcessTree(cmd *exec.Cmd) error {
 		return nil
 	}
 	if cmd.Process.Pid > 0 {
-		if err := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid)).Run(); err == nil {
+		// taskkill 也是控制台程序：GUI 进程直接拉起时 Windows 会为它新建控制台窗口（黑框一闪）。
+		killCmd := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid))
+		hideConsoleWindow(killCmd)
+		if err := killCmd.Run(); err == nil {
 			return nil
 		}
 	}

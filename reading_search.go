@@ -1,6 +1,6 @@
 package main
 
-// 阅读模式全书搜索（docs/reading-mode.md §11.2）：
+// 阅读模式全书搜索（docs/finished-plans/reading-mode.md §11.2）：
 // 不建全文索引、不进 SQLite，按预算即时扫描；支持取消与超时；进度经
 // runtime.EventsEmit("reading-search-progress") 推送。只读实现。
 

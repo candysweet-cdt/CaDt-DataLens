@@ -1,6 +1,6 @@
 package main
 
-// EPUB 解析与安全测试（docs/reading-mode.md §17.1）：现场构造最小 EPUB。
+// EPUB 解析与安全测试（docs/finished-plans/reading-mode.md §17.1）：现场构造最小 EPUB。
 
 import (
 	"archive/zip"

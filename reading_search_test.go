@@ -1,6 +1,6 @@
 package main
 
-// 全书搜索测试（docs/reading-mode.md §17.1）：命中、上下文、大小写、上限。
+// 全书搜索测试（docs/finished-plans/reading-mode.md §17.1）：命中、上下文、大小写、上限。
 
 import (
 	"os"

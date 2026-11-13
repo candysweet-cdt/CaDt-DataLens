@@ -1,4 +1,4 @@
-// 阅读渲染层（docs/reading-mode.md §10）：
+// 阅读渲染层（docs/finished-plans/reading-mode.md §10）：
 // md 复用共享 markdown.js 与同一套 DOMPurify 规则；txt 转义直渲；
 // docx 块 → HTML；epub 经 DOMParser 清洗后套用阅读排版。LRU 缓存。
 

@@ -1,4 +1,4 @@
-// 共享 Markdown 渲染层：从 main.js 抽出（docs/reading-mode.md §10.2）。
+// 共享 Markdown 渲染层：从 main.js 抽出（docs/finished-plans/reading-mode.md §10.2）。
 // 阅读模式与主界面 md 预览共用同一实例与 sanitize 规则，避免两套安全配置漂移。
 // main.js 侧保留 mermaid 脚本加载（依赖视图状态），通过 deps 注入占位函数。
 

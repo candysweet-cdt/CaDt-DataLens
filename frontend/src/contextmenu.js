@@ -22,11 +22,15 @@ export function createContextMenu() {
     }
 
     function close() {
+        const onClose = openOptions.onClose;
         closeDeeper(0);
         root.classList.add('hidden');
         root.textContent = '';
         isOpen = false;
         openOptions = {};
+        if (typeof onClose === 'function') {
+            try { onClose(); } catch (e) {}
+        }
     }
 
     function place(panel, x, y) {
@@ -91,6 +95,15 @@ export function createContextMenu() {
         placeSubmenu(panel, anchor);
     }
 
+    // 胶囊徽标（如权限菜单「自动审批」旁的 AI 标识）：item.badge 为短文本。
+    function renderBadge(item) {
+        if (!item.badge) return null;
+        const badge = el('span', 'mi-badge');
+        badge.innerHTML = iconSvg('sparkles', 9);
+        badge.appendChild(el('span', 'mi-badge-text', String(item.badge)));
+        return badge;
+    }
+
     function render(panel, items, depth) {
         for (const item of items || []) {
             if (item.sep) {
@@ -98,6 +111,7 @@ export function createContextMenu() {
                 continue;
             }
             const rich = !!item.description;
+            const badge = renderBadge(item);
             const row = el('button', 'menu-item ctx-item' + (rich ? ' ctx-rich' : '') +
                 (item.disabled ? ' disabled' : '') + (item.danger ? ' danger' : ''));
             row.type = 'button';
@@ -107,7 +121,13 @@ export function createContextMenu() {
             const key = el('span', 'mi-key', item.shortcut || '');
             if (rich) {
                 const text = el('span', 'mi-text');
-                text.append(label, el('span', 'mi-desc', item.description));
+                if (badge) {
+                    const line = el('span', 'mi-line');
+                    line.append(label, badge);
+                    text.append(line, el('span', 'mi-desc', item.description));
+                } else {
+                    text.append(label, el('span', 'mi-desc', item.description));
+                }
                 row.append(icon, text, key);
                 if (item.selected || item.checked) {
                     const check = el('span', 'mi-check');
@@ -115,7 +135,9 @@ export function createContextMenu() {
                     row.appendChild(check);
                 }
             } else {
-                row.append(icon, label, key);
+                row.append(icon, label);
+                if (badge) row.appendChild(badge);
+                row.append(key);
             }
             if (item.submenu && item.submenu.length) {
                 const arrow = el('span', 'ctx-arrow');

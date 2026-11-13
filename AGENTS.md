@@ -18,6 +18,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `sessionstore*.go` / `sessionlock*.go`：AI 会话磁盘存储（追加式 JSONL、每会话 meta、原子替换、fsync 回滚、跨进程写锁、回收站删除）
 - `aiconfig*.go`：AI 配置 `ai-config.json` 的原子读写（0600）
 - `sessionindex*.go`：AI 会话 SQLite **派生**搜索索引（modernc pure Go，JSONL 为唯一真源）
+- `activity.go`：操作留痕（追加式 JSONL、按月分文件滚动分段、跨进程写锁、保留清理；只存操作摘要，不存正文与密钥）
 - `sqlview*.go`：CSV/TSV/JSONL 的只读 SQL 查询（导入临时 SQLite，不修改原文件）
 - `browser*.go` / `devtools_*.go`：内嵌浏览器、开发者工具
 - `search.go`：工作区内容搜索（有 `searchBudget`、`searchMaxFileSize` 等硬预算）
@@ -35,8 +36,9 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `src/explorer.js`：文件树（惰性加载 + 内存缓存 + 自动刷新）
 - `src/ai-panel.js`、`src/palette.js`、`src/contextmenu.js`、`src/icons.js`、`src/fileicons*.js`、`src/plugins.js`、`src/jsonrepair.js`、`src/debugconsole.js`
 - `src/ai-session-store.js`：AI 会话 JSONL 编解码/重放 + 磁盘适配（图片外置、增量持久化）
+- `src/activity-log.js`：操作留痕前端服务（脱敏 sanitizer、攒批 ≤200ms/20 条调 `ActivityAppend`；开关与保留月数在设置 → 操作记录）
 - `src/markdown.js`：共享 Markdown 渲染/sanitize（main.js 与阅读模式共用，规则单一来源）
-- `src/reading/`：阅读模式（`reading.js` 控制器、`reading-model.js` 纯函数 TOC/排序/进度/joinSoftLines、`reading-state.js` localStorage 进度/书签/统计、`reading-view.js` 书架/详情/目录 DOM、`reading-render.js` md/txt/docx/epub 渲染 + LRU、`reading-search.js` 章内/全书查找、`reading-tts.js` 朗读）；Go 侧对应 `reading*.go`；方案见 `docs/reading-mode.md`；**只读，禁止调用写接口**
+- `src/reading/`：阅读模式（`reading.js` 控制器、`reading-model.js` 纯函数 TOC/排序/进度/joinSoftLines、`reading-state.js` localStorage 进度/书签/统计、`reading-view.js` 书架/详情/目录 DOM、`reading-render.js` md/txt/docx/epub 渲染 + LRU、`reading-search.js` 章内/全书查找、`reading-tts.js` 朗读）；Go 侧对应 `reading*.go`；方案见 `docs/finished-plans/reading-mode.md`；**只读，禁止调用写接口**
 - `src/style.css`：布局、主题、Ace/jsoneditor 样式；`src/reading.css`：阅读模式样式（`.rd-` 前缀）
 - `index.html`：窗口结构、菜单、设置对话框
 - `public/vendor/`：jsoneditor、mermaid 等第三方资源；`public/fonts/`：Inter / JetBrains Mono / Fira Code（OFL）
@@ -45,7 +47,9 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 ### `docs/`
 - `packaging.md`（打包与发布）、`plugins/`、`skills/`、`samples/`、`screenshots/`、`icons/`、`legal/`
-- `ai-panel.md`、`ai-panel-v2.md`、`writing-mode.md`、`reading-mode.md`、`icon-guidelines.md`
+- `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`）
+- `unfinished-plans/`：未开工/进行中的方案（目前：`structure-cleanup.md`）
+- `icon-guidelines.md`
 - `reports/optimization-proposals.md`：体积与性能优化提案（含实测体积基线）
 
 ### 其他
@@ -80,6 +84,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 ### 文档与提交
 - 用户可见的改动同步更新 `CHANGELOG.md` 与 `README.md` 对应小节。
+- 方案文档放 `docs/unfinished-plans/`，全部实施后移入 `docs/finished-plans/`。
 - 版本号三处需一致：`app.go` 的 `appVersion`、`wails.json` 的 `productVersion`、NSIS 脚本（见 `docs/packaging.md`）。
 
 ## 常用命令

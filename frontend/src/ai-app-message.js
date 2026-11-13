@@ -6,6 +6,8 @@ import {ICONS} from './icons.js';
 export const APP_MESSAGE_ICONS = {
     git: 'git',
     schedule: 'clock',
+    browser: 'camera',
+    app: 'camera',
     notice: 'info',
     update: 'refresh',
     plugin: 'agents',
@@ -33,5 +35,8 @@ export function detectAppMessage(content) {
     if (git) return {kind: 'git', label: 'Git 快捷操作 · ' + git[1].trim(), icon: ''};
     const scheduled = text.match(/^\[定时任务 · ([^\]]+)\]/);
     if (scheduled) return {kind: 'schedule', label: '定时任务 · ' + scheduled[1].trim(), icon: ''};
+    if (/^\[浏览器截图（browser_screenshot 工具自动附加）\]/.test(text)) {
+        return {kind: 'browser', label: '浏览器截图', icon: 'camera'};
+    }
     return null;
 }

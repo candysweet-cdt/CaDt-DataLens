@@ -19,7 +19,6 @@ import (
 
 	"github.com/wailsapp/go-webview2/pkg/edge"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
-	"golang.org/x/sys/windows"
 )
 
 const (
@@ -41,6 +40,10 @@ var (
 	procBrowserDestroyWindow             = browserUser32.NewProc("DestroyWindow")
 	procBrowserPeekMessageW              = browserUser32.NewProc("PeekMessageW")
 	procBrowserMsgWaitForMultipleObjects = browserUser32.NewProc("MsgWaitForMultipleObjects")
+	procBrowserEnumChildWindows          = browserUser32.NewProc("EnumChildWindows")
+	procBrowserGetClassNameW             = browserUser32.NewProc("GetClassNameW")
+	procBrowserSetWindowPos              = browserUser32.NewProc("SetWindowPos")
+	procBrowserGetWindow                 = browserUser32.NewProc("GetWindow")
 
 	browserOle32Host          = syscall.NewLazyDLL("ole32.dll")
 	procBrowserCoInitializeEx = browserOle32Host.NewProc("CoInitializeEx")
@@ -66,7 +69,27 @@ var (
 	browserHostTasks chan func()
 	browserHostHWND  uintptr
 	browserHostReady chan struct{}
+	browserHostErr   error
 )
+
+// browserInitCOM 在当前线程把 COM 公寓初始化为 STA（WebView2 的硬要求）。
+// Go 的 OS 线程会被复用：系统通知等库可能已在线程上残留 MTA 初始化（RoInitialize），
+// 此时 CoInitializeEx(STA) 返回 RPC_E_CHANGED_MODE。宿主线程已经 LockOSThread 独占，
+// 这里把残留的 MTA 初始化逐个撤销后重试 STA。
+func browserInitCOM() error {
+	for attempt := 0; attempt < 8; attempt++ {
+		hr, _, _ := procBrowserCoInitializeEx.Call(0, 2) // COINIT_APARTMENTTHREADED
+		switch hr {
+		case 0, 1: // S_OK / S_FALSE（已是 STA）
+			return nil
+		case 0x80010106: // RPC_E_CHANGED_MODE
+			procBrowserCoUninitialize.Call()
+		default:
+			return fmt.Errorf("浏览器宿主线程 COM 初始化失败 0x%08x", hr)
+		}
+	}
+	return fmt.Errorf("浏览器宿主线程无法进入 STA 公寓（残留 MTA 初始化过多）")
+}
 
 func browserHostWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	if msg == browserDispatchMsg {
@@ -92,13 +115,16 @@ func runBrowserTask(task func()) {
 	task()
 }
 
+func browserHostFail(format string, args ...interface{}) {
+	browserHostErr = fmt.Errorf(format, args...)
+	writeAppLog("ERROR", "browser-host 初始化失败：%v", browserHostErr)
+	close(browserHostReady)
+}
+
 func browserHostLoop() {
 	runtime.LockOSThread()
-	// COINIT_APARTMENTTHREADED（OLE 消息过滤会与 WebView2 的事件派发冲突，见调试记录）
-	hr, _, _ := procBrowserCoInitializeEx.Call(0, 2)
-	if hr != uintptr(windows.S_OK) && hr != uintptr(windows.S_FALSE) && hr != 0x00000001 { // RPC_E_CHANGED_MODE
-		writeAppLog("ERROR", "browser-host CoInitializeEx 失败 0x%08x", hr)
-		close(browserHostReady)
+	if err := browserInitCOM(); err != nil {
+		browserHostFail("%v", err)
 		return
 	}
 	defer procBrowserCoUninitialize.Call()
@@ -118,14 +144,17 @@ func browserHostLoop() {
 	wc.hInstance = hinst
 	wc.lpszClassName = uintptr(unsafe.Pointer(classPtr))
 	if r, _, _ := procBrowserRegisterClassW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
-		writeAppLog("ERROR", "browser-host 注册窗口类失败")
-		close(browserHostReady)
+		browserHostFail("浏览器宿主注册窗口类失败")
 		return
 	}
 	// HWND_MESSAGE = -3（message-only 窗口）
 	browserHostHWND, _, _ = procBrowserCreateWindowEx.Call(
 		0, uintptr(unsafe.Pointer(classPtr)), 0, 0,
 		0, 0, 0, 0, ^uintptr(2), 0, hinst, 0)
+	if browserHostHWND == 0 {
+		browserHostFail("浏览器宿主创建窗口失败")
+		return
+	}
 	close(browserHostReady)
 
 	// COM STA 标准泵：MsgWaitForMultipleObjects + PeekMessage（阻塞 GetMessage 下
@@ -162,6 +191,13 @@ func browserHostRun(task func()) error {
 		go browserHostLoop()
 	})
 	<-browserHostReady
+	// 宿主初始化失败要立刻报错，不能把任务排进无人消费的队列干等看门狗超时
+	if browserHostErr != nil {
+		return browserHostErr
+	}
+	if browserHostHWND == 0 {
+		return fmt.Errorf("浏览器宿主窗口未就绪")
+	}
 	done := make(chan error, 1)
 	browserHostTasks <- func() {
 		defer func() {
@@ -196,7 +232,9 @@ type browserInstance struct {
 	id         string
 	profileKey string
 	chromium   *edge.Chromium
+	controller *edge.ICoreWebView2Controller
 	webview    *edge.ICoreWebView2
+	hwndCtl    uintptr // WebView2 控件自己的 HWND（z 序调整用）
 	url        string
 	title      string
 	canGoBack  bool
@@ -210,6 +248,46 @@ var (
 	browserMu        sync.Mutex
 	browserInstances = map[string]*browserInstance{}
 )
+
+// ---- 子窗口 z 序：主 WebView 占满客户区，内嵌控件默认会被它盖住 ----
+
+const (
+	browserHwndTop       = 0
+	browserSwpNoSize     = 0x0001
+	browserSwpNoMove     = 0x0002
+	browserSwpNoActivate = 0x0010
+)
+
+var browserChildHwnds []uintptr
+
+var browserEnumChildProc = syscall.NewCallback(func(hwnd, _ uintptr) uintptr {
+	var buf [64]uint16
+	n, _, _ := procBrowserGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if n > 0 && syscall.UTF16ToString(buf[:n]) == "Chrome_WidgetWin_0" {
+		browserChildHwnds = append(browserChildHwnds, hwnd)
+	}
+	return 1
+})
+
+// browserWebviewChildren 列出父窗口下所有 WebView2 顶层控件（宿主线程调用）。
+func browserWebviewChildren(parent uintptr) map[uintptr]bool {
+	browserChildHwnds = browserChildHwnds[:0]
+	procBrowserEnumChildWindows.Call(parent, browserEnumChildProc, 0)
+	out := make(map[uintptr]bool, len(browserChildHwnds))
+	for _, h := range browserChildHwnds {
+		out[h] = true
+	}
+	return out
+}
+
+// browserRaiseControl 把内嵌控件提到主 WebView 之上（否则原生控件被盖住，页面看着像空白）。
+func browserRaiseControl(inst *browserInstance) {
+	if inst.hwndCtl == 0 {
+		return
+	}
+	procBrowserSetWindowPos.Call(inst.hwndCtl, browserHwndTop, 0, 0, 0, 0,
+		browserSwpNoMove|browserSwpNoSize|browserSwpNoActivate)
+}
 
 // browserParentHWND 返回 WebView2 控件的宿主父窗口（生产 = Wails 主窗口；测试可替换）。
 var browserParentHWND = findWailsWindow
@@ -245,6 +323,15 @@ func browserRefreshState(inst *browserInstance) {
 	}
 }
 
+// browserNotifyLoading 只广播 loading 状态（导航刚开始时页面还是旧 URL，
+// 不能走 browserRefreshState 把地址栏覆盖回去）。
+func browserNotifyLoading(inst *browserInstance) {
+	if inst.emit == nil {
+		return
+	}
+	inst.emit("browser-nav", map[string]interface{}{"id": inst.id, "loading": inst.loading})
+}
+
 // browserCreateOnHost 在宿主线程上创建实例（Embed 自带消息泵，同步等到 controller 就绪）。
 func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 	c := edge.NewChromium()
@@ -266,13 +353,26 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 		}
 	}
 	inst.chromium = c
+	before := browserWebviewChildren(hwnd)
 	if !c.Embed(hwnd) {
 		return fmt.Errorf("创建浏览器控件失败")
 	}
-	wv, err := c.GetController().GetCoreWebView2()
+	// Embed 会新建一个 Chrome_WidgetWin_0 子窗口；找出来记住，后面调 z 序用
+	for h := range browserWebviewChildren(hwnd) {
+		if !before[h] {
+			inst.hwndCtl = h
+			break
+		}
+	}
+	if inst.hwndCtl == 0 {
+		writeAppLog("WARN", "browser-%s：未找到 WebView2 控件窗口，页面可能被主界面遮挡", inst.id)
+	}
+	ctrl := c.GetController()
+	wv, err := ctrl.GetCoreWebView2()
 	if err != nil {
 		return fmt.Errorf("获取浏览器内核失败：%w", err)
 	}
+	inst.controller = ctrl
 	inst.webview = wv
 	if err := wvInitScript(wv, `window.__cadtHost = 'datalens';`); err != nil {
 		return err
@@ -361,6 +461,8 @@ func (a *App) BrowserNavigate(id string, url string) error {
 		if taskErr = wvNavigate(inst.webview, url); taskErr != nil {
 			return
 		}
+		// 让前端立刻拿到 loading=true（「停止加载」可用），完成回调会再发一次 loading=false
+		browserNotifyLoading(inst)
 		// 任务内泵等导航完成（回调依赖宿主线程泵）；超时不视为错误，状态事件照发
 		deadline := time.Now().Add(3 * time.Second)
 		var msg browserMsg
@@ -421,6 +523,9 @@ func (a *App) BrowserReload(id string) error {
 		}
 		inst.loading = true
 		taskErr = wvReload(inst.webview)
+		if taskErr == nil {
+			browserNotifyLoading(inst)
+		}
 	})
 	if jobErr != nil {
 		return jobErr
@@ -437,6 +542,10 @@ func (a *App) BrowserStop(id string) error {
 			return
 		}
 		taskErr = wvStop(inst.webview)
+		if taskErr == nil {
+			inst.loading = false
+			browserNotifyLoading(inst)
+		}
 	})
 	if jobErr != nil {
 		return jobErr
@@ -545,6 +654,7 @@ func (a *App) BrowserSetBounds(id string, x int, y int, w int, h int) error {
 			_ = inst.chromium.Show()
 			inst.visible = true
 		}
+		browserRaiseControl(inst)
 	})
 	if jobErr != nil {
 		return jobErr
@@ -566,6 +676,7 @@ func (a *App) BrowserSetVisible(id string, visible bool) error {
 		if visible {
 			_ = inst.chromium.Show()
 			inst.chromium.Focus()
+			browserRaiseControl(inst)
 		} else {
 			_ = inst.chromium.Hide()
 		}
@@ -588,6 +699,7 @@ func (a *App) BrowserFocus(id string) error {
 		if inst.chromium != nil {
 			inst.chromium.Focus()
 			_ = inst.chromium.Show()
+			browserRaiseControl(inst)
 		}
 	})
 	if jobErr != nil {
@@ -605,6 +717,13 @@ func (a *App) BrowserClose(id string) error {
 		if inst.chromium != nil {
 			inst.chromium.ShuttingDown()
 			_ = inst.chromium.Hide()
+		}
+		if inst.controller != nil {
+			if err := wvControllerClose(inst.controller); err != nil {
+				writeAppLog("WARN", "浏览器控制器关闭失败：%v", err)
+			}
+			inst.controller = nil
+			inst.webview = nil
 		}
 		browserMu.Lock()
 		delete(browserInstances, inst.id)

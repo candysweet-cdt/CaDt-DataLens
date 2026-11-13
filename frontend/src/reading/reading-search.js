@@ -1,4 +1,4 @@
-// 阅读查找与全书搜索（docs/reading-mode.md §11）：
+// 阅读查找与全书搜索（docs/finished-plans/reading-mode.md §11）：
 // 章内查找优先 CSS Custom Highlight API（不改 DOM），WebView2 不支持时回退 <mark>。
 
 export function createReadingSearch(deps) {

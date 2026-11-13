@@ -1,6 +1,6 @@
 package main
 
-// DOCX 解析测试（docs/reading-mode.md §17.1）：zip.Writer 现场构造，不提交二进制夹具。
+// DOCX 解析测试（docs/finished-plans/reading-mode.md §17.1）：zip.Writer 现场构造，不提交二进制夹具。
 
 import (
 	"archive/zip"

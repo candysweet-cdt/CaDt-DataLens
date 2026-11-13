@@ -2,7 +2,7 @@ package main
 
 // 阅读模式扫描：把一个目录（或单个 md/txt/docx/epub 文件）识别为一本书。
 // 只读实现：本文件不写任何源文件，也不引入新依赖。
-// 方案见 docs/reading-mode.md §2/§3/§4。
+// 方案见 docs/finished-plans/reading-mode.md §2/§3/§4。
 
 import (
 	"fmt"

@@ -1,4 +1,4 @@
-// 阅读视图 DOM 构建（docs/reading-mode.md §3/§5/§6/§14）：
+// 阅读视图 DOM 构建（docs/finished-plans/reading-mode.md §3/§5/§6/§14）：
 // 全部结构由 JS 构建进 #reading-view 容器，index.html 只放空容器。
 // 样式见 reading.css（.rd- 前缀）。
 

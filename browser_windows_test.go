@@ -4,6 +4,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -12,6 +15,33 @@ import (
 
 	"github.com/wailsapp/go-webview2/pkg/edge"
 )
+
+// TestBrowserInitCOMUnpoisonsThread：Go 复用的线程可能已被其他库残留成 MTA
+// （系统通知的 RoInitialize），宿主必须能把它清回 STA，否则内嵌浏览器永远起不来。
+func TestBrowserInitCOMUnpoisonsThread(t *testing.T) {
+	combase := syscall.NewLazyDLL("combase.dll")
+	roInitialize := combase.NewProc("RoInitialize")
+	getApartmentType := combase.NewProc("CoGetApartmentType")
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if hr, _, _ := roInitialize.Call(1); hr != 0 && hr != 1 { // RO_INIT_MULTITHREADED
+		t.Fatalf("RoInitialize(MTA): 0x%08x", hr)
+	}
+	if hr, _, _ := procBrowserCoInitializeEx.Call(0, 2); hr != 0x80010106 { // RPC_E_CHANGED_MODE
+		t.Fatalf("当前线程应为 MTA（STA 初始化应返回 RPC_E_CHANGED_MODE），实际 0x%08x", hr)
+	}
+	if err := browserInitCOM(); err != nil {
+		t.Fatalf("browserInitCOM: %v", err)
+	}
+	defer procBrowserCoUninitialize.Call()
+	var aptType, qualifier uint32
+	if hr, _, _ := getApartmentType.Call(uintptr(unsafe.Pointer(&aptType)), uintptr(unsafe.Pointer(&qualifier))); hr != 0 {
+		t.Fatalf("CoGetApartmentType: 0x%08x", hr)
+	}
+	if aptType != 0 && aptType != 3 { // APTTYPE_STA / APTTYPE_MAINSTA
+		t.Fatalf("公寓类型 = %d，预期 STA", aptType)
+	}
+}
 
 // TestBrowserHostRunTasks 验证宿主线程任务派发与错误传递。
 func TestBrowserHostRunTasks(t *testing.T) {
@@ -142,4 +172,80 @@ func TestBrowserEmbedAndCDP(t *testing.T) {
 	if browserGet("t-browser") != nil {
 		t.Fatal("实例未释放")
 	}
+}
+
+// TestBrowserLocalFileNavigation 真实 WebView2 导航到本地 HTML（file:// URL），
+// 供内置技能 answer-me-with-html 使用；默认跳过，显式运行：
+// go test -v -run TestBrowserLocalFileNavigation
+func TestBrowserLocalFileNavigation(t *testing.T) {
+	if !testing.Verbose() {
+		t.Skip("默认跳过；go test -v -run TestBrowserLocalFileNavigation 显式运行（本机 WebView2 冒烟）")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "answer page.html")
+	page := `<!doctype html><html><head><meta charset="utf-8"><title>本地页面 OK</title></head>` +
+		`<body><div id="m">hello-file</div></body></html>`
+	if err := os.WriteFile(path, []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hinst, _, _ := procBrowserGetModuleHandle.Call(0)
+	clsPtr, _ := syscall.UTF16PtrFromString("CaDtBrowserFileTestWnd")
+	var wc struct {
+		cbSize, style               uint32
+		lpfnWndProc                 uintptr
+		cbClsExtra, cbWndExtra      int32
+		hInstance, hIcon, hCursor   uintptr
+		hbrBackground, lpszMenuName uintptr
+		lpszClassName, hIconSm      uintptr
+	}
+	wc.cbSize = uint32(unsafe.Sizeof(wc))
+	wc.lpfnWndProc = procBrowserDefWindowProcW.Addr()
+	wc.hInstance = hinst
+	wc.lpszClassName = uintptr(unsafe.Pointer(clsPtr))
+	if r, _, _ := procBrowserRegisterClassW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
+		t.Fatal("注册测试窗口类失败")
+	}
+	hwnd, _, _ := procBrowserCreateWindowEx.Call(
+		0, uintptr(unsafe.Pointer(clsPtr)), 0, 0x80000000,
+		0, 0, 480, 320, 0, 0, hinst, 0)
+	if hwnd == 0 {
+		t.Fatal("创建测试窗口失败")
+	}
+	procBrowserShowWindow.Call(hwnd, 4)
+	defer procBrowserDestroyWindow.Call(hwnd)
+
+	origParent := browserParentHWND
+	browserParentHWND = func() uintptr { return hwnd }
+	defer func() { browserParentHWND = origParent }()
+
+	app := &App{}
+	if _, err := app.BrowserOpen("t-file", "about:blank", "test"); err != nil {
+		t.Fatalf("BrowserOpen: %v", err)
+	}
+	defer app.BrowserClose("t-file")
+	inst := browserGet("t-file")
+	if inst == nil || inst.webview == nil {
+		t.Fatal("实例未就绪")
+	}
+	inst.emit = nil
+	if err := browserHostRun(func() {
+		bounds := edge.Rect{Left: 0, Top: 0, Right: 480, Bottom: 320}
+		inst.chromium.ResizeWithBounds(&bounds)
+	}); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+
+	url := "file:///" + strings.ReplaceAll(filepath.ToSlash(path), " ", "%20")
+	if err := app.BrowserNavigate("t-file", url); err != nil {
+		t.Fatalf("BrowserNavigate(%s): %v", url, err)
+	}
+	result, err := app.BrowserEval("t-file", "document.title + '|' + document.getElementById('m').textContent")
+	if err != nil {
+		t.Fatalf("BrowserEval: %v", err)
+	}
+	if !strings.Contains(result, "本地页面 OK") || !strings.Contains(result, "hello-file") {
+		t.Fatalf("file:// 页面未渲染：%s", result)
+	}
+	fmt.Printf("[browser-file] url=%s result=%s\n", url, result)
 }

@@ -35,6 +35,8 @@ const (
 	wvSlotGetDocumentTitle = 48
 	wvSlotInitScript       = 27
 	wvSlotCapturePreview   = 30
+	// ICoreWebView2Controller：IUnknown 3 + IDL 字段 21（Close 是第 22 个）
+	wvControllerSlotClose = 24
 )
 
 var (
@@ -111,6 +113,18 @@ func wvStop(wv *edge.ICoreWebView2) error {
 	hr, _, _ := syscall.SyscallN(wvProc(wv, wvSlotStop), uintptr(unsafe.Pointer(wv)))
 	if hr != 0 {
 		return fmt.Errorf("Stop 0x%08x", hr)
+	}
+	return nil
+}
+
+// wvControllerClose 关闭 WebView2 控制器（库没导出 Close），销毁控件子窗口并释放
+// 控制器/内核；否则关闭标签页后原生窗口和渲染进程只是被隐藏，仍长期驻留。
+func wvControllerClose(ctrl *edge.ICoreWebView2Controller) error {
+	hr, _, _ := syscall.SyscallN(
+		(*wvRaw)(unsafe.Pointer(ctrl)).vtbl[wvControllerSlotClose],
+		uintptr(unsafe.Pointer(ctrl)))
+	if hr != 0 {
+		return fmt.Errorf("控制器 Close 0x%08x", hr)
 	}
 	return nil
 }

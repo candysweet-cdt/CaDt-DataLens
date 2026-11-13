@@ -38,7 +38,7 @@ function stripLeading(line) {
     return trimmed.length === line.length ? null : trimmed;
 }
 
-// formatWritingText：写作排版整理（按 docs/writing-mode.md §⑤ 的规则顺序）
+// formatWritingText：写作排版整理（按 docs/finished-plans/writing-mode.md §⑤ 的规则顺序）
 //  1. \r\n → \n（保存沿用现有 EOL 策略还原 CRLF）
 //  2. 删行尾空白
 //  3. ≥3 连续空行收敛为 1 个空行

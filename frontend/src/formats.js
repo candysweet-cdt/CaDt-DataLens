@@ -206,18 +206,73 @@ export const formats = {
         rawOnly: true,
         preview: true,
     },
+    // 代码类格式：rawOnly（不解析成结构树），各自独立成组是为了
+    // ① 状态栏 / 界面显示正确的语言名（此前全部显示「纯文本」）；
+    // ② 每个语言自己的默认缩进（如 Python 4 空格、Go 用 Tab）。
+    //   默认缩进在 main.js 的 defaultFormatSettings() 里按组给值。
+    python: {
+        id: 'python',
+        name: 'Python',
+        extensions: ['py', 'pyw', 'pyi'],
+        aceMode: 'python',
+        rawOnly: true,
+    },
+    golang: {
+        id: 'golang',
+        name: 'Go',
+        extensions: ['go', 'mod', 'work', 'sum'],
+        aceMode: 'go',
+        rawOnly: true,
+    },
+    web: {
+        id: 'web',
+        name: 'Web 前端',
+        extensions: ['html', 'htm', 'xhtml', 'css', 'scss', 'less',
+            'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts', 'cts', 'vue'],
+        aceMode: 'text',
+        rawOnly: true,
+    },
+    clang: {
+        id: 'clang',
+        name: 'C/C++',
+        extensions: ['c', 'h', 'cpp', 'cc', 'cxx', 'c++', 'hpp', 'hh', 'hxx', 'ino'],
+        aceMode: 'c_cpp',
+        rawOnly: true,
+    },
+    jvm: {
+        id: 'jvm',
+        name: 'Java/Kotlin/C#',
+        extensions: ['java', 'kt', 'kts', 'cs', 'swift', 'scala', 'groovy', 'gradle', 'nf'],
+        aceMode: 'java',
+        rawOnly: true,
+    },
+    shell: {
+        id: 'shell',
+        name: 'Shell/Batch',
+        extensions: ['sh', 'bash', 'zsh', 'ksh', 'bat', 'cmd', 'ps1', 'psm1', 'psd1'],
+        aceMode: 'sh',
+        rawOnly: true,
+    },
+    script: {
+        id: 'script',
+        name: 'Ruby/PHP/Lua 等',
+        extensions: ['rb', 'php', 'phtml', 'pl', 'pm', 't', 'r', 'lua', 'm', 'mm', 'dart', 'sc'],
+        aceMode: 'text',
+        rawOnly: true,
+    },
+    sql: {
+        id: 'sql',
+        name: 'SQL',
+        extensions: ['sql'],
+        aceMode: 'sql',
+        rawOnly: true,
+    },
     text: {
         id: 'text',
         name: '纯文本',
         extensions: ['txt', 'log', 'conf',
-            'html', 'htm', 'xhtml', 'css', 'scss', 'less',
-            'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts', 'cts', 'vue',
-            'py', 'pyw', 'pyi', 'sh', 'bash', 'zsh', 'ksh', 'bat', 'cmd', 'ps1', 'psm1', 'psd1',
-            'go', 'mod', 'work', 'sum', 'java', 'kt', 'kts', 'lua', 'sql',
-            'c', 'h', 'cpp', 'cc', 'cxx', 'c++', 'hpp', 'hh', 'hxx', 'ino',
-            'cs', 'rs', 'rb', 'php', 'phtml', 'swift', 'm', 'mm', 'pl', 'pm', 't', 'r',
-            'dart', 'scala', 'sc', 'groovy', 'gradle', 'nf', 'mak', 'mk', 'cmake', 'dockerfile',
-            'diff', 'patch', 'proto', 'graphql', 'gql', 'plist', 'mdx',
+            'mak', 'mk', 'cmake', 'dockerfile',
+            'diff', 'patch', 'proto', 'graphql', 'gql', 'plist',
             'gitignore', 'gitattributes', 'gitmodules'],
         aceMode: 'text',
         rawOnly: true,
@@ -372,6 +427,13 @@ export function aceModeFor(fileName, driver) {
     const dot = base.lastIndexOf('.');
     const ext = dot < 0 ? '' : base.slice(dot + 1);
     return 'ace/mode/' + (nameMode || extensionAceModes[ext] || (driver && driver.aceMode) || 'text');
+}
+
+// CMakeLists.txt / Makefile / .gitignore / .env 这类「已知代码 / 配置文件名」：
+// 扩展名虽是 .txt（或无扩展名），但应按代码视图打开并语法高亮，不算纯文本。
+export function isKnownCodeFileName(fileName) {
+    const base = String(fileName || '').split(/[\\/]/).pop().toLowerCase();
+    return knownFileNames.has(base) || !!fileNameAceModes[base];
 }
 
 const knownFileNames = new Set([

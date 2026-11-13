@@ -1,4 +1,4 @@
-// 阅读朗读（docs/reading-mode.md §13）：
+// 阅读朗读（docs/finished-plans/reading-mode.md §13）：
 // Web Speech API，零依赖；中文语音探针；分句队列；CSS Highlight 高亮当前句；跟随滚动。
 
 export function createReadingTts(deps) {

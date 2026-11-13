@@ -141,6 +141,8 @@ test('buildSessionMeta counts messages and archived', () => {
     assert.equal(meta.messageCount, 2);
     assert.equal(meta.archivedCount, 1);
     assert.equal(meta.summary.text, 's');
+    assert.equal(meta.pinned, false, '未置顶会话 meta.pinned = false');
+    assert.equal(buildSessionMeta({id: 's2', pinned: true}).pinned, true, '置顶标记写入 meta');
 });
 
 function fakeBackend() {
@@ -377,4 +379,107 @@ test('disk store: failed append is retried on next persist', async () => {
     await store.flush();
     const loaded = await store.loadAll(null);
     assert.deepEqual(loaded[0].messages.map((m) => m.content), ['a']);
+});
+
+test('disk store: invalidateMessage re-persists mutated approval (classifier source)', async () => {
+    const backend = fakeBackend();
+    const store = createSessionDiskStore({backend});
+    const session = newSession({
+        messages: [{role: 'user', content: '帮我看看', ts: 1, status: 'done'}],
+    });
+    await store.persistSession(session);
+    await store.flush();
+
+    // 工具消息先以「无 approval」的中间状态落盘（对应审批判定期间的排队写入）
+    const toolMessage = {role: 'tool', name: 'run_command', content: '执行中…', status: 'running', ts: 2};
+    session.messages.push(toolMessage);
+    await store.persistSession(session);
+    await store.flush();
+    let loaded = await store.loadAll(null);
+    assert.equal(loaded[0].messages[1].approval, undefined, '中间状态落盘时还没有 approval');
+
+    // 分类器放行：补上 approval（autoRule=classifier）→ 必须标记重写，否则旧状态留在日志里
+    toolMessage.approval = {state: 'approved', autoRule: 'classifier', actor: 'auto'};
+    toolMessage.status = 'done';
+    store.invalidateMessage(session, toolMessage);
+    await store.persistSession(session);
+    await store.flush();
+
+    const log = backend._logs.get('s1');
+    assert.ok(log.includes('"autoRule":"classifier"'), '分类器放行来源必须落盘');
+    const result = replaySessionLog(log);
+    assert.equal(result.messages.length, 2, 'truncate 重写后不应产生重复消息');
+    assert.equal(result.messages[1].approval.autoRule, 'classifier');
+    assert.equal(result.messages[1]._mid, toolMessage._mid, '重追加沿用同一消息 id');
+
+    loaded = await store.loadAll(null);
+    assert.equal(loaded[0].messages.length, 2);
+    assert.equal(loaded[0].messages[1].approval.autoRule, 'classifier');
+});
+
+test('disk store: manual approval pending state is overwritten by user decision', async () => {
+    const backend = fakeBackend();
+    const store = createSessionDiskStore({backend});
+    const session = newSession({messages: []});
+    const toolMessage = {
+        role: 'tool', name: 'run_command', content: '等待用户审批命令…', status: 'pending', ts: 1,
+        approval: {state: 'pending', kind: 'command'},
+    };
+    session.messages.push(toolMessage);
+    await store.persistSession(session);
+    await store.flush();
+    let loaded = await store.loadAll(null);
+    assert.equal(loaded[0].messages[0].approval.state, 'pending');
+
+    // 用户批准并记住：pending 状态必须被截断重写，而不是永远留在 JSONL 里
+    toolMessage.approval.state = 'approved';
+    toolMessage.approval.actor = 'user';
+    toolMessage.approval.autoRule = 'exact';
+    toolMessage.status = 'done';
+    toolMessage.content = '命令已执行';
+    store.invalidateMessage(session, toolMessage);
+    await store.persistSession(session);
+    await store.flush();
+
+    const log = backend._logs.get('s1');
+    const result = replaySessionLog(log);
+    assert.equal(result.messages.length, 1, '不应出现重复消息');
+    assert.equal(result.messages[0].approval.state, 'approved');
+    assert.equal(result.messages[0].approval.autoRule, 'exact');
+    assert.ok(log.includes('"t":"truncate"'), '旧状态由 truncate 事件在重放时移除');
+});
+
+test('disk store: invalidateMessage is a no-op for messages never persisted', async () => {
+    const backend = fakeBackend();
+    const store = createSessionDiskStore({backend});
+    const session = newSession({messages: [{role: 'user', content: 'a', ts: 1, status: 'done'}]});
+    await store.persistSession(session);
+    await store.flush();
+    const fresh = {role: 'tool', name: 'run_command', content: 'x', status: 'done', ts: 2};
+    session.messages.push(fresh);
+    store.invalidateMessage(session, fresh); // 从未落盘：不应破坏 _mids
+    session.messages.push({role: 'assistant', content: 'b', ts: 3, status: 'done'});
+    await store.persistSession(session);
+    await store.flush();
+    const loaded = await store.loadAll(null);
+    assert.deepEqual(loaded[0].messages.map((m) => m.content), ['a', 'x', 'b']);
+});
+
+test('disk store: full rewrite keeps messages whose mid entry was invalidated', async () => {
+    const backend = fakeBackend();
+    const store = createSessionDiskStore({backend});
+    const session = newSession({
+        messages: [
+            {role: 'user', content: 'a', ts: 1, status: 'done'},
+            {role: 'assistant', content: 'b', ts: 2, status: 'done'},
+        ],
+    });
+    await store.persistSession(session);
+    await store.flush();
+    store.invalidateMessage(session, session.messages[1]); // mid 记账被清空
+    session._needsRewrite = true; // 归一化等场景触发整份重写
+    await store.persistSession(session);
+    await store.flush();
+    const loaded = await store.loadAll(null);
+    assert.deepEqual(loaded[0].messages.map((m) => m.content), ['a', 'b'], '重写不能丢被失效的消息');
 });
