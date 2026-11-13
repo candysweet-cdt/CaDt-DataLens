@@ -654,6 +654,13 @@
                                 AI 回复显示卡片边框
                             </label>
                         </div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-inline-widgets">
+                                渲染回答中的 SVG / HTML 图
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">标注 svg / html 的代码块会显示为可视化卡片（可切换源码、复制、点链接）；关闭后按普通代码块显示。</div>
                         <div class="settings-section-title">对话日志</div>
                         <div class="popover-row">
                             <label class="popover-label">
@@ -677,6 +684,16 @@
                             </label>
                         </div>
                         <div class="fmt-hint hint-indent">关闭后 AI 无法查看或调用该工具（标签页 / 视图 / 主题 / 设置 / 模拟键盘输入等），cadt-ui 技能同时隐藏。</div>
+                        <div class="settings-section-title">子代理</div>
+                        <div class="popover-row">
+                            <span class="popover-label">子代理总数上限</span>
+                            <input type="number" id="ai-opt-subagent-max" class="ai-settings-input ai-font-size-num" min="1" max="20" step="1" value="20">
+                        </div>
+                        <div class="popover-row">
+                            <span class="popover-label">递归层级</span>
+                            <input type="number" id="ai-opt-subagent-depth" class="ai-settings-input ai-font-size-num" min="0" max="20" step="1" value="0">
+                        </div>
+                        <div class="fmt-hint hint-indent">上限统计所有层级正在运行的子代理（含子代理递归派出的），不含主代理；达到上限后主代理等待空位，子代理再派会被拒绝。层级 0 = 不设限，1–20 = 最多再往下派几层。</div>
                         <div class="settings-section-title">通知</div>
                         <div class="popover-row">
                             <label class="popover-label">
@@ -990,7 +1007,7 @@
                             <div><span>全局搜索</span><span class="kbd">连按 3 次 Shift</span></div>
                             <div><span>代码/文本视图转到行:列</span><span class="kbd">Ctrl+G</span></div>
                             <div class="settings-section-title">视图与窗口</div>
-                            <div><span>文件侧边栏</span><span class="kbd">Alt+1</span></div>
+                            <div><span>文件侧边栏</span><span class="kbd">Ctrl+B</span></div>
                             <div><span>结构视图</span><span class="kbd">Alt+7</span></div>
                             <div><span>终端</span><span class="kbd">Alt+F12</span></div>
                             <div><span>调试控制台</span><span class="kbd">F12</span></div>
@@ -1391,6 +1408,20 @@
                 </div>
             </div>
         </div>
+        <div id="dlg-save-conflict" class="dialog hidden" role="dialog" aria-label="保存冲突">
+            <div class="dialog-head">
+                <span class="dialog-title">文件已被外部修改</span>
+                <button type="button" class="dialog-close" data-close="1" title="关闭"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+            </div>
+            <div class="dialog-body">
+                <span id="dlg-save-conflict-text"></span>
+                <div class="dialog-footer">
+                    <button type="button" id="btn-conflict-reload" class="dlg-btn primary">重新加载（放弃我的修改）</button>
+                    <button type="button" id="btn-conflict-overwrite" class="dlg-btn">仍然覆盖</button>
+                    <button type="button" id="btn-conflict-cancel" class="dlg-btn">取消</button>
+                </div>
+            </div>
+        </div>
         <div id="dlg-name" class="dialog dialog-name hidden" role="dialog" aria-label="名称">
             <div class="dialog-head">
                 <span id="dlg-name-title" class="dialog-title">新建文件</span>
@@ -1515,7 +1546,7 @@
     <div id="editor-wrap">
         <nav id="activity-bar" aria-label="工具窗口">
             <div class="ab-group ab-top">
-                <button type="button" id="ab-files" class="ab-btn" title="文件树 (Alt+1)" aria-label="文件树" aria-pressed="false">
+                <button type="button" id="ab-files" class="ab-btn" title="文件树 (Ctrl+B)" aria-label="文件树" aria-pressed="false">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5.4c0-.9.7-1.6 1.6-1.6h3.1l1.7 1.9h5c.9 0 1.6.7 1.6 1.6v7.3c0 .9-.7 1.6-1.6 1.6H4.6c-.9 0-1.6-.7-1.6-1.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
                 </button>
                 <button type="button" id="ab-structure" class="ab-btn" title="结构 (Alt+7)" aria-label="结构" aria-pressed="false">
@@ -1640,7 +1671,7 @@
                     <img class="welcome-banner" src="/brand/welcome-banner.jpg" alt="CaDt-DataLens" draggable="false">
                     <div class="welcome-shortcuts">
                         <div class="ws-row"><span class="ws-label">新建</span><span class="ws-key">Ctrl+N</span></div>
-                        <div class="ws-row"><span class="ws-label">文件侧边栏</span><span class="ws-key">Alt+1</span></div>
+                        <div class="ws-row"><span class="ws-label">文件侧边栏</span><span class="ws-key">Ctrl+B</span></div>
                         <div class="ws-row"><span class="ws-label">终端</span><span class="ws-key">Alt+F12</span></div>
                         <div class="ws-row"><span class="ws-label">搜索</span><span class="ws-key">Ctrl+F</span></div>
                         <div class="ws-row"><span class="ws-label">新窗口</span><span class="ws-key">Shift+F4</span></div>
@@ -1648,7 +1679,6 @@
                         <div class="ws-drag">将文件拖放到此处以打开</div>
                     </div>
                     <button id="btn-welcome-open" class="tb-btn primary">打开文件 (Ctrl+O)</button>
-                    <button id="btn-welcome-read" class="tb-btn">阅读书籍…</button>
                 </div>
                 <div id="reading-view" class="hidden"></div>
             </div>
@@ -1682,6 +1712,12 @@
                             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.3 2.7h6.3a1.7 1.7 0 0 1 1.7 1.7v4.8a1.7 1.7 0 0 1-1.7 1.7H6.3L3.6 13.4V4.4a1.7 1.7 0 0 1 1.7-1.7z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M8.4 5v3.6M6.6 6.8h3.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
                         </button>
                         <button type="button" id="ai-git" class="ai-icon-btn hidden" title="Git 操作" aria-haspopup="menu"></button>
+                        <button type="button" id="ai-float-fullscreen" class="ai-icon-btn ai-float-only" title="全屏（当前窗口）">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 2.8H2.8v3.4M9.8 2.8h3.4v3.4M6.2 13.2H2.8V9.8M9.8 13.2h3.4V9.8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        <button type="button" id="ai-float-collapse" class="ai-icon-btn ai-float-only" title="收起（只保留标题栏）">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.8 8.2h8.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                        </button>
                         <div class="ai-mode-seg" id="ai-mode-seg" aria-label="显示方式">
                             <button type="button" data-ai-mode="dock" title="停靠：无文件时占满内容区，打开文件后分屏">
                                 <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M9.8 3v10" stroke="currentColor" stroke-width="1.1"/></svg>
@@ -1848,11 +1884,18 @@
     </div>
     <div id="enc-popover" class="enc-popover hidden"></div>
     <footer id="statusbar">
-        <button type="button" id="btn-sidebar" class="sb-toggle" title="文件侧边栏 (Alt+1)" aria-pressed="false">
+        <button type="button" id="btn-sidebar" class="sb-toggle" title="文件侧边栏 (Ctrl+B)" aria-pressed="false">
             <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.2 2.8v10.4" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
         </button>
         <div id="breadcrumb"></div>
         <span id="st-dirty"></span>
+        <span id="st-ai-write" style="display:none">
+            <span class="st-aw-icon"></span>
+            <span class="st-aw-state"></span>
+            <span class="st-aw-path"></span>
+            <span class="add"></span>
+            <span class="del"></span>
+        </span>
         <span id="st-message"></span>
         <div id="fileinfo">
             <span id="st-mode"></span>

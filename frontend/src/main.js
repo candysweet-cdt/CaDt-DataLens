@@ -21,6 +21,7 @@ import {semanticDiff, semanticEntryText, unifiedDiff} from './diff.js';
 import {validateJsonSchema} from './jsonschema.js';
 import {getPluginCommands, initPluginRuntime, loadPlugins} from './plugins.js';
 import {createMarkdownRenderer} from './markdown.js';
+import {showPatchView, hidePatchView, disposePatchView, refreshPatchView} from './patch-view.js';
 import {WRITING_FONTS, WRITING_PAPERS, formatWritingText, genName, SCENE_SEPARATOR} from './writing.js';
 import changelogText from '../../CHANGELOG.md?raw';
 import termsText from '../../docs/legal/terms.md?raw';
@@ -2197,6 +2198,7 @@ const mockBackend = {
     async AIListModels(cfg) { window.__mockAiModelsCfg = cfg; return ['deepseek-chat', 'deepseek-reasoner', 'deepseek-flash']; },
     async AIAppDir() { return 'mock://appdata/CandySweet/CaDt-DataLens'; },
     async AIHomeDir() { return window.__mockHomeDir || 'mock://home'; },
+    async AIBuiltinSkillsDir() { return window.__mockBuiltinSkillsDir || ''; },
     async AIExePath() { return window.__mockExePath || 'mock://bin/datalens.exe'; },
     async OpenAIFloatWindow(root) { window.__mockAIFloatRoot = root; return null; },
     async OpenSettingsInMainWindow(pane) { window.__mockOpenSettingsInMain = pane; return null; },
@@ -2479,6 +2481,12 @@ const els = {
     stEnc: document.getElementById('st-enc'),
     stMessage: document.getElementById('st-message'),
     stDirty: document.getElementById('st-dirty'),
+    stAiWrite: document.getElementById('st-ai-write'),
+    stAwIcon: document.querySelector('#st-ai-write .st-aw-icon'),
+    stAwState: document.querySelector('#st-ai-write .st-aw-state'),
+    stAwPath: document.querySelector('#st-ai-write .st-aw-path'),
+    stAwAdd: document.querySelector('#st-ai-write .add'),
+    stAwDel: document.querySelector('#st-ai-write .del'),
     stCount: document.getElementById('st-count'),
     breadcrumb: document.getElementById('breadcrumb'),
     findBar: document.getElementById('find-bar'),
@@ -3290,6 +3298,7 @@ const defaultSettings = {
     aiShowThinking: true,
     aiShowUsage: false,
     aiAssistantCard: false,
+    aiInlineWidgets: true,
     aiMaxSessions: 50,
     aiInjectContext: true,
     aiInjectRoot: true,
@@ -3413,6 +3422,8 @@ for (const key of ['aiChatFontEn', 'aiChatFontCjk', 'aiChatCodeFont']) {
 settings.aiShowThinking = settings.aiShowThinking !== false;
 settings.aiShowUsage = settings.aiShowUsage === true;
 settings.aiAssistantCard = settings.aiAssistantCard === true;
+// AI 回答里把 svg / html 围栏渲染成可视化卡片（默认开；关闭后按普通代码块显示）
+settings.aiInlineWidgets = settings.aiInlineWidgets !== false;
 settings.aiMaxSessions = Math.min(500, Math.max(2, Number(settings.aiMaxSessions) || 50));
 settings.aiInjectContext = settings.aiInjectContext !== false;
 for (const key of ['aiInjectRoot', 'aiInjectActiveFile', 'aiInjectCaret', 'aiInjectViewport', 'aiInjectOpenFiles',
@@ -3593,6 +3604,11 @@ const elsDialogs = {
     confirm: document.getElementById('dlg-confirm'),
     confirmText: document.getElementById('dlg-confirm-text'),
     confirmOk: document.getElementById('btn-discard'),
+    conflict: document.getElementById('dlg-save-conflict'),
+    conflictText: document.getElementById('dlg-save-conflict-text'),
+    conflictReload: document.getElementById('btn-conflict-reload'),
+    conflictOverwrite: document.getElementById('btn-conflict-overwrite'),
+    conflictCancel: document.getElementById('btn-conflict-cancel'),
     name: document.getElementById('dlg-name'),
     nameTitle: document.getElementById('dlg-name-title'),
     nameLabel: document.getElementById('dlg-name-label'),
@@ -3937,7 +3953,7 @@ function openDialogEl(dlg, options) {
         !elsDialogs.settings.classList.contains('hidden');
     elsDialogs.mask.classList.remove('hidden');
     if (!keepSettings) elsDialogs.settings.classList.add('hidden');
-    for (const other of [elsDialogs.confirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
+    for (const other of [elsDialogs.confirm, elsDialogs.conflict, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
         if (other !== dlg) other.classList.add('hidden');
     }
     dlg.dataset.parentSettings = keepSettings ? '1' : '';
@@ -3950,10 +3966,11 @@ function openDialogEl(dlg, options) {
 
 function closeTopDialog() {
     if (!elsDialogs.settings.classList.contains('hidden')) {
-            for (const dlg of [elsDialogs.confirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
+            for (const dlg of [elsDialogs.confirm, elsDialogs.conflict, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
             if (dlg.classList.contains('hidden') || dlg.dataset.parentSettings !== '1') continue;
             dlg.classList.add('hidden');
             if (dlg === elsDialogs.confirm) confirmAction = null;
+            if (dlg === elsDialogs.conflict) finishSaveConflict('cancel');
             if (dlg === elsDialogs.name) {
                 nameSubmit = null;
                 nameBusy = false;
@@ -3972,6 +3989,8 @@ function closeDialogs() {
     elsDialogs.mask.classList.add('hidden');
     elsDialogs.settings.classList.add('hidden');
     elsDialogs.confirm.classList.add('hidden');
+    if (saveConflictResolve) finishSaveConflict('cancel');
+    elsDialogs.conflict.classList.add('hidden');
     elsDialogs.name.classList.add('hidden');
     elsDialogs.goto.classList.add('hidden');
     elsDialogs.props.classList.add('hidden');
@@ -4215,6 +4234,32 @@ function openAbout() {
 }
 
 let confirmAction = null;
+// 保存冲突对话框的 Promise resolver：关闭对话框（按钮 / Esc / 遮罩）一律按取消处理
+let saveConflictResolve = null;
+
+function finishSaveConflict(choice) {
+    const resolve = saveConflictResolve;
+    saveConflictResolve = null;
+    elsDialogs.conflict.classList.add('hidden');
+    if (!elsDialogs.mask.classList.contains('hidden')) closeTopDialog();
+    if (resolve) resolve(choice);
+}
+
+function openSaveConflictDialog(doc, deleted) {
+    return new Promise((resolve) => {
+        saveConflictResolve = resolve;
+        const name = (doc && (doc.name || doc.path)) || '文件';
+        elsDialogs.conflictText.textContent = deleted
+            ? '「' + name + '」已在磁盘上被删除或移动，但编辑器里还有未保存的修改。'
+            : '「' + name + '」已被其他程序修改，但编辑器里还有未保存的修改。请选择如何处理：';
+        elsDialogs.conflictReload.disabled = !!deleted;
+        openDialogEl(elsDialogs.conflict);
+    });
+}
+
+elsDialogs.conflictReload.addEventListener('click', () => finishSaveConflict('reload'));
+elsDialogs.conflictOverwrite.addEventListener('click', () => finishSaveConflict('overwrite'));
+elsDialogs.conflictCancel.addEventListener('click', () => finishSaveConflict('cancel'));
 let nameSubmit = null;
 let nameBusy = false;
 
@@ -4916,7 +4961,8 @@ document.querySelectorAll('.dialog-head').forEach((head) => head.addEventListene
 document.querySelectorAll('.dialog-close').forEach((btn) => btn.addEventListener('click', closeTopDialog));
 elsDialogs.mask.addEventListener('click', (e) => {
     if (e.target !== elsDialogs.mask) return;
-    if (!elsDialogs.confirm.classList.contains('hidden') || !elsDialogs.name.classList.contains('hidden') ||
+    if (!elsDialogs.confirm.classList.contains('hidden') || !elsDialogs.conflict.classList.contains('hidden') ||
+        !elsDialogs.name.classList.contains('hidden') ||
         !elsDialogs.props.classList.contains('hidden') || !elsDialogs.update.classList.contains('hidden') ||
         !elsDialogs.writing.classList.contains('hidden') ||
         !elsDialogs.writingName.classList.contains('hidden')) closeTopDialog();
@@ -5778,6 +5824,7 @@ const CONVERT_ENCODINGS = [['utf-8', 'UTF-8'], ['gbk', 'GBK'], ['gb18030', 'GB18
 const INDENTS = [['2', '2 空格'], ['4', '4 空格'], ['tab', 'Tab']];
 const EOLS = [['follow', '跟随原文件'], ['lf', 'LF'], ['crlf', 'CRLF']];
 const VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
+const PATCH_VIEWS = [['patch', '补丁视图'], ['code', '代码视图'], ['text', '文本视图']];
 const CSV_VIEWS = [['table', '表格视图'], ['sql', 'SQL 查询'], ['tree', '树视图'], ['text', '文本视图']];
 const JSONL_VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图'], ['sql', 'SQL 查询']];
 const MARKDOWN_VIEWS = [['split', '分屏'], ['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
@@ -5817,6 +5864,7 @@ function viewOptionsFor(fmt, doc) {
     if (fmt && fmt.id === 'markdown') return MARKDOWN_VIEWS;
     if (isSvgDoc(doc)) return SVG_VIEWS;
     if (fmt && fmt.id === 'jsonl') return JSONL_VIEWS;
+    if (fmt && fmt.patch) return PATCH_VIEWS;
     return fmt && (fmt.table || fmt.id === 'csv') ? CSV_VIEWS : VIEWS;
 }
 
@@ -5879,6 +5927,7 @@ function viewLabel(mode) {
     if (mode === 'preview') return '预览';
     if (mode === 'render') return '渲染视图';
     if (mode === 'table') return '表格视图';
+    if (mode === 'patch') return '补丁视图';
     if (mode === 'sql') return 'SQL 查询';
     if (mode === 'text') return '文本视图';
     if (mode === 'code') return '代码视图';
@@ -7204,6 +7253,7 @@ const VIEW_ICONS = {
     image: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
     binary: '<svg viewBox="0 0 14 14" aria-hidden="true"><text x="2" y="10.6" font-size="9" font-family="JetBrains Mono, Consolas, monospace" font-weight="700" fill="currentColor">01</text></svg>',
     render: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 11c2.8 0 3.4-7 6.2-7 1.7 0 2 1.6 3.8 1.6" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><circle cx="2" cy="11" r="1.1" fill="currentColor"/><circle cx="12" cy="5.6" r="1.1" fill="currentColor"/></svg>',
+    patch: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 3.4h10M2 7h6.4M2 10.6h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M9.6 8.2l2.4 2.4-2.4 2.4" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     split: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 2.6v9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
 };
 const MORE_ICON = '<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="2.9" r="1.25" fill="currentColor"/><circle cx="7" cy="7" r="1.25" fill="currentColor"/><circle cx="7" cy="11.1" r="1.25" fill="currentColor"/></svg>';
@@ -7216,6 +7266,7 @@ function viewDisabledFor(doc, mode) {
     if (mode === 'preview') return !(doc.format && doc.format.preview) || !!doc.large;
     if (mode === 'table') return !(doc.format && doc.format.table);
     if (mode === 'render') return !isSvgDoc(doc);
+    if (mode === 'patch') return !(doc.format && doc.format.patch);
     return false;
 }
 
@@ -7306,9 +7357,9 @@ function bgTermTabIcon() {
 
 function buildGroupTab(g, doc, strip) {
     const tab = document.createElement('div');
-    tab.className = 'tab' + (doc.id === g.activeId ? ' active' : '') + (doc.dirty ? ' dirty' : '');
+    tab.className = 'tab' + (doc.id === g.activeId ? ' active' : '') + (doc.dirty ? ' dirty' : '') + (doc.staleOnDisk ? ' stale' : '');
     tab.dataset.docId = String(doc.id);
-    tab.title = doc.path || doc.name;
+    tab.title = (doc.path || doc.name) + (doc.staleOnDisk ? '\n（已在外部修改）' : '');
     // 后台终端标签页用 terminal 图标（非文件，没有扩展名图标）
     const icon = doc.bgTerm ? bgTermTabIcon() : createFileIcon(doc.name, 'tab-icon');
     const dot = document.createElement('span');
@@ -7634,6 +7685,57 @@ function toggleFocusedNode(action) {
     const collapsed = btn.classList.contains('jsoneditor-collapsed');
     if (action === 'expand' && collapsed) btn.click();
     if (action === 'collapse' && !collapsed) btn.click();
+}
+
+// ---- 状态栏「AI 写入」徽标 ----
+// 由 ai-panel 的写操作事件驱动：每次落盘推一次状态，不轮询磁盘，
+// 因此外部编辑器 / git 造成的改动不会点亮它。
+// 显隐沿用状态栏既有做法（切换 display），自动隐藏时长与 flash() 的 5s 对齐。
+const AI_WRITE_LABELS = {pending: '待确认', running: '写入中', done: '已修改', failed: '写入失败', denied: '被规则阻止'};
+const AI_WRITE_TRANSIENT = new Set(['done', 'failed', 'denied']);
+const AI_WRITE_HIDE_MS = 5000;
+let aiWriteHideTimer = 0;
+
+function hideAiWriteBadge() {
+    if (aiWriteHideTimer) { clearTimeout(aiWriteHideTimer); aiWriteHideTimer = 0; }
+    if (!els.stAiWrite) return;
+    els.stAiWrite.style.display = 'none';
+    els.stAiWrite.classList.remove('pending', 'running', 'done', 'failed', 'denied');
+}
+
+function updateAiWriteBadge(payload) {
+    const el = els.stAiWrite;
+    if (!el) return;
+    if (aiWriteHideTimer) { clearTimeout(aiWriteHideTimer); aiWriteHideTimer = 0; }
+    const state = payload && AI_WRITE_LABELS[payload.state] ? payload.state : 'idle';
+    if (state === 'idle') {
+        // 本轮结束不立刻抹掉「已修改」提示，交给瞬时态的自动隐藏计时器
+        if (AI_WRITE_TRANSIENT.has(currentAiWriteState())) return;
+        hideAiWriteBadge();
+        return;
+    }
+    const label = AI_WRITE_LABELS[state];
+    el.classList.remove('pending', 'running', 'done', 'failed', 'denied');
+    el.classList.add(state);
+    el.style.display = '';
+    if (els.stAwState) els.stAwState.textContent = label;
+    if (els.stAwPath) els.stAwPath.textContent = baseNameOf(payload.relPath || payload.path);
+    if (els.stAwAdd) els.stAwAdd.textContent = payload.added > 0 ? '+' + payload.added : '';
+    if (els.stAwDel) els.stAwDel.textContent = payload.removed > 0 ? '−' + payload.removed : '';
+    const counts = (payload.added || payload.removed) ? '（+' + (payload.added || 0) + ' −' + (payload.removed || 0) + '）' : '';
+    el.title = label + counts + '\n' + (payload.path || payload.relPath || '');
+    if (AI_WRITE_TRANSIENT.has(state)) {
+        aiWriteHideTimer = setTimeout(() => { aiWriteHideTimer = 0; hideAiWriteBadge(); }, AI_WRITE_HIDE_MS);
+    }
+}
+
+function currentAiWriteState() {
+    const el = els.stAiWrite;
+    if (!el || el.style.display === 'none') return '';
+    for (const state of Object.keys(AI_WRITE_LABELS)) {
+        if (el.classList.contains(state)) return state;
+    }
+    return '';
 }
 
 function updateStatus() {
@@ -8878,6 +8980,90 @@ function updateBrowserTitle(doc, title) {
     }
 }
 
+// 补丁视图的宿主上下文：把主界面的能力（打开文件、重载、提示）注入进去，
+// 补丁视图本身不直接依赖 main.js 的全局状态。
+let patchViewHostCtx = null;
+
+function patchRootPath() {
+    if (explorer && typeof explorer.getRoot === 'function') return explorer.getRoot() || '';
+    return workspaceFolder || '';
+}
+
+function patchAbsPath(rel) {
+    const root = patchRootPath().replace(/[\\/]+$/, '');
+    if (!root || !rel) return rel || '';
+    return root + '/' + String(rel).replace(/\\/g, '/');
+}
+
+async function reloadAfterPatch(files) {
+    if (explorer && explorer.refresh) explorer.refresh();
+    for (const rel of files || []) {
+        const doc = findDocByPath(patchAbsPath(rel));
+        if (!doc) continue;
+        if (doc.dirty) {
+            flash(doc.name + ' 已被补丁修改，但编辑器里有未保存内容，未自动重载', true);
+            continue;
+        }
+        if (doc === file) {
+            patchViewHostCtx.suppressNotify = true;
+            try { await reloadActive({quiet: true}); } catch (e) {}
+            patchViewHostCtx.suppressNotify = false;
+        } else {
+            doc.staleOnDisk = true;
+        }
+    }
+}
+
+function patchViewContext() {
+    if (patchViewHostCtx) return patchViewHostCtx;
+    patchViewHostCtx = {
+        backend,
+        suppressNotify: false,
+        getRoot: patchRootPath,
+        openPath: (rel) => {
+            const abs = patchAbsPath(rel);
+            if (abs) openPath(abs);
+        },
+        notifyChanged: (files) => { reloadAfterPatch(files); },
+        flash: (msg, isErr) => flash(msg, isErr),
+    };
+    return patchViewHostCtx;
+}
+
+// 补丁在代码视图里除 token 着色外，给整行铺淡底色（Ace marker，fullLine）。
+// 超过 5000 行只保留 token 着色，避免 marker 过多拖慢滚动。
+function refreshPatchMarkers(doc) {
+    const ace = doc && doc.editor && doc.editor.aceEditor;
+    if (!ace || !doc.format || !doc.format.patch) return;
+    const session = ace.session;
+    if (!session) return;
+    for (const id of (doc._patchMarkers || [])) {
+        try { session.removeMarker(id); } catch (e) {}
+    }
+    doc._patchMarkers = [];
+    const total = session.getLength();
+    if (total > 5000) return;
+    const aceLib = window.ace;
+    if (!aceLib || typeof aceLib.require !== 'function') return;
+    let Range = null;
+    try { Range = aceLib.require('ace/range').Range; } catch (e) { return; }
+    if (!Range) return;
+    for (let row = 0; row < total; row += 1) {
+        const text = session.getLine(row) || '';
+        if (text.startsWith('+++') || text.startsWith('---')) continue;
+        let cls = '';
+        if (text.startsWith('+')) cls = 'dl-diff-add-line';
+        else if (text.startsWith('-')) cls = 'dl-diff-del-line';
+        if (!cls) continue;
+        try {
+            doc._patchMarkers.push(session.addMarker(new Range(row, 0, row, 1), cls, 'fullLine'));
+        } catch (e) {
+            break;
+        }
+    }
+}
+
+
 function createDocEditor(doc) {
     if (doc.editor) return;
     if (doc.browser) {
@@ -8891,13 +9077,14 @@ function createDocEditor(doc) {
     const fmt = doc.format;
     const fs = getFormatSettings(fmt.id);
     const showJsonErrors = fmt.id === 'json' && /\.json$/i.test(doc.name || '');
+    const patchRequested = !!fmt.patch && (doc.mode === 'patch' || !doc.mode);
     const tableRequested = !!fmt.table && doc.mode === 'table';
     const previewRequested = !!fmt.preview && doc.mode === 'preview';
     const splitRequested = doc.mode === 'split' && !!splitKindFor(doc);
     const imageRequested = !!fmt.image && doc.mode === 'image';
     const binaryMode = !!fmt.image || fmt.id === 'bytes';
     let startMode = doc.mode === 'text' ? 'text' : (!doc.treeAvailable ? 'code' : (doc.mode === 'code' ? 'code' : 'tree'));
-    if (tableRequested) startMode = 'text';
+    if (tableRequested || patchRequested) startMode = 'text';
     if (previewRequested || splitRequested) startMode = 'code';
     let initialText = null;
     let initialValue = null;
@@ -9014,6 +9201,7 @@ function createDocEditor(doc) {
     if (fmt.table) createCsvTableView(doc);
     if (fmt.preview) createMarkdownPreview(doc);
     if (fmt.image) createImageView(doc);
+    if (patchRequested) showPatchView(doc, patchViewContext());
     if (tableRequested) showCsvTableView(doc);
     if (previewRequested) showMarkdownPreview(doc);
     if (imageRequested) showImageView(doc);
@@ -9021,6 +9209,7 @@ function createDocEditor(doc) {
     applyReadOnlyToDoc(doc);
     doc.content = null;
     doc.loading = false;
+    if (fmt.patch) refreshPatchMarkers(doc);
     scheduleGitGutter(doc, 200);
 }
 
@@ -11209,6 +11398,7 @@ function createDoc(data) {
             binary: true,
             bases: {tree: null, code: null},
             savedText: data.content,
+            diskMtime: data.mtime || '',
         };
     }
     const preview = detectFormat(data.name, '');
@@ -11249,7 +11439,7 @@ function createDoc(data) {
         format,
         treeAvailable,
         parseError,
-        mode: plainTextView ? 'text' : format.preview ? (data.large ? 'code' : preferredMode) : (treeAvailable ? preferredMode : 'code'),
+        mode: format.patch ? 'patch' : (plainTextView ? 'text' : format.preview ? (data.large ? 'code' : preferredMode) : (treeAvailable ? preferredMode : 'code')),
         text: null,
         rawText: treeAvailable ? data.content : null,
         dirty: false,
@@ -11258,6 +11448,7 @@ function createDoc(data) {
         bases: {tree: null, code: null, text: null, table: null, preview: null},
         savedText: data.content,
         bookmarks: new Set(),
+        diskMtime: data.mtime || '',
     };
 }
 
@@ -11333,7 +11524,7 @@ function showWelcome() {
 }
 
 let activateToken = 0;
-const lastTabSwitchLog = {id: null, at: 0};
+let lastTabSwitchLog = {id: null, at: 0};
 
 async function activateDoc(doc) {
     if (!doc) return;
@@ -11398,6 +11589,60 @@ async function activateDoc(doc) {
     }
 }
 
+// ---------- 外部修改检测（写盘前冲突 + 读盘自动刷新） ----------
+const externalDocTimers = new Map();
+
+function handleExternalDocChanges(payload) {
+    if (!payload || !backend.GetFileStat) return;
+    const root = String(payload.root || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (!root) return;
+    const changed = new Set();
+    if (payload.overflow) {
+        for (const doc of docs) if (doc.path && !doc.browser) changed.add(doc);
+    } else {
+        for (const rel of payload.paths || []) {
+            const full = root + '/' + String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+            for (const doc of docs) {
+                if (!doc.path || doc.browser) continue;
+                if (doc.path.replace(/\\/g, '/').toLowerCase() === full) changed.add(doc);
+            }
+        }
+    }
+    for (const doc of changed) {
+        const prev = externalDocTimers.get(doc.id);
+        if (prev) clearTimeout(prev);
+        externalDocTimers.set(doc.id, setTimeout(() => {
+            externalDocTimers.delete(doc.id);
+            checkDocExternalChange(doc).catch(() => {});
+        }, 350));
+    }
+}
+
+// 磁盘 mtime 与打开/上次保存时不同：干净文档自动重载，脏文档标记 staleOnDisk（保存时弹冲突）
+async function checkDocExternalChange(doc) {
+    if (!doc || !doc.path || doc.browser || !backend.GetFileStat) return;
+    if (!doc.diskMtime) return;
+    let st = null;
+    try {
+        st = await backend.GetFileStat(doc.path);
+    } catch (e) {
+        return;
+    }
+    if (!st || !st.exists || st.mtime === doc.diskMtime) return;
+    if (doc.dirty) {
+        doc.staleOnDisk = true;
+        renderTabs();
+        return;
+    }
+    if (doc === file) {
+        await reloadActive({quiet: true});
+        flash('文件已在外部修改，已自动重新加载 ' + doc.name);
+    } else {
+        doc.staleOnDisk = true;
+        renderTabs();
+    }
+}
+
 async function handleAIWorkspaceFileChanged(path) {
     if (explorer && explorer.refresh) explorer.refresh();
     const doc = findDocByPath(path);
@@ -11432,6 +11677,7 @@ function closeDocNow(doc, remember = true) {
     if (doc.dirty) activityLog.log('tab.closeDirty', doc.name, {discarded: true});
     else activityLog.log('tab.close', doc.name, {});
     disposeSqlDoc(doc);
+    disposePatchView(doc);
     const wasActive = doc === file;
     if (doc.path && remember) {
         closedTabs.push({path: doc.path, name: doc.name});
@@ -11899,7 +12145,10 @@ const NEW_FILE_TYPES = [
     {label: 'JSONL 文件', name: '新建文件.jsonl'},
     {label: 'INI 文件', name: '新建文件.ini'},
     {label: 'Properties 文件', name: '新建文件.properties'},
-    {sep: true},
+];
+
+// 不常用的代码类文件收进「更多」二级菜单
+const NEW_FILE_TYPES_MORE = [
     {label: 'JavaScript 文件', name: '新建文件.js'},
     {label: 'TypeScript 文件', name: '新建文件.ts'},
     {label: 'HTML 文件', name: '新建文件.html'},
@@ -11914,6 +12163,30 @@ const NEW_FILE_TYPES = [
     {label: 'Kotlin 文件', name: '新建文件.kt'},
     {label: 'Lua 脚本', name: '新建文件.lua'},
 ];
+
+function fileTypeMenuItem(type, action) {
+    const spec = fileIconSpec(type.name);
+    const dot = type.name.lastIndexOf('.');
+    return {
+        label: type.label,
+        shortcut: dot >= 0 ? type.name.slice(dot) : '',
+        iconHtml: spec.svg,
+        iconClass: spec.className,
+        action: () => action(type),
+    };
+}
+
+function newFileTypeMenuItems(action) {
+    return [
+        ...NEW_FILE_TYPES.map((type) => fileTypeMenuItem(type, action)),
+        {sep: true},
+        {
+            label: '更多',
+            icon: 'more',
+            submenu: NEW_FILE_TYPES_MORE.map((type) => fileTypeMenuItem(type, action)),
+        },
+    ];
+}
 
 function remapPathValue(path, oldPath, newPath) {
     if (!path) return path;
@@ -12233,26 +12506,12 @@ function openCreateEntryDialog(dirPath, isDir, suggestedName, title) {
 }
 
 function newFileMenuItems(dirPath) {
-    const items = [];
-    for (const type of NEW_FILE_TYPES) {
-        if (type.sep) {
-            items.push({sep: true});
-            continue;
-        }
-        const spec = fileIconSpec(type.name);
-        const dot = type.name.lastIndexOf('.');
-        items.push({
-            label: type.label,
-            shortcut: dot >= 0 ? type.name.slice(dot) : '',
-            iconHtml: spec.svg,
-            iconClass: spec.className,
-            action: () => openCreateEntryDialog(dirPath, false, type.name, '新建 ' + type.label),
-        });
-    }
-    items.push({sep: true});
-    items.push({label: '文件…', icon: 'E7C3', action: () => openCreateEntryDialog(dirPath, false, '', '新建文件')});
-    items.push({label: '目录…', icon: 'E8B7', action: () => openCreateEntryDialog(dirPath, true, '新建文件夹', '新建文件夹')});
-    return items;
+    return [
+        {label: '文件…', icon: 'E7C3', action: () => openCreateEntryDialog(dirPath, false, '', '新建文件')},
+        {label: '目录…', icon: 'E8B7', action: () => openCreateEntryDialog(dirPath, true, '新建文件夹', '新建文件夹')},
+        {sep: true},
+        ...newFileTypeMenuItems((type) => openCreateEntryDialog(dirPath, false, type.name, '新建 ' + type.label)),
+    ];
 }
 
 function applyRenamedPath(oldPath, newPath) {
@@ -12690,8 +12949,6 @@ function initContextMenus() {
             },
             showInFolder: (path) => backend.ShowInFolder(path).catch(() => {}),
         });
-        const welcomeRead = document.getElementById('btn-welcome-read');
-        if (welcomeRead) welcomeRead.addEventListener('click', () => readingMode.openBookshelf());
     }
     if (!els.mainPane) return;
     els.mainPane.addEventListener('contextmenu', (e) => {
@@ -14155,7 +14412,9 @@ function initAIPanel() {
         },
         flash,
         copyText,
-        renderMarkdown: renderMarkdownHtml,
+        // AI 消息里的 svg / html 围栏按设置渲染成内联可视化卡片；其它 Markdown 视图不传该开关
+        renderMarkdown: (text) => renderMarkdownHtml(text, {aiWidgets: settings.aiInlineWidgets !== false}),
+        openExternal: openExternalUrl,
         confirm: openCloseConfirm,
         nameDialog: openNameDialog,
         openSettings: (pane) => {
@@ -14299,6 +14558,12 @@ function initAIPanel() {
         },
     });
     window.__lens.aiPanel = aiPanel;
+    // 状态栏「AI 写入」徽标：订阅面板的写操作事件（事件驱动，不轮询磁盘）
+    if (typeof aiPanel.onWriteStatus === 'function') {
+        // 图标走统一注册表：与工具卡里 edit_file 用的是同一枚铅笔，不在 HTML 里手写路径
+        if (els.stAwIcon) els.stAwIcon.innerHTML = iconSvg('rename', 12);
+        aiPanel.onWriteStatus((payload) => updateAiWriteBadge(payload));
+    }
     window.__mockAiEmit = (name, payload) => {
         if (aiPanel) aiPanel.handleEvent(name, payload);
     };
@@ -14724,7 +14989,45 @@ async function saveDoc(doc, opts = {}) {
     try {
         const eol = fs.eol === 'follow' ? doc.eol : fs.eol;
         const enc = fs.encoding === 'auto' ? (doc.enc || 'utf-8') : fs.encoding;
-        await backend.SaveFile(path, text, eol, doc.hasBom, enc);
+        // 写前冲突检测：磁盘 mtime 与打开 / 上次保存时不一致时不静默覆盖外部修改
+        const tracked = !opts.saveAs && hadPath && !doc.untitled && !!doc.diskMtime && !!backend.SaveFileChecked;
+        let saveMtime = 0;
+        if (tracked) {
+            let result = await backend.SaveFileChecked(path, text, eol, doc.hasBom, enc, doc.diskMtime);
+            if (result && result.conflict) {
+                if (!doc.dirty) {
+                    await discardDocAndReload(doc);
+                    flash('文件已在外部修改，已重新加载 ' + doc.name);
+                    return true;
+                }
+                if (opts.auto) {
+                    doc.staleOnDisk = true;
+                    renderTabs();
+                    flash('文件已在外部修改，已跳过自动保存：' + doc.name, true);
+                    return false;
+                }
+                const choice = await openSaveConflictDialog(doc, result.deleted);
+                if (choice === 'cancel') return false;
+                if (choice === 'reload') {
+                    await discardDocAndReload(doc);
+                    flash('已重新加载 ' + doc.name);
+                    return false;
+                }
+                result = await backend.SaveFileChecked(path, text, eol, doc.hasBom, enc, '');
+                if (!result || result.conflict) return false;
+            }
+            saveMtime = (result && result.mtime) || 0;
+        } else {
+            await backend.SaveFile(path, text, eol, doc.hasBom, enc);
+        }
+        if (!saveMtime && backend.GetFileStat) {
+            try {
+                const st = await backend.GetFileStat(path);
+                if (st && st.exists) saveMtime = st.mtime || 0;
+            } catch (e) {}
+        }
+        doc.diskMtime = saveMtime || '';
+        doc.staleOnDisk = false;
         doc.enc = enc;
         doc.path = path;
         doc.name = path.split(/[\\/]/).pop();
@@ -14774,6 +15077,18 @@ async function saveDoc(doc, opts = {}) {
 
 async function save(opts = {}) {
     return saveDoc(file, opts);
+}
+
+// 放弃缓冲区修改并以磁盘版本为准：前台标签立即重载，后台标签切换时重载
+async function discardDocAndReload(doc) {
+    doc.dirty = false;
+    if (doc === file) {
+        await reloadActive({quiet: true});
+        return;
+    }
+    doc.staleOnDisk = true;
+    updateTabDirty(doc);
+    renderTabs();
 }
 
 async function saveAs() {
@@ -15365,6 +15680,7 @@ function switchMode(mode) {
     const docBefore = file;
     const wasSplit = !!(docBefore && docBefore.splitActive);
     applySwitchMode(mode);
+    if (file && file.format && file.format.patch && currentMode !== 'patch') refreshPatchMarkers(file);
     const splitChanged = !!(file && file.splitActive) !== wasSplit;
     if (currentMode !== fromMode || splitChanged) {
         activityLog.log('view.switch', currentMode, {from: fromMode});
@@ -15435,6 +15751,20 @@ function applySwitchMode(mode) {
     if (currentMode === 'preview') {
         if (doc) leaveMarkdownPreview(doc, mode);
         return;
+    }
+    if (mode === 'patch') {
+        if (doc && doc.format && doc.format.patch) {
+            doc.mode = 'patch';
+            currentMode = 'patch';
+            applyReadOnlyToDoc(doc);
+            showPatchView(doc, patchViewContext());
+            updateStatus();
+            updateSearchState();
+        }
+        return;
+    }
+    if (currentMode === 'patch') {
+        hidePatchView(doc);
     }
     if (mode === 'table') {
         if (doc && doc.format.table) enterCsvTable(doc);
@@ -17430,37 +17760,26 @@ async function restoreSession(sess) {
 }
 
 function newDocumentMenuItems() {
-    const items = [];
-    for (const type of NEW_FILE_TYPES) {
-        if (type.sep) {
-            items.push({sep: true});
-            continue;
-        }
-        const spec = fileIconSpec(type.name);
-        const dot = type.name.lastIndexOf('.');
-        const ext = dot >= 0 ? type.name.slice(dot) : '';
-        items.push({
-            label: type.label,
-            shortcut: ext,
-            iconHtml: spec.svg,
-            iconClass: spec.className,
-            action: () => newDocumentWith('未命名' + ext, ext.toLowerCase() === '.json' ? '{}' : ''),
-        });
-    }
-    items.push({sep: true});
-    items.push({
-        label: '文件…',
-        icon: 'E7C3',
-        disabled: !workspaceFolder,
-        action: () => openCreateEntryDialog(workspaceFolder, false, '', '新建文件'),
-    });
-    items.push({
-        label: '目录…',
-        icon: 'E8B7',
-        disabled: !workspaceFolder,
-        action: () => openCreateEntryDialog(workspaceFolder, true, '新建文件夹', '新建文件夹'),
-    });
-    return items;
+    return [
+        {
+            label: '文件…',
+            icon: 'E7C3',
+            disabled: !workspaceFolder,
+            action: () => openCreateEntryDialog(workspaceFolder, false, '', '新建文件'),
+        },
+        {
+            label: '目录…',
+            icon: 'E8B7',
+            disabled: !workspaceFolder,
+            action: () => openCreateEntryDialog(workspaceFolder, true, '新建文件夹', '新建文件夹'),
+        },
+        {sep: true},
+        ...newFileTypeMenuItems((type) => {
+            const dot = type.name.lastIndexOf('.');
+            const ext = dot >= 0 ? type.name.slice(dot) : '';
+            newDocumentWith('未命名' + ext, ext.toLowerCase() === '.json' ? '{}' : '');
+        }),
+    ];
 }
 
 function propsTimeText(ms) {
@@ -18040,7 +18359,7 @@ function menuItems(kind) {
                 {sep: true},
                 {label: '终端面板', shortcut: 'Alt+F12', checked: terminalUI.open && dockView === 'terminal', action: () => toggleDockView('terminal')},
                 ...(developerMode ? [{label: '调试控制台', shortcut: 'F12', checked: terminalUI.open && dockView === 'debug', action: () => toggleDockView('debug')}] : []),
-                {label: '文件侧边栏', shortcut: 'Alt+1', checked: !!settings.showSidebar, action: () => toggleSidebar()},
+                {label: '文件侧边栏', shortcut: 'Ctrl+B', checked: !!settings.showSidebar, action: () => toggleSidebar()},
                 {label: '文件列表', checked: settings.sidebarMode === 'list', action: () => setSidebarMode('list')},
                 {label: '文件树', checked: settings.sidebarMode === 'tree', action: () => setSidebarMode('tree')},
                 {label: '结构视图', shortcut: 'Alt+7', checked: !!settings.showSidebar && currentSidebarView() === 'structure', action: () => toggleSidebarView('structure')},
@@ -18363,6 +18682,12 @@ window.addEventListener('keydown', (e) => {
         palette.toggle();
         return;
     }
+    if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSidebar();
+        return;
+    }
     const key = e.key.toLowerCase();
     if (!isDialogOpen() && gitStateCache.available && !isPlainTextEntryTarget()) {
         if (e.ctrlKey && !e.altKey && !e.shiftKey && key === 'k') {
@@ -18582,6 +18907,7 @@ if (rt) {
     rt.EventsOn('open-files', (paths) => openPaths(paths));
     rt.EventsOn('workspace-changed', (payload) => {
         if (explorer && typeof explorer.handleExternalChanges === 'function') explorer.handleExternalChanges(payload);
+        handleExternalDocChanges(payload);
     });
     // Wails 文件拖放：注册窗口级 dragover/drop 监听（不注册就收不到任何外部拖放），
     // useDropTarget=false 让整个窗口都接受；回调拿到的路径已由 Go 侧解析好
