@@ -1197,7 +1197,7 @@ export function createAIPanel(options) {
     let drag = null;
     let settingsStatusTimer = 0;
     let fontSaveTimer = 0;
-    let lastApplied = {font: 0, thinking: null, usage: null};
+    let lastApplied = {font: 0, thinking: null, usage: null, widgets: null};
     let slashState = {open: false, index: 0, items: []};
     let noteSeq = 0;
     const pendingApprovals = new Map();
@@ -7956,6 +7956,8 @@ export function createAIPanel(options) {
         refreshToolWrap(entry.session, toolMessage);
         entry.resolve({approved: !!approved, remember: remember || ''});
         updateComposerTakeover(true);
+        // 用户已经在处理这个会话了，「未查看」圆点顺手清掉。
+        if (entry.session) clearSessionUnread(entry.session);
         renderSessionList();
     }
 
@@ -8967,6 +8969,14 @@ export function createAIPanel(options) {
                 ctx.toolMessage.status = 'running';
                 ctx.toolMessage.content = '正在应用补丁…';
                 refreshToolWrap(ctx.session, ctx.toolMessage);
+                // 状态栏徽标：补丁是多文件动作，按计划合计上报（relPath 用补丁摘要）
+                const patchRelPath = approvalRef.summary || preview.summary || '补丁';
+                const patchEntry = liveWriteEntry({relPath: patchRelPath, path: preview.root || root || ''});
+                if (patchEntry) {
+                    patchEntry.added += Math.max(0, Math.round(Number(preview.added) || 0));
+                    patchEntry.removed += Math.max(0, Math.round(Number(preview.removed) || 0));
+                }
+                emitWriteStatus(writeStatusPayload('running', patchEntry));
                 let result;
                 try {
                     result = await backend.PatchApply(approvalRef.planId, selected, null, mode);
@@ -8975,6 +8985,7 @@ export function createAIPanel(options) {
                     attempt.count += 1;
                     attempt.lastCode = 'PATCH_APPLY_IO';
                     patchAttempts.set(hash, attempt);
+                    emitWriteStatus(writeStatusPayload('failed', patchEntry, {error: msg}));
                     return patchErrorText('PATCH_APPLY_IO', '写入失败', msg, false);
                 }
                 if (ctx.toolMessage.approval) {
@@ -8986,6 +8997,22 @@ export function createAIPanel(options) {
                         recordChange(ctx.session, {path: aiJoinPath(root, f.relPath), relPath: f.relPath, tool: 'propose_patch', added: f.added || 0, removed: f.removed || 0});
                         notifyFileChanged(aiJoinPath(root, f.relPath));
                     }
+                }
+                // 状态栏徽标：按实际应用结果收尾（部分成功也只报已应用的量；回滚失败按失败提示）
+                {
+                    const rollbackFailed = result.code === 'PATCH_ROLLBACK_FAILED';
+                    let appliedAdded = 0;
+                    let appliedRemoved = 0;
+                    for (const f of result.files || []) {
+                        if (f.status !== 'applied') continue;
+                        appliedAdded += Math.max(0, Math.round(Number(f.added) || 0));
+                        appliedRemoved += Math.max(0, Math.round(Number(f.removed) || 0));
+                    }
+                    emitWriteStatus(writeStatusPayload(
+                        rollbackFailed ? 'failed' : 'done',
+                        {relPath: patchRelPath, path: patchEntry ? patchEntry.path : (preview.root || root || ''), added: appliedAdded, removed: appliedRemoved},
+                        rollbackFailed ? {error: '回滚失败，文件可能需要手动检查'} : null
+                    ));
                 }
                 if (result.code === 'PATCH_ROLLBACK_FAILED') {
                     attempt.count += 1;
@@ -9640,6 +9667,14 @@ export function createAIPanel(options) {
             }
         }
 
+        // 注入顺序按「稳定 → 动态」排列：工具目录、规则、输出语言等静态块在前，
+        // 工作区状态与附件每轮变化，放最后；这样公共前缀最长，能命中服务商的前缀缓存。
+        const catalog = toolCatalogText(currentScopeOf(session), !!(session && session.planMode));
+        if (catalog) parts.push(catalog);
+        const rules = workspaceRulesText(currentScopeOf(session), !!(session && session.planMode));
+        if (rules) parts.push(rules);
+        parts.push(outputLanguageRuleText());
+
         {
             const context = getWorkspaceContext() || {};
             const root = getScopeRoot() || '';
@@ -9689,11 +9724,6 @@ export function createAIPanel(options) {
             }
         }
 
-        const catalog = toolCatalogText(currentScopeOf(session), !!(session && session.planMode));
-        if (catalog) parts.push(catalog);
-        const rules = workspaceRulesText(currentScopeOf(session), !!(session && session.planMode));
-        if (rules) parts.push(rules);
-
         if (attachmentList && attachmentList.length) {
             const blocks = attachmentList.map(formatAttachmentBlock).filter(Boolean);
             if (blocks.length) {
@@ -9704,7 +9734,6 @@ export function createAIPanel(options) {
                 };
             }
         }
-        parts.push(outputLanguageRuleText());
 
         return {text: parts.join('\n\n'), meta};
     }
@@ -9727,8 +9756,9 @@ export function createAIPanel(options) {
         updateSendState();
         updateComposerTakeover();
         if (stream) {
-            const entry = activeModelEntry();
-            if (el.hint) el.hint.textContent = '生成中 · Enter 排队 · Ctrl+Enter 插话' + (entry && entry.model ? ' · ' + entry.model : '');
+            // 提示本轮实际使用的模型；对话中切换模型要到下一条消息才生效
+            const running = (stream.profileCfg && stream.profileCfg.model) || (activeModelEntry() || {}).model || '';
+            if (el.hint) el.hint.textContent = '生成中 · Enter 排队 · Ctrl+Enter 插话' + (running ? ' · ' + running : '');
         } else if (oneShot) {
             if (el.hint) el.hint.textContent = '正在压缩上下文…';
         }
@@ -9873,6 +9903,8 @@ export function createAIPanel(options) {
 
         if (cut != null && cut >= 0) session.messages = session.messages.slice(0, cut);
         pendingEdit = null;
+        // 上一次切换的模型从这条消息开始生效：先把切换记录落到本条消息之前
+        flushModelSwitchNote(session);
 
         const turnStartedAt = Date.now();
         const userMessage = {
@@ -9990,10 +10022,8 @@ export function createAIPanel(options) {
         s.tools = toolsForScope(currentScopeOf(session), !!session.planMode);
         s.systemPrompt = (s.baseSystemPrompt || AI_DEFAULT_SYSTEM_PROMPT) +
             (session.planMode ? '\n\n' + planModeBlock() : '');
-        // 对话中切换模型 / 账号：已发出的请求不受影响，本轮后续请求改用新配置；
-        // 消息头标签同步成实际请求的模型，避免旧模型的回答被标成新模型。
-        const activeNow = activeProfile();
-        if (activeNow) s.profileCfg = configForProfile(activeNow);
+        // 一轮对话固定使用启动时的模型配置：对话中切换模型从下一条消息开始生效，
+        // 本轮剩余的工具轮仍走旧模型；消息头标签跟随本轮实际请求的模型。
         if (s.assistant && s.profileCfg && s.profileCfg.model) s.assistant.model = s.profileCfg.model;
         const index = session.messages.indexOf(s.assistant);
         if (index < 0) {
@@ -10178,11 +10208,6 @@ export function createAIPanel(options) {
         emitWriteStatus({state: 'idle'});
         // 本轮文件改动汇总卡（Qoder 风格）：在落盘前追加，保证重放后仍显示
         appendChangesSummary(session, current.startedAt);
-        // 生成中切换的模型：本轮结束后落一条记录，位置在下一条用户消息之前
-        if (session && pendingModelSwitch && pendingModelSwitch.sessionId === session.id) {
-            appendModelSwitchNote(session, pendingModelSwitch);
-            pendingModelSwitch = null;
-        }
         // 用户在别的会话或面板关着时结束：条目上留一个「已完成未查看」，切回来（或打开面板）才清掉。
         if (session && !current.stopped && (currentSession() !== session || !isOpen())) {
             if (current.assistant.status === 'done') setSessionUnread(session, 'done');
@@ -10778,9 +10803,9 @@ export function createAIPanel(options) {
         el.modelChip.title = '模型：' + model + '\n账号：' + profile.name + '\n推理等级：' + effort;
     }
 
-    // 对话内切换模型 / 账号的留痕：写一条可视注记（不进入模型上下文，重放后仍在）。
-    // 生成中切换时已发出的请求仍用旧配置，推迟到本轮结束再记录最终选择。
-    let pendingModelSwitch = null;
+    // 对话内切换模型 / 账号的留痕：切换只在下一条消息发出时生效，
+    // 分隔记录也在那一刻落到对话里（不进入模型上下文，重放后仍在）。
+    const pendingModelSwitches = new Map();
 
     function modelSwitchLabel(profile, entry) {
         return (entry && entry.model) || (profile && profile.name) || '';
@@ -10809,26 +10834,26 @@ export function createAIPanel(options) {
         const from = modelSwitchLabel(fromProfile, fromEntry);
         const to = modelSwitchLabel(toProfile, toEntry);
         if (!from || !to || from === to) return;
+        // 连续多次切换合并成「起点 → 最终选择」；切回起点则不留记录。
+        const pending = pendingModelSwitches.get(session.id);
         const note = {
-            from,
+            from: pending ? pending.from : from,
             to,
             account: (toProfile && toProfile.name) || '',
             effort: toProfile ? effortLabel(toProfile, toEntry) : '',
         };
-        if (stream && stream.sessionId === session.id) {
-            // 连续多次切换合并成「起点 → 最终选择」；切回起点则不留记录。
-            if (pendingModelSwitch && pendingModelSwitch.sessionId === session.id) {
-                pendingModelSwitch.to = note.to;
-                pendingModelSwitch.account = note.account;
-                pendingModelSwitch.effort = note.effort;
-                if (pendingModelSwitch.from === pendingModelSwitch.to) pendingModelSwitch = null;
-            } else {
-                pendingModelSwitch = Object.assign({sessionId: session.id}, note);
-            }
-            return;
-        }
+        if (note.from === note.to) pendingModelSwitches.delete(session.id);
+        else pendingModelSwitches.set(session.id, note);
+    }
+
+    // 发送下一条消息时把挂起的切换记录落进对话（在本条用户消息之前）。
+    function flushModelSwitchNote(session) {
+        if (!session) return false;
+        const note = pendingModelSwitches.get(session.id);
+        if (!note) return false;
+        pendingModelSwitches.delete(session.id);
         appendModelSwitchNote(session, note);
-        persistSessions();
+        return true;
     }
 
     // 切换账号：恢复该账号记住的模型条目（lastModelId）
@@ -11303,21 +11328,32 @@ export function createAIPanel(options) {
         if (!el.moreBtn || !showContextMenu) return;
         const rect = el.moreBtn.getBoundingClientRect();
         const items = floatWindow ? [
-            {label: '新建会话', action: () => newSession()},
-            {label: '重命名会话…', action: () => renameSession()},
-            {label: '删除会话', action: () => deleteSession()},
-            {label: '导出会话…', action: () => exportSession()},
-            {label: '会话数据诊断…', action: () => showSessionDiagnostics(currentSession())},
+            {label: '新建会话', icon: 'plus', action: () => newSession()},
+            {label: '重命名会话…', icon: 'rename', action: () => renameSession()},
+            {label: '删除会话', icon: 'trash', action: () => deleteSession()},
+            {label: '导出会话…', icon: 'export', action: () => exportSession()},
+            {label: '会话数据诊断…', icon: 'info', action: () => showSessionDiagnostics(currentSession())},
             {sep: true},
         ] : [];
+        // 头部宽度不足时显示方式与换侧按钮已收起，在菜单里补回同一组操作
+        const head = panel.querySelector('.ai-head-title-row');
+        if (!floatWindow && head && head.classList.contains('ai-head-compact')) {
+            items.push(
+                {label: '显示方式：停靠分屏', icon: 'layout-dock', checked: mode === 'dock', action: () => setMode('dock')},
+                {label: '显示方式：全屏', icon: 'layout-fullscreen', checked: mode === 'fullscreen', action: () => setMode('fullscreen')},
+                {label: '在独立悬浮窗打开', icon: 'layout-float', action: () => setMode('float')},
+                {label: '换到另一侧', icon: 'swap-side', action: togglePanelSide},
+                {sep: true},
+            );
+        }
         items.push(
-            {label: '提示词…', action: () => showPromptDialog()},
-            {label: '记忆管理…', action: () => showMemoryDialog()},
-            {label: '技能管理…', action: () => showSkillsDialog()},
+            {label: '提示词…', icon: 'doc', action: () => showPromptDialog()},
+            {label: '记忆管理…', icon: 'save', action: () => showMemoryDialog()},
+            {label: '技能管理…', icon: 'sparkles', action: () => showSkillsDialog()},
             {sep: true},
-            {label: '会话数据诊断…', action: () => showSessionDiagnostics(currentSession())},
-            {label: '对话日志目录…', action: openAILogDir},
-            {label: '模型设置…', action: () => openSettings('models')},
+            {label: '会话数据诊断…', icon: 'info', action: () => showSessionDiagnostics(currentSession())},
+            {label: '对话日志目录…', icon: 'open-folder', action: openAILogDir},
+            {label: '模型设置…', icon: 'gear', action: () => openSettings('models')},
         );
         showContextMenu(items, rect.left - 160, rect.bottom + 4);
     }
@@ -12164,6 +12200,7 @@ export function createAIPanel(options) {
         askConfirm('删除会话「' + (session.title || '新会话') + '」及其全部消息？', () => {
             sessions = sessions.filter((s) => s.id !== session.id);
             commandApprovalRules.delete(session.id);
+            pendingModelSwitches.delete(session.id);
             stopSubAgentsOf(session.id);
             clearQueueForSession(session.id);
             logActivity('ai.session', session.id, {op: 'delete', title: session.title || ''}, {actor: 'user', source: 'user'});
@@ -13452,6 +13489,7 @@ export function createAIPanel(options) {
         askConfirm('清空当前会话的全部消息？', () => {
             session.messages = [];
             commandApprovalRules.delete(session.id);
+            pendingModelSwitches.delete(session.id);
             session.summary = null;
             session.archived = [];
             archivedFlowOpen.delete(session.id);
@@ -15463,6 +15501,12 @@ export function createAIPanel(options) {
         pendingApprovals.set(key, entry);
         updateComposerTakeover(true);
         renderSessionList();
+        // 状态栏徽标：补丁待确认（多文件，数字取计划合计；relPath 为补丁摘要）
+        liveWriteEntry({relPath: approval.relPath, path: approval.root});
+        emitWriteStatus(writeStatusPayload('pending', liveWrite, {
+            added: Math.max(0, Math.round(Number(preview.added) || 0)),
+            removed: Math.max(0, Math.round(Number(preview.removed) || 0)),
+        }));
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });
