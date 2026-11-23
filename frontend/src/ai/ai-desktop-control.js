@@ -123,6 +123,134 @@ export function desktopConfigNeedsUpgrade(row, plan) {
     return false;
 }
 
+// ===== 可用性五态（2026-11-23 修正）=====
+// 旧代码用 `installedCount()`（快照里 windows 工具数 > 0）当「装了没」的判据。这只对
+// 一半情况成立：server 启动失败（uv 缺失 / 依赖下载失败 / wheel 被存储清理删掉）时
+// 工具数同样是 0，于是一台「已安装 + 开关已开 + 工具全勾」的机器被回成
+// 「桌面控制尚未安装：请点『安装』」——用户照着做，界面上根本没有安装按钮（卡片自
+// 2026-11-22 起是「开关即安装」，只在旧配置时才出现「更新配置」）。
+// 真身要看两处：mcp.json 里有没有 windows 行，以及 MCP 快照里该 server 的 state/工具数。
+export const DESKTOP_AVAILABILITY = Object.freeze({
+    // mcp.json 没有 windows 行：真的没装
+    NOT_INSTALLED: 'not-installed',
+    // 有行，但 MCP 总开关关闭 / 该行 enabled=false / enabledTools 为空（server 不会启动）
+    DISABLED: 'disabled',
+    // 有行且启用，但 server 没连上（state=failed 或 closed，带失败原因）
+    FAILED: 'failed',
+    // 正在连（state=connecting / reconnecting）：首次要下载依赖，可能要等几分钟
+    STARTING: 'starting',
+    // 已连上且工具已注册：可以走审批 → 进入控制模式
+    READY: 'ready',
+});
+
+function clipText(text, max) {
+    const raw = String(text || '').replace(/\s+/g, ' ').trim();
+    if (raw.length <= max) return raw;
+    return raw.slice(0, max) + '…';
+}
+
+// desktopAvailability 纯函数：把「配置行 + 快照 server + MCP 总开关」折算成一个态。
+// input: {configRow, server, mcpEnabled, snapshotLoaded, configKnown}
+//   · configRow 来自 MCPGetConfig().mcpServers.windows（读盘失败时传 null + configKnown=false）
+//   · server 来自 MCPSnapshot 快照（{state, toolCount, lastError, reason}）
+//   · configKnown=false 且没有 server 时不敢断言「没装」——宁可报「启动异常」，也不要
+//     把一次读盘失败变成一句「去点安装」的错误指引。
+export function desktopAvailability(input) {
+    const source = (input && typeof input === 'object') ? input : {};
+    const row = (source.configRow && typeof source.configRow === 'object') ? source.configRow : null;
+    const server = (source.server && typeof source.server === 'object') ? source.server : null;
+    const state = server ? (String(server.state || '').trim() || 'closed') : 'unknown';
+    const toolCount = Math.max(0, Math.round(Number((server && server.toolCount) || 0) || 0));
+    const lastError = clipText(server && server.lastError, 300);
+    const reason = clipText(server && server.reason, 120);
+    const configKnown = source.configKnown !== false;
+    const snapshotLoaded = source.snapshotLoaded !== false;
+    const out = {
+        kind: DESKTOP_AVAILABILITY.READY,
+        installed: true,
+        state,
+        toolCount,
+        reason,
+        lastError,
+        detail: '',
+    };
+    if (!row && !server) {
+        if (!configKnown && !snapshotLoaded) {
+            // 配置与快照都没读到：不下「没装」的结论，按启动异常处理（文案会请用户去核对）
+            return Object.assign(out, {kind: DESKTOP_AVAILABILITY.FAILED, installed: true, detail: '配置与运行状态都读取失败'});
+        }
+        return Object.assign(out, {kind: DESKTOP_AVAILABILITY.NOT_INSTALLED, installed: false});
+    }
+    // MCP 总开关关闭时 Go 侧不建运行态条目（ApplyConfig 提前返回），快照里看不到 server
+    if (source.mcpEnabled === false && snapshotLoaded) {
+        return Object.assign(out, {kind: DESKTOP_AVAILABILITY.DISABLED, detail: 'MCP 客户端总开关是关闭的'});
+    }
+    if (row && row.enabled === false) {
+        return Object.assign(out, {kind: DESKTOP_AVAILABILITY.DISABLED, detail: 'windows 服务器行是停用状态（enabled=false）'});
+    }
+    if (row && Array.isArray(row.enabledTools) && row.enabledTools.length === 0) {
+        return Object.assign(out, {kind: DESKTOP_AVAILABILITY.DISABLED, detail: '工具勾选为空（空数组 = 一个都不给，server 不会启动）'});
+    }
+    if (toolCount > 0) {
+        return Object.assign(out, {kind: DESKTOP_AVAILABILITY.READY});
+    }
+    if (state === 'connecting' || state === 'reconnecting') {
+        return Object.assign(out, {kind: DESKTOP_AVAILABILITY.STARTING});
+    }
+    return Object.assign(out, {kind: DESKTOP_AVAILABILITY.FAILED});
+}
+
+// desktopAvailabilityMessage：给 AI 看的完整说明（工具结果）。必须让模型能区分
+// 「没装」与「装了没起来」，并原样带上 state 与失败原因——否则它会反复诱导用户去点
+// 一个不存在的按钮。
+// 修复指引只指向「一定存在」的入口：外部工具页的「启用桌面控制」开关始终在，关掉再
+// 打开会重试安装；「更新配置」按钮只在旧配置（needsUpgrade）时才渲染，启动失败时通常
+// 配置本身是好的、按钮并不存在，指过去又是一条死路（2026-11-23 审查）。MCPDesktopDoctor
+// 是 Wails 绑定、不是 AI 可调用工具，也不写进指引。
+export function desktopAvailabilityMessage(avail) {
+    const kind = String((avail && avail.kind) || '');
+    const state = String((avail && avail.state) || 'unknown');
+    const errText = clipText((avail && (avail.lastError || avail.reason)) || '', 300);
+    const detail = clipText((avail && avail.detail) || '', 120);
+    const where = '应用页面 → 外部工具 → 桌面控制';
+    if (kind === DESKTOP_AVAILABILITY.NOT_INSTALLED) {
+        return '桌面控制尚未安装：mcp.json 里没有 windows 服务器行。请用户在 ' + where
+            + ' 打开「启用桌面控制」开关（打开即安装内置组件，首次会下载 Python 3.14 与依赖，约 100–190 MB）后再申请。';
+    }
+    if (kind === DESKTOP_AVAILABILITY.DISABLED) {
+        return '桌面控制已安装，但当前不会启动（' + (detail || '未启用') + '）。请用户在 ' + where
+            + ' 打开「启用桌面控制」开关，并确认工具列表里至少保留一个勾选；改完后再申请。不要重新安装。';
+    }
+    if (kind === DESKTOP_AVAILABILITY.STARTING) {
+        return '桌面控制已安装，但 server 正在连接（state=' + state + '）。首次启动要下载 Python 3.14 与依赖，'
+            + '可能要几分钟：请稍后重新申请。若长时间停在这个状态，让用户到 ' + where
+            + ' 看安装进度，确认 uv 是否就位。';
+    }
+    return '桌面控制已安装，但 server 启动失败：state=' + state + '、已注册工具数=' + (Number(avail && avail.toolCount) || 0)
+        + '。失败原因：' + (errText || detail || '（MCP 侧未回传原因，见应用日志的 MCP 启动横幅）')
+        + '。这是启动失败、不是未安装——不要重复安装，也不要再让用户去找安装入口；请用户到 ' + where
+        + ' 把「启用桌面控制」开关关掉再打开，让 server 重新拉起并重试安装依赖；若仍失败，把上面的失败原因贴出来排查。';
+}
+
+// desktopAvailabilitySummary：权限面板 / 菜单里的一行短文案（不含冗长指引）。
+export function desktopAvailabilitySummary(avail) {
+    const kind = String((avail && avail.kind) || '');
+    const state = String((avail && avail.state) || 'unknown');
+    if (kind === DESKTOP_AVAILABILITY.NOT_INSTALLED) {
+        return '未安装：先到 应用页面 → 外部工具 → 桌面控制 打开开关';
+    }
+    if (kind === DESKTOP_AVAILABILITY.DISABLED) {
+        return '已安装但未启用（' + (clipText(avail && avail.detail, 60) || '开关关闭') + '）：点此去 外部工具 打开';
+    }
+    if (kind === DESKTOP_AVAILABILITY.STARTING) {
+        return '已安装，server 正在启动（state=' + state + '）：稍等再开';
+    }
+    if (kind === DESKTOP_AVAILABILITY.FAILED) {
+        return '已安装但启动失败（state=' + state + '）：到 外部工具 → 桌面控制 关掉开关再打开重试';
+    }
+    return '';
+}
+
 export function controlModeActionOf(input) {
     const raw = String((input && input.action) || '').trim().toLowerCase();
     if (raw === 'exit' || raw === 'leave' || raw === 'stop' || raw === 'off' || raw === '退出') return 'exit';

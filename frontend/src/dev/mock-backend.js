@@ -3465,7 +3465,7 @@ const mockBackend = {
     async MCPSamplesList() {
         const installed = window.__mockMcpInstalled || new Set();
         const base = [
-            {id: 'tts_sapi', name: 'Windows 语音合成（SAPI）', description: '用系统 SAPI 把文本合成 WAV 文件，离线、零安装。', capability: 'tts', serverName: 'tts_sapi', toolName: 'tts_sapi', publicToolName: 'mcp__tts_sapi__tts_sapi', prerequisites: ['Windows 自带 PowerShell（pwsh 7 或 5.1）'], envKeys: [], scriptPath: 'C:\\mock\\builtin-mcp-samples\\tts-sapi.ps1', scriptExists: false, commandPreview: 'pwsh -NoProfile -ExecutionPolicy Bypass -File C:\\mock\\tts-sapi.ps1', clientEnabled: true},
+            {id: 'tts_sapi', name: 'Windows 语音合成（SAPI）', description: '用系统 SAPI 把文本合成 WAV 文件，离线、零安装。', capability: 'tts', serverName: 'tts_sapi', toolName: 'tts_sapi', publicToolName: 'mcp__tts_sapi__tts_sapi', prerequisites: ['Windows PowerShell 5.1（Win10/11 自带，无需另装 PowerShell 7）'], envKeys: [], scriptPath: 'C:\\mock\\builtin-mcp-samples\\tts-sapi.ps1', scriptExists: false, commandPreview: 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\\mock\\tts-sapi.ps1', clientEnabled: true},
             {id: 'ocr_windows', name: 'Windows OCR（系统引擎）', description: '用 Windows.Media.Ocr 识别图片中的文字。', capability: 'ocr', serverName: 'ocr_windows', toolName: 'ocr_windows', publicToolName: 'mcp__ocr_windows__ocr_windows', prerequisites: ['Windows PowerShell 5.1', 'OCR 语言包'], envKeys: [], scriptPath: 'C:\\mock\\builtin-mcp-samples\\ocr-windows.ps1', scriptExists: false, commandPreview: 'powershell -File C:\\mock\\ocr-windows.ps1', clientEnabled: true},
             {id: 'asr_whisper', name: 'whisper.cpp 语音识别', description: '用本机 whisper.cpp 把音频转成文字。', capability: 'asr', serverName: 'asr_whisper', toolName: 'asr_whisper', publicToolName: 'mcp__asr_whisper__asr_whisper', prerequisites: ['Python 3.9+', 'whisper.cpp', 'ggml 模型'], envKeys: ['WHISPER_CLI', 'WHISPER_MODEL'], scriptPath: 'C:\\mock\\builtin-mcp-samples\\asr-whisper.py', scriptExists: false, commandPreview: 'python -u C:\\mock\\asr-whisper.py', clientEnabled: true},
         ];
@@ -3475,6 +3475,31 @@ const mockBackend = {
         window.__mockMcpInstalled = window.__mockMcpInstalled || new Set();
         window.__mockMcpInstalled.add(id);
         return {installed: true, id, publicToolName: 'mcp__' + id + '__' + id, note: 'mock 安装完成'};
+    },
+    // MCP 配置读口（桌面控制可用性判定 + 外部工具页共用）：mock 维护一份最小配置，
+    // 已装的内置示例/桌面组件写进对应行，让 dev 模式的「装没装」判定走真实路径——
+    // 缺这个方法时 refreshDesktopAvailability 会把 configKnown=false、判定退化成 FAILED。
+    async MCPGetConfig() {
+        const installed = window.__mockMcpInstalled || new Set();
+        const mcpServers = {};
+        if (installed.has('tts_sapi')) {
+            mcpServers.tts_sapi = {command: 'powershell', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\mock\\tts-sapi.ps1'], enabledTools: ['tts_sapi']};
+        }
+        if (installed.has('ocr_windows')) {
+            mcpServers.ocr_windows = {command: 'powershell', args: [], enabledTools: ['ocr_windows']};
+        }
+        if (installed.has('asr_whisper')) {
+            mcpServers.asr_whisper = {command: 'python', args: ['-u', 'C:\\mock\\asr-whisper.py'], enabledTools: ['asr_whisper']};
+        }
+        if (window.__mockDesktopInstall && window.__mockDesktopInstall.done) {
+            mcpServers.windows = {command: 'uvx', args: ['--from', 'C:\\mock\\windows_mcp.whl', 'windows-mcp', 'serve', '--no-control'], enabledTools: ['Snapshot']};
+        }
+        return {version: 1, mcpServers};
+    },
+    // MCP 运行态快照：mock 没有真实 server 进程，返回空列表 + enabled=true，
+    // 让 getState().loaded=true，桌面判定不会因「快照没拉到」误报。
+    async MCPSnapshot() {
+        return {enabled: true, servers: []};
     },
     // 桌面控制「安装…」：mock 只回成功步骤（真装依赖要下载 uv / Python，dev 环境不跑）
     async MCPDesktopInstall() {

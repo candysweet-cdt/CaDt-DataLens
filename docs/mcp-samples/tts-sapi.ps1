@@ -2,7 +2,10 @@
 # Tool: tts_sapi { text, voice? ("stella" | "tide"), outputPath? }
 # Writes a WAV file with Windows SAPI (offline, no extra install) and returns its path.
 # Configure in CaDt-DataLens: Settings -> AI -> External Tools -> MCP servers.
-#   command: pwsh   args: -NoProfile -ExecutionPolicy Bypass -File <path to this file>
+#   command: powershell   args: -NoProfile -ExecutionPolicy Bypass -File <path to this file>
+# Use Windows PowerShell 5.1 (powershell.exe, shipped with Win10/11): `pwsh` is PowerShell 7,
+# which is an extra install and is missing on clean machines. This script only needs
+# System.Speech, so 5.1 runs it fine.
 # Keep stdout protocol-only: never Write-Host / Write-Output from this script.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
