@@ -188,6 +188,7 @@ import {createAIGenJobs} from './gen/ai-gen-jobs.js';
 // 智能体（群聊成员）归一化：agents[] 存 ai-config.json，群聊域读它组上下文
 import {createInboxWaiters} from './chat/ai-inbox-wait.js';
 import {agentLevelText} from './group/ai-team-model.js';
+import {createAIGroupBridge} from './group/ai-group-bridge.js';
 import {normalizeAgents} from './agent/ai-agent-model.js';
 import {
     AI_CONFIG_KEY,
@@ -15948,7 +15949,7 @@ async function requestApproval(session, toolMessage, info) {
             flash('已退出消息编辑（会话已切换）');
         }
         // 点会话即退出群聊视图（G6 面板化）：群讨论继续在 runtime 里跑，只是不显示
-        if (panelView !== 'session') setPanelView('session');
+        if (groupBridge.getPanelView() !== 'session') setPanelView('session');
         // 懒加载会话：正文还没读上来（启动只补了当前会话 + 最近若干条）。先补正文再走切换流程，
         // 界面永远看不到「空对话」；同时避免任何一次写盘把还没读完的历史当成空内容写出去。
         if (target._stub) {
@@ -16028,7 +16029,7 @@ async function requestApproval(session, toolMessage, info) {
 
     function newSession() {
         // 新建会话即回到会话视图（G6 面板化）
-        if (panelView !== 'session') setPanelView('session');
+        if (groupBridge.getPanelView() !== 'session') setPanelView('session');
         const current = currentSession();
         // 当前会话还没发过消息时复用它，避免连点新建刷出一堆空会话。
         // 临时会话不参与复用（它不绑工作区，复用等于把一次性会话拉进工作区）。
@@ -16105,7 +16106,7 @@ async function requestApproval(session, toolMessage, info) {
     // 落盘只作留档（meta.temp），重启后启动加载一律滤掉——对用户来说关掉应用就没了。
     // 不复用空会话、不接管工作区草稿：它就该是一张干净的白纸。
     function newTempSession() {
-        if (panelView !== 'session') setPanelView('session');
+        if (groupBridge.getPanelView() !== 'session') setPanelView('session');
         const current = currentSession();
         // 当前就是一张没写过的临时会话：直接复用（连点不刷一堆空临时会话）
         if (isTransientSession(current) && !current.archivedAt && !(current.messages || []).length) {
@@ -17218,78 +17219,16 @@ async function requestApproval(session, toolMessage, info) {
     }
 
     // ---------- 内容视图：会话 | 群聊（G6 面板化） ----------
-
-    // 面板的内容视图只有两种：session（现有对话）/ group（群聊接管）。
-    // 显示形态（dock/fullscreen）归 applyMode 管，这里只管「显示哪套内容」。
-    // 群讨论/自由聊天都跑在 aiGroupRuntime 里，切回会话视图只是卸载 DOM，不停成员发言。
-    let panelView = 'session';
-    let panelGroupSpec = null; // {groupId, title}
-    let groupViewApi = null;   // mountGroupChatView 返回的 {dispose, focus}
-    let groupViewRelease = null;
-    let groupViewFocus = null;
-
-    function applyPanelViewDom() {
-        const group = panelView === 'group';
-        panel.classList.toggle('ai-group-mode', group);
-        if (el.groupHost) el.groupHost.classList.toggle('hidden', !group);
-        // 面板头标题随视图切换：会话视图固定「AI 助手」，群聊视图显示群名
-        if (el.headTitle) el.headTitle.textContent = group ? ((panelGroupSpec && panelGroupSpec.title) || '群聊') : 'AI 助手';
-    }
-
-    function notifyPanelView() {
-        if (!onViewChange) return;
-        try {
-            onViewChange(panelView, panelView === 'group' && panelGroupSpec ? panelGroupSpec.groupId : '');
-        } catch (e) { /* 宿主高亮失败不影响视图切换 */ }
-    }
-
-    function releaseGroupView() {
-        if (groupViewRelease) {
-            try { groupViewRelease(); } catch (e) { /* 卸载失败不阻断切换 */ }
-        }
-        groupViewRelease = null;
-        groupViewApi = null;
-        groupViewFocus = null;
-        if (el.groupHost) el.groupHost.textContent = '';
-    }
-
-    // 入口：bridgeShowGroupView（侧栏群行 / 更多菜单 / 群切换弹层 / AI 代建群）与
-    // bridgeShowSessionView（switchSession / newSession）。返回是否切换成功。
-    function setPanelView(next, spec) {
-        if (next === 'group') {
-            if (!mountGroupChatView || !el.groupHost) {
-                flash('群聊视图不可用（宿主未就绪）', true);
-                return false;
-            }
-            const nextSpec = {
-                groupId: String((spec && spec.groupId) || ''),
-                title: String((spec && spec.title) || ''),
-            };
-            if (!nextSpec.groupId) return false;
-            // 同群重复打开：不重建视图，只确保面板可见
-            if (panelView === 'group' && panelGroupSpec && panelGroupSpec.groupId === nextSpec.groupId && groupViewApi) {
-                open(true);
-                return true;
-            }
-            releaseGroupView();
-            panelView = 'group';
-            panelGroupSpec = nextSpec;
-            applyPanelViewDom();
-            const api = mountGroupChatView(nextSpec, el.groupHost) || null;
-            groupViewApi = api;
-            groupViewRelease = api && typeof api.dispose === 'function' ? api.dispose : null;
-            groupViewFocus = api && typeof api.focus === 'function' ? () => groupViewApi && groupViewApi.focus() : null;
-            open(true);
-            notifyPanelView();
-            return true;
-        }
-        releaseGroupView();
-        panelView = 'session';
-        panelGroupSpec = null;
-        applyPanelViewDom();
-        notifyPanelView();
-        return true;
-    }
+    // 视图状态与挂载/卸载拆到 group/ai-group-bridge.js（phase4 P3），本闭包只留薄转发。
+    const groupBridge = createAIGroupBridge({
+        panel,
+        el,
+        open,
+        flash,
+        get onViewChange() { return onViewChange; },
+        get mountGroupChatView() { return mountGroupChatView; },
+    });
+    const setPanelView = (...args) => groupBridge.setPanelView(...args);
 
     // ---------- 显示方式与几何 ----------
 
@@ -17562,10 +17501,10 @@ async function requestApproval(session, toolMessage, info) {
             }
             panel.classList.remove('hidden');
             applyMode(mode, false);
-            if (panelView === 'group') {
+            if (groupBridge.getPanelView() === 'group') {
                 // 群聊视图接管面板：会话列表 / 消息渲染 / 输入聚焦都跳过，聚焦群聊输入框
                 positionOverlays();
-                setTimeout(() => { if (groupViewFocus) groupViewFocus(); }, 0);
+                setTimeout(() => { const focus = groupBridge.getGroupViewFocus(); if (focus) focus(); }, 0);
             } else {
                 // 面板重新可见时，当前会话视为已查看。
                 clearSessionUnread(currentSession());
@@ -19155,10 +19094,7 @@ async function requestApproval(session, toolMessage, info) {
         // G6 面板化：内容视图切换（会话 ↔ 群聊）。侧栏群行 / 更多菜单 / AI 代建群都走这里。
         bridgeShowGroupView: (spec) => setPanelView('group', spec),
         bridgeShowSessionView: () => setPanelView('session'),
-        bridgePanelView: () => ({
-            view: panelView,
-            groupId: panelView === 'group' && panelGroupSpec ? panelGroupSpec.groupId : '',
-        }),
+        bridgePanelView: () => groupBridge.getBridgePanelView(),
         handleEvent,
         // 多实例：别的窗口写了当前会话时由 main.js 的 resource-changed 转发进来
         handleResourceChange,

@@ -1,6 +1,6 @@
 # 前端拆分第四阶段：ai-panel.js 与 main.js
 
-> 状态：**阶段一 + M1 + M2 + P2 已实施并验证通过；P1 跳过；P3–P4 / M3–M7 待办**（2026-11-24）。本文件既是交接文档，也是本轮实施记录。
+> 状态：**阶段一 + M1 + M2 + M3 + P2 + P3 已实施并验证通过；P1 跳过；P4 / M4–M7 待办**（2026-11-24）。本文件既是交接文档，也是本轮实施记录。
 > 用户裁定范围（2026-11-23 补充）：**本轮分两阶段串行执行——阶段一：ai/ 目录全量重组（117 文件按域归位 + 测试目录镜像 + 护栏/文档同步）；阶段二：两个低风险试点批（P1 / M1）**。验证采用完整档（静态裸引用扫描 + npm test 全量 + npm run build + 定向冒烟）。阶段二试点完成并验证通过后停下汇报，再决定是否继续后续批次（P2–P4 / M2–M7）。
 > 决策依据：phase2/phase3 已建立成熟的 deps 重写 + 分批验证方法论，但明确把这两个文件推迟（「ai-panel 交子代理消息化方案」「main.js 组合根不动」）。本次两份只读调研（ai-panel 19,636 行 / main.js 7,688 行全文逐段读取）确认：可安全拆的叶子块有限，真正的大头被密集测试护栏与硬约束锁死。
 > 前置阅读：`docs/finished-plans/frontend-split-phase2.md`（抽取模式与 tokenizer 三坑）、`docs/finished-plans/frontend-split-phase3.md`（目录归位与多域解耦）、`AGENTS.md`（代码规模与质量红线、AI 工具增删改、app_control 三处对齐）。
@@ -224,7 +224,7 @@
 |---|---|---|---|---|---|---|
 | **P1【本轮试点】** | `ai/session/ai-session-log.js`（阶段一后落点；原写 `ai/ai-session-log.js`） | 16540–16678 | 140 | 会话对话日志落盘（getAILogRoot/ensureAILogDir/queueLogSave/openAILogDir/showSessionDiagnostics） | 低 | 0（0 个测试锚定这些函数名） |
 | **P2【已实施】** | `ai/chat/ai-context-estimate.js` | 实测 buildApiMessages 6247-6441（195 行） | ~213 | buildApiMessages 瘦身组装；4 个 lastBuild* 状态**留主闭包**经 setter 写回（8+ 处读取，整包搬会大改读取点） | 中低 | 已改 ai-turn-steer-wiring.test.mjs 切片路径到新模块 |
-| P3 | `ai/ai-group-bridge.js` | 17337–17409 + 19248–19271 + 19032–19051 | 200 | 群聊视图挂载/卸载、aiGroupApi、bridgeShow* 薄转发 | 中 | 同步 main.js 接线；群聊测试不读源码 |
+| **P3【已实施】** | `ai/group/ai-group-bridge.js` | 实测内容视图块 17220–17292（74 行） | ~88 | 内容视图切换（会话↔群聊）：5 状态 + 4 函数整包搬；aiGroupApi/bridgeShow* 仍是薄转发面（保持原位） | 中 | 0（群聊测试只测 ai-group-model 纯函数，不读视图切换源码） |
 | P4（动手前重评） | `ai/ai-panel-view-switch.js` | 17337–17801 | 465 | setPanelView / 浮窗几何 / 分屏互换 | 高 | ai-panel-mode-lock.test.mjs:24 钉 setMode( 恰好 5 处；ai-auto-collapse 钉显示方式菜单 |
 
 **明确暂缓（本路线图不排期）**：
@@ -243,7 +243,7 @@
 |---|---|---|---|---|---|---|
 | **M1【本轮试点】** | `shell/aux-window-modes.js` | 499–744 | 250 | 便签/监控/对比/查看/预览五种独立窗渲染（auxWindowKind/auxToast/closeAuxWindowSelf/buildAuxWindowHead + 5 个 startXxxWindowMode） | 低 | 0（无测试锚定这 5 个 starter；window-close-semantics 只锁 startConsoleWindowMode，不在本块） |
 | **M2【已实施】** | `editor/bookmark-actions.js` | 原 3614–3671（实测 main.js:1409-1469） | ~93 | 书签 UI 与 app_control 共用动作（list/add/remove/clear/goto + appActionBookmarkDoc） | 低-中 | 0（书签测试测纯函数，不读分发源码） |
-| M3 | `shell/plugin-importer.js` | 3300–3409 | 110 | 插件文档导入器（已有分节注释标识） | 中 | 少量 |
+| **M3【已实施】** | `shell/plugin-importer.js` | 实测 main.js:3038-3148（111 行） | ~118 | 插件文档导入器（askConfirmAsync/importerReadContext/readFileBase64/openWithPluginImporter） | 中 | 0（plugin-importers 测试只测纯函数 findImporterFor/hexDumpToBase64） |
 | M4 | `shell/window-switch.js` | 6027–6053 | 27 | 多窗口切换列表缓存 | 中 | 改 window-switch-wiring.test.mjs:20-30 |
 | M5 | `shell/console-window.js` | 201–473 + 746–754 | 280 | 调试台 + 诊断日志单一入口 | 中高 | 改 window-close-semantics.test.mjs:22-48、session-restore.test.mjs:105-142 |
 | M6 | `shell/workspace-session.js` | 3762–3837 | 75 | 工作区打开/关闭 + 跨窗口会话复用 | 中高 | 中 |
@@ -331,6 +331,11 @@
 **阶段二 M2（已实施）**：从 main.js:1409-1469 拆出 5 个书签 case + `appActionBookmarkDoc` 到 `frontend/src/editor/bookmark-actions.js`（`createBookmarkActions(deps)`，93 行）；`bookmarkOverview`/`formatBookmarkListText` 纯函数直接 import，编辑器域函数（findDocByPath/openPaths/selectLineInDoc/addBookmarkAt/removeBookmarkAt/clearDocBookmarks/rememberDocView）与 docs/file 经 deps getter 注入；main.js 的 5 个 case 改为薄转发，删除原 `appActionBookmarkDoc` 定义。验证同 M1（module-scope 对无 export 顶层脚本误报，改用一次性静态扫描 + 对照验证）；`npm test` 全量 2652 项全绿、`npm run build` 成功。
 
 **阶段二 P2（已实施）**：从 ai-panel.js:6247-6441 拆出 `buildApiMessages`（195 行）到 `frontend/src/ai/chat/ai-context-estimate.js`（`createAIContextEstimate(deps)`，213 行）。14 个纯函数直接 import（ai-constants/plan-file/message-queue/tool-args/compact/context-slim），`settings`/`contextWindowOf` 与 4 个输出状态（anchor/savedTokens/shrinkPressure/shrinkRatio）经 getter/setter 注入——**状态留主闭包**（被 8+ 处读取，整包搬会大改读取点，故只搬函数体、setter 写回）。ai-panel.js 保留 5 行薄转发，清理 8 个未用 import。`ai-turn-steer-wiring.test.mjs` 的源码切片改为读新模块。验证：全量测试全绿、`npm run build` 成功、deps 静态扫描含对照验证通过。ai-panel.js 净减约 190 行。
+
+**阶段二 M3 + P3（已实施，同批）**：
+- M3：从 main.js:3038-3148 拆出插件文档导入器（askConfirmAsync / importerReadContext / readFileBase64 / openWithPluginImporter）到 `frontend/src/shell/plugin-importer.js`（`createPluginImporter(deps)`，118 行）。extOf/findImporterFor/hexDumpToBase64 直接 import，elsDialogs/openConfirmDialog/backend/openVirtualDoc/activityLog/flash 经 deps 注入；main.js 构造模块并保留 `openWithPluginImporter` 解构别名。
+- P3：从 ai-panel.js:17220-17292 拆出内容视图切换（5 个状态 panelView/panelGroupSpec/groupViewApi/groupViewRelease/groupViewFocus + applyPanelViewDom/notifyPanelView/releaseGroupView/setPanelView）到 `frontend/src/ai/group/ai-group-bridge.js`（`createAIGroupBridge(deps)`，88 行）。panel/el/open/flash/onViewChange/mountGroupChatView 经 getter 注入；模块导出 setPanelView/getPanelView/getBridgePanelView/getGroupViewFocus，主文件 3 处 panelView 读取与 return 面 bridgePanelView、groupViewFocus 全改走 getter。`aiGroupApi`/`bridgeShow*` 仍是薄转发面（保持原位，无拆分价值）。
+- 验证：全量测试全绿、`npm run build` 成功、两个模块的 deps 静态扫描（P3 对照验证抓到注入 bug）通过。
 
 ---
 
