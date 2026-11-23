@@ -112,6 +112,7 @@ import {createEditorMenus} from './editor/editor-menus.js';
 import {createExplorerOps} from './explorer/explorer-ops.js';
 import {createEditorGroups} from './editor/editor-groups.js';
 import {bookmarkOverview, formatBookmarkListText} from './editor/bookmark-list.js';
+import {createBookmarkActions} from './editor/bookmark-actions.js';
 import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from './core/readonly.js';
 import {listScratchDrafts, isScratchPath, normalizeScratchExt, scratchDir} from './core/scratch.js';
 import {tabKindOf} from './core/tab-kinds.js';
@@ -1406,66 +1407,21 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
             }
             return result;
         }
-        // ===== 书签（跨文件行书签；聚合口径=打开中的文档，与书签的持久化语义一致）=====
+        // ===== 书签（跨文件行书签；执行体拆到 editor/bookmark-actions.js，phase4 M2）=====
         case 'list_bookmarks': {
-            return formatBookmarkListText(bookmarkOverview(docs));
+            return bookmarkActions.listBookmarks();
         }
         case 'add_bookmark': {
-            const doc = await appActionBookmarkDoc(p);
-            const line = Math.round(Number(p.line));
-            if (!line || line < 1) throw new Error('add_bookmark 需要 line（1 起的行号）');
-            // 没有行号视图（如树视图）时先切到代码视图定位到该行，保证行数钳制可用
-            let ace = doc.editor && doc.editor.aceEditor;
-            if (!ace) {
-                const landed = await selectLineInDoc(doc, line);
-                if (!landed) throw new Error((doc.name || '该文件') + ' 当前没有支持行号的视图，无法加书签');
-                ace = doc.editor && doc.editor.aceEditor;
-            }
-            const result = addBookmarkAt(doc, line - 1);
-            if (!result) throw new Error('添加书签失败：该文件没有可用的代码/文本编辑器');
-            rememberDocView(doc);
-            let lineCount = 0;
-            try { lineCount = ace.session.getLength(); } catch (e) {}
-            const out = {file: doc.name || doc.path, line: result.row + 1, added: !result.existed};
-            if (lineCount && line > lineCount) {
-                out.note = '请求行超出范围（共 ' + lineCount + ' 行），已加在第 ' + (result.row + 1) + ' 行';
-            }
-            return out;
+            return bookmarkActions.addBookmark(p);
         }
         case 'remove_bookmark': {
-            const doc = await appActionBookmarkDoc(p);
-            const line = Math.round(Number(p.line));
-            if (!line || line < 1) throw new Error('remove_bookmark 需要 line（1 起的行号）');
-            const result = removeBookmarkAt(doc, line - 1);
-            if (!result || !result.existed) {
-                const rows = [...(doc.bookmarks || [])].sort((a, b) => a - b).map((row) => row + 1);
-                throw new Error('该文件第 ' + line + ' 行没有书签' +
-                    (rows.length ? '（现有书签行：' + rows.join('、') + '）' : '（该文件还没有书签）'));
-            }
-            rememberDocView(doc);
-            return {file: doc.name || doc.path, line, removed: true};
+            return bookmarkActions.removeBookmark(p);
         }
         case 'clear_bookmarks': {
-            const doc = await appActionBookmarkDoc(p);
-            const removed = clearDocBookmarks(doc);
-            rememberDocView(doc);
-            return {file: doc.name || doc.path, removed};
+            return bookmarkActions.clearBookmarks(p);
         }
         case 'goto_bookmark': {
-            const path = String(p.path || '').trim();
-            if (!path) throw new Error('goto_bookmark 需要 path');
-            const line = Math.round(Number(p.line));
-            if (!line || line < 1) throw new Error('goto_bookmark 需要 line（1 起的行号）');
-            await openPaths([path]);
-            const doc = findDocByPath(path);
-            if (!doc) throw new Error('文件不存在或无法打开：' + path);
-            const landed = await selectLineInDoc(doc, line);
-            if (!landed) throw new Error((doc.name || '该文件') + ' 不支持按行定位');
-            const out = {file: doc.name || doc.path, line: landed.line};
-            if (landed.clamped) {
-                out.note = '请求行超出范围（共 ' + landed.lineCount + ' 行），已定位到第 ' + landed.line + ' 行';
-            }
-            return out;
+            return bookmarkActions.gotoBookmark(p);
         }
         case 'toggle_sidebar': {
             toggleSidebarView(['files', 'git', 'structure', 'chats'].includes(p.view) ? p.view : settings.sidebarView || 'files');
@@ -2823,6 +2779,18 @@ const editorGroupsMod = createEditorGroups({
     get workspaceFolder() { return workspaceFolder; },
 });
 const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterPluginView, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hidePluginView, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
+// app_control 书签动作执行体（phase4 M2）：编辑器域函数经 getter 活引用注入。
+const bookmarkActions = createBookmarkActions({
+    getDocs: () => docs,
+    getFile: () => file,
+    findDocByPath,
+    openPaths,
+    selectLineInDoc,
+    addBookmarkAt,
+    removeBookmarkAt,
+    clearDocBookmarks,
+    rememberDocView,
+});
 // 内置类型表由 new-file-menu.js 单一来源派生；属性面板的「新建文档」菜单保持既有行为，
 // 资源管理器右键的「新建」子菜单则按 settings.newFileMenu 合成（见 explorer-ops.js）。
 const NEW_FILE_TYPES = BUILTIN_FILE_TYPES.filter((t) => t.group === 'top').map(({id, ...type}) => type);
@@ -3419,24 +3387,6 @@ async function jumpBookmarkEntry(entry) {
     await openPaths([path]);
     const doc = findDocByPath(path);
     if (doc) await selectLineInDoc(doc, (Number(entry && entry.row) || 0) + 1);
-}
-
-async function appActionBookmarkDoc(p) {
-    const path = String(p.path || '').trim();
-    let doc = null;
-    if (path) {
-        doc = findDocByPath(path);
-        if (!doc) {
-            await openPaths([path]);
-            doc = findDocByPath(path);
-        }
-        if (!doc) throw new Error('文件不存在或无法打开：' + path);
-    } else {
-        doc = file;
-        if (!doc) throw new Error('当前没有打开的文件；请传 path 指定文件');
-    }
-    if (doc.binary || doc.large) throw new Error((doc.name || '该文件') + ' 是二进制或大文件，不支持行书签');
-    return doc;
 }
 
 async function openDialog() {

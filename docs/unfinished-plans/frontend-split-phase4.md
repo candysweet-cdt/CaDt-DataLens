@@ -1,6 +1,6 @@
 # 前端拆分第四阶段：ai-panel.js 与 main.js
 
-> 状态：**阶段一 + M1 已实施并验证通过；P1 跳过；P2–P4 / M2–M7 待办**（2026-11-24）。本文件既是交接文档，也是本轮实施记录。
+> 状态：**阶段一 + M1 + M2 已实施并验证通过；P1 跳过；P2–P4 / M3–M7 待办**（2026-11-24）。本文件既是交接文档，也是本轮实施记录。
 > 用户裁定范围（2026-11-23 补充）：**本轮分两阶段串行执行——阶段一：ai/ 目录全量重组（117 文件按域归位 + 测试目录镜像 + 护栏/文档同步）；阶段二：两个低风险试点批（P1 / M1）**。验证采用完整档（静态裸引用扫描 + npm test 全量 + npm run build + 定向冒烟）。阶段二试点完成并验证通过后停下汇报，再决定是否继续后续批次（P2–P4 / M2–M7）。
 > 决策依据：phase2/phase3 已建立成熟的 deps 重写 + 分批验证方法论，但明确把这两个文件推迟（「ai-panel 交子代理消息化方案」「main.js 组合根不动」）。本次两份只读调研（ai-panel 19,636 行 / main.js 7,688 行全文逐段读取）确认：可安全拆的叶子块有限，真正的大头被密集测试护栏与硬约束锁死。
 > 前置阅读：`docs/finished-plans/frontend-split-phase2.md`（抽取模式与 tokenizer 三坑）、`docs/finished-plans/frontend-split-phase3.md`（目录归位与多域解耦）、`AGENTS.md`（代码规模与质量红线、AI 工具增删改、app_control 三处对齐）。
@@ -242,7 +242,7 @@
 | 批次 | 新模块 | 锚点区间 | ≈行 | 职责 | 风险 | 测试改动 |
 |---|---|---|---|---|---|---|
 | **M1【本轮试点】** | `shell/aux-window-modes.js` | 499–744 | 250 | 便签/监控/对比/查看/预览五种独立窗渲染（auxWindowKind/auxToast/closeAuxWindowSelf/buildAuxWindowHead + 5 个 startXxxWindowMode） | 低 | 0（无测试锚定这 5 个 starter；window-close-semantics 只锁 startConsoleWindowMode，不在本块） |
-| M2 | `editor/bookmark-actions.js` | 3614–3671 | 58 | 书签 UI 与 app_control 共用动作 | 低-中 | 少量 |
+| **M2【已实施】** | `editor/bookmark-actions.js` | 原 3614–3671（实测 main.js:1409-1469） | ~93 | 书签 UI 与 app_control 共用动作（list/add/remove/clear/goto + appActionBookmarkDoc） | 低-中 | 0（书签测试测纯函数，不读分发源码） |
 | M3 | `shell/plugin-importer.js` | 3300–3409 | 110 | 插件文档导入器（已有分节注释标识） | 中 | 少量 |
 | M4 | `shell/window-switch.js` | 6027–6053 | 27 | 多窗口切换列表缓存 | 中 | 改 window-switch-wiring.test.mjs:20-30 |
 | M5 | `shell/console-window.js` | 201–473 + 746–754 | 280 | 调试台 + 诊断日志单一入口 | 中高 | 改 window-close-semantics.test.mjs:22-48、session-restore.test.mjs:105-142 |
@@ -326,6 +326,9 @@
 **阶段二 M1（已实施）**：从 main.js:494-745 拆出 5 个辅助窗启动器 + 头部/提示基建到 `frontend/src/shell/aux-window-modes.js`（`createAuxWindowModes(deps)`，257 行）；backend/rt/appEvents/applySettings/baseNameOf 经 getter 注入，纯函数/工厂直接 import；`auxWindowKind` 顶层 await Promise 按硬约束留 main.js；bridgeUI 的 5 个 deps getter 改指向模块返回面。
 - 验证：module-scope 对无 export 顶层脚本误报（deps getter 键被当裸用），按文档预案改用 `.cadt/tmp-m1-scan.mjs` 一次性静态扫描（含对照验证：注入已知裸用 bug 确认能抓到）；`npm test` 全量 2652 项全绿；`npm run build` 成功。
 - 冒烟边界：辅助窗需带 `--aux-kind` 参数启动独立窗口，app_control 不跨窗口、无法模拟；运行态冒烟需在重启后的独立窗口手动进行。
+  - 后续补测（用户重建 exe 后）：桌面控制打开便签独立窗，标题/尺寸正确、Alt+F4 关窗正常、无运行时错误；便签窗内容空白系数据原因（全局便签为空 + 当前未打开工作区），与 M1 无关（deps 传法已 git 对比逐字一致）。
+
+**阶段二 M2（已实施）**：从 main.js:1409-1469 拆出 5 个书签 case + `appActionBookmarkDoc` 到 `frontend/src/editor/bookmark-actions.js`（`createBookmarkActions(deps)`，93 行）；`bookmarkOverview`/`formatBookmarkListText` 纯函数直接 import，编辑器域函数（findDocByPath/openPaths/selectLineInDoc/addBookmarkAt/removeBookmarkAt/clearDocBookmarks/rememberDocView）与 docs/file 经 deps getter 注入；main.js 的 5 个 case 改为薄转发，删除原 `appActionBookmarkDoc` 定义。验证同 M1（module-scope 对无 export 顶层脚本误报，改用一次性静态扫描 + 对照验证）；`npm test` 全量 2652 项全绿、`npm run build` 成功。
 
 ---
 
