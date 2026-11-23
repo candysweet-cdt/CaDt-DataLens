@@ -8,7 +8,7 @@
 import {iconSvg} from '../core/icons.js';
 import {createInput, createSelect} from '../core/form-controls.js';
 import {createFileIcon} from '../core/fileicons.js';
-import {kvGet, kvSet} from '../core/kv-store.js';
+import {kvGet, kvGetJson, kvSet, kvSetJson} from '../core/kv-store.js';
 import {createGitGraphDialogs} from './git-graph-dialogs.js';
 
 const ROW_H = 26;        // 提交行高（px）
