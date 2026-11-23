@@ -126,7 +126,14 @@ function createOverlayStack() {
                 return false;
             }
         }
-        entry.handle.dispose();
+        // 与 Esc 同源：外点关闭必须走 onClose（浮层在回调里移除 DOM / 清监听 / 复位状态），
+        // 不能只 dispose——否则 DOM 残留但内联 z-index 被清成 auto，浮层会沉到 AI 面板
+        // （z-index 20/24）底下被盖住（消息中心浮层实测：ask_user 通知弹出后外点关闭，
+        // 浮层残留不可见，面板重建后才重新露出）。外点语义就是「关这一层」，
+        // 不尊重 onClose 的让路返回值（那是 Esc 逐层退栈才有的语义）。
+        safeClose(entry);
+        // 兜底：onClose 未自拆的调用方（纯逻辑层 / 只置空句柄）强制出栈，避免泄漏。
+        if (entries.indexOf(entry) >= 0) entry.handle.dispose();
         return true;
     }
 

@@ -217,15 +217,18 @@ test('dispatchOutsideClick：点在 el 内放行、点在 el 外关闭，打开�
     const outside = fakeEl();
     const panel = fakeEl();
     panel.contains = (t) => t === inside;
-    stack.open({ id: 'pop', kind: 'popover', el: panel, closeOnOutsideClick: true, onClose: () => true });
+    let closed = 0;
+    stack.open({ id: 'pop', kind: 'popover', el: panel, closeOnOutsideClick: true, onClose: () => { closed++; return true; } });
     // 打开当帧的 pointerdown 不关闭（pendingActivate）
     assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: outside })), false);
     await new Promise((r) => setTimeout(r, 0));
     // 点在内部不关
     assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: inside })), false);
     assert.equal(stack.size(), 1);
-    // 点在外部关闭
+    assert.equal(closed, 0);
+    // 点在外部关闭：必须走 onClose（浮层在回调里移除 DOM，否则残留后被面板盖住）
     assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: outside })), true);
+    assert.equal(closed, 1);
     assert.equal(stack.size(), 0);
 });
 

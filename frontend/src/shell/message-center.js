@@ -97,7 +97,12 @@ export function createMessageCenter(ctx) {
             badge.classList.toggle('hidden', !count);
             btn.dataset.tip = count ? '消息中心（' + count + ' 条未读）' : '消息中心';
         }
-        if (pop && pop.isConnected) renderPanel(pop);
+        if (pop && pop.isConnected) {
+            renderPanel(pop);
+            // 新消息进来（如 ask_user 提问）会让未读排前、面板变高：重新定位让底边继续贴按钮。
+            // 否则顶边固定 + 内容增高会把底部顶出视口/状态栏，只露出上半截（与「清空全部」同一处理）。
+            if (placePanel) placePanel();
+        }
     }
 
     // 新增消息：msg = {kind: 'ai'|'success'|'error'|'update'|'info', title, body, sessionId?, actionId?}；

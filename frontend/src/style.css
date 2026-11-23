@@ -3746,7 +3746,9 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
 /* 消息中心浮层面板（按钮上方，右对齐贴右缘） */
 .msg-center-pop {
     position: fixed;
-    /* z-index 由全局弹层栈分配（popover 档） */
+    /* z-index 由全局弹层栈分配（popover 档 4100+）；这里留 4100 兜底，
+       避免任何 restoreZ 路径把内联值清掉后掉回 auto、被 AI 面板（z-index 20/24）盖住 */
+    z-index: 4100;
     width: 340px;
     max-width: calc(100vw - 16px);
     max-height: min(56vh, 440px);
