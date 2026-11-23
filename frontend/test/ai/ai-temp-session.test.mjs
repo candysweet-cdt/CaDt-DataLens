@@ -11,7 +11,7 @@ import {readFileSync} from 'node:fs';
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 const panel = read('../../src/ai/ai-panel.js');
-const list = read('../../src/ai/ai-session-list.js');
+const list = read('../../src/ai/session/ai-session-list.js');
 const html = read('../../index.html');
 
 function sliceFunction(source, marker, nextMarker = '\n    function ') {
@@ -83,7 +83,7 @@ test('临时会话的派生（分支 / 支线）继承 temp 且不绑工作区',
     assert.match(branchFn, /if \(isTransientSession\(branch\)\) branch\.workspace = '';/,
         '分支兜底绑定会把临时会话变成工作区会话');
 
-    const sidechat = read('../../src/ai/ai-sidechat.js');
+    const sidechat = read('../../src/ai/chat/ai-sidechat.js');
     assert.match(sidechat, /Object\.assign\(child, inherited\)/);
     assert.match(sidechat, /if \(child\.temp === true\) child\.workspace = '';/);
     assert.match(sidechat, /forkSettings\(owner\)/);

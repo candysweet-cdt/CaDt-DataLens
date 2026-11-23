@@ -2,8 +2,8 @@
 // （§1.2）、纪要润色/导出/带回（§3.8）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createAIGroupRuntime} from '../../src/ai/ai-group-runtime.js';
-import {buildChairMessages, buildMemberMessages, normalizeGroupMeta} from '../../src/ai/ai-group-model.js';
+import {createAIGroupRuntime} from '../../src/ai/group/ai-group-runtime.js';
+import {buildChairMessages, buildMemberMessages, normalizeGroupMeta} from '../../src/ai/group/ai-group-model.js';
 
 async function settle(ms = 40) {
     await new Promise((resolve) => setTimeout(resolve, ms));

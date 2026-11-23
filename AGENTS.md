@@ -45,7 +45,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 > 2026-11-14 定，源自 phase 2/3 前端拆分与历次带病提交的实测教训。行数不是目标，职责单一才是；每条红线背后都有真实事故。
 
 **文件规模**
-- 新建源码文件目标 ≤ 1500 行，**硬上限 3000 行**（Go 与前端同规）；豁免类不计上限：测试文件（`*_test.go` / `*.test.mjs`）、样式、HTML、表驱动常量（`structure.js`、`run.js`、`ai/ai-tool-defs.js`、`ai/ai-constants.js`、`dev/mock-backend.js`）。
+- 新建源码文件目标 ≤ 1500 行，**硬上限 3000 行**（Go 与前端同规）；豁免类不计上限：测试文件（`*_test.go` / `*.test.mjs`）、样式、HTML、表驱动常量（`structure.js`、`run.js`、`ai/tools/ai-tool-defs.js`、`ai/core/ai-constants.js`、`dev/mock-backend.js`）。
 - 拆分信号看职责不看行数：文件里出现第二个互不相关域（靠分节注释隔开的两类功能）就必须拆，几百行也不留——「现在无痛拆」的成本远低于「将来被迫拆」。
 - 存量超线文件「只减不增」：不往里加新域，改动到哪顺手收敛到哪。当前超线（2026-11-14 实测，按 3000 行口径）：前端 `ai/ai-panel.js`（1.1 万行，拆分方案另立）、`main.js`（4.4k 组合根）；Go 侧无超线。
 
@@ -83,7 +83,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - **表单控件硬规范（2026-11-15 定）**：禁止新增裸 `<input>` / `<select>` / `<textarea>`（含 checkbox / radio），一律用 `core/form-controls.js` 的 `createSwitch / createSelect / createInput / createTextarea`（动态）或 `docs/frontend-form-controls.md` 里的静态 class 结构；设置页行式下拉用 `createSettingsSelect`。`style.css` 的 `:where()` 全局兜底只兜存量，不是继续写原生控件的许可；`test/core/form-controls-factory.test.mjs` 按文件基线卡新增，**基线只允许调小，不许调大**。
 - **弹层硬规范（2026-11-20 定）**：新增页面级浮层（对话框/模态/popover/菜单/灯箱）必须经 `core/overlay-stack.js` 的 `overlayStack.open({id, kind, el, onClose})` 注册、所有关闭路径收口 `handle.dispose()`，Esc 由栈按层序退——**不要再写自己的 window/document 级 Esc 监听，也不要在 style.css 手写弹层 z-index**（档位由栈分配）；**外点关闭走同一栈的 `open({closeOnOutsideClick: true, anchors})`，不要再自挂 document `pointerdown`/`mousedown` 外点监听**（护栏 `test/core/outside-click-guard.test.mjs`，白名单只许减不许增）；锚点定位走 `core/popover-position.js` 的 `placePopover`。面板/视图内部的小浮层不进栈、可自挂 Esc；元素级 Esc 语义 ≠「关所在层」的输入框打 `data-esc-local`。护栏 `test/core/overlay-esc-guard.test.mjs` 扫描全局 Esc 监听，非豁免文件直接红——**新弹层让测试变绿的正确做法是注册进栈，不是加豁免**。方案见 `docs/finished-plans/overlay-stack.md`。
 - **通用工具函数硬规范（2026-11-23 定）**：写工具函数前先查 `docs/core-capabilities.md`——转义（`core/escape.js`）、字节/时间格式化（`core/humanize.js`）、DOM 工厂（`core/dom.js`）、短 id（`core/id.js`）、JSON 容错解析（`core/json-safe.js`）、localStorage 读写（`core/kv-store.js`）、文本剪贴板（`core/clipboard.js`）等已有唯一实现，**禁止在业务模块重写**；护栏 `test/core/utility-duplication-guard.test.mjs` 按文件基线卡新增（只许减不许增），新文件出现重复实现直接红。语义相近但不同的转义（XML / 插件上下文 / 图表 SVG）不算重复，已在清单里逐条说明。
-- **图标硬规范（2026-11-22 定，icon-consolidation 落地）**：通用 UI 图标一律走 `core/icons.js` 的 `iconSvg()`——业务代码**禁止内联 `<svg>` 字面量、禁止自建局部图标表 / 影子工厂（`icons` 对象、`icon()` 一类）、禁止遗留 MDL2 码位（`icon: 'E8C8'` 类）**；`iconHtml` 只允许 `iconSvg()` 来源，其他来源必须带 `// iconHtml-exception:` 原因注释。合理例外域（不算散落、禁止并入注册表）：文件类型 `core/fileicons*.js`、品牌 `ai/ai-provider-icons.js`、AI 可视化引擎 `core/widget.js` / `core/*-render.js`。护栏 `test/core/icon-guard.test.mjs`（已登记 `npm test`）按文件基线只减不增——**新图标让测试保持绿的正确做法是先登记注册表再用 iconSvg()，不是加豁免**；尺寸注意：无 CSS `svg` 规则的容器里 iconSvg 默认 14px 会替代 SVG 的 100% 默认撑满，按容器显式传尺寸。规范全文见 `docs/icon-guidelines.md`，方案见 `docs/finished-plans/icon-consolidation.md`。
+- **图标硬规范（2026-11-22 定，icon-consolidation 落地）**：通用 UI 图标一律走 `core/icons.js` 的 `iconSvg()`——业务代码**禁止内联 `<svg>` 字面量、禁止自建局部图标表 / 影子工厂（`icons` 对象、`icon()` 一类）、禁止遗留 MDL2 码位（`icon: 'E8C8'` 类）**；`iconHtml` 只允许 `iconSvg()` 来源，其他来源必须带 `// iconHtml-exception:` 原因注释。合理例外域（不算散落、禁止并入注册表）：文件类型 `core/fileicons*.js`、品牌 `ai/core/ai-provider-icons.js`、AI 可视化引擎 `core/widget.js` / `core/*-render.js`。护栏 `test/core/icon-guard.test.mjs`（已登记 `npm test`）按文件基线只减不增——**新图标让测试保持绿的正确做法是先登记注册表再用 iconSvg()，不是加豁免**；尺寸注意：无 CSS `svg` 规则的容器里 iconSvg 默认 14px 会替代 SVG 的 100% 默认撑满，按容器显式传尺寸。规范全文见 `docs/icon-guidelines.md`，方案见 `docs/finished-plans/icon-consolidation.md`。
 - **设置同步硬规范（2026-11-22 定）**：`settings` 的持久化与跨窗口同步只有三条通道，别开第四条——① `applySettings()`（settings-ui.js）：全量重绘 + 落盘 + `settings-changed` 广播，设置页/菜单等用户可见变更的唯一出口；② `persistSettingsLight()`：只落盘 + 广播不重绘，拖分割线 / `rememberScratchExt` 等高频或局部小改动走它；③ `applyRemoteSettings()`：跨窗快照**唯一合并入口**（剥 `PER_WINDOW_LAYOUT_KEYS` 后原地合并 + 落盘 + 重绘，不再广播防环）。**禁止**在任何其他文件直写 `localStorage.setItem(settingsKey…)`、新增第二个 `EventsEmit('settings-changed')`、或绕过合并入口直并快照（历史直写点漏广播 = 别的窗口内存副本停在旧值）。新增「窗口自身形态」类键（面板显隐/宽度/形态、窗口模式、当前选择——如 `runActiveProfile`）必须登记 `PER_WINDOW_LAYOUT_KEYS`（settings-sync.js），偏好与数据键默认同步；判类规则见该注释。`applyAlwaysOnTop` 带值未变守卫——Wails `SetAlwaysOnTop` 会无条件把窗口提到本档 Z 序最顶（win32 实测），去掉守卫会复现「点侧边栏图标两窗来回闪」。护栏 `test/settings/settings-windowops.test.mjs`（已登记 `npm test`）。
 - Markdown 渲染链：markdown-it → DOMPurify → hljs / KaTeX / mermaid；涉安全的改动（sanitize、外链、内嵌 HTML）必须保守，**原始 HTML 不执行是硬要求**。
 - 预览/表格等大 DOM 操作注意避免整段 `innerHTML` 重渲染。
@@ -193,7 +193,7 @@ powershell -ExecutionPolicy Bypass -File tools/build-installer.ps1
 # Go 测试
 go test ./...
 
-# 重训端侧命令分类器（产出 frontend/src/ai/local-classifier-weights.mjs，语料/硬指标在脚本内）
+# 重训端侧命令分类器（产出 frontend/src/ai/security/local-classifier-weights.mjs，语料/硬指标在脚本内）
 node scripts/train-local-classifier.mjs --version factory-YYYY-MM-DD-1
 
 # 后端测试（含 Windows 集成测试）

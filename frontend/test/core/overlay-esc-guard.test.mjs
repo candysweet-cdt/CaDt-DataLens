@@ -24,7 +24,7 @@ const ESCAPE_LOCAL_WHITELIST = {
     'core/tooltip.js': 'tooltip 非栈成员：任何 Esc 顺手藏气泡，不 preventDefault',
     // 面板层叠上下文内自管的小浮层（栈消费时被抢占、栈空时自关，见 AGENTS.md）
     'ai/ai-panel.js': '面板内 ctx/changes pop：面板层叠上下文内自管',
-    'ai/ai-group-view.js': '群聊菜单/mention pop：挂群聊视图 shell 内自管',
+    'ai/group/ai-group-view.js': '群聊菜单/mention pop：挂群聊视图 shell 内自管',
     // 全屏视图 / 文档内浮层：非页面级弹层
     'reading/reading.js': '阅读模式是全屏视图状态机，Esc 链只管视图内部',
     'editor/editor-csv-view.js': 'CSV 统计面板挂 doc.tableEl 内，per-doc 自管',

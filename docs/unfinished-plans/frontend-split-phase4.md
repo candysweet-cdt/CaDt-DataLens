@@ -1,6 +1,6 @@
 # 前端拆分第四阶段：ai-panel.js 与 main.js
 
-> 状态：**方案定稿，尚未实施**（2026-11-24）。本文件是交接文档，供接手会话按批次执行。
+> 状态：**阶段一 + M1 已实施并验证通过；P1 跳过；P2–P4 / M2–M7 待办**（2026-11-24）。本文件既是交接文档，也是本轮实施记录。
 > 用户裁定范围（2026-11-23 补充）：**本轮分两阶段串行执行——阶段一：ai/ 目录全量重组（117 文件按域归位 + 测试目录镜像 + 护栏/文档同步）；阶段二：两个低风险试点批（P1 / M1）**。验证采用完整档（静态裸引用扫描 + npm test 全量 + npm run build + 定向冒烟）。阶段二试点完成并验证通过后停下汇报，再决定是否继续后续批次（P2–P4 / M2–M7）。
 > 决策依据：phase2/phase3 已建立成熟的 deps 重写 + 分批验证方法论，但明确把这两个文件推迟（「ai-panel 交子代理消息化方案」「main.js 组合根不动」）。本次两份只读调研（ai-panel 19,636 行 / main.js 7,688 行全文逐段读取）确认：可安全拆的叶子块有限，真正的大头被密集测试护栏与硬约束锁死。
 > 前置阅读：`docs/finished-plans/frontend-split-phase2.md`（抽取模式与 tokenizer 三坑）、`docs/finished-plans/frontend-split-phase3.md`（目录归位与多域解耦）、`AGENTS.md`（代码规模与质量红线、AI 工具增删改、app_control 三处对齐）。
@@ -97,7 +97,7 @@
 - 结构：`// 顶部 1–9 职责注释` → `let permissionLifecycleHook`（:6）+ `export function setPermissionLifecycleHook`（:7–9）→ **95 条顶层 import**（:10–327）→ **唯一大工厂 `export function createAIPanel(options)`（:329–19636）**。
 - 工厂体内：**579 个 4 空格缩进的 function/async function**、**39 个 `const xxx = createXxx(...)` 兄弟模块工厂**、**52 处 `// ---------- xxx ----------` 分节注释**、`return {...}` 在 :19171–19635。
 - 只有 2 个 export：`:7 setPermissionLifecycleHook`、`:329 createAIPanel`。**无其他具名导出**。
-- 唯一 import 点：`frontend/src/main.js:33` `import {createAIPanel} from './ai/ai-panel.js';`。全仓无第二处。
+- 唯一 import 点：`frontend/src/main.js:33` `import {createAIPanel} from '../../frontend/src/ai/ai-panel.js';`。全仓无第二处。
 - **工厂 + deps 注入模式（双重）**：
   1. 主工厂 `createAIPanel(options)` 把 opts 解包成约 60 个注入能力（:330–484），典型 `typeof opts.X === 'function' ? ... : noop` 兜底。
   2. 39 个内部兄弟模块工厂全部 factory + 显式 deps 注入；let 状态经 **58 处 getter/setter** 传活引用（例 `getStream: () => stream` :18470、`getDismissedPlanApproval`/`setDismissedPlanApproval` :18468-18469）；互引模块用惰性箭头转发解环（:18359、:18369-18372、:18295-18296）。
@@ -269,6 +269,8 @@
 
 **零测试锚定依据**：全仓 grep `queueLogSave|getAILogRoot|ensureAILogDir|openAILogDir|showSessionDiagnostics` 在 `frontend/test/` 下 0 命中（唯一相关 ai-session-disk.test.mjs 测的是已拆出的 ai-session-disk.js，不动本块）。
 
+> **⚠️ P1 已裁定跳过（2026-11-24，用户拍板）**：动手前复核发现，本调研基于旧快照，块主体的落盘机 `createAIConversationLog`（含 `queueLogSave`/`appendAskMarkdown`）早已拆进 `frontend/src/ai/session/ai-session-disk.js:1087-1306`。ai-panel.js 现存的只是它的薄别名 + 路径解析（getAILogRoot/ensureAILogDir/openAILogDir）+ 诊断 UI（showSessionDiagnostics），后者依赖 openAIDialog/dialogNode/dialogButton/closeAIDialog、backend、flash、showNote、currentSession、replaySessionLog、aiTextOf、aiFormatBytes、effectiveStorageMode 等 20+ 符号，且 `conversationLog.appendAskMarkdown` 被块外的 markdown 构建函数共用。按 AGENTS.md「注入面 >15 项不搬」红线，强拆违反判据且收益极小（主体已拆出），故跳过 P1。阶段二只做 M1。
+
 ---
 
 ## 6. 试点批 M1 实施步骤：`frontend/src/shell/aux-window-modes.js`
@@ -306,9 +308,24 @@
 5. 多会话并行改动冲突——动手前检查工作树，若有在途未提交改动先与用户确认（phase3 的 Z 归位就因 12 个在途文件而推迟）。
 6. tokenizer 重写三坑（phase2 记录）：of-in 非声明上下文 / import 绑定进 topLevel / 对象简写位展开 `key: deps.X`。
 
-**收尾**（阶段一 + 试点完成后）：更新 AGENTS.md 目录清单与 CHANGELOG.md / README.md（用户可见行为无变化，记为 refactor）；本文件从 `docs/unfinished-plans/` 移入 `docs/finished-plans/`，阶段一与 P1/M1 标「已实施」、其余标「待办」；用 cognition_edit 维护受影响条目（ai-panel.js / main.js / module-scope.test.mjs 及阶段一归位后的各 ai/ 子目录条目的 F/R/A/S）。
+**收尾**（阶段一 + 试点完成后）：更新 AGENTS.md 目录清单与 CHANGELOG.md / README.md（用户可见行为无变化，记为 refactor）；用 cognition_edit 维护受影响条目（ai-panel.js / main.js / module-scope.test.mjs 及阶段一归位后的各 ai/ 子目录条目的 F/R/A/S）。**本文件暂留 `docs/unfinished-plans/`**（P2–P4 / M2–M7 未实施，未达「全部实施后移入 finished-plans」的条件）；待全部批次完成后再移入。
 
 **不在本方案范围**：P2–P4、M2–M7 的实施；style.css 拆分（已判定必要性低）；Go 侧（结构健康，无需动）。阶段二验证通过后停下汇报，是否继续后续批次由用户另行决定。
+
+### 8.1 本轮实施记录（2026-11-24）
+
+**阶段一：ai/ 目录全量重组（已实施）**
+- 116 个源码文件按 10 域归位（agent/chat/core/gen/group/security/session/settings/tools/usage），`ai-panel.js` 留 `ai/` 根作组合根；127 个测试文件镜像拆到 `test/ai/<域>/`，7 个组合根/跨多域测试留根。
+- 一次性迁移脚本（`.cadt/tmp-*`，用完即删）按 basename 查映射表，重算所有相对路径层级（import / read() / new URL() / 动态 import / 断言正则 / HOSTS 裸路径），同步 `package.json` 的 `test:ai` 清单（127 条）。
+- 修复了迁移暴露的边角：留根测试路径层级、`read()` 自带基准包装、断言字符串被误改、动态 import 变量路径、正则字面量里的 import 断言。
+- 验证：`npm test` 全量 2652 项全绿（1495+649+487+21）；`npm run build` 成功。
+- 认知索引：15 条旧扁平路径条目迁到新域路径，更新 `cognition_app.go` 的 R 引用。
+
+**阶段二 P1（跳过）**：见第 5 节末尾裁定——落盘机早已拆出、诊断 UI 注入面超红线。
+
+**阶段二 M1（已实施）**：从 main.js:494-745 拆出 5 个辅助窗启动器 + 头部/提示基建到 `frontend/src/shell/aux-window-modes.js`（`createAuxWindowModes(deps)`，257 行）；backend/rt/appEvents/applySettings/baseNameOf 经 getter 注入，纯函数/工厂直接 import；`auxWindowKind` 顶层 await Promise 按硬约束留 main.js；bridgeUI 的 5 个 deps getter 改指向模块返回面。
+- 验证：module-scope 对无 export 顶层脚本误报（deps getter 键被当裸用），按文档预案改用 `.cadt/tmp-m1-scan.mjs` 一次性静态扫描（含对照验证：注入已知裸用 bug 确认能抓到）；`npm test` 全量 2652 项全绿；`npm run build` 成功。
+- 冒烟边界：辅助窗需带 `--aux-kind` 参数启动独立窗口，app_control 不跨窗口、无法模拟；运行态冒烟需在重启后的独立窗口手动进行。
 
 ---
 

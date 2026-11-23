@@ -3,7 +3,7 @@
 // 讨论进行中的点名走 forcedIds（ai-group-discussion.test.mjs 已覆盖），此处不重复。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createAIGroupRuntime} from '../../src/ai/ai-group-runtime.js';
+import {createAIGroupRuntime} from '../../src/ai/group/ai-group-runtime.js';
 
 async function settle(ms = 40) {
     await new Promise((resolve) => setTimeout(resolve, ms));

@@ -1,6 +1,6 @@
 import {createFileIcon} from '../core/fileicons.js';
 import {iconSvg} from '../core/icons.js';
-import {renderSessionOutline, syncSessionOutlineActive} from '../ai/session-outline.js';
+import {renderSessionOutline, syncSessionOutlineActive} from '../ai/session/session-outline.js';
 
 // ===== 结构视图：解析当前文件并生成可导航的大纲/符号树 =====
 // 支持 Markdown 标题层级、HTML/XML 标签树、Python/JS/TS/Go/Java 等语言的

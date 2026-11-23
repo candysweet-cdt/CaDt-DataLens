@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createSessionDiskStore, createAIConversationLog} from '../../src/ai/ai-session-disk.js';
+import {createSessionDiskStore, createAIConversationLog} from '../../src/ai/session/ai-session-disk.js';
 import {
     buildSessionMeta,
     encodeMessageEvent,
@@ -20,8 +20,8 @@ import {
     encodeSessionLines,
     encodeArchiveEvent,
     encodeMetaEvent,
-} from '../../src/ai/ai-session-store.js';
-import {persistBudgetText, SLIM_PERSIST_HARD_LIMIT} from '../../src/ai/ai-context-slim.js';
+} from '../../src/ai/session/ai-session-store.js';
+import {persistBudgetText, SLIM_PERSIST_HARD_LIMIT} from '../../src/ai/chat/ai-context-slim.js';
 
 const TOO_LARGE = 'session-too-large: 会话正文 300 MB，超过 256 MB 上限（打开时将自动整理归档）';
 

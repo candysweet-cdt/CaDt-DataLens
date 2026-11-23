@@ -18,7 +18,7 @@ import {fileURLToPath} from 'node:url';
 const srcRoot = new URL('../../src/', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, srcRoot), 'utf8');
 
-const constantsSrc = read('ai/ai-constants.js');
+const constantsSrc = read('ai/core/ai-constants.js');
 const panelSrc = read('ai/ai-panel.js');
 const mainSrc = read('main.js');
 

@@ -14,7 +14,7 @@ const read = (rel) => readFileSync(join(SRC, rel), 'utf8');
 const norm = (s) => s.replace(/\s+/g, ' ').trim();
 
 test('AI 输入框：Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z 只挡冒泡，不 preventDefault', () => {
-    const src = read('ai/ai-composer.js');
+    const src = read('ai/chat/ai-composer.js');
     const guard = `(e.ctrlKey || e.metaKey) && !e.altKey && e.key &&
             (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
             e.stopPropagation();
@@ -54,6 +54,6 @@ test('右键菜单的撤销/重做仍保留（与键盘共用原生撤销栈）'
     const src = read('shell/edit-menu.js');
     assert.match(src, /label: '撤销', shortcut: 'Ctrl\+Z'[\s\S]*?execEditable\(target, 'undo'\)/);
     assert.match(src, /label: '重做', shortcut: 'Ctrl\+Y'[\s\S]*?execEditable\(target, 'redo'\)/);
-    const composer = read('ai/ai-composer.js');
+    const composer = read('ai/chat/ai-composer.js');
     assert.match(composer, /openEditMenu\(showContextMenu, event, target, \{paste: \(\) => pasteIntoEditable\(target\)\}\)/);
 });

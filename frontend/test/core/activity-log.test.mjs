@@ -144,7 +144,7 @@ test('ACTIVITY_DOMAINS 覆盖全部动作大类', () => {
 // 静态断言（方案 §8）：每个 P0/P1 action 在触发点代码里都有字面量调用。
 test('每个操作事件都有触发点', () => {
     const dir = new URL('../../src/core/', import.meta.url);
-    const files = ['../main.js', '../ai/ai-panel.js', '../shell/mode-switch.js', '../settings/settings-ui.js', '../writing/writing-ui.js', '../writing/writing-mode.js', '../settings/settings-pane-plugins.js', '../editor/editor-groups.js', '../terminal/terminal-ui.js', '../bridge/bridge-ui.js', '../shell/quick-switch.js', '../shell/menu-bar.js', '../shell/session-restore.js', '../shell/app-actions.js', '../shell/properties-ui.js', '../shell/update-check.js', '../explorer/explorer-ops.js'];
+    const files = ['../main.js', '../../src/ai/ai-panel.js', '../shell/mode-switch.js', '../settings/settings-ui.js', '../writing/writing-ui.js', '../writing/writing-mode.js', '../settings/settings-pane-plugins.js', '../editor/editor-groups.js', '../terminal/terminal-ui.js', '../bridge/bridge-ui.js', '../shell/quick-switch.js', '../shell/menu-bar.js', '../shell/session-restore.js', '../shell/app-actions.js', '../shell/properties-ui.js', '../shell/update-check.js', '../explorer/explorer-ops.js'];
     const src = files.map((f) => readFileSync(new URL(f, dir), 'utf8')).join('\n');
     const required = [
         'file.open', 'file.save', 'file.saveAs', 'file.create', 'file.delete', 'file.rename', 'file.move', 'file.format',

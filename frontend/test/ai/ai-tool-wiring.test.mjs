@@ -17,7 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {AI_TOOL_CATALOG, AI_TOOL_DEFS, AI_TOOL_GROUPS, createAIToolDefs} from '../../src/ai/ai-tool-defs.js';
+import {AI_TOOL_CATALOG, AI_TOOL_DEFS, AI_TOOL_GROUPS, createAIToolDefs} from '../../src/ai/tools/ai-tool-defs.js';
 import {ICONS} from '../../src/core/icons.js';
 
 const toolNames = Object.keys(AI_TOOL_DEFS);
@@ -39,8 +39,8 @@ function sliceTopFunction(text, signature) {
 }
 
 const panelSrc = read('ai/ai-panel.js');
-const cardSrc = read('ai/ai-tool-cards.js');
-const subSrc = read('ai/ai-subagents.js');
+const cardSrc = read('ai/tools/ai-tool-cards.js');
+const subSrc = read('ai/agent/ai-subagents.js');
 
 // executeTool 是生命周期钩子包装层（pre/post-tool-use 挂钩），真正的 case 分支在 executeToolInner
 const executeBody = sliceTopFunction(panelSrc, 'async function executeTool(name, args, ctx) {') +

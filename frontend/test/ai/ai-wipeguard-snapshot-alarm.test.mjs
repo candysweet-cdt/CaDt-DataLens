@@ -7,7 +7,7 @@ import {
     snapshotAlarmReset,
     compactSnapshotError,
     WIPEGUARD_SNAPSHOT_ALARM_COOLDOWN_MS,
-} from '../../src/ai/ai-wipeguard.js';
+} from '../../src/ai/security/ai-wipeguard.js';
 
 const T0 = 1_000_000_000_000;
 const COOL = WIPEGUARD_SNAPSHOT_ALARM_COOLDOWN_MS;

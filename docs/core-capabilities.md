@@ -23,7 +23,7 @@
 
 ## 语义相近但**不算**重复（别误合并）
 
-- `ai/ai-persona.js` 的 `escapeXmlText`、`bridge/memo-docx.js` 的 `escapeXml`：给模型/docx 的 XML 转义（只转 `& < >`），非 HTML innerHTML
+- `ai/core/ai-persona.js` 的 `escapeXmlText`、`bridge/memo-docx.js` 的 `escapeXml`：给模型/docx 的 XML 转义（只转 `& < >`），非 HTML innerHTML
 - `shell/plugin-context.js` 的 `escapeAttr` / `escapeClosingTag`：插件上下文防注入，非 HTML
 - `core/layout-render.js` / `core/wordcloud-render.js` 的 SVG 文本转义：图表产物
 - `core/markdown.js` 用的 `markdownRenderer.utils.escapeHtml`：markdown-it 自带，安全链的一部分

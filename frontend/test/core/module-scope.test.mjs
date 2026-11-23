@@ -124,32 +124,35 @@ const HOSTS = [
         modules: ['shell/titlebar-project.js', 'shell/titlebar-git-branch.js'],
     },
     {
-        host: 'ai/ai-session-store.js',
-        modules: ['ai/ai-session-disk.js'],
+        host: 'ai/session/ai-session-store.js',
+        modules: ['ai/session/ai-session-disk.js'],
     },
     {
         // 四个子域与宿主共享同一个 ctx（模块内自取 const x = ctx.x），
         // 宿主函数一律经 extras 注入，故宿主侧只剩 ctx 解包与 binder 两种符号
-        host: 'ai/ai-settings-dialog.js',
+        host: 'ai/settings/ai-settings-dialog.js',
         modules: [
-            'ai/ai-permission-settings.js',
-            'ai/ai-preference-settings.js',
-            'ai/ai-model-settings.js',
-            'ai/ai-settings-io.js',
+            'ai/security/ai-permission-settings.js',
+            'ai/settings/ai-preference-settings.js',
+            'ai/settings/ai-model-settings.js',
+            'ai/settings/ai-settings-io.js',
         ],
     },
     {
         // 补丁卡 / 提问卡与宿主共享同一个 ctx；宿主的 updateComposerTakeover / askNavAction
         // 经 extras 注入（分发器在宿主工厂内后定义，extras 传惰性箭头）
-        host: 'ai/ai-takeover.js',
-        modules: ['ai/ai-patch-card.js', 'ai/ai-ask-cards.js'],
+        host: 'ai/chat/ai-takeover.js',
+        modules: ['ai/chat/ai-patch-card.js', 'ai/chat/ai-ask-cards.js'],
     },
     {
         // 详情视图 / 头部 HUD 与宿主共享同一个 ctx；块模型纯函数与运行态注册表
         // （const Map 活引用）、运行时动作经 extras 注入
-        host: 'ai/ai-subagents.js',
-        modules: ['ai/ai-agent-view.js', 'ai/ai-head-hud.js'],
+        host: 'ai/agent/ai-subagents.js',
+        modules: ['ai/agent/ai-agent-view.js', 'ai/agent/ai-head-hud.js'],
     },
+    // 注：main.js 是无 export 的顶层脚本，module-scope 的「宿主顶层符号」扫描对它误报
+    // （deps 对象的 getter 键如 get flash()/get backend() 会被当成裸用宿主同名符号）。
+    // shell/aux-window-modes.js（phase4 M1）改用 .cadt/tmp 一次性静态扫描核对 deps 契约，不进 HOSTS。
 ];
 
 test('拆出的模块不得裸用宿主定义/宿主 import 的符号', () => {
@@ -200,7 +203,7 @@ test('AI 设置域在 mock ctx 下可构造（捕获工厂执行期的 Reference
     g.window = {addEventListener() {}, removeEventListener() {}};
     g.document = {getElementById: () => null, createElement: () => anyObj};
     try {
-        const mod = await import(new URL('../../src/ai/ai-settings-dialog.js', import.meta.url).href);
+        const mod = await import(new URL('../../src/ai/settings/ai-settings-dialog.js', import.meta.url).href);
         const api = mod.createAISettingsDialog(new Proxy({}, {get: () => anyFn}));
         const required = [
             'bindSettingsPane', 'refreshSettingsPane', 'refreshChatSettings', 'setSettingsStatus',
@@ -234,7 +237,7 @@ test('AI 接管卡域在 mock ctx 下可构造（捕获工厂执行期的 Refere
     g.window = {addEventListener() {}, removeEventListener() {}};
     g.document = {getElementById: () => null, createElement: () => anyObj};
     try {
-        const mod = await import(new URL('../../src/ai/ai-takeover.js', import.meta.url).href);
+        const mod = await import(new URL('../../src/ai/chat/ai-takeover.js', import.meta.url).href);
         const api = mod.createAITakeover(new Proxy({}, {get: () => anyFn}));
         // 返回面 9 键 = ai-panel.js 转发层的全部取用面，缺一即面板接管区失灵
         const required = [
@@ -268,7 +271,7 @@ test('AI 子代理域在 mock ctx 下可构造（捕获工厂执行期的 Refere
     g.window = {addEventListener() {}, removeEventListener() {}};
     g.document = {getElementById: () => null, createElement: () => anyObj};
     try {
-        const mod = await import(new URL('../../src/ai/ai-subagents.js', import.meta.url).href);
+        const mod = await import(new URL('../../src/ai/agent/ai-subagents.js', import.meta.url).href);
         const api = mod.createAISubagents(new Proxy({}, {get: () => anyFn}));
         // 覆盖三个域：运行时核心 / 头部 HUD / 详情视图（返回面 55 键的代表性子集）
         const required = [

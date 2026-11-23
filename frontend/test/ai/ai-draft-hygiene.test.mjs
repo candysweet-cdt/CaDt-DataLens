@@ -8,9 +8,9 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
-const composer = read('../../src/ai/ai-composer.js');
+const composer = read('../../src/ai/chat/ai-composer.js');
 const panel = read('../../src/ai/ai-panel.js');
-const queue = read('../../src/ai/ai-message-queue.js');
+const queue = read('../../src/ai/chat/ai-message-queue.js');
 
 function sliceFunction(source, marker) {
     const start = source.indexOf(marker);

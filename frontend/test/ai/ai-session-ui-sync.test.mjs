@@ -11,7 +11,7 @@ import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
 const src = readFileSync(fileURLToPath(new URL('../../src/ai/ai-panel.js', import.meta.url)), 'utf8');
-const cardSrc = readFileSync(fileURLToPath(new URL('../../src/ai/ai-tool-cards.js', import.meta.url)), 'utf8');
+const cardSrc = readFileSync(fileURLToPath(new URL('../../src/ai/tools/ai-tool-cards.js', import.meta.url)), 'utf8');
 
 // 按函数声明切片：从 `function NAME(` 到下一个同缩进（4 空格）的兄弟函数声明。
 // 模块惯例：createAIPanel 体内函数声明一律 4 空格缩进，嵌套箭头函数不会命中。
@@ -98,7 +98,7 @@ test('工具卡 / 助手操作按钮按渲染会话取 owner，不直接落 curr
 // 父/根会话都被删除时，子代理没有归宿：不许拿面板当前会话顶上（那会把结算与记录挂到
 // 用户正看着的另一个对话）。parentSessionOfSub 的结果只喂 profileOf / entryOf，null 安全。
 test('子代理父会话解析不再回落 currentSession', () => {
-    const subSrc = readFileSync(fileURLToPath(new URL('../../src/ai/ai-subagents.js', import.meta.url)), 'utf8');
+    const subSrc = readFileSync(fileURLToPath(new URL('../../src/ai/agent/ai-subagents.js', import.meta.url)), 'utf8');
     const start = subSrc.indexOf('function parentSessionOfSub(');
     assert.ok(start >= 0, '找不到 parentSessionOfSub');
     const body = subSrc.slice(start, start + 400);

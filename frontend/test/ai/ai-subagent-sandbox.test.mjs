@@ -13,8 +13,8 @@ import {readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-import {subSandboxModeOf, subSandboxPolicy} from '../../src/ai/ai-subagents.js';
-import {describeSandboxGrant, sandboxHasResidue, sandboxModeLabel} from '../../src/ai/ai-sandbox-grant.js';
+import {subSandboxModeOf, subSandboxPolicy} from '../../src/ai/agent/ai-subagents.js';
+import {describeSandboxGrant, sandboxHasResidue, sandboxModeLabel} from '../../src/ai/security/ai-sandbox-grant.js';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
 
@@ -71,7 +71,7 @@ test('P2 三处都取不到根时留空（交给 Go 侧 fail-closed，不降级�
 });
 
 test('P4 子代理工具表挂命令四件套（run / background / check / stop）', () => {
-    const text = sourceOf('ai/ai-subagents.js');
+    const text = sourceOf('ai/agent/ai-subagents.js');
     const tools = sliceBetween(text, 'function subToolsForScope(', 'function activeSubCount(');
     for (const name of ['run_command', 'background_command', 'check_command', 'stop_command']) {
         assert.ok(tools.includes('AI_TOOL_DEFS.' + name), '子代理必须能用 ' + name + '（沙箱档执行）');
@@ -79,7 +79,7 @@ test('P4 子代理工具表挂命令四件套（run / background / check / stop�
 });
 
 test('read_video 下发按会话视频能力裁剪，执行守卫用同一判定', () => {
-    const src = sourceOf('ai/ai-subagents.js');
+    const src = sourceOf('ai/agent/ai-subagents.js');
     const tools = sliceBetween(src, 'function subToolsForScope(', 'function activeSubCount(');
     assert.ok(tools.includes('videoCapableOf(session)'), '子代理 read_video 必须按会话视频能力注册');
     assert.ok(!/\[[^\]]*AI_TOOL_DEFS\.read_video[^\]]*\]/.test(tools),
@@ -91,7 +91,7 @@ test('read_video 下发按会话视频能力裁剪，执行守卫用同一判定
 });
 
 test('P7 子代理挂 wait_agent，且等的是自己的收件箱（不指向具体代理）', () => {
-    const text = sourceOf('ai/ai-subagents.js');
+    const text = sourceOf('ai/agent/ai-subagents.js');
     const tools = sliceBetween(text, 'function subToolsForScope(', 'function activeSubCount(');
     // 2026-11-17 实测：子代理工具表没有 wait_agent，用 background 派单后结果只能靠结算通知回流，
     // 那条路对子代理会话不可靠（B 支一条支线的第 5 层汇报丢失）。能派单就必须能收。
@@ -126,7 +126,7 @@ test('P7 子代理挂 wait_agent，且等的是自己的收件箱（不指向具
 test('P10 嵌套投递：结算与提问都经 deliverToParent，不只看 sessions 表', () => {
     // 2026-11-17 五层嵌套实测：层5 的结论没回到层4。根因是 sessionById(parentSessionId)
     // 对子代理会话恒为 null（子会话不进 sessions 表），于是第 2 层起的通知全部静默丢失。
-    const text = sourceOf('ai/ai-subagents.js');
+    const text = sourceOf('ai/agent/ai-subagents.js');
     assert.ok(text.includes('function deliverToParent('), '必须有统一的父级投递入口');
     const fn = sliceBetween(text, 'function deliverToParent(', 'function finalizeSubAgent(');
     assert.ok(fn.includes('subAgents.get(sub.parentSessionId)'), '先看父是不是运行中的子代理');
@@ -140,7 +140,7 @@ test('P10 嵌套投递：结算与提问都经 deliverToParent，不只看 sessi
 });
 
 test('P11 收件箱来源前缀三方可辨：用户插话 / 主代理消息 / 下级代理回报', () => {
-    const text = sourceOf('ai/ai-subagents.js');
+    const text = sourceOf('ai/agent/ai-subagents.js');
     const fn = sliceBetween(text, 'export function inboxMessageText(', '// 冷唤醒准入');
     assert.ok(fn.includes('［用户插话］') && fn.includes('［上级代理消息］') && fn.includes('［下级代理回报］'),
         '三种来源都必须有独立前缀，否则嵌套时父代理分不清谁说的');
@@ -150,7 +150,7 @@ test('P11 收件箱来源前缀三方可辨：用户插话 / 主代理消息 / �
 test('P12 嵌套提问可作答：能派单的层同时挂 agent_send，且方向限死自己的下级', () => {
     // 2026-11-17 审查发现：buildAskNotice 教父代理用 agent_send(askId=…) 作答，但子代理工具表
     // 里没有它 —— 嵌套时父是子代理，收得到提问却答不了，只能等 120s 放行。
-    const text = sourceOf('ai/ai-subagents.js');
+    const text = sourceOf('ai/agent/ai-subagents.js');
     const tools = sliceBetween(text, 'function subToolsForScope(', 'function activeSubCount(');
     // 用「同一条 push 语句里带条件」而不是字符距离——距离断言会被无关的文案改动撞红（刚发生过）
     const sendLine = tools.split('\n').find((line) => line.includes('AI_TOOL_DEFS.agent_send'));
@@ -169,7 +169,7 @@ test('P12 嵌套提问可作答：能派单的层同时挂 agent_send，且方�
 test('P13 收尾轮真的不下发工具，幻觉调用直接收尾（不死循环）', () => {
     // 旧实现：注释写「收尾轮不带工具」，实际每次请求都发完整工具表；模型在收尾轮
     // 仍能调 read_file / spawn_agent，调 ask_user 还会空等父代理 120s。
-    const text = sourceOf('ai/ai-subagents.js');
+    const text = sourceOf('ai/agent/ai-subagents.js');
     const round = sliceBetween(text, 'const apiMessages = buildApiMessages(', 'async function runSubToolRound(');
     assert.ok(/const tools = s\.wrapUp \? \[\] : subToolsForScope\(/.test(round),
         'wrapUp 时必须传空工具表');
@@ -185,7 +185,7 @@ test('P14 孤儿接管与投递兜底：父终态不级联，但下级必须有�
     // 下级结论可能还有价值，agent_stop 才显式级联），它派出的三个层4 对账子代理还在跑；
     // 结算时 deliverToParent 两头落空——父不在 subAgents、sessionById(子代理会话 id) 恒 null，
     // 四条「结论未能投递」flash，结论就地蒸发。
-    const text = sourceOf('ai/ai-subagents.js');
+    const text = sourceOf('ai/agent/ai-subagents.js');
     // ① finalizeSubAgent 终态必须尝试接管运行中的下级
     const fin = sliceBetween(text, 'function finalizeSubAgent(', '// 停止时未消费的收件箱条数');
     assert.ok(fin.includes('adoptOrphanChildren(sub)'), '终态必须调用孤儿接管');
@@ -206,7 +206,7 @@ test('P14 孤儿接管与投递兜底：父终态不级联，但下级必须有�
 test('P15 嵌套预算继承：子代理再派单未点名 maxRounds 时继承派出方的上限', () => {
     // 2026-11-18 bug-hunt 实测诱因：主代理派层2给了 maxRounds 80，层2 派层3没传 → 落回
     // 设置默认 50 → 中间层先饿死自动收尾，下级成孤儿。显式点名永远优先，主代理派单不继承。
-    const text = sourceOf('ai/ai-subagents.js');
+    const text = sourceOf('ai/agent/ai-subagents.js');
     const fn = sliceBetween(text, 'async function startSubAgent(', 'async function runSubAgent(');
     assert.ok(fn.includes('spawnCallerSession.parentSessionId'), '只有子代理派单才继承（主会话不是子代理）');
     assert.ok(fn.includes('parentLiveSub.maxRounds'), '未点名时继承派出方自己的轮次上限');
@@ -240,7 +240,7 @@ test('P7 留痕：沙箱拒绝 / 不可用各自成 status，主循环与子代�
         '主循环留痕必须让沙箱状态优先于 done/error');
     assert.ok(panel.includes('sandbox: toolMessage.sandbox'), '留痕要带沙箱档位');
 
-    const sub = sourceOf('ai/ai-subagents.js');
+    const sub = sourceOf('ai/agent/ai-subagents.js');
     assert.ok(sub.includes('status: toolMessage.activityStatus ||'),
         '子代理工具循环也必须按沙箱状态留痕（子代理命令无人可问，留痕是唯一审计面）');
     assert.ok(sub.includes('sandbox: toolMessage.sandbox'), '子代理留痕同样带档位');
@@ -268,7 +268,7 @@ test('P8 授权残留：文案如实列出三样痕迹，设置页有检查/清�
     // 只有其中一样也算残留（部分清理失败不能假装干净）
     assert.equal(sandboxHasResidue({root: 'C:/ws', labeled: true}), true);
 
-    const settings = sourceOf('ai/ai-permission-settings.js');
+    const settings = sourceOf('ai/security/ai-permission-settings.js');
     assert.ok(settings.includes('backend.SandboxScan('), '设置页要能检查残留');
     assert.ok(settings.includes('backend.SandboxRevoke('), '设置页要能清除授权');
 });
@@ -279,7 +279,7 @@ test('P9 HUD 档位标签、后台拒绝分类与作业归属校验', () => {
     assert.equal(sandboxModeLabel('danger-full-access'), '完全');
     assert.equal(sandboxModeLabel('weird'), 'weird'); // 未知值原样回显，不猜
 
-    const hud = sourceOf('ai/ai-head-hud.js');
+    const hud = sourceOf('ai/agent/ai-head-hud.js');
     assert.ok(hud.includes('sandboxMode: sub.sandboxMode'), 'HUD 要读派出时定死的档位');
     assert.ok(hud.includes('ai-agent-badge ai-sandbox-badge'), '档位要渲染成胶囊标识');
     assert.ok(hud.includes('appendBit(agentSandboxBadge(agent.sandboxMode))'), '档位胶囊要嵌在副标题原「沙箱 …」文本的位置');

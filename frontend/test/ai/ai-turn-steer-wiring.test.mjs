@@ -4,15 +4,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {createAIMessageQueue} from '../../src/ai/ai-message-queue.js';
+import {createAIMessageQueue} from '../../src/ai/chat/ai-message-queue.js';
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
-const composer = read('../../src/ai/ai-composer.js');
-const queue = read('../../src/ai/ai-message-queue.js');
+const composer = read('../../src/ai/chat/ai-composer.js');
+const queue = read('../../src/ai/chat/ai-message-queue.js');
 const panel = read('../../src/ai/ai-panel.js');
-const store = read('../../src/ai/ai-session-store.js');
-const usage = read('../../src/ai/ai-usage-ui.js');
-const outline = read('../../src/ai/session-outline.js');
+const store = read('../../src/ai/session/ai-session-store.js');
+const usage = read('../../src/ai/usage/ai-usage-ui.js');
+const outline = read('../../src/ai/session/session-outline.js');
 
 function sliceBetween(source, startMarker, endMarker) {
     const start = source.indexOf(startMarker);
@@ -203,7 +203,7 @@ test('startRound：第 2 次及以后请求前 drain，且先落盘再组装请�
 });
 
 test('buildApiMessages：steer 消息只在请求里包 user_steer 模板', () => {
-    assert.match(panel, /import \{createAIMessageQueue, formatSteerMessage\} from '\.\/ai-message-queue\.js';/);
+    assert.match(panel, /import \{createAIMessageQueue, formatSteerMessage\} from '\.\/chat\/ai-message-queue\.js';/);
     const build = sliceFunction(panel, 'function buildApiMessages(session, endIndex, systemText) {');
     assert.match(build, /message\.role === 'user' && message\.steer/);
     assert.match(build, /content = formatSteerMessage\(content\)/);

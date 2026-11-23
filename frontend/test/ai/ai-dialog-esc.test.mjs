@@ -38,7 +38,7 @@ test('main.js：弹层栈监听先于一切弹层工厂安装', () => {
 });
 
 test('ai-panel.js：AI 弹窗经 openAIDialog 进栈，旧让路查询已移除', () => {
-    const manage = read('ai/ai-manage-dialogs.js');
+    const manage = read('ai/settings/ai-manage-dialogs.js');
     assert.match(manage, /overlayStack\.open\(\{[\s\S]*?id: 'ai-dialog'/,
         'openAIDialog 要把 AI 弹窗注册进全局弹层栈');
     assert.match(manage, /id: 'ai-dialog', kind: 'modal'/, 'AI 弹窗归 modal 档');

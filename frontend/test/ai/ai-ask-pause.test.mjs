@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 
 const root = new URL('../../', import.meta.url);
 const panel = readFileSync(fileURLToPath(new URL('src/ai/ai-panel.js', root)), 'utf8');
-const cards = readFileSync(fileURLToPath(new URL('src/ai/ai-ask-cards.js', root)), 'utf8');
+const cards = readFileSync(fileURLToPath(new URL('src/ai/chat/ai-ask-cards.js', root)), 'utf8');
 const css = readFileSync(fileURLToPath(new URL('src/style.css', root)), 'utf8');
 
 const fnBody = (src, startMark, endMark) => {

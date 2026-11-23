@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {configForModel} from '../../src/ai/ai-config-model.js';
+import {configForModel} from '../../src/ai/core/ai-config-model.js';
 import {
     AI_PROVIDER_ACCOUNT_PREFIX,
     AI_PROVIDER_MAX_HEADERS,

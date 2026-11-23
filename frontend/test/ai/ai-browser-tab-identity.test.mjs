@@ -10,10 +10,10 @@ import {readFileSync} from 'node:fs';
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 const panel = read('../../src/ai/ai-panel.js');
-const browserTools = read('../../src/ai/ai-browser-tools.js');
+const browserTools = read('../../src/ai/tools/ai-browser-tools.js');
 
 test('ai-panel 从 ai-browser-tools 导入 resolveSessionBrowserTabId', () => {
-    assert.match(panel, /import\s*\{[\s\S]*?resolveSessionBrowserTabId[\s\S]*?\}\s*from\s*['"]\.\/ai-browser-tools\.js['"]/);
+    assert.match(panel, /import\s*\{[\s\S]*?resolveSessionBrowserTabId[\s\S]*?\}\s*from\s*['"]\.\/tools\/ai-browser-tools\.js['"]/);
 });
 
 test('app_control 分支在 open_browser_tab / close_browser_tab 后同步会话标签页身份', () => {

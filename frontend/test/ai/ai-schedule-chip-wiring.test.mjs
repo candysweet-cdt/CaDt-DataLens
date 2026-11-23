@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
-const scheduleSrc = readFileSync(fileURLToPath(new URL('../../src/ai/ai-schedule.js', import.meta.url)), 'utf8');
+const scheduleSrc = readFileSync(fileURLToPath(new URL('../../src/ai/settings/ai-schedule.js', import.meta.url)), 'utf8');
 const panelSrc = readFileSync(fileURLToPath(new URL('../../src/ai/ai-panel.js', import.meta.url)), 'utf8');
 
 test('定时胶囊必须在工厂时绑 click → ctx.togglePop（与计时胶囊同款）', () => {

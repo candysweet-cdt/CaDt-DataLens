@@ -114,18 +114,18 @@ test('createCheckbox 生成紧凑行内勾选（label 内带文字），control 
 // 2026-11-15 存量快照。迁移一处就把对应数字减一；新增一处会让测试失败。
 const BASELINE = {
     'index.html': 20,
-    'src/ai/ai-manage-dialogs.js': 1,
-    'src/ai/ai-mcp-settings.js': 2,
+    'src/ai/settings/ai-manage-dialogs.js': 1,
+    'src/ai/tools/ai-mcp-settings.js': 2,
     // phase3 A2 把 ai-takeover 的补丁卡 / ask 卡拆成兄弟模块：4 处裸控件随域迁移
     // （ask-cards 2 + patch-card 2），宿主 11 → 7，总量不变、非新增债务
-    'src/ai/ai-ask-cards.js': 2,
+    'src/ai/chat/ai-ask-cards.js': 2,
     'src/ai/ai-panel.js': 2,
-    'src/ai/ai-patch-card.js': 2,
-    'src/ai/ai-reminders.js': 4,
-    'src/ai/ai-session-list.js': 1,
-    'src/ai/ai-takeover.js': 7,
-    'src/ai/ai-timer.js': 3,
-    'src/ai/ai-tool-cards.js': 2,
+    'src/ai/chat/ai-patch-card.js': 2,
+    'src/ai/chat/ai-reminders.js': 4,
+    'src/ai/session/ai-session-list.js': 1,
+    'src/ai/chat/ai-takeover.js': 7,
+    'src/ai/settings/ai-timer.js': 3,
+    'src/ai/tools/ai-tool-cards.js': 2,
     'src/editor/editor-browser-tab.js': 1,
     'src/editor/editor-csv-view.js': 1,
     'src/editor/editor-sql-view.js': 2,

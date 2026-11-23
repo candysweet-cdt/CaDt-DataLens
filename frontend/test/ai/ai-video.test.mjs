@@ -15,8 +15,8 @@ import {
     bufferToBase64,
     isReadableVideoPath,
     aiEstimateVideoTokens,
-} from '../../src/ai/ai-constants.js';
-import {safeVideoName, serializeSessionMessage} from '../../src/ai/ai-session-store.js';
+} from '../../src/ai/core/ai-constants.js';
+import {safeVideoName, serializeSessionMessage} from '../../src/ai/session/ai-session-store.js';
 
 test('isReadableVideoPath：只认 .mp4，其他容器拒绝', () => {
     assert.equal(isReadableVideoPath('D:/a/b/clip.mp4'), true);

@@ -9,7 +9,7 @@ import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
 const modelSettingsSrc = readFileSync(
-    fileURLToPath(new URL('../../src/ai/ai-model-settings.js', import.meta.url)), 'utf8');
+    fileURLToPath(new URL('../../src/ai/settings/ai-model-settings.js', import.meta.url)), 'utf8');
 const panelSrc = readFileSync(
     fileURLToPath(new URL('../../src/ai/ai-panel.js', import.meta.url)), 'utf8');
 

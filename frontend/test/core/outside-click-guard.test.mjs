@@ -25,8 +25,8 @@ function walkJs(dir, out = []) {
 
 // 合理存量：无法进 overlay-stack 的外点关闭监听，写明原因，只许减不许增
 const OUTSIDE_CLICK_WHITELIST = {
-    'ai/ai-group-view.js': '群聊菜单/mention pop 在群聊视图 shell 层叠上下文内自管（非页面级浮层）',
-    'ai/ai-reminders.js': '提醒浮层是面板内全局单监听（初始化挂一次、按 hidden 判断），非每开一次挂一个',
+    'ai/group/ai-group-view.js': '群聊菜单/mention pop 在群聊视图 shell 层叠上下文内自管（非页面级浮层）',
+    'ai/chat/ai-reminders.js': '提醒浮层是面板内全局单监听（初始化挂一次、按 hidden 判断），非每开一次挂一个',
     'ai/ai-panel.js': '用量弹层无栈条目、面板内自管（待迁移）；另 17895 处是消息选择等非关闭语义',
     'shell/contextmenu.js': '右键菜单需记录 lastPointerTarget 供动作判定，外点关闭只是其副作用之一',
     'shell/titlebar-git-branch.js': '项目/Git分支/运行配置三个标题栏弹层共用一个 document 监听，含 pin 状态判定',

@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-import {replaySessionLog} from '../../src/ai/ai-session-store.js';
+import {replaySessionLog} from '../../src/ai/session/ai-session-store.js';
 
 const fixturePath = new URL('./fixtures/vacuum-parity.json', import.meta.url);
 const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));

@@ -12,8 +12,8 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
 const read = (rel) => readFileSync(join(SRC, rel), 'utf8');
 
 test('ai-composer.js：Escape 状态机实例 + keydown 登记先于 IME 早退', () => {
-    const src = read('ai/ai-composer.js');
-    assert.match(src, /import \{createShiftDoubleTap\} from '\.\.\/core\/shift-double-tap\.js';/,
+    const src = read('ai/chat/ai-composer.js');
+    assert.match(src, /import \{createShiftDoubleTap\} from '\.\.\/\.\.\/core\/shift-double-tap\.js';/,
         '判定器单一来源，不复制状态机');
     assert.match(src, /createShiftDoubleTap\(\{key: 'Escape'\}\)/, '键位参数化成 Escape');
     const fn = src.match(/function handleComposerKey\(e\) \{[\s\S]*?\n    \}/);
@@ -26,7 +26,7 @@ test('ai-composer.js：Escape 状态机实例 + keydown 登记先于 IME 早退'
 });
 
 test('ai-composer.js：keyup 结算触发停止，与停止按钮同一条路径（byUser=true）', () => {
-    const src = read('ai/ai-composer.js');
+    const src = read('ai/chat/ai-composer.js');
     const fn = src.match(/function handleComposerKeyUp\(e\) \{[\s\S]*?\n    \}/);
     assert.ok(fn, 'handleComposerKeyUp（keyup 结算）应存在');
     assert.match(fn[0], /if \(!escDoubleTap\.onKeyUp\(e\)\) return;/, 'keydown 只登记，keyup 才结算');

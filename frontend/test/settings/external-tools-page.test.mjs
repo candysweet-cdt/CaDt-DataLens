@@ -104,7 +104,7 @@ test('外部工具页现代化：页头保存反馈 + 能力有效性徽标 + �
     assert.ok(/function capabilityState\(/.test(paneSrc), '能力提示应升级为 capabilityState（徽标 tone + 文案）');
     assert.ok(/statusBadge\(state\.text, state\.tone\)/.test(paneSrc), '能力卡必须渲染有效性徽标');
     // MCP 工具面板：每次重建 panel 节点，消除监听器累积
-    const mcpSrc = read('src/ai/ai-mcp-settings.js');
+    const mcpSrc = read('src/ai/tools/ai-mcp-settings.js');
     assert.ok(/if \(panel\) panel\.remove\(\);/.test(mcpSrc),
         'renderToolsPanel 必须先移除旧 panel 节点再新建，否则每次叠加一组监听器');
 });
@@ -159,7 +159,7 @@ test('桌面控制：开关即安装 + 进度条 + 工具逐项开关，MCP 列�
     assert.ok(!/writeDesktopServerRow/.test(paneSrc), '旧的两段式写入已删除（安装一步到位）');
     assert.ok(!/runDesktopDoctor/.test(paneSrc), 'doctor 检测按钮已从卡片移除');
     assert.ok(/setDesktopEnabled/.test(paneSrc), '已安装时开关走 setDesktopEnabled（只切 enabled）');
-    const mcpSrc = read('src/ai/ai-mcp-settings.js');
+    const mcpSrc = read('src/ai/tools/ai-mcp-settings.js');
     assert.ok(/name !== DESKTOP_MCP_SERVER/.test(mcpSrc),
         'MCP 服务器列表必须过滤 windows 行（桌面控制只在自己的卡片里出现）');
 });
@@ -205,10 +205,10 @@ test('桌面控制：权限面板行 / 标题胶囊 / 跑马灯 / 控制模式�
     assert.ok(htmlSrc.includes('id="ai-chip-desktop"') && htmlSrc.includes('id="ai-desktop-marquee"'),
         '标题红胶囊与面板顶部跑马灯节点必须在 index.html');
     assert.ok(/ai-marquee/.test(cssSrc) && /ai-chip-desktop/.test(cssSrc), '两套样式必须存在');
-    const defsSrc = read('src/ai/ai-tool-defs.js');
+    const defsSrc = read('src/ai/tools/ai-tool-defs.js');
     assert.ok(/windows_control_mode: \{/.test(defsSrc), '工具定义必须改名为 windows_control_mode');
     assert.ok(!/windows_desktop: \{/.test(defsSrc), '旧揭示工具定义必须删除');
-    assert.ok(/defaultDesktopControl/.test(read('src/ai/ai-settings-dialog.js')),
+    assert.ok(/defaultDesktopControl/.test(read('src/ai/settings/ai-settings-dialog.js')),
         '设置页「新会话默认桌面控制」必须接线');
 });
 

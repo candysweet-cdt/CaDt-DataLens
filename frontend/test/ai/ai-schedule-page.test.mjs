@@ -9,7 +9,7 @@ import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
 const read = (rel) => readFileSync(fileURLToPath(new URL('../../' + rel, import.meta.url)), 'utf8');
-const scheduleSrc = read('src/ai/ai-schedule.js');
+const scheduleSrc = read('src/ai/settings/ai-schedule.js');
 const mainSrc = read('src/main.js');
 
 test('定时任务应用页：表格式排程列表 + 列头', () => {

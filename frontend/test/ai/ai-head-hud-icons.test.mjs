@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
-const hud = readFileSync(new URL('../../src/ai/ai-head-hud.js', import.meta.url), 'utf8');
+const hud = readFileSync(new URL('../../src/ai/agent/ai-head-hud.js', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../../src/style.css', import.meta.url), 'utf8');
 
 test('已停止用 stop 字形，不再与暂停共用图标', () => {

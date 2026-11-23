@@ -12,14 +12,11 @@ import {bindEditableContextMenuFallback} from './shell/edit-menu.js';
 import {copyImageBlobToClipboard} from './core/image-clipboard.js';
 import {copyTextToClipboard} from './core/clipboard.js';
 import {kvGetJson} from './core/kv-store.js';
-import {prepareImagePayload} from './ai/ai-image-encode.js';
-import {normalizeTermText} from './ai/ai-terminal-tools.js';
-import {createBridgeMemoView} from './bridge/bridge-memo-view.js';
-import {createAIMonitorView} from './ai/ai-monitor-view.js';
-import {createAICognitionPage} from './ai/ai-cognition-page.js';
-import {createDiffWindowView} from './editor/diff-window-view.js';
-import {createLightView} from './editor/light-view.js';
-import {createPreviewWindowView, pickPreviewKind} from './editor/preview-window-view.js';
+import {prepareImagePayload} from './ai/tools/ai-image-encode.js';
+import {normalizeTermText} from './ai/tools/ai-terminal-tools.js';
+import {createAICognitionPage} from './ai/settings/ai-cognition-page.js';
+import {pickPreviewKind} from './editor/preview-window-view.js';
+import {createAuxWindowModes} from './shell/aux-window-modes.js';
 import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from './core/code-shot.js';
 import {createDebugConsole} from './terminal/debugconsole.js';
 import {createActivityLog} from './core/activity-log.js';
@@ -31,8 +28,8 @@ import {createDbAppActions} from './db/db-app-actions.js';
 import {iconSvg, renderMenuIcon} from './core/icons.js';
 import {createPalette} from './shell/palette.js';
 import {createAIPanel} from './ai/ai-panel.js';
-import {createAIWipeguard, WIPEGUARD_NOTIFY_COOLDOWN_MS} from './ai/ai-wipeguard.js';
-import {decideAutoCollapse, shouldExpandEditorOnTab} from './ai/ai-auto-collapse.js';
+import {createAIWipeguard, WIPEGUARD_NOTIFY_COOLDOWN_MS} from './ai/security/ai-wipeguard.js';
+import {decideAutoCollapse, shouldExpandEditorOnTab} from './ai/chat/ai-auto-collapse.js';
 import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './core/jsonrepair.js';
 import {fileIconSpec} from './core/fileicons.js';
@@ -56,19 +53,19 @@ import changelogText from '../../CHANGELOG.md?raw';
 import termsText from '../../docs/legal/terms.md?raw';
 import privacyText from '../../docs/legal/privacy.md?raw';
 import {createBridgeUI} from './bridge/bridge-ui.js';
-import {createAIGroupRuntime} from './ai/ai-group-runtime.js';
-import {createAIGroupSidebar} from './ai/ai-group-sidebar.js';
-import {createAIGroupView} from './ai/ai-group-view.js';
-import {createAIGroupMemberView} from './ai/ai-group-member-view.js';
+import {createAIGroupRuntime} from './ai/group/ai-group-runtime.js';
+import {createAIGroupSidebar} from './ai/group/ai-group-sidebar.js';
+import {createAIGroupView} from './ai/group/ai-group-view.js';
+import {createAIGroupMemberView} from './ai/group/ai-group-member-view.js';
 // app_control 代建智能体 / 群聊：数据层纯函数（模型清单/关键词解析/校验/群草稿）+ 唯一 id 生成
-import {agentsUpsert, listModelOptions, resolveModelByKeyword} from './ai/ai-agent-model.js';
-import {buildGroupDraft} from './ai/ai-group-model.js';
-import {isOfficialPluginSource, pluginInstallRoute, pluginUninstallRoute} from './ai/ai-app-approval.js';
+import {agentsUpsert, listModelOptions, resolveModelByKeyword} from './ai/agent/ai-agent-model.js';
+import {buildGroupDraft} from './ai/group/ai-group-model.js';
+import {isOfficialPluginSource, pluginInstallRoute, pluginUninstallRoute} from './ai/security/ai-app-approval.js';
 import {
     applySettingsValue, buildSettingsTree, coerceSettingsValue,
     describeSettingsInput, describeSettingsValue, findSettingsRow, settingsRowSnapshot,
 } from './settings/settings-tree.js';
-import {aiNowId} from './ai/ai-constants.js';
+import {aiNowId} from './ai/core/ai-constants.js';
 import {createCursorThemes} from './shell/cursor-themes.js';
 import {createTerminalUI} from './terminal/terminal-ui.js';
 import {createFormatConvert} from './editor/format-convert.js';
@@ -77,7 +74,7 @@ import {createAppLinks} from './shell/app-links.js';
 import {createPropertiesUI} from './shell/properties-ui.js';
 import {createSessionRestore} from './shell/session-restore.js';
 import {createBrowserTabRestore} from './shell/browser-tab-restore.js';
-import {decideSessionOpen} from './ai/ai-session-scope.js';
+import {decideSessionOpen} from './ai/session/ai-session-scope.js';
 import {createAppActions} from './shell/app-actions.js';
 import {createQuickSwitch} from './shell/quick-switch.js';
 import {createSchemaPanel} from './editor/schema-panel.js';
@@ -101,7 +98,7 @@ import {createSettingsPaneWipeguard} from './settings/settings-pane-wipeguard.js
 import {createSettingsPaneNewFileMenu} from './settings/settings-pane-new-file-menu.js';
 import {createSettingsPaneLifecycle} from './settings/settings-pane-lifecycle.js';
 import {createLifecycleHooks} from './shell/lifecycle-hooks.js';
-import {analyzeDangerousCommand} from './ai/ai-command-rules.js';
+import {analyzeDangerousCommand} from './ai/security/ai-command-rules.js';
 import {createStorageAutoClean} from './settings/storage-autoclean.js';
 import {createSettingsPaneExternalTools} from './settings/settings-pane-external-tools.js';
 import {createMenuBar} from './shell/menu-bar.js';
@@ -505,243 +502,15 @@ const auxWindowKind = (async () => {
     }
 })();
 
-// 辅助窗的轻提示：没有状态栏，走底部浮动条（自管超时，不进弹层栈）。
-let auxToastTimer = 0;
-function auxToast(msg, isErr) {
-    let host = document.getElementById('aux-toast');
-    if (!host) {
-        host = document.createElement('div');
-        host.id = 'aux-toast';
-        document.body.appendChild(host);
-    }
-    host.textContent = String(msg == null ? '' : msg);
-    host.classList.toggle('error', !!isErr);
-    host.classList.add('show');
-    clearTimeout(auxToastTimer);
-    auxToastTimer = setTimeout(() => host.classList.remove('show'), 2600);
-}
-
-function closeAuxWindowSelf() {
-    try { if (window.runtime && window.runtime.WindowClose) window.runtime.WindowClose(); } catch (e) {}
-}
-
-// buildAuxWindowHead 辅助窗统一头部：标题 + 上下文胶囊 + 动作按钮。
-// 无边框窗口，头部即拖动区（body.*-only CSS 对 .aux-window-head 开 drag）。
-function buildAuxWindowHead({title, pill, pillTitle, actions}) {
-    const head = document.createElement('div');
-    head.className = 'aux-window-head';
-    const label = document.createElement('span');
-    label.className = 'aux-window-title';
-    label.textContent = title;
-    head.appendChild(label);
-    if (pill) {
-        const pillEl = document.createElement('span');
-        pillEl.className = 'aux-window-pill';
-        pillEl.textContent = pill;
-        if (pillTitle) pillEl.title = pillTitle;
-        head.appendChild(pillEl);
-    }
-    const spacer = document.createElement('div');
-    spacer.className = 'aux-window-spacer';
-    head.appendChild(spacer);
-    for (const a of (actions || [])) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'aux-window-btn';
-        btn.dataset.tip = a.tip || a.label || '';
-        btn.setAttribute('aria-label', a.tip || a.label || '');
-        btn.innerHTML = iconSvg(a.icon || 'close', 12);
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            a.onClick(e);
-        });
-        head.appendChild(btn);
-    }
-    return head;
-}
-
-// 便签独立窗口：桌面便签形态（置顶小窗）。复用主窗口同一套便签视图、
-// store 与租约（memoApi.flushAll 走同一落盘链），外部变更经 resource-changed 同步。
-async function startMemoWindowMode() {
-    window.__auxWindowMode = 'memo';
-    document.documentElement.classList.remove('app-booting');
-    document.body.classList.add('memo-only');
-    try { applySettings(); } catch (e) {}
-    let info = null;
-    try { info = backend.GetStartupMemo ? await backend.GetStartupMemo() : null; } catch (e) {}
-    if (!info || !info.scope) { closeAuxWindowSelf(); return; }
-    const scope = info.scope === 'workspace' ? 'workspace' : 'global';
-    const wsRoot = String(info.workspace || '');
-    let memoFlush = () => {};
-    const head = buildAuxWindowHead({
-        title: '便签',
-        pill: scope === 'workspace' ? (baseNameOf(wsRoot) || '工作区') : '全局',
-        pillTitle: scope === 'workspace' ? wsRoot : '全局便签',
-        actions: [{
-            icon: 'close',
-            tip: '关闭',
-            onClick: () => { memoFlush(); closeAuxWindowSelf(); },
-        }],
-    });
-    const host = document.createElement('div');
-    host.className = 'aux-window-body';
-    document.body.append(head, host);
-    const menu = createContextMenu();
-    const memoView = createBridgeMemoView({
-        get backend() { return backend; },
-        get flash() { return auxToast; },
-        get els() { return {editor: host}; },
-        get ctxMenu() { return menu; },
-        get workspaceFolder() { return wsRoot; },
-        get rt() { return rt; },
-        normalizeTermText,
-        initialScope: () => scope,
-    });
-    memoView.createMemoView({memo: true});
-    memoFlush = () => {
-        try { if (memoView.memoApi && memoView.memoApi.flushAll) memoView.memoApi.flushAll().catch(() => {}); } catch (e) {}
-    };
-    // 外部变更同步：AI 写入 / 其他窗口保存 → 重载（与主窗口同一 resource-changed 链）。
-    appEvents.onApp('resource-changed', (payload) => memoView.memoOnResourceEvent(payload));
-    // 关窗前 flush：防抖窗口内的最后一下编辑不落盘就丢了（1s 防抖 + mtime CAS 兜底）。
-    window.addEventListener('pagehide', memoFlush, {once: true});
-}
-
-// 会话监控窗：只读镜像——渲染被监控会话/群聊的 JSONL 时间线并尾随流式事件。
-// 不改会话归属：原窗口继续持有回合租约，这里只看 + 停止 + 跳回发起窗口。
-async function startMonitorWindowMode() {
-    window.__auxWindowMode = 'monitor';
-    document.documentElement.classList.remove('app-booting');
-    document.body.classList.add('monitor-only');
-    try { applySettings(); } catch (e) {}
-    let info = null;
-    try { info = backend.GetStartupMonitorSession ? await backend.GetStartupMonitorSession() : null; } catch (e) {}
-    if (!info || !info.sessionId) { closeAuxWindowSelf(); return; }
-    const monitor = createAIMonitorView({
-        get backend() { return backend; },
-        get appEvents() { return appEvents; },
-        toast: auxToast,
-        sessionId: String(info.sessionId),
-        kind: info.kind === 'group' ? 'group' : 'session',
-        workspace: String(info.workspace || ''),
-        origin: String(info.origin || ''),
-        onOpenHome: () => {
-            if (info.origin && backend.WindowFocusByName) backend.WindowFocusByName(info.origin);
-        },
-        onClose: () => closeAuxWindowSelf(),
-    });
-    monitor.mount(document.body);
-}
-
-// 文件对比窗：读取两个文件 → 行级 diff + 可选语义差异，只读展示。
-async function startDiffWindowMode() {
-    window.__auxWindowMode = 'diff';
-    document.documentElement.classList.remove('app-booting');
-    document.body.classList.add('diff-only');
-    try { applySettings(); } catch (e) {}
-    let info = null;
-    try { info = backend.GetStartupDiff ? await backend.GetStartupDiff() : null; } catch (e) {}
-    if (!info || !info.left || !info.right) { closeAuxWindowSelf(); return; }
-    const left = String(info.left);
-    const right = String(info.right);
-    let rerun = () => {};
-    const head = buildAuxWindowHead({
-        title: '文件对比',
-        pill: (baseNameOf(left) || left) + ' ↔ ' + (baseNameOf(right) || right),
-        pillTitle: left + '\n' + right,
-        actions: [
-            {
-                icon: 'refresh',
-                tip: '重新比较',
-                onClick: () => rerun(),
-            },
-            {icon: 'close', tip: '关闭', onClick: () => closeAuxWindowSelf()},
-        ],
-    });
-    const host = document.createElement('div');
-    host.className = 'aux-window-body';
-    document.body.append(head, host);
-    const view = createDiffWindowView({
-        get backend() { return backend; },
-        toast: auxToast,
-        left,
-        right,
-        baseNameOf,
-        container: host,
-        onTitle: (text) => {
-            try { if (window.runtime && window.runtime.WindowSetTitle) window.runtime.WindowSetTitle(text + ' · 文件对比 · CaDt-DataLens'); } catch (e) {}
-        },
-    });
-    view.mount();
-    rerun = () => view.run();
-}
-
-// 轻量查看窗：一个文件一个只读窗（文本高亮 / 图片），不占工作区归属，
-// 不会与打开它的主窗口抢会话/监听/租约——「双击即看」的正路。
-async function startLightWindowMode() {
-    window.__auxWindowMode = 'light';
-    document.documentElement.classList.remove('app-booting');
-    document.body.classList.add('light-only');
-    try { applySettings(); } catch (e) {}
-    let info = null;
-    try { info = backend.GetStartupLight ? await backend.GetStartupLight() : null; } catch (e) {}
-    if (!info || !info.path) { closeAuxWindowSelf(); return; }
-    const path = String(info.path);
-    const head = buildAuxWindowHead({
-        title: '查看',
-        pill: baseNameOf(path) || path,
-        pillTitle: path,
-        actions: [{icon: 'close', tip: '关闭', onClick: () => closeAuxWindowSelf()}],
-    });
-    const host = document.createElement('div');
-    host.className = 'aux-window-body';
-    document.body.append(head, host);
-    const view = createLightView({
-        get backend() { return backend; },
-        path,
-        baseNameOf,
-        container: host,
-    });
-    view.mount();
-    try { if (window.runtime && window.runtime.WindowSetTitle) window.runtime.WindowSetTitle((baseNameOf(path) || path) + ' · 查看 · CaDt-DataLens'); } catch (e) {}
-}
-
-// 实时预览外置窗：markdown/HTML/SVG/图片的只读镜像，轮询磁盘 mtime 跟随保存。
-// 源文件在主窗口编辑，预览窗只读——写作时预览丢第二屏的形态。
-async function startPreviewWindowMode() {
-    window.__auxWindowMode = 'preview';
-    document.documentElement.classList.remove('app-booting');
-    document.body.classList.add('preview-only');
-    try { applySettings(); } catch (e) {}
-    let info = null;
-    try { info = backend.GetStartupPreview ? await backend.GetStartupPreview() : null; } catch (e) {}
-    if (!info || !info.path) { closeAuxWindowSelf(); return; }
-    const path = String(info.path);
-    const head = buildAuxWindowHead({
-        title: '实时预览',
-        pill: baseNameOf(path) || path,
-        pillTitle: path,
-        actions: [
-            ...(info.origin && backend.WindowFocusByName ? [{
-                icon: 'new-window',
-                tip: '回到主窗口',
-                onClick: () => backend.WindowFocusByName(info.origin),
-            }] : []),
-            {icon: 'close', tip: '关闭', onClick: () => closeAuxWindowSelf()},
-        ],
-    });
-    const host = document.createElement('div');
-    host.className = 'aux-window-body';
-    document.body.append(head, host);
-    const view = createPreviewWindowView({
-        get backend() { return backend; },
-        path,
-        kind: pickPreviewKind(path),
-        container: host,
-    });
-    view.mount();
-    window.addEventListener('pagehide', () => view.dispose(), {once: true});
-}
+// 辅助独立窗（便签/监控/对比/查看/预览）的启动编排搬进 shell/aux-window-modes.js（phase4 M1）。
+// backend/rt/appEvents/applySettings/baseNameOf 经 getter 活引用注入，避免拍 let 快照。
+const auxWindowModes = createAuxWindowModes({
+    get backend() { return backend; },
+    get rt() { return rt; },
+    get appEvents() { return appEvents; },
+    get applySettings() { return applySettings; },
+    get baseNameOf() { return baseNameOf; },
+});
 
 async function refreshLogPath() {
     if (!backend.GetLogPath) return;
@@ -7559,11 +7328,11 @@ const bridgeUI = createBridgeUI({
     get consoleWindowMode() { return consoleWindowMode; },
     get terminalWindowMode() { return terminalWindowMode; },
     get auxWindowKind() { return auxWindowKind; },
-    get startMemoWindowMode() { return startMemoWindowMode; },
-    get startMonitorWindowMode() { return startMonitorWindowMode; },
-    get startDiffWindowMode() { return startDiffWindowMode; },
-    get startLightWindowMode() { return startLightWindowMode; },
-    get startPreviewWindowMode() { return startPreviewWindowMode; },
+    get startMemoWindowMode() { return auxWindowModes.startMemoWindowMode; },
+    get startMonitorWindowMode() { return auxWindowModes.startMonitorWindowMode; },
+    get startDiffWindowMode() { return auxWindowModes.startDiffWindowMode; },
+    get startLightWindowMode() { return auxWindowModes.startLightWindowMode; },
+    get startPreviewWindowMode() { return auxWindowModes.startPreviewWindowMode; },
     // 便签面板顶栏「弹出」：把当前作用域弹成置顶便签窗（便签窗自身不传这个键，不显示按钮）
     get popOutMemo() {
         return (scope, workspace) => {

@@ -19,7 +19,7 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
 const read = (rel) => readFileSync(join(SRC, rel), 'utf8');
 
 test('ai-composer.js：submitFromComposer 有 submitInFlight 防重入锁，且在取文本前就拦下', () => {
-    const src = read('ai/ai-composer.js');
+    const src = read('ai/chat/ai-composer.js');
     assert.match(src, /let submitInFlight = false;/,
         '必须有 submitInFlight 锁——只靠忙检查挡不住 await 窗口内的第二次提交');
     const fn = src.match(/function submitFromComposer\(ev\) \{[\s\S]*?\n    \}/);
@@ -32,7 +32,7 @@ test('ai-composer.js：submitFromComposer 有 submitInFlight 防重入锁，且�
 });
 
 test('ai-composer.js：锁在 finally 里释放，同步抛错也不能把输入区永久卡死', () => {
-    const src = read('ai/ai-composer.js');
+    const src = read('ai/chat/ai-composer.js');
     const fn = src.match(/function submitFromComposer\(ev\) \{[\s\S]*?\n    \}/);
     assert.ok(fn, 'submitFromComposer 应存在');
     // 锁必须包在 try/finally 里：await 抛错也要走 finally 置回 false，否则下一次提交永远进不来。
@@ -42,7 +42,7 @@ test('ai-composer.js：锁在 finally 里释放，同步抛错也不能把输入
 });
 
 test('ai-composer.js：直发分支 return submitText 的 Promise，锁才能持有到起轮清空输入区', () => {
-    const src = read('ai/ai-composer.js');
+    const src = read('ai/chat/ai-composer.js');
     const fn = src.match(/function sendComposerMessage\(text, ev\) \{[\s\S]*?\n    \}/);
     assert.ok(fn, 'sendComposerMessage 应存在');
     // 不 return 的话 Promise 立刻 resolve，锁在 startSessionTurn 的 await 窗口里就放了，
@@ -51,7 +51,7 @@ test('ai-composer.js：直发分支 return submitText 的 Promise，锁才能持
 });
 
 test('ai-composer.js：Enter 处理挡掉键盘重复（e.repeat），先于发送判定', () => {
-    const src = read('ai/ai-composer.js');
+    const src = read('ai/chat/ai-composer.js');
     const fn = src.match(/function handleComposerKey\(e\) \{[\s\S]*?\n    \}/);
     assert.ok(fn, 'handleComposerKey 应存在');
     const repeatAt = fn[0].indexOf('if (e.repeat) return;');

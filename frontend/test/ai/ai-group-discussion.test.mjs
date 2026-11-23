@@ -3,7 +3,7 @@
 // 真实 SSE 生命周期不在此面内（G2/G3 手工验收）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createAIGroupRuntime} from '../../src/ai/ai-group-runtime.js';
+import {createAIGroupRuntime} from '../../src/ai/group/ai-group-runtime.js';
 
 async function settle(ms = 40) {
     await new Promise((resolve) => setTimeout(resolve, ms));

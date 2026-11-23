@@ -327,7 +327,7 @@ test('restoreParkedWidgets：多出的旧节点被丢弃，空 parked / 非法�
 });
 
 test('接线：流式重渲染按 park → innerHTML → restore → enhanceWidgets 保活，轮结束跳过 restore', () => {
-    const src = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');
+    const src = readFileSync(new URL('../../src/ai/tools/ai-tool-cards.js', import.meta.url), 'utf8');
     const parkAt = src.indexOf('const parked = parkPendingWidgets(md);');
     assert.ok(parkAt > 0, '摘出在 innerHTML 覆盖之前');
     const writeAt = src.indexOf('md.innerHTML = renderMarkdown(content);', parkAt);

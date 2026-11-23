@@ -33,7 +33,7 @@ const EXEMPT_FILES = new Set([
     'core/widget.js',          // AI 可视化引擎（检测/补壳用户 SVG 产物）
     'core/layout-render.js',   // graph 关系图渲染（图表产物，非图标）
     'core/wordcloud-render.js',// 词云渲染（图表产物，非图标）
-    'ai/ai-provider-icons.js', // 供应商品牌图标域
+    'ai/core/ai-provider-icons.js', // 供应商品牌图标域
     // 非图标命中（文件级豁免，写明原因）：
     'dev/mock-backend.js',     // mock 的文件内容/插件图标数据，非 UI 图标
     'shell/plugins.js',        // 插件运行时只检查插件提供的字符串是否含 SVG，不自产图标

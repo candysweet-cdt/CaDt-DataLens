@@ -54,7 +54,7 @@ test('formatBookmarkListText：分组文本、计数与空态指引', () => {
 });
 
 test('接线护栏：五动作三处清单 + 计划模式拦截 + quick-switch 层级 + 键位', () => {
-    const constants = read('ai/ai-constants.js');
+    const constants = read('ai/core/ai-constants.js');
     const main = read('main.js');
     const panel = read('ai/ai-panel.js');
     const quickSwitch = read('shell/quick-switch.js');
@@ -75,7 +75,7 @@ test('接线护栏：五动作三处清单 + 计划模式拦截 + quick-switch �
     assert.ok(main.includes("keymap.is(kb, 'edit.bookmarkList')"), '键位派发缺书签总览');
     assert.ok(main.includes("openQuickSwitchAt('bookmarks')"), '书签总览未指向 quick-switch 书签层级');
     // app_control 常驻 description 点名书签动作族（可发现性，memo 先例）
-    const toolDefs = read('ai/ai-tool-defs.js');
+    const toolDefs = read('ai/tools/ai-tool-defs.js');
     assert.ok(toolDefs.includes('list_bookmarks / add_bookmark / remove_bookmark / clear_bookmarks / goto_bookmark'),
         'app_control 描述缺书签动作族');
 });

@@ -4,6 +4,13 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 重构（AI 源码按域归位：ai/ 下 117 文件拆进 10 个子目录，测试目录镜像；main.js 拆出辅助窗模块）
+
+- **ai/ 目录按域重组**：`frontend/src/ai/` 下 116 个 `ai-*.js` 按职责归入 `agent/`、`chat/`、`core/`、`gen/`、`group/`、`security/`、`session/`、`settings/`、`tools/`、`usage/` 十个子目录，`ai-panel.js` 留根作组合根；`frontend/test/ai/` 的 127 个测试同步镜像拆到对应子目录（7 个组合根/跨多域测试留根）。依赖图实测 0 个循环依赖，全部相对路径（import / read() / new URL() / 动态 import / 断言正则 / 护栏裸路径）按新旧目录重算，`package.json` 的 `test:ai` 清单（127 条）与 AGENTS.md / docs / 认知索引路径同步。纯目录归位，不改变任何函数体与用户可见行为。
+- **main.js 拆出辅助窗模块（phase4 M1）**：便签 / 会话监控 / 文件对比 / 查看 / 实时预览五种独立窗的启动编排从 main.js（~250 行）拆到 `frontend/src/shell/aux-window-modes.js`（`createAuxWindowModes(deps)`），backend/rt/appEvents/applySettings/baseNameOf 经 getter 注入；`auxWindowKind` 顶层 await Promise 按硬约束留组合根。
+- **P1（会话日志块）跳过**：落盘机 `createAIConversationLog` 早已在 `ai-session-disk.js`，剩余诊断 UI 注入面超红线，强拆无收益，已在方案文档记录裁定。
+- **验证**：`npm test` 全量 2652 项全绿，`npm run build` 成功；M1 另用一次性静态扫描（含对照验证）核对 deps 契约。方案与实施记录见 `docs/unfinished-plans/frontend-split-phase4.md`。
+
 ### 修复（点 X 关窗要等约 0.8 秒窗口才消失：监听取消靠 300ms 轮询 + 收尾排在关窗之前）
 
 - **现象**：关闭主窗口后窗口会「愣一下」再消失。本机日志实测两次退出分别为 `WindowClosing 钩子触发 → 窗口关闭摘除资源监听` 855ms / 806ms，全部发生在窗口真正销毁之前。

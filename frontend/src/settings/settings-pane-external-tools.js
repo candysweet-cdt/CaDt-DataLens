@@ -16,10 +16,10 @@ import {
     effectiveExternalMode,
     externalProviderReady,
     normalizeExternalToolsConfig,
-} from '../ai/ai-external-tools.js';
+} from '../ai/tools/ai-external-tools.js';
 // 桌面控制（Computer Use）的配置行构造（desktop-mcp.md §5.3/§13.5 P2 降级：
 // 复制安装命令 + 一键写入 mcp.json 行 + doctor 只读诊断；不做自动安装依赖）
-import {DESKTOP_MCP_SERVER, DESKTOP_ALL_TOOLS, DESKTOP_HIGH_RISK_TOOLS, desktopServerConfigRow, desktopConfigNeedsUpgrade, isDesktopToolDef} from '../ai/ai-desktop-control.js';
+import {DESKTOP_MCP_SERVER, DESKTOP_ALL_TOOLS, DESKTOP_HIGH_RISK_TOOLS, desktopServerConfigRow, desktopConfigNeedsUpgrade, isDesktopToolDef} from '../ai/tools/ai-desktop-control.js';
 import {onAppEvent} from '../core/app-events.js';
 
 export function createSettingsPaneExternalTools(deps) {

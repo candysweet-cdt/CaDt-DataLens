@@ -23,14 +23,14 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const read = (rel) => readFileSync(join(root, rel), 'utf8');
 
 const htmlSrc = read('index.html');
-const agentSrc = read('src/ai/ai-agent-settings.js');
-const dlgSrc = read('src/ai/ai-settings-dialog.js');
+const agentSrc = read('src/ai/agent/ai-agent-settings.js');
+const dlgSrc = read('src/ai/settings/ai-settings-dialog.js');
 const panelSrc = read('src/ai/ai-panel.js');
 const mainSrc = read('src/main.js');
 const uiSrc = read('src/settings/settings-ui.js');
-const sidebarSrc = read('src/ai/ai-group-sidebar.js');
-const runtimeSrc = read('src/ai/ai-group-runtime.js');
-const constSrc = read('src/ai/ai-constants.js');
+const sidebarSrc = read('src/ai/group/ai-group-sidebar.js');
+const runtimeSrc = read('src/ai/group/ai-group-runtime.js');
+const constSrc = read('src/ai/core/ai-constants.js');
 const cssSrc = read('src/style.css');
 
 test('APP_PAGES 注册 agents，图标已在注册表', () => {

@@ -3,13 +3,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {planApprovalInstruction} from '../../src/ai/ai-tool-cards.js';
+import {planApprovalInstruction} from '../../src/ai/tools/ai-tool-cards.js';
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
-const takeover = read('../../src/ai/ai-takeover.js');
-const toolCards = read('../../src/ai/ai-tool-cards.js');
+const takeover = read('../../src/ai/chat/ai-takeover.js');
+const toolCards = read('../../src/ai/tools/ai-tool-cards.js');
 const panel = read('../../src/ai/ai-panel.js');
-const worktree = read('../../src/ai/ai-worktree.js');
+const worktree = read('../../src/ai/tools/ai-worktree.js');
 
 function sliceFunction(source, marker) {
     const start = source.indexOf(marker);

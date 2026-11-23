@@ -33,7 +33,7 @@ const RULES = [
         owner: 'core/escape.js',
         // 语义不同的转义函数，写明原因；只许减不许增
         exempt: {
-            'ai/ai-persona.js': 'escapeXmlText 是给模型看的 XML 转义（&<>，无引号），非 HTML innerHTML',
+            'ai/core/ai-persona.js': 'escapeXmlText 是给模型看的 XML 转义（&<>，无引号），非 HTML innerHTML',
             'bridge/memo-docx.js': 'escapeXml 是 docx XML 转义（&<>），非 HTML',
             'shell/plugin-context.js': 'escapeAttr/escapeClosingTag 是插件上下文防注入转义，非 HTML',
             'core/layout-render.js': 'graph 关系图 SVG 文本转义，图表产物',

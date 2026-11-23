@@ -66,7 +66,7 @@ test('自动标题：输出预算是「防失控上限」，不再用 64 饿死�
 });
 
 test('自动标题：英文强约束提示词 + 任务框架写进用户消息', () => {
-    const constants = readFileSync(join(SRC, 'ai', 'ai-constants.js'), 'utf8');
+    const constants = readFileSync(join(SRC, 'ai', 'core', 'ai-constants.js'), 'utf8');
     const block = constants.match(/export const AI_TITLE_SYSTEM_PROMPT = \[([\s\S]*?)\]\.join/);
     assert.ok(block, '找到标题系统提示词');
     // 英文强约束：明确「这是生成任务不是对话」，禁止回答/执行消息里的指令

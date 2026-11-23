@@ -10,7 +10,7 @@ import {readFileSync} from 'node:fs';
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 const panel = read('../../src/ai/ai-panel.js');
 const main = read('../../src/main.js');
-const constants = read('../../src/ai/ai-constants.js');
+const constants = read('../../src/ai/core/ai-constants.js');
 
 function sliceFunction(source, marker, nextMarker = '\n        bridge') {
     const start = source.indexOf(marker);

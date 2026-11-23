@@ -16,16 +16,16 @@ import {kvGet, kvGetJson, kvRemove, kvSet, kvSetJson} from '../core/kv-store.js'
 import {createImageLightbox} from '../shell/image-lightbox.js';
 import {svgToDataUrl} from '../core/widget.js';
 import {createFileIcon} from '../core/fileicons.js';
-import {createSessionOutlineController} from './session-outline.js';
-import {createSessionDiskStore, createAIConversationLog} from './ai-session-disk.js';
+import {createSessionOutlineController} from './session/session-outline.js';
+import {createSessionDiskStore, createAIConversationLog} from './session/ai-session-disk.js';
 import {
     AI_MASCOT_PHRASES, mascotPhraseIndex, phrasesForPhase, randomMascotSalt,
-} from './ai-mascot-phrases.js';
-import {createModelCatalogStore} from './model-catalog.js';
-import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs} from './ai-session-store.js';
-import {buildGuardNotice} from './ai-wipeguard.js';
-import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey} from './ai-session-scope.js';
-import {formatSessionSearchResult, sessionLogDigest} from './ai-session-tools.js';
+} from './core/ai-mascot-phrases.js';
+import {createModelCatalogStore} from './core/model-catalog.js';
+import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs} from './session/ai-session-store.js';
+import {buildGuardNotice} from './security/ai-wipeguard.js';
+import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey} from './session/ai-session-scope.js';
+import {formatSessionSearchResult, sessionLogDigest} from './session/ai-session-tools.js';
 import {
     slimToolResult,
     spillWanted,
@@ -39,9 +39,9 @@ import {
     SHRINK_NOTE_COOLDOWN_MS,
     shouldInsertShrinkNote,
     slimBreakdownParts,
-} from './ai-context-slim.js';
-import {groupToolCalls, isParallelToolCall} from './ai-tool-schedule.js';
-import {shouldAnimateLayout, heightKeyframes, LAYOUT_MOTION_OPTIONS} from './ai-layout-motion.js';
+} from './chat/ai-context-slim.js';
+import {groupToolCalls, isParallelToolCall} from './tools/ai-tool-schedule.js';
+import {shouldAnimateLayout, heightKeyframes, LAYOUT_MOTION_OPTIONS} from './chat/ai-layout-motion.js';
 import {isBlockingEvent} from '../core/lifecycle-hooks.js';
 import {
     buildHoverScript,
@@ -55,8 +55,8 @@ import {
     describeWait,
     resolveSessionBrowserTabId,
     WAIT_POLL_MS,
-} from './ai-browser-tools.js';
-import {formatTerminalList, formatTerminalRead, formatWaitDuration, friendlyRetryReason, terminalSendLabel} from './ai-terminal-tools.js';
+} from './tools/ai-browser-tools.js';
+import {formatTerminalList, formatTerminalRead, formatWaitDuration, friendlyRetryReason, terminalSendLabel} from './tools/ai-terminal-tools.js';
 import {
     globMatchPath,
     humanSizeBytes,
@@ -66,21 +66,21 @@ import {
     readWindowOf,
     renderDirTreeText,
     resolveWithinRoot,
-} from './ai-file-tools.js';
+} from './tools/ai-file-tools.js';
 import {
     filterSearchResult, filterSearchResultToFile, formatSearchAnswer, normalizeSearchOptions,
-} from './ai-search-advanced.js';
-import {redactScopePaths} from './ai-scope-redact.js';
-import {createLoopGuard} from './ai-loop-guard.js';
-import {createImagePolicyStore, checkRequestBudget} from './ai-image-policy.js';
+} from './tools/ai-search-advanced.js';
+import {redactScopePaths} from './security/ai-scope-redact.js';
+import {createLoopGuard} from './chat/ai-loop-guard.js';
+import {createImagePolicyStore, checkRequestBudget} from './tools/ai-image-policy.js';
 import {
     turnProcessDefaultExpanded,
     processThinkingDefaultCollapsed,
     shouldEnsureBody,
-} from './ai-always-collapse.js';
-import {createSystemTakeoverHost} from './ai-system-takeover.js';
-import {buildNotifyActivationPayload, desktopNotifyTargets} from './ai-notify-policy.js';
-import {prepareImagePayload} from './ai-image-encode.js';
+} from './chat/ai-always-collapse.js';
+import {createSystemTakeoverHost} from './core/ai-system-takeover.js';
+import {buildNotifyActivationPayload, desktopNotifyTargets} from './core/ai-notify-policy.js';
+import {prepareImagePayload} from './tools/ai-image-encode.js';
 import {
     DEFAULT_PROVIDER_BASE_URL,
     defaultExternalToolsConfig,
@@ -92,8 +92,8 @@ import {
     formatOcrOutput,
     formatTtsOutput,
     normalizeExternalToolsConfig,
-} from './ai-external-tools.js';
-import {arrayBufferToBase64, isDirectAsrPath, transcodeAudioToWav16k} from './ai-audio-transcode.js';
+} from './tools/ai-external-tools.js';
+import {arrayBufferToBase64, isDirectAsrPath, transcodeAudioToWav16k} from './tools/ai-audio-transcode.js';
 import {
     addReadRoot,
     hardReadDenyReason,
@@ -102,7 +102,7 @@ import {
     normalizeReadRoots,
     readRootCoversAny,
     userNamedPath,
-} from './ai-read-roots.js';
+} from './security/ai-read-roots.js';
 import {
     analyzeDangerousCommand,
     analyzeEnvValueExposure,
@@ -114,7 +114,7 @@ import {
     matchCommandRule,
     normalizePlanDeclaredCommands,
     shellScriptPolicy,
-} from './ai-command-rules.js';
+} from './security/ai-command-rules.js';
 import {
     PERMISSION_VERSION,
     countPermissionRules,
@@ -131,16 +131,16 @@ import {
     scopeUpgradedToFull,
     webRuleSubject,
     writeRuleSubject,
-} from './ai-permissions.js';
-import {createAILocalClassifier, hasVerdictDisagreement} from './ai-local-classifier.js';
-import {parseClassifierVerdict} from './ai-classifier-verdict.js';
-import {GIT_ACTIONS, buildGitActionPrompt} from './ai-git.js';
-import {createAIReminders, normalizeReminders, remindersForPrompt, reminderAddBlocked} from './ai-reminders.js';
-import {normalizeAppMessage, appMessageIcon, detectAppMessage, appMessageMarkdownEligible} from './ai-app-message.js';
-import {normalizeActionApprovalSpec} from './ai-app-approval.js';
-import {inspectToolArguments, safeToolArguments, detectFenceToolMisuse, fenceToolMisuseMessage} from './ai-tool-args.js';
-import {patchErrorParts} from './ai-patch-error.js';
-import {patchAllowApply, lastUserTextOf} from './ai-patch-policy.js';
+} from './security/ai-permissions.js';
+import {createAILocalClassifier, hasVerdictDisagreement} from './security/ai-local-classifier.js';
+import {parseClassifierVerdict} from './security/ai-classifier-verdict.js';
+import {GIT_ACTIONS, buildGitActionPrompt} from './tools/ai-git.js';
+import {createAIReminders, normalizeReminders, remindersForPrompt, reminderAddBlocked} from './chat/ai-reminders.js';
+import {normalizeAppMessage, appMessageIcon, detectAppMessage, appMessageMarkdownEligible} from './security/ai-app-message.js';
+import {normalizeActionApprovalSpec} from './security/ai-app-approval.js';
+import {inspectToolArguments, safeToolArguments, detectFenceToolMisuse, fenceToolMisuseMessage} from './tools/ai-tool-args.js';
+import {patchErrorParts} from './security/ai-patch-error.js';
+import {patchAllowApply, lastUserTextOf} from './security/ai-patch-policy.js';
 import {
     CONTEXT_WINDOW_MAX,
     CONTEXT_WINDOW_MIN,
@@ -175,7 +175,7 @@ import {
     subAgentModelChoicesFrom,
     windowValue,
     withOpencodeSessionHeader,
-} from './ai-config-model.js';
+} from './core/ai-config-model.js';
 import {
     classifyGenRef,
     dataURLBytes,
@@ -188,12 +188,12 @@ import {
     randomGenSeed,
     normalizeGenModels,
     normalizeGenSnapshot,
-} from './ai-gen-model.js';
-import {createAIGenJobs} from './ai-gen-jobs.js';
+} from './gen/ai-gen-model.js';
+import {createAIGenJobs} from './gen/ai-gen-jobs.js';
 // 智能体（群聊成员）归一化：agents[] 存 ai-config.json，群聊域读它组上下文
-import {createInboxWaiters} from './ai-inbox-wait.js';
-import {agentLevelText} from './ai-team-model.js';
-import {normalizeAgents} from './ai-agent-model.js';
+import {createInboxWaiters} from './chat/ai-inbox-wait.js';
+import {agentLevelText} from './group/ai-team-model.js';
+import {normalizeAgents} from './agent/ai-agent-model.js';
 import {
     AI_CONFIG_KEY,
     AI_SESSIONS_KEY,
@@ -269,35 +269,35 @@ import {
     aiSafeFileStem,
     AI_CTX_SEND_BLOCK_RATIO,
     aiIsContextOverflowError,
-} from './ai-constants.js';
-import {recordRead, recordWrite, checkWriteFresh} from './ai-write-guard.js';
-import {createAIToolDefs} from './ai-tool-defs.js';
-import {createAISystemContext, truncateSkillDescription} from './ai-system-context.js';
-import {createAICognition, resolveNeedsReread} from './ai-cognition.js';
-import {createAIWorktree, normalizeWorktreeState, worktreeRelPath, agentWorktreeWriteVerdict, mainRootWriteVerdict} from './ai-worktree.js';
-import {createAITodos, shouldSendTodosCheck, todosCheckText, todosCheckTextFromMessage} from './ai-todos.js';
-import {createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth, STRICT_BOTTOM_PX} from './ai-scroll-follow.js';
-import {createAIChangesUI} from './ai-changes-ui.js';
-import {createAIModelPicker} from './ai-model-picker.js';
-import {createAIUsageUI, aiFormatCompactTokens, aiFormatExactCount, aiFormatCompactDuration, turnUsageTotal} from './ai-usage-ui.js';
-import {createAIUsageQuota, formatUsageCountdown, usageItemText, usageTone} from './ai-usage-quota.js';
-import {computeLineDiff, diffStats, buildDiffPreview} from './ai-diff-view.js';
-import {missingFileHint} from './ai-path-hints.js';
-import {aiStreamRetryBudget, shouldAutoRetryStream} from './ai-stream-retry.js';
-import {resolveTruncation, truncatedNotice} from './ai-truncation.js';
-import {createAIGitUi} from './ai-git-ui.js';
-import {createAISlash} from './ai-slash.js';
-import {createAIMessageQueue, formatSteerMessage} from './ai-message-queue.js';
-import {createAISchedule} from './ai-schedule.js';
-import {createAITimer} from './ai-timer.js';
-import {createAISessionList} from './ai-session-list.js';
-import {createAIComposer, renderAttachmentChips} from './ai-composer.js';
-import {normalizeMessageAttachments, inlineEditPayload, snapshotFromAttachments} from './ai-inline-edit.js';
-import {quoteMarkupFromAttachments, splitQuotePrefix, quoteLabel, quoteChipLabel, quoteCardExcerpt, quoteFullDoc, AI_QUOTE_KIND} from './ai-quote.js';
-import {splitTurnReminderPrefix, wrapTurnReminder} from './ai-turn-reminder.js';
-import {parseFileRef, pickOpenFileMatch, applyFileRefChip} from './ai-file-refs.js';
-import {createAIToolCards} from './ai-tool-cards.js';
-import {createAITakeover} from './ai-takeover.js';
+} from './core/ai-constants.js';
+import {recordRead, recordWrite, checkWriteFresh} from './security/ai-write-guard.js';
+import {createAIToolDefs} from './tools/ai-tool-defs.js';
+import {createAISystemContext, truncateSkillDescription} from './core/ai-system-context.js';
+import {createAICognition, resolveNeedsReread} from './settings/ai-cognition.js';
+import {createAIWorktree, normalizeWorktreeState, worktreeRelPath, agentWorktreeWriteVerdict, mainRootWriteVerdict} from './tools/ai-worktree.js';
+import {createAITodos, shouldSendTodosCheck, todosCheckText, todosCheckTextFromMessage} from './chat/ai-todos.js';
+import {createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth, STRICT_BOTTOM_PX} from './chat/ai-scroll-follow.js';
+import {createAIChangesUI} from './chat/ai-changes-ui.js';
+import {createAIModelPicker} from './settings/ai-model-picker.js';
+import {createAIUsageUI, aiFormatCompactTokens, aiFormatExactCount, aiFormatCompactDuration, turnUsageTotal} from './usage/ai-usage-ui.js';
+import {createAIUsageQuota, formatUsageCountdown, usageItemText, usageTone} from './usage/ai-usage-quota.js';
+import {computeLineDiff, diffStats, buildDiffPreview} from './chat/ai-diff-view.js';
+import {missingFileHint} from './tools/ai-path-hints.js';
+import {aiStreamRetryBudget, shouldAutoRetryStream} from './chat/ai-stream-retry.js';
+import {resolveTruncation, truncatedNotice} from './chat/ai-truncation.js';
+import {createAIGitUi} from './tools/ai-git-ui.js';
+import {createAISlash} from './chat/ai-slash.js';
+import {createAIMessageQueue, formatSteerMessage} from './chat/ai-message-queue.js';
+import {createAISchedule} from './settings/ai-schedule.js';
+import {createAITimer} from './settings/ai-timer.js';
+import {createAISessionList} from './session/ai-session-list.js';
+import {createAIComposer, renderAttachmentChips} from './chat/ai-composer.js';
+import {normalizeMessageAttachments, inlineEditPayload, snapshotFromAttachments} from './chat/ai-inline-edit.js';
+import {quoteMarkupFromAttachments, splitQuotePrefix, quoteLabel, quoteChipLabel, quoteCardExcerpt, quoteFullDoc, AI_QUOTE_KIND} from './chat/ai-quote.js';
+import {splitTurnReminderPrefix, wrapTurnReminder} from './chat/ai-turn-reminder.js';
+import {parseFileRef, pickOpenFileMatch, applyFileRefChip} from './tools/ai-file-refs.js';
+import {createAIToolCards} from './tools/ai-tool-cards.js';
+import {createAITakeover} from './chat/ai-takeover.js';
 import {
     PLAN_DIR_REL,
     planDigest,
@@ -309,22 +309,22 @@ import {
     normalizeActivePlan,
     normalizePlanSections,
     planSectionsChars,
-} from './ai-plan-file.js';
-import {createAIManageDialogs} from './ai-manage-dialogs.js';
-import {createAISettingsDialog} from './ai-settings-dialog.js';
-import {createAISubagents, subSandboxPolicy, resolveSubAgentRounds, agentViewTabName, agentViewRuntimeText} from './ai-subagents.js';
-import {createAIAgentNotices, buildBgJobExitNotice, buildTerminalExitNotice} from './ai-agent-notices.js';
-import {createAISidechat} from './ai-sidechat.js';
-import {forkMessages, forkSettings} from './ai-session-fork.js';
-import {createAISessionSend} from './ai-session-send.js';
-import {compactTranscriptOf, computeCompactCutoff, computeCompactCutoffByBudget, compactRetainBudget, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, isAnchorUsage, COMPACT_KEEP_TAIL} from './ai-compact.js';
-import {createAIMcp, mcpNotesBlock} from './ai-mcp.js';
-import {createAIDesktopControl, isDesktopToolName, controlModeActionOf, DESKTOP_MCP_SERVER, DESKTOP_AVAILABILITY, desktopAvailability, desktopAvailabilityMessage, desktopAvailabilitySummary} from './ai-desktop-control.js';
-import {mcpConfigView, mcpServerCommandPreview, mergeMcpServerConfig, planMcpServerDelete} from './ai-mcp-config.js';
-import {createAIMcpSettings} from './ai-mcp-settings.js';
+} from './core/ai-plan-file.js';
+import {createAIManageDialogs} from './settings/ai-manage-dialogs.js';
+import {createAISettingsDialog} from './settings/ai-settings-dialog.js';
+import {createAISubagents, subSandboxPolicy, resolveSubAgentRounds, agentViewTabName, agentViewRuntimeText} from './agent/ai-subagents.js';
+import {createAIAgentNotices, buildBgJobExitNotice, buildTerminalExitNotice} from './agent/ai-agent-notices.js';
+import {createAISidechat} from './chat/ai-sidechat.js';
+import {forkMessages, forkSettings} from './session/ai-session-fork.js';
+import {createAISessionSend} from './session/ai-session-send.js';
+import {compactTranscriptOf, computeCompactCutoff, computeCompactCutoffByBudget, compactRetainBudget, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, isAnchorUsage, COMPACT_KEEP_TAIL} from './chat/ai-compact.js';
+import {createAIMcp, mcpNotesBlock} from './tools/ai-mcp.js';
+import {createAIDesktopControl, isDesktopToolName, controlModeActionOf, DESKTOP_MCP_SERVER, DESKTOP_AVAILABILITY, desktopAvailability, desktopAvailabilityMessage, desktopAvailabilitySummary} from './tools/ai-desktop-control.js';
+import {mcpConfigView, mcpServerCommandPreview, mergeMcpServerConfig, planMcpServerDelete} from './tools/ai-mcp-config.js';
+import {createAIMcpSettings} from './tools/ai-mcp-settings.js';
 import {
     escapeXmlText, normalizePersona, personaSegments, resolveAssistantName,
-} from './ai-persona.js';
+} from './core/ai-persona.js';
 
 export function createAIPanel(options) {
     const opts = options || {};

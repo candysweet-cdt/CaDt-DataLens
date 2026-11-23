@@ -6,8 +6,8 @@ import {readFileSync} from 'node:fs';
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 const panel = read('../../src/ai/ai-panel.js');
-const composer = read('../../src/ai/ai-composer.js');
-const store = read('../../src/ai/ai-session-store.js');
+const composer = read('../../src/ai/chat/ai-composer.js');
+const store = read('../../src/ai/session/ai-session-store.js');
 
 function sliceBetween(source, startMarker, endMarker) {
     const start = source.indexOf(startMarker);

@@ -3,7 +3,7 @@
 // 链尾自动成果纪要、relaySnapshot 与状态文案。纯函数部分直接测 ai-group-model 导出。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createAIGroupRuntime} from '../../src/ai/ai-group-runtime.js';
+import {createAIGroupRuntime} from '../../src/ai/group/ai-group-runtime.js';
 import {
     GROUP_MEMBER_MAX,
     RELAY_CAPS,
@@ -15,8 +15,8 @@ import {
     relayStageFocus,
     relayWakes,
     stripHandoffMarker,
-} from '../../src/ai/ai-group-model.js';
-import {discussionActionLabel, groupStatusText} from '../../src/ai/ai-group-ui-model.js';
+} from '../../src/ai/group/ai-group-model.js';
+import {discussionActionLabel, groupStatusText} from '../../src/ai/group/ai-group-ui-model.js';
 
 async function waitFor(fn, ms = 4000) {
     const start = Date.now();

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {configForModel, normalizeModelEntry} from '../../src/ai/ai-config-model.js';
+import {configForModel, normalizeModelEntry} from '../../src/ai/core/ai-config-model.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel) => readFileSync(join(ROOT, rel), 'utf8');
@@ -56,7 +56,7 @@ test('前端渲染排队提示，并在流有进展时收起', () => {
 test('模型编辑器提供频率上限输入并写回条目', () => {
     const html = read('index.html');
     const panel = read('src/ai/ai-panel.js');
-    const dialog = read('src/ai/ai-settings-dialog.js');
+    const dialog = read('src/ai/settings/ai-settings-dialog.js');
     assert.match(html, /id="ai-opt-rpm"/, '编辑器缺输入框');
     assert.match(panel, /rpm:\s*document\.getElementById\('ai-opt-rpm'\)/, 'opt 表缺条目');
     assert.match(dialog, /if \(opt\.rpm\) opt\.rpm\.value = Number\(entry\.rpm\) > 0/, '缺回填');
