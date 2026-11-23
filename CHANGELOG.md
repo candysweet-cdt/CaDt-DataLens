@@ -4,6 +4,20 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（点 X 关窗要等约 0.8 秒窗口才消失：监听取消靠 300ms 轮询 + 收尾排在关窗之前）
+
+- **现象**：关闭主窗口后窗口会「愣一下」再消失。本机日志实测两次退出分别为 `WindowClosing 钩子触发 → 窗口关闭摘除资源监听` 855ms / 806ms，全部发生在窗口真正销毁之前。
+- **根因**：① `internal/watch/watch_windows.go` 的 `watchDirectory` 用 `WaitForSingleObject(event, 300)` 轮询 stop 通道才发现「该退了」，而 `ResourceWatcher.stopLocked` / `Watcher.stopSlotLocked` 是**同步 `<-done` 且逐槽串行**——实测单次取消 206~213ms（最坏 300ms），关窗时 1 个工作区槽 + 1~2 个资源槽串联就吃掉 0.6~0.9s；② 这段等待排在 `WindowClosing` 钩子里（v3 钩子同步执行，不返回就不销毁窗口），其中 `teardownAppServices` 还要等 MCP server 关 stdin 后子进程退出（整批预算 8s），会话里跑过 MCP 工具时更久。
+- **修法**：① stop 通道桥接成手动复位内核事件，等待改成 `WaitForMultipleObjects({目录通知, stop})`——取消即时返回，300ms 退化成保险丝（`stop` 事件 SetEvent 失败时的兜底轮询）；退出前先等桥接 goroutine 退出再关句柄，避免 `SetEvent` 撞上 `CloseHandle`。② 新增 `hideWindowsBeforeTeardown()`：退出路径（`beforeCloseWindow` / `ForceQuitAll` / `ForceClose`）先把全部窗口从屏幕上摘掉再收口，视觉上等于立刻关闭，进程与子进程的收口顺序完全不变。隐藏走 `ShowWindowAsync`（`windowhide_windows.go` / `windowhide_other.go`）而不是 `WebviewWindow.Hide()`——后者是 `InvokeSync`（派发主线程并等待），与「钩子跑在 v3 事件 goroutine 上」组合有互锁风险；`createWindow` 的 8s 兜底显示加 `teardownDone / forceClosed` 守卫，避免把正在退出的隐藏窗口又塞回屏幕。
+- **验证**：`watch_windows_test.go` 新增 `TestWatchDirectoryStopIsPrompt`（连续 3 次 stop 必须 < 150ms，轮询实现下界 200ms+ 必然失败）；`go test ./internal/watch` 10 例全绿，`go test . -run "TestShouldHideOnClose|TestNoWindowsOnlyAPIInCrossPlatformFiles"` 全绿，`go build .` 通过。
+
+### 修复（AI 重试把环境块当用户正文：重试一次多叠一层 `<system-reminder>`）
+
+- **现象**：会话里点「重试 / 重新生成」后，用户消息气泡里会露出 `<system-reminder>` + `<workspace_context>` / `<cognition_index>` 等宿主环境块原文（长的还会折叠成「展开全文」），且每重试一次叠得更厚。
+- **根因**：`ai-panel.js` 的 `regenerateLast()` 直接把上一条用户消息的 `content` 原样交给起轮，而落盘的 `content` 前缀已经是上一轮的环境块；起轮又按当前状态包一层新的 → 历史里变成「新块 + 旧块 + 正文」。气泡渲染只剥开头一块（`splitTurnReminderPrefix` 只匹配一次），旧块就被当用户正文显示。
+- **修法**：① `ai-turn-reminder.js` 的 `splitTurnReminderPrefix` 改为**逐层剥离**开头连续的环境块（`reminder` 仍指第一个块，`body` 是其后正文）——已有受损历史消息重新渲染/复制/导出也会自愈；② `regenerateLast` 重发前先取 `splitTurnReminderPrefix(userMessage.content).body`，与「编辑重发 / 复制消息」同一口径，不再把旧块带进新一轮；③ 同时把落盘的文本类附件快照（`message.attachments`）一并带给起轮——旧块剥掉后 `<attachments>` 按空清单重建，不回传就等于静默丢掉用户当初附的文件 / 引用内容。
+- **验证**：`ai-turn-reminder.test.mjs` 新增「两层块逐层剥干净」「regenerateLast 必须经 splitTurnReminderPrefix 取正文」两个用例（11 例全绿），`ai-quote` / `session-outline` / `ai-session-store` / `ai-cognition` 共 78 例全绿，`npm run build` 通过。
+
 ### 修复（内置 TTS 示例启动命令 + 桌面控制「尚未安装」误报）
 
 > 来源：GitHub PR #1（作者 jasonsac-hzau，"fix(ai): 内置 TTS 示例改用系统 PowerShell 5.1；桌面控制申请按真因报错"）。两处缺陷的修复由该 PR 提供，本地合入时在其基础上补了审查修正（见下）。
