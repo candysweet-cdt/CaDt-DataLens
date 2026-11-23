@@ -4,6 +4,7 @@
 import {iconSvg} from '../core/icons.js';
 import {createTextarea} from '../core/form-controls.js';
 import {agentLevelText} from './ai-team-model.js';
+import {createScrollGesture, nextStickState} from './ai-scroll-follow.js';
 
 export function createAIAgentView(ctx, extras) {
     const el = ctx.el;
@@ -28,6 +29,11 @@ export function createAIAgentView(ctx, extras) {
     const agentTranscriptBlocks = extras.agentTranscriptBlocks;
     const agentBlockSig = extras.agentBlockSig;
     const canReviveRecord = extras.canReviveRecord;
+    // 工具行的动词+图标映射（复用主消息区 toolMeta）与默认折叠判定（纯函数）
+    const toolMeta = typeof extras.toolMeta === 'function' ? extras.toolMeta : null;
+    const agvToolDefaultCollapsed = typeof extras.agvToolDefaultCollapsed === 'function'
+        ? extras.agvToolDefaultCollapsed
+        : (name, text) => String(text || '').length > 400;
     // 运行态注册表（宿主构造块里的 const Map，稳定活引用）
     const subAgents = extras.subAgents;
     const subAgentRecords = extras.subAgentRecords;
@@ -66,26 +72,60 @@ export function createAIAgentView(ctx, extras) {
         return div;
     }
 
-    // 工具行：名称 + 输出。视图是只读速览，超长输出截断（完整输出在父会话的工具卡里）。
+    // 工具行：动词 + 图标 + 主参数 + 可折叠输出（与主消息区工具卡同款信息密度）。
+    // 视图是只读速览，超长输出截断（完整输出在父会话的工具卡里）。折叠态存在节点 class 上：
+    // 块节点按 key 持久复用，重渲染只改文本、不动 class，用户的开合选择跨 300ms 刷新自动保留。
     const AGV_TOOL_TEXT_MAX = 4000;
 
     function agentToolRow(block) {
         const row = document.createElement('div');
         row.className = 'ai-agv-tool';
+        const head = document.createElement('button');
+        head.type = 'button';
+        head.className = 'ai-agv-tool-head';
+        const icon = document.createElement('span');
+        icon.className = 'ai-agv-tool-icon';
+        const verb = document.createElement('span');
+        verb.className = 'ai-agv-tool-verb';
         const label = document.createElement('span');
         label.className = 'ai-agv-tool-name';
+        const chev = document.createElement('span');
+        chev.className = 'ai-agv-tool-chev';
+        chev.innerHTML = iconSvg('chevron-down', 12);
+        head.append(icon, verb, label, chev);
+        head.addEventListener('click', () => {
+            row.classList.toggle('collapsed');
+            // 展开后内容变高：贴底态下补一次底（按所属 view 找滚动状态，多挂载点互不串扰）
+            const owner = toolRowOwner.get(row);
+            if (owner) refollowAfterToolToggle(owner);
+        });
+        const body = document.createElement('div');
+        body.className = 'ai-agv-tool-body';
         const pre = document.createElement('pre');
-        row.append(label, pre);
+        body.appendChild(pre);
+        row.append(head, body);
+        if (agvToolDefaultCollapsed(block.name, block.text)) row.classList.add('collapsed');
         fillAgentToolRow(row, block || {});
         return row;
     }
 
+    // 工具行 → 所属 view（多挂载点下按行反查，避免折叠点击串到别的 view 的滚动状态）
+    const toolRowOwner = new WeakMap();
+
     function fillAgentToolRow(row, block) {
-        row.className = 'ai-agv-tool' + (block.error ? ' error' : '');
+        const failed = !!(block && block.error);
+        // 用 classList.toggle 而非重写 className：保住用户的折叠态（collapsed）
+        row.classList.toggle('error', failed);
+        const icon = row.querySelector('.ai-agv-tool-icon');
+        const verb = row.querySelector('.ai-agv-tool-verb');
         const label = row.querySelector('.ai-agv-tool-name');
+        const meta = toolMeta ? toolMeta(block.name || 'tool', null) : null;
+        if (icon) icon.innerHTML = meta && meta.icon ? iconSvg(meta.icon, 13) : '';
+        if (verb) verb.textContent = meta && meta.verb ? meta.verb : '';
         if (label) {
-            const suffix = block.error ? ' · 失败' : '';
-            label.textContent = (block.name || 'tool') + (block.arg ? ' · ' + block.arg : '') + suffix;
+            const suffix = failed ? ' · 失败' : '';
+            label.textContent = (block.arg ? block.arg : (block.name || 'tool')) + suffix;
+            label.dataset.tip = block.name || 'tool';
         }
         const pre = row.querySelector('pre');
         if (!pre) return;
@@ -276,7 +316,9 @@ export function createAIAgentView(ctx, extras) {
         // 首帧一律跟到底部：刚打开详情时正文常常一屏放不下（长派单提示词），此时 scrollTop=0
         // 会被误算成「用户在上翻」，于是整轮都不再跟随——表现就是滚动条一直卡在顶部，
         // 内容却还在下面长。落地之后才交由用户的真实位置决定。
-        const pinned = !view.scrollReady || !measurable || body.scrollHeight - prevTop - body.clientHeight < 60;
+        // 后续帧用通用手势判定（ai-scroll-follow）：只有用户手势里的上滚才解除贴底，
+        // 工具卡展开/内容重排导致的 scrollTop 变化不算上翻（旧的手写「距底<60」会被骗）。
+        const pinned = !view.scrollReady || !measurable || view.stick.stickBottom;
         const blocks = state.blocks;
         const seen = new Set();
         let cursor = body.firstElementChild;
@@ -286,6 +328,8 @@ export function createAIAgentView(ctx, extras) {
             if (!node) {
                 node = createAgentBlockNode(block);
                 node.dataset.agvKey = block.key;
+                // 工具行记下所属 view：折叠点击据此找滚动状态（多挂载点互不串扰）
+                if (block.kind === 'tool') toolRowOwner.set(node, view);
                 view.blockNodes.set(block.key, node);
             }
             // 只在「最后一块且子代理仍在跑」时按生成中处理：可视化卡片先占位不建实例
@@ -311,7 +355,59 @@ export function createAIAgentView(ctx, extras) {
             // 上翻读时把位置还回去（超出新上限会自动钳到 max，不会凭空回到顶部）
             body.scrollTop = prevTop;
         }
+        // 同步「上一帧位置」：滚动监听用它区分用户上滚与布局变化（首帧 DOM 刚落地，
+        // 以实际写回的 scrollTop 为准，避免把首帧吸附误判成用户滚动）
+        view.scrollLastTop = body.scrollTop;
+        view.scrollGesture.reset();
         view.scrollReady = true;
+    }
+
+    // 正文滚动监听：只有用户手势（滚轮 / 触摸 / 滚动条拖拽）里的上滚才解除贴底。
+    // 判定收在 ai-scroll-follow.js，与主消息区同一口径——工具卡展开 / 内容重排导致的
+    // scrollTop 变化不算上翻，避免「展开一个工具卡后再也不跟随触底」。
+    function bindAgentScroll(view, body) {
+        if (view.scrollBound) return;
+        view.scrollBound = true;
+        const onScroll = () => {
+            const top = body.scrollTop;
+            const distance = body.scrollHeight - top - body.clientHeight;
+            const shrunk = top < view.scrollLastTop - 0.5;
+            const byUser = view.scrollGesture.active();
+            const next = nextStickState(
+                {stickBottom: view.stick.stickBottom, lastTop: view.scrollLastTop, byUser},
+                {top, distance},
+            );
+            view.stick.stickBottom = next.stickBottom;
+            view.scrollLastTop = top;
+        };
+        const onWheel = () => view.scrollGesture.note();
+        const onTouchStart = () => view.scrollGesture.begin();
+        const onTouchMove = () => view.scrollGesture.note();
+        const onTouchEnd = () => view.scrollGesture.end();
+        body.addEventListener('scroll', onScroll, {passive: true});
+        body.addEventListener('wheel', onWheel, {passive: true});
+        body.addEventListener('touchstart', onTouchStart, {passive: true});
+        body.addEventListener('touchmove', onTouchMove, {passive: true});
+        body.addEventListener('touchend', onTouchEnd, {passive: true});
+        body.addEventListener('touchcancel', onTouchEnd, {passive: true});
+        view.scrollCleanup = () => {
+            body.removeEventListener('scroll', onScroll);
+            body.removeEventListener('wheel', onWheel);
+            body.removeEventListener('touchstart', onTouchStart);
+            body.removeEventListener('touchmove', onTouchMove);
+            body.removeEventListener('touchend', onTouchEnd);
+            body.removeEventListener('touchcancel', onTouchEnd);
+        };
+    }
+
+    // 工具卡展开导致内容变高：贴底态下补一次底（手势判定在 scroll 事件里已更新 stick）
+    function refollowAfterToolToggle(view) {
+        if (!view || !view.stick.stickBottom || view.scrollGesture.active()) return;
+        const body = view.body;
+        // 等展开后的布局收敛再补底（display:none 切换 / CSS display:block 需一帧）
+        requestAnimationFrame(() => {
+            if (view.stick.stickBottom && body && body.clientHeight > 0) body.scrollTop = body.scrollHeight;
+        });
     }
 
     function agentStatusMeta(view) {
@@ -502,6 +598,7 @@ export function createAIAgentView(ctx, extras) {
             view.body = document.createElement('div');
             view.body.className = 'ai-agent-view-body';
         }
+        bindAgentScroll(view, view.body);
         renderAgentHead(view, view.head);
         // 结构固定为「头部 → 正文 → 输入行」；正文节点常驻，内部按块增量更新
         if (root.firstElementChild !== view.head) root.insertBefore(view.head, root.firstElementChild);
@@ -631,6 +728,12 @@ export function createAIAgentView(ctx, extras) {
             blockNodes: new Map(),
             // 首帧是否已落地（syncAgentBlocks 里决定「跟到底部」还是「尊重用户位置」）
             scrollReady: false,
+            // 滚动贴底跟随（ai-scroll-follow 单一来源）：只有用户手势里的上滚才解除贴底
+            stick: {stickBottom: true},
+            scrollLastTop: 0,
+            scrollGesture: createScrollGesture(),
+            scrollBound: false,
+            scrollCleanup: null,
         };
         agentViews.add(view);
         renderAgentView(view);
@@ -645,6 +748,8 @@ export function createAIAgentView(ctx, extras) {
                 clearTimeout(view.timer);
                 view.timer = 0;
             }
+            if (view.scrollCleanup) { view.scrollCleanup(); view.scrollCleanup = null; }
+            view.scrollGesture.reset();
             agentViews.delete(view);
             removed = true;
         }

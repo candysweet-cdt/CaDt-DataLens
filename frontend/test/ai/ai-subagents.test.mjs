@@ -3,7 +3,7 @@
 // 这里锁住「改一处就会悄悄变味」的三条判定。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, subScopeDowngrade, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, waitWakeText, waitTimeoutText, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agentToolArgBrief, parseTranscriptLines, AI_INBOX_WAIT_MAX_SEC} from '../../src/ai/ai-subagents.js';
+import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, subScopeDowngrade, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, waitWakeText, waitTimeoutText, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agvToolDefaultCollapsed, agentViewTabName, agentViewRuntimeText, agentToolArgBrief, parseTranscriptLines, AI_INBOX_WAIT_MAX_SEC} from '../../src/ai/ai-subagents.js';
 
 test('takeInboxBatch：插队（step）先于排队（turn），各自保持入队顺序', () => {
     const inbox = {
@@ -270,6 +270,44 @@ test('agentBlockSig：正文追加即变，生成中与落定不同签名（占�
     // 只看尾部：长正文不会把签名字符串撑大
     const long = {kind: 'assistant', text: 'x'.repeat(5000) + 'TAIL'};
     assert.ok(agentBlockSig(long, false).length < 160);
+});
+
+test('agvToolDefaultCollapsed：长输出与噪声工具默认收起，短输出展开', () => {
+    // 短输出的普通工具直接铺开
+    assert.equal(agvToolDefaultCollapsed('read_file', 'a.js:1'), false);
+    assert.equal(agvToolDefaultCollapsed('write_file', 'ok'), false);
+    // 长输出默认收起（阈值 400）
+    assert.equal(agvToolDefaultCollapsed('read_file', 'x'.repeat(400)), false, '正好 400 仍展开');
+    assert.equal(agvToolDefaultCollapsed('read_file', 'x'.repeat(401)), true, '超过 400 收起');
+    // 命令/搜索/列目录这类即使输出短也默认收起（多行噪声）
+    for (const name of ['run_command', 'background_command', 'search_text', 'list_dir', 'glob', 'check_command']) {
+        assert.equal(agvToolDefaultCollapsed(name, 'ok'), true, name + ' 应默认收起');
+    }
+    // 缺字段容错
+    assert.equal(agvToolDefaultCollapsed(null, null), false);
+    assert.equal(agvToolDefaultCollapsed(undefined, undefined), false);
+});
+
+test('agentViewTabName：状态前缀可辨，名字清洗，未知状态不加前缀', () => {
+    assert.equal(agentViewTabName('调研子代理', 'running'), '⟳ 调研子代理');
+    assert.equal(agentViewTabName('调研子代理', 'done'), '✓ 调研子代理');
+    assert.equal(agentViewTabName('调研子代理', 'error'), '✕ 调研子代理');
+    assert.equal(agentViewTabName('调研子代理', 'stopped'), '■ 调研子代理');
+    assert.equal(agentViewTabName('调研子代理', ''), '调研子代理', '无状态不加前缀');
+    assert.equal(agentViewTabName('  调研  子代理 ', 'done'), '✓ 调研 子代理', '空白折叠');
+    assert.equal(agentViewTabName('', 'running'), '⟳ 子代理', '空名回退');
+    assert.equal(agentViewTabName(null, null), '子代理');
+});
+
+test('agentViewRuntimeText：轮次 · 耗时 · token · 状态，缺字段跳过', () => {
+    assert.equal(agentViewRuntimeText(null), '');
+    assert.equal(agentViewRuntimeText({state: 'running', rounds: 3, ms: 12500, tokens: 55800}),
+        '轮次 3 · 13s · 55.8k tok · 运行中');
+    assert.equal(agentViewRuntimeText({state: 'done', rounds: 0, ms: 0, tokens: 0}), '已完成', '零值跳过只留状态');
+    assert.equal(agentViewRuntimeText({state: 'error'}), '失败');
+    assert.equal(agentViewRuntimeText({rounds: 2}), '轮次 2', '无状态只留轮次');
+    // ms 至少显示 1s（运行中不足 1 秒时不显示 0s）
+    assert.equal(agentViewRuntimeText({state: 'running', ms: 100}), '1s · 运行中');
 });
 
 test('agentToolArgBrief：取点名到对象的字段，畸形 JSON 与空值返回空串', () => {

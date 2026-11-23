@@ -12212,7 +12212,26 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     gap: 4px;
 }
 .ai-agv-tool.error { border-color: color-mix(in srgb, var(--red) 45%, transparent); }
-.ai-agv-tool-name { font-size: 10.5px; font-weight: 600; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 工具卡头部：动词 + 图标 + 主参数 + 折叠箭头，整行可点开合（与主消息区工具卡同款） */
+.ai-agv-tool-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.ai-agv-tool-icon { display: inline-flex; align-items: center; flex: none; color: var(--muted); }
+.ai-agv-tool-verb { flex: none; font-size: 10.5px; font-weight: 600; color: var(--text); }
+.ai-agv-tool-name { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-agv-tool-chev { flex: none; display: inline-flex; align-items: center; color: var(--muted); transition: transform .12s ease; }
+.ai-agv-tool.collapsed .ai-agv-tool-chev { transform: rotate(-90deg); }
+.ai-agv-tool.collapsed .ai-agv-tool-body { display: none; }
 .ai-agv-tool pre {
     margin: 0;
     font-family: var(--editor-font-family);
@@ -12304,10 +12323,14 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     font-size: 12px;
     line-height: 1.7;
 }
-.agentview-root .ai-agent-view-body { padding: 12px 16px; gap: 10px; }
+.agentview-root .ai-agent-view-body { padding: 12px 16px; gap: 12px; }
 .agentview-root .ai-agv-msg { font-size: 12.5px; line-height: 1.7; }
 .agentview-root .ai-agv-user { font-size: 12.5px; line-height: 1.7; }
-.agentview-root .ai-agv-tool pre { max-height: 260px; }
+.agentview-root .ai-agv-tool-head { gap: 7px; }
+.agentview-root .ai-agv-tool-verb,
+.agentview-root .ai-agv-tool-name { font-size: 11px; }
+/* 展开后限高，配合默认折叠避免长转录把一屏占满（完整输出在父会话工具卡里） */
+.agentview-root .ai-agv-tool pre { max-height: 200px; }
 
 /* ===== 快捷便签面板（bridge-memo-view）===== */
 .memo-pane { padding: 0; }

@@ -781,6 +781,8 @@ function tabTooltip(doc) {
         // 层号 = depth+1（内部 depth 主代理为 0，人读层号以主代理为第 1 层，与 HUD/团队树一致）。
         // editor-groups 不 import ai 域（单向依赖），这里按同一口径就地算。
         if (spec.depth >= 1) bits.push('第 ' + (spec.depth + 1) + ' 层');
+        // 运行态行（bridge 层经快照写入 spec.runtimeText）：轮次 · 耗时 · token · 状态
+        if (spec.runtimeText) bits.push(spec.runtimeText);
         if (spec.task) bits.push(taskSnippetForTab(spec.task));
         return bits.join('\n') + lockTip;
     }

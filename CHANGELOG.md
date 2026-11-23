@@ -12,6 +12,14 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **桌面控制申请把「已安装但启动失败」报成「尚未安装」**：`request_desktop_control` 原用「MCP 快照里 windows 工具数 > 0」当「装没装」判据，而 server 启动失败（uv 缺失 / 依赖没下完 / wheel 被清理）时工具数同样是 0——于是「已安装 + 开关已开 + 工具全勾」的机器收到「请点『安装』」，而卡片自 2026-11-22 起是「开关即安装」，界面上没有这个按钮。修法：`ai-desktop-control.js` 新增纯函数 `desktopAvailability()` 把「mcp.json 的 windows 行 + 快照 state/lastError + MCP 总开关」折算成五态（未安装 / 已装未启用 / 启动中 / 启动失败 / 可用）与 `desktopAvailabilityMessage()` / `desktopAvailabilitySummary()`；`ai-panel.js` 的 `request_desktop_control`、`windows_control_mode` 兜底、权限面板开关、菜单描述与「新会话默认桌面控制」置灰判定统一走它（启动失败时带 `state` 与失败原因）；`ai-mcp.js` 的 `getState()` 增加 `loaded`，区分「MCP 总开关关闭」与「还没拉过快照」。守卫：`ai-desktop-control.test.mjs` 新增五态用例。
 - **本地审查修正（在 PR 基础上）**：① FAILED 文案原本让用户「点『更新配置』重装依赖」，但该按钮只在旧配置（`needsUpgrade`）时渲染，启动失败时配置本身通常是好的、按钮并不存在——改为指向始终存在的「启用桌面控制」开关（关掉再打开重试）；② 移除文案里让 AI「用 MCPDesktopDoctor 确认 uv」的指引——它是 Wails 绑定、不是 AI 可调用工具；③ 测试补断言，禁止 FAILED 文案再指向不存在的「更新配置 / MCPDesktopDoctor」入口；④ dev mock 补 `MCPGetConfig` / `MCPSnapshot`，避免 dev 模式可用性判定退化成「启动失败」。
 
+### 优化（子代理详情标签页：工具输出可折叠 + 标题带状态 + 滚动跟随）
+
+- **工具输出改可折叠工具卡**：详情正文的工具行原先是「裸工具名 + 一坨截断文本」（长输出硬铺开、无动词无图标），现复用主消息区同一份 `toolMeta` 动词+图标映射，头部显示「图标 + 动词 + 主参数 + 折叠箭头」，长输出（>400 字）与命令/搜索/列目录类工具默认收起、点击展开。折叠态存在块节点 class 上，跨 300ms 流式刷新自动保留。`toolMeta` 经 ctx 注入（不搬动定义，避免破坏 `ai-tool-wiring` 的源码切片守卫）。改动在 `ai-agent-view.js` / `ai-subagents.js` / `ai-tool-cards.js` / `ai-panel.js` / `style.css`。
+- **标签页标题带运行状态**：运行中/完成/失败/停止分别加 `⟳ / ✓ / ✕ / ■` 前缀，tooltip 追加「轮次 · 耗时 · token · 状态」行。仿后台终端的「快照 + 订阅 + 卸载」范式：面板闭包内新增 `agentViewSnapshot` 与状态订阅，经 `bridgeAgentViewSnapshot` / `bridgeOnAgentViewUpdate` 桥方法送进 bridge 标签（bridge 域不 import ai 域，纯函数同样经桥方法注入）；300ms 节流 + 名称比对守卫避免每次状态事件重建标签栏，卸载时退订 + 清定时器 + 清 `doc.tabUnmount`。改动在 `ai-subagents.js` / `ai-panel.js` / `bridge-agent-view.js` / `editor-groups.js`。
+- **正文排版微调**：内容区工具输出展开后限高 260→200px、块间距 10→12px、工具卡头部字号微调，避免长转录占满一屏（`style.css` 的 `.agentview-root` 覆盖区）。
+- **滚动跟随接入通用模块**：详情正文的手写「距底<60」判定会被工具卡展开/内容重排骗成用户上翻；现改用 `ai-scroll-follow.js` 的 `createScrollGesture` + `nextStickState`，只有用户手势里的上滚才解除贴底，工具卡展开后贴底态自动补底。保留首帧吸附与后台标签（display:none）不写 scrollTop 两道守卫，多挂载点用 WeakMap 按工具行反查所属 view 防串扰。改动在 `ai-agent-view.js`。
+- **验证**：`ai-subagents.test.mjs` 补 `agvToolDefaultCollapsed` / `agentViewTabName` / `agentViewRuntimeText` 表驱动用例；`npm test`、`npm run build` 全绿（构建仅余既有 chunk 体积警告）。
+
 ### 修复（内嵌浏览器：分辨率选择不缩放，页面纹丝不动）
 
 - **现象**：工具条选「375 × 812（iPhone）」等预设后，页面照旧按标签页宽度布局——`innerWidth`、媒体查询都没变，分辨率选项实际上只改了可视框大小，等于没选。

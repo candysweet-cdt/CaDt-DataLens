@@ -7,9 +7,19 @@ export function createBridgeAgentView(deps) {
 
 const AGENT_VIEW_MAX = 8;
 
+// 标题主体（不含状态前缀）：超 20 字截断。状态前缀经 deps.aiPanel.bridgeAgentViewTabName 叠加
+// （bridge 域不 import ai 域，纯函数经桥方法注入，与 bridgeMountAgentView 同款模式）。
 function agentTabName(name) {
     const line = String(name || '子代理').replace(/\s+/g, ' ').trim() || '子代理';
     return line.length > 20 ? line.slice(0, 20) + '…' : line;
+}
+
+function tabNameWithState(name, state) {
+    const base = agentTabName(name);
+    const withState = deps.aiPanel && deps.aiPanel.bridgeAgentViewTabName
+        ? deps.aiPanel.bridgeAgentViewTabName(base, state)
+        : base;
+    return withState;
 }
 
 // 视图键：优先 subId（运行态/终态记录都以它为主键），退回派单时的注册表 key。
@@ -82,8 +92,40 @@ function createAgentView(doc) {
         root.classList.add('empty');
         return;
     }
+    // 运行态标题/tooltip 同步（仿后台终端的「快照 + 订阅 + 卸载」范式）。
+    // 通知不带 key（运行态用 sub.key、标签存 subId，两者口径不同），收到后各自读自己的快照；
+    // 用 name/runtime 比对守卫避免每次状态事件都 renderTabs 整段重建标签栏。
+    let titleTimer = 0;
+    const syncAgentTitle = () => {
+        if (!doc.pane || !doc.pane.isConnected) return;
+        const ai = deps.aiPanel;
+        if (!ai || !ai.bridgeAgentViewSnapshot) return;
+        const snap = ai.bridgeAgentViewSnapshot(doc.agentView || doc.agentViewSpec.subId || doc.agentViewSpec.toolCallId);
+        const name = tabNameWithState(doc.agentViewSpec.name, snap && snap.state);
+        const runtime = snap && ai.bridgeAgentViewRuntimeText ? ai.bridgeAgentViewRuntimeText(snap) : '';
+        let changed = false;
+        if (name && name !== doc.name) { doc.name = name; changed = true; }
+        if (runtime !== (doc.agentViewSpec.runtimeText || '')) { doc.agentViewSpec.runtimeText = runtime; changed = true; }
+        if (changed && typeof deps.renderTabs === 'function') deps.renderTabs();
+    };
+    // 节流：状态事件密集（流式期间每轮多次），合并到 300ms 一次
+    const scheduleSyncTitle = () => {
+        if (titleTimer) return;
+        titleTimer = setTimeout(() => { titleTimer = 0; syncAgentTitle(); }, 300);
+    };
+    let unsubAgent = null;
+    if (deps.aiPanel && deps.aiPanel.bridgeOnAgentViewUpdate) {
+        unsubAgent = deps.aiPanel.bridgeOnAgentViewUpdate(scheduleSyncTitle);
+    }
+    syncAgentTitle();
+
+    // 卸载契约：先退订 + 清定时器，再卸载正文视图，最后清空 doc.tabUnmount（避免重复调用）
     doc.tabUnmount = () => {
+        if (titleTimer) { clearTimeout(titleTimer); titleTimer = 0; }
+        if (typeof unsubAgent === 'function') unsubAgent();
+        unsubAgent = null;
         if (deps.aiPanel && deps.aiPanel.bridgeUnmountAgentView) deps.aiPanel.bridgeUnmountAgentView(root);
+        doc.tabUnmount = null;
     };
 }
 

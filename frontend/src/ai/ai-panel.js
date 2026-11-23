@@ -312,7 +312,7 @@ import {
 } from './ai-plan-file.js';
 import {createAIManageDialogs} from './ai-manage-dialogs.js';
 import {createAISettingsDialog} from './ai-settings-dialog.js';
-import {createAISubagents, subSandboxPolicy, resolveSubAgentRounds} from './ai-subagents.js';
+import {createAISubagents, subSandboxPolicy, resolveSubAgentRounds, agentViewTabName, agentViewRuntimeText} from './ai-subagents.js';
 import {createAIAgentNotices, buildBgJobExitNotice, buildTerminalExitNotice} from './ai-agent-notices.js';
 import {createAISidechat} from './ai-sidechat.js';
 import {forkMessages, forkSettings} from './ai-session-fork.js';
@@ -18842,6 +18842,9 @@ async function requestApproval(session, toolMessage, info) {
         isFloatWindow: () => !!window.__aiFloatWindow,
         // 子代理正文与主消息区同一条增强链（代码复制钮 / 本地图片 / 可视化卡片）
         enhanceAnswerBody: (...args) => toolCardsMod.enhanceAnswerBody(...args),
+        // 子代理详情里的工具行复用主消息区同一份动词+图标映射（toolMeta 是工具卡工厂内
+        // 局部函数，经 ctx 延迟注入，避免搬动它破坏 ai-tool-wiring 的源码切片守卫）
+        toolMeta: (...args) => toolCardsMod.toolMeta(...args),
         currentSession,
         persistSessions,
         sessionById,
@@ -18975,6 +18978,7 @@ async function requestApproval(session, toolMessage, info) {
     const bgJobSnapshot = (...args) => subagentsMod.bgJobSnapshot(...args);
     const notifyBgListeners = (...args) => subagentsMod.notifyBgListeners(...args);
     const bridgeStopBgJob = (...args) => subagentsMod.bridgeStopBgJob(...args);
+    const agentViewSnapshot = (...args) => subagentsMod.agentViewSnapshot(...args);
 
     // 工具卡 / 审批卡渲染（阶段 3 拆出：ai-tool-cards.js；构造置于 init 之前（init 的渲染路径会触达工具卡与 HUD 别名））
     const toolCardsMod = createAIToolCards({
@@ -19590,6 +19594,15 @@ async function requestApproval(session, toolMessage, info) {
         // 因为运行态、收件箱与插话输入行都在面板闭包里（标签页只提供容器与标签）。
         bridgeMountAgentView: (root, spec) => mountAgentView(root, spec),
         bridgeUnmountAgentView: (root) => unmountAgentView(root),
+        // 子代理详情标签页的运行态快照与状态订阅（仿后台终端的 bridgeBgJob / bridgeOnBgUpdate）
+        bridgeAgentViewSnapshot: (key) => agentViewSnapshot(String(key || '')),
+        bridgeAgentViewTabName: (name, state) => agentViewTabName(name, state),
+        bridgeAgentViewRuntimeText: (snapshot) => agentViewRuntimeText(snapshot),
+        bridgeOnAgentViewUpdate: (cb) => {
+            if (typeof cb !== 'function') return () => {};
+            subagentsMod.agentViewListeners.add(cb);
+            return () => subagentsMod.agentViewListeners.delete(cb);
+        },
         // 智能体团队详情标签页（内容区）用的桥：主代理的标题 / 模型 / 权限档 / 生成状态
         // 都在面板闭包里，注入给团队视图；标签页本身只提供容器。
         bridgeMountAgentTeamView: (root, spec) => mountTeamView(root, spec, {getMainAgent: mainAgentInfoOf}),

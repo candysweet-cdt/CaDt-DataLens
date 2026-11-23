@@ -327,6 +327,35 @@ export function agentBlockSig(block, streaming) {
         '|' + text.length + ':' + text.slice(-96);
 }
 
+// 详情视图工具行的默认折叠判定（导出供单测）。子代理详情是只读速览，长输出默认收起、
+// 点箭头展开；短输出直接铺开。命令/搜索/列目录这类工具即使输出不长也常带多行噪声，
+// 一律默认收起，避免一屏被工具输出占满（主消息区工具卡同款策略）。
+export function agvToolDefaultCollapsed(name, text) {
+    const len = String((text == null ? '' : text)).length;
+    if (len > 400) return true;
+    return ['run_command', 'background_command', 'search_text', 'list_dir', 'glob', 'check_command'].includes(name);
+}
+
+// 子代理详情标签页标题的状态前缀（导出供单测）：纯文本符号，不上色、控制范围。
+// running 带转圈符号，让一标签栏里一眼看出谁还在跑；终态用对勾/叉/方块区分。
+export function agentViewTabName(name, state) {
+    const base = String(name || '子代理').replace(/\s+/g, ' ').trim() || '子代理';
+    const prefix = {running: '⟳ ', done: '✓ ', error: '✕ ', stopped: '■ '}[state] || '';
+    return prefix + base;
+}
+
+// 运行态行文本（标签 tooltip 用）：轮次 · 耗时 · token · 状态，与详情头部同口径。
+export function agentViewRuntimeText(snapshot) {
+    if (!snapshot) return '';
+    const bits = [];
+    if (snapshot.rounds) bits.push('轮次 ' + snapshot.rounds);
+    if (snapshot.ms) bits.push(Math.max(1, Math.round(snapshot.ms / 1000)) + 's');
+    if (snapshot.tokens) bits.push((snapshot.tokens / 1000).toFixed(1) + 'k tok');
+    const stateText = {running: '运行中', done: '已完成', error: '失败', stopped: '已停止'}[snapshot.state] || snapshot.state || '';
+    if (stateText) bits.push(stateText);
+    return bits.join(' · ');
+}
+
 export function createAISubagents(ctx) {
     const el = ctx.el;
     const panel = ctx.panel;
@@ -340,6 +369,8 @@ export function createAISubagents(ctx) {
     const isFloatWindow = typeof ctx.isFloatWindow === 'function' ? ctx.isFloatWindow : () => false;
     // 正文增强链（代码复制钮 / 本地图片 / mermaid·echarts·svg 可视化卡片）：与主消息区同一条
     const enhanceAnswerBody = typeof ctx.enhanceAnswerBody === 'function' ? ctx.enhanceAnswerBody : null;
+    // 工具行动词+图标映射：复用主消息区 toolMeta（经 ctx 注入），缺省时详情视图回退裸工具名
+    const toolMeta = typeof ctx.toolMeta === 'function' ? ctx.toolMeta : null;
     const currentSession = ctx.currentSession;
     const persistSessions = ctx.persistSessions;
     const sessionById = ctx.sessionById;
@@ -440,6 +471,7 @@ export function createAISubagents(ctx) {
     // 留守侧调用点（subThrottleRender / subTranscriptPush / 运行时刷新）与返回面经同名别名零改动。
     const viewMod = createAIAgentView(ctx, {
         agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, canReviveRecord,
+        agvToolDefaultCollapsed,
         subAgents, subAgentRecords, subAgentTranscripts,
         steerSubAgent: (...args) => steerSubAgent(...args),
         queueSubAgentMessage: (...args) => queueSubAgentMessage(...args),
@@ -451,10 +483,15 @@ export function createAISubagents(ctx) {
         agentStateBadge: (...args) => agentStateBadge(...args),
         // 重启后从磁盘补读转录（正文在 ai-artifacts，见 finalizeSubAgent 的落盘）
         loadAgentTranscript: (...args) => loadAgentTranscriptFromDisk(...args),
+        toolMeta,
     });
     const agentViews = viewMod.agentViews;
     const scheduleAgentViewRender = (...args) => viewMod.scheduleAgentViewRender(...args);
-    const refreshAgentViewIfOpen = (...args) => viewMod.refreshAgentViewIfOpen(...args);
+    const refreshAgentViewIfOpen = (key) => {
+        // 详情正文刷新 + 内容区标签页状态订阅同步（一处接线覆盖 running/done/stop/收件箱等全部变化）
+        notifyAgentViewListeners(key);
+        return viewMod.refreshAgentViewIfOpen(key);
+    };
     const renderAgentView = (...args) => viewMod.renderAgentView(...args);
     const openAgentView = (...args) => viewMod.openAgentView(...args);
     const mountAgentView = (...args) => viewMod.mountAgentView(...args);
@@ -664,6 +701,41 @@ export function createAISubagents(ctx) {
     function notifyBgListeners(jobId) {
         for (const fn of bgUpdateListeners) {
             try { fn(jobId); } catch (e) {}
+        }
+    }
+
+    // ---- 子代理详情标签页桥接（供内容区标签页读取运行态、订阅状态变化） ----
+    // key 兼容两种：bridge 标签存的是 subId（sub.id），运行态通知带的是 sub.key（toolCallId）。
+    // 快照只返回纯数据，运行态注册表不外泄（bridge 域单向依赖，只经 ai-panel 桥方法访问）。
+    const agentViewListeners = new Set();
+
+    function agentViewSnapshot(key) {
+        const id = String(key || '');
+        if (!id) return null;
+        const sub = subAgents.get(id) || [...subAgents.values()].find((s) => s.key === id) || null;
+        if (sub) {
+            return {
+                key: sub.key, subId: sub.id, state: sub.state || 'running',
+                rounds: sub.flow ? sub.flow.roundNo : 0,
+                ms: Math.max(0, Date.now() - sub.startedAt),
+                tokens: sub.flow && sub.flow.usage ? (Number(sub.flow.usage.totalTokens) || 0) : 0,
+                name: sub.name || '',
+            };
+        }
+        const rec = subAgentRecords.get(id) || [...subAgentRecords.values()].find((r) => r.key === id) || null;
+        if (rec) {
+            return {
+                key: rec.key || '', subId: rec.id, state: rec.state,
+                rounds: rec.rounds || 0, ms: rec.ms || 0, tokens: rec.tokens || 0,
+                name: rec.name || '',
+            };
+        }
+        return null;
+    }
+
+    function notifyAgentViewListeners(key) {
+        for (const fn of agentViewListeners) {
+            try { fn(String(key || '')); } catch (e) {}
         }
     }
 
@@ -2284,5 +2356,6 @@ export function createAISubagents(ctx) {
         subAgents, subAgentTranscripts, subAgentRecords,
         loadAgentTranscriptFromDisk,
         bgJobSnapshot, notifyBgListeners, bridgeStopBgJob,
+        agentViewSnapshot, agentViewListeners, notifyAgentViewListeners,
     };
 }
