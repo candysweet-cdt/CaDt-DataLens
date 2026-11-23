@@ -289,11 +289,19 @@ export function createAIModelPicker(ctx) {
         const width = Math.min(360, window.innerWidth - 16);
         picker.style.width = width + 'px';
         // 锁定打开时的高度：搜索过滤只重建列表内容，弹层高度不再随结果条数变化。
-        // 列表自身 flex:1 + overflow:auto，内容变少时留白、变多时内部滚动。
-        const height = picker.offsetHeight;
+        // 列表自身 flex:1 + min-height:0 + overflow:auto，内容变少时留白、变多时内部滚动。
+        // 放置侧取上/下可用空间更大的一侧，并把高度夹进该侧空间（chip 靠屏幕边时收高度而非伸出视口）。
+        const margin = 8;
+        const naturalHeight = picker.offsetHeight;
+        const spaceUp = rect.top - margin;
+        const spaceDown = window.innerHeight - rect.bottom - margin;
+        const placeUp = spaceUp >= spaceDown;
+        const avail = Math.max(placeUp ? spaceUp : spaceDown, 0);
+        const height = Math.min(naturalHeight, Math.max(avail, 120));
         picker.style.height = height + 'px';
-        const top = rect.top - height - 8 >= 8 ? rect.top - height - 8 : Math.max(8, rect.bottom + 8);
-        picker.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)) + 'px';
+        const rawTop = placeUp ? rect.top - height - margin : rect.bottom + margin;
+        const top = Math.max(margin, Math.min(rawTop, window.innerHeight - height - margin));
+        picker.style.left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin)) + 'px';
         picker.style.top = top + 'px';
         picker.style.visibility = '';
         search.focus();
