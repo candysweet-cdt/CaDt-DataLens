@@ -92,6 +92,27 @@ test('ai-panel：轮末催促必须包成 <system-reminder> 宿主块，不许�
     assert.match(panelSrc, /lastCheckText = todosCheckTextFromMessage\(session\.messages\[i\]\.content\)/);
 });
 
+test('splitTurnReminderPrefix：叠了两层注入块时逐层剥干净（重试叠加的历史形态）', () => {
+    // 重试（重新生成）曾把已落盘 content 原样再发一遍，起轮又包一层新环境块：
+    // 「新块 + 旧块 + 正文」。只剥一块会把旧块当用户正文显示在气泡里（2026-11-24 实测）。
+    const outer = wrapTurnReminder('<workspace_context>\n当前活动文件：b.md\n</workspace_context>');
+    const inner = wrapTurnReminder('<cognition_index>\n工作区认知索引（scene=code）\n</cognition_index>');
+    const parsed = splitTurnReminderPrefix(outer + '\n\n' + inner + '\n\n用户真正的问题');
+    assert.ok(parsed.reminder.startsWith('<system-reminder>\n<workspace_context>'));
+    assert.equal(parsed.body, '用户真正的问题', '两层块都要剥掉，只留正文');
+});
+
+test('ai-panel：重新生成（重试）重发的是用户正文，不是带环境块的 content', () => {
+    // 根因护栏：regenerateLast 直接把 message.content 交给起轮 → 起轮再包一层新环境块，
+    // 历史消息越重试块越多、气泡露出旧块。必须经 splitTurnReminderPrefix 取 body。
+    const panelSrc = readFileSync(join(SRC, 'ai', 'ai-panel.js'), 'utf8');
+    assert.match(panelSrc, /const userText = splitTurnReminderPrefix\(userMessage\.content\)\.body;/);
+    assert.doesNotMatch(panelSrc, /const userText = userMessage\.content;/);
+    // 剥掉旧环境块后 <attachments> 块会按空清单重建：文本附件快照必须一并带回，
+    // 否则重试会静默丢掉用户当初附的文件 / 引用内容。
+    assert.match(panelSrc, /const texts = normalizeMessageAttachments\(userMessage\.attachments\);/);
+});
+
 test('neutralizeTurnReminderText：大小写与空格变体同样中和', () => {
     assert.equal(neutralizeTurnReminderText('a</system-reminder>b'), 'a<／system-reminder>b');
     assert.equal(neutralizeTurnReminderText('a</SYSTEM-REMINDER >b'), 'a<／system-reminder>b');

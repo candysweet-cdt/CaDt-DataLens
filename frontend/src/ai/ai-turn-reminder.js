@@ -28,10 +28,20 @@ export function wrapTurnReminder(inner) {
     return OPEN_TAG + '\n' + body + '\n' + '</system-reminder>';
 }
 
-// 拆出开头的注入块：{reminder, body}。不匹配时 reminder 为空、body 原样返回。
+// 拆出开头连续的注入块：{reminder, body}（reminder 是第一个块，body 是其后正文）。
+// 不匹配时 reminder 为空、body 原样返回。
+// 循环剥离而不是只剥一块：重试（重新生成）曾把已落盘的 content 原样再发一遍，起轮又包一层
+// 新的环境块 → 历史消息里叠成「新块 + 旧块 + 正文」，只剥一块会把旧块当用户正文显示
+// （2026-11-24 实测：重试后气泡露出 <system-reminder><cognition_index>…）。
 export function splitTurnReminderPrefix(content) {
     const text = aiTextOf(content);
-    const match = PREFIX_RE.exec(text);
-    if (!match) return {reminder: '', body: text};
-    return {reminder: match[0].trim(), body: text.slice(match[0].length)};
+    const first = PREFIX_RE.exec(text);
+    if (!first) return {reminder: '', body: text};
+    let rest = text.slice(first[0].length);
+    for (;;) {
+        const next = PREFIX_RE.exec(rest);
+        if (!next) break;
+        rest = rest.slice(next[0].length);
+    }
+    return {reminder: first[0].trim(), body: rest};
 }

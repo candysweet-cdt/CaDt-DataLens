@@ -15330,8 +15330,14 @@ async function requestApproval(session, toolMessage, info) {
         const userIndex = lastUserIndex(session);
         if (userIndex < 0) return;
         const userMessage = session.messages[userIndex];
-        const userText = userMessage.content;
+        // 重发的必须是用户正文：已落盘 content 的前缀是上一轮的环境块（<system-reminder>），
+        // 起轮会按当前状态重新生成一份——原样带上就会叠成两层，气泡里露出旧块
+        // （2026-11-24 重试实测）。与编辑重发 / 复制的口径一致。
+        const userText = splitTurnReminderPrefix(userMessage.content).body;
         const media = attachmentsFromImages(userMessage.images).concat(attachmentsFromVideos(userMessage.videos));
+        // 文本类附件（文件 / 技能 / 引用 / 选区）快照随消息落盘：重发时要一并带回，
+        // 否则剥掉旧环境块后 <attachments> 块按空清单重建，模型看不到用户当初附的内容。
+        const texts = normalizeMessageAttachments(userMessage.attachments);
         // 截断必须发生在拿到回合租约、按 stat 重读之后（startSessionTurn 的 truncateAt）；
         // 这里不能先 slice + persist，否则会用旧前缀截掉另一窗口已提交的消息。
         if (sessionOverride) {
@@ -15340,13 +15346,14 @@ async function requestApproval(session, toolMessage, info) {
                 attachments: {
                     images: media.filter((item) => item.kind === 'image'),
                     videos: media.filter((item) => item.kind === 'video'),
+                    texts,
                 },
             }).then((result) => {
                 if (result && !result.ok) flashTurnStartFailure(result);
             }).catch(() => {});
             return;
         }
-        setAttachments(media);
+        setAttachments(media.concat(texts));
         renderAttachments();
         submitText(userText, userIndex);
     }
