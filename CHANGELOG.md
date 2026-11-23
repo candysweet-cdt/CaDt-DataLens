@@ -4,6 +4,11 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（内置 TTS 示例启动命令 + 桌面控制「尚未安装」误报）
+
+- **`tts_sapi` 内置示例在干净系统上必挂**：示例的启动命令写的是 `pwsh`（PowerShell 7，需另装），前置条件却写「Windows 自带 PowerShell（pwsh 7 或 5.1）」——Win10/11 自带的是 `powershell.exe`(5.1)，两者自相矛盾。实测干净机器上「装完即 `state=failed`、`toolCount=0`」，把 `command` 改成 `powershell` 立刻 `connected`（同目录 `ocr_windows` 示例一直用 `powershell`）。修法：`internal/mcpsamples/samples.go` 里 `tts_sapi` 的 `Command` 改为 `powershell`、前置条件改为「Windows PowerShell 5.1（Win10/11 自带，无需另装 PowerShell 7）」，`docs/mcp-samples/README.md` / `tts-sapi.ps1` 的注释与 dev mock 的预览文案同步。守卫：`internal/mcpsamples/mcp_samples_test.go` 新增 `TestBuiltinSampleCommandsResolveOnCleanSystem`（按注册表断言启动命令、预览前缀，并禁止前置条件再承诺 `pwsh`）。已安装的老用户无需重装：自愈逻辑只在脚本缺失时补写脚本，命令仍取 `mcp.json` 里原有的行——把该行的命令改成 `powershell` 即可。
+- **桌面控制申请把「已安装但启动失败」报成「尚未安装」**：`request_desktop_control` 用「MCP 快照里 windows 工具数 > 0」当「装没装」的判据，而 server 启动失败（uv 缺失 / 依赖没下完 / wheel 被清理）时工具数同样是 0——于是「已安装 + 开关已开 + 工具全勾」的机器会收到「请点『安装』」，而卡片自 2026-11-22 起是「开关即安装」，界面上根本没有这个按钮。修法：`ai-desktop-control.js` 新增纯函数 `desktopAvailability()` 把「mcp.json 的 windows 行 + 快照 state/lastError + MCP 总开关」折算成五态（未安装 / 已装未启用 / 启动中 / 启动失败 / 可用）与 `desktopAvailabilityMessage()` / `desktopAvailabilitySummary()`；`ai-panel.js` 的 `request_desktop_control`、`windows_control_mode` 的兜底、权限面板开关、菜单描述与「新会话默认桌面控制」置灰判定统一走它（启动失败时带 `state` 与失败原因，并明说「不是未安装、不要重复安装」）；`ai-mcp.js` 的 `getState()` 增加 `loaded`，用来区分「MCP 总开关关闭」与「还没拉过快照」。守卫：`ai-desktop-control.test.mjs` 新增四态用例（启动失败不得判成未安装、文案必须带 state 与原因、不得再出现「点『安装』」）。
+
 ### 修复（内嵌浏览器：分辨率选择不缩放，页面纹丝不动）
 
 - **现象**：工具条选「375 × 812（iPhone）」等预设后，页面照旧按标签页宽度布局——`innerWidth`、媒体查询都没变，分辨率选项实际上只改了可视框大小，等于没选。
