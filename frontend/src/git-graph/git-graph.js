@@ -16,6 +16,11 @@ const LANE_W = 16;       // 每条泳道宽（px）
 const LANE_PAD = 8;      // 泳道区左右留白
 const DEFAULT_LIMIT = 500;
 
+// 目录未就绪时的自动重试（启动恢复期 applyDockView 可能早于 workspaceFolder 赋值）：
+// 每 200ms 试一次、最多 15 次（约 3s），覆盖工作区恢复窗口又不会永久空转。
+const DIR_RETRY_DELAY_MS = 200;
+const DIR_RETRY_MAX = 15;
+
 // 目录图标：统一走注册表（原散落 SVG 与 explorer 同造型，已收编 core/icons.js 的 folder 键）；
 // 文件图标走 createFileIcon（core/fileicons.js 主题解析链），「本次变动」树与文件树显示同一套图标
 const FOLDER_SVG = iconSvg('folder');
@@ -222,6 +227,16 @@ export function fileTreeFromChanges(files, rootName) {
     return rootName ? [root] : root.children;
 }
 
+// graphPageFailed 判定一次 GitGraphCommits 返回是否算「加载失败」（纯函数，可单测）。
+// Go 侧 available 在跑 git log 之前就置 true（internal/gitinfo/graph.go:79），坏 ref /
+// git log 失败只写 reason 不撤 available；因此「有 reason 且零提交」也要按失败处理，
+// 否则前端会把坏 ref 当成功收尾：initialized=true、列表空，连刷新都救不回（currentRef 粘着坏值）。
+export function graphPageFailed(page) {
+    if (!page || !page.available) return true;
+    const commits = Array.isArray(page.commits) ? page.commits : [];
+    return !commits.length && !!page.reason;
+}
+
 // buildSkeletonHtml 生成首次加载的骨架屏内部 HTML（纯静态、可单测）。
 // 三栏结构与 .gg-body 对齐；条块宽度错落，避免整齐得像表格。
 // 纯字符串、无用户输入，用 innerHTML 一次性注入是安全的（同 buildLaneSvg）。
@@ -272,6 +287,7 @@ export function createGitGraph(ctx) {
         dateFilter: '',          // 提交搜索：日期筛选（today/7d/30d/1y）
         expandedGroups: {local: true, remote: false, tags: false, worktrees: false},
         initialized: false,
+        loadedDir: '',        // 上次成功加载用的 git 目录：工作区/仓库变了要让 initialized 失效
         refsW: 180,     // 左栏 ref 树宽（可拖动）
         detailW: 280,   // 右栏详情宽（可拖动）
         filesCache: new Map(),   // sha → 文件变动列表（LRU 上限 FILES_CACHE_MAX）
@@ -289,6 +305,9 @@ export function createGitGraph(ctx) {
 
     let els = null; // {root, body, refsCol, refTree, rightCol, commitWrap, laneCol, commitList, detail, hint, filterInput, branchFilter, skeleton}
     let resizeWatched = false;
+    let inflightReload = null; // 进行中的 reload()：并发 show() 复用它，避免后一次被 loading 守卫吞掉
+    let dirRetryTimer = 0;     // 目录未就绪时的重试定时器
+    let dirRetry = 0;          // 已重试次数（有上限，避免永久空转）
 
     // 栏宽持久化：读用 try/catch 兜底（隐私模式 / 损坏值），写尽力而为
     function loadPaneWidths() {
@@ -645,9 +664,10 @@ export function createGitGraph(ctx) {
         hideHint();
         try {
             const page = await ctx.backend.GitGraphCommits(dir, ref || '', DEFAULT_LIMIT, skip);
-            if (!page || !page.available) {
+            // 失败判定要跟 Go 侧对齐：available 在跑 git log 之前就置 true（graph.go:79），
+            // 坏 ref / 拉取失败只写 reason，所以「有 reason 且零提交」也按失败提示，别当成功收尾。
+            if (graphPageFailed(page)) {
                 showHint(page && page.reason ? page.reason : '无法读取提交历史');
-                state.loading = false;
                 return;
             }
             if (skip === 0) {
@@ -661,20 +681,31 @@ export function createGitGraph(ctx) {
             state.hasMore = page.hasMore;
             state.nextSkip = page.nextSkip;
             state.initialized = true;
+            state.loadedDir = dir;
+            dirRetry = 0; // 成功加载后清零重试计数（下次目录失效可重新拿到重试额度）
             filteredCache = null; // 数据变了，清过滤缓存
             fillUserSelect();
             if (els && els.branchSel) els.branchSel.value = state.currentRef || '';
             renderCommitList(true);
         } catch (e) {
             showHint('读取提交历史失败：' + e);
+        } finally {
+            // 无论成功 / 失败 / 抛错都复位，避免 loading 被钉死挡住后续所有加载（含刷新）
+            state.loading = false;
+            hideSkeleton();
         }
-        state.loading = false;
     }
 
     async function reload() {
+        // 共享 in-flight promise：并发 show()（如快速切视图、切回图谱）复用同一次加载，
+        // 而不是让后一次被 loadCommits 的 loading 守卫静默丢弃——那样骨架被提前收掉、
+        // initialized 仍 false，就出现「一片空白、只能手动刷新」。
+        if (inflightReload) return inflightReload;
         state.filesCache.clear();
         state.fileCollapse.clear();
-        await Promise.all([loadRefs(), loadCommits(state.currentRef, 0)]);
+        inflightReload = Promise.all([loadRefs(), loadCommits(state.currentRef, 0)])
+            .finally(() => { inflightReload = null; });
+        return inflightReload;
     }
 
     // afterGraphWrite 图谱写操作（签出 / 重置 / 新建分支）完成后的统一收尾：
@@ -684,15 +715,32 @@ export function createGitGraph(ctx) {
         if (ctx.refreshGitStatus) ctx.refreshGitStatus();
     }
 
-    // 首次切到该视图时调用（懒加载）：首次拉数据期间显示骨架屏
+    // 首次切到该视图时调用（懒加载）：首次拉数据期间显示骨架屏。
+    // 已加载过且 git 目录没变才跳过；切了工作区 / 仓库后 initialized 失效，下次进来自动重拉
+    //（否则停在 false 上又没重试入口，只能手动点刷新）。
     async function show() {
         const e = ensureEls();
         if (!e) return;
-        if (state.initialized) return;
+        if (state.initialized && state.loadedDir === gitDir()) return;
+        // 启动恢复期 git 目录还没就绪（applyDockView 早于 workspaceFolder 赋值）：
+        // 短延时重试几次，避免留下「骨架已收、列表空、只能手动刷新」的空白。
+        if (!gitDir()) {
+            // 视图已被切走 / 面板已收起时不再重试（用户不在看，白白空转）
+            if (e.root.classList.contains('hidden')) return;
+            if (dirRetry < DIR_RETRY_MAX && !dirRetryTimer) {
+                dirRetryTimer = setTimeout(() => {
+                    dirRetryTimer = 0;
+                    dirRetry++;
+                    show();
+                }, DIR_RETRY_DELAY_MS);
+            }
+            return;
+        }
         showSkeleton();
         try {
             await reload();
         } finally {
+            // reload 已在 loadCommits 的 finally 里收骨架；这里兜底 `!dir` 等早退路径
             hideSkeleton();
         }
     }

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
     glyphX, laneSvgWidth, buildLaneSvg, parseCommitRefs, fileTreeFromChanges,
-    buildSkeletonHtml, clampPaneWidth, buildCommitMatcher,
+    buildSkeletonHtml, clampPaneWidth, buildCommitMatcher, graphPageFailed,
 } from '../../src/git-graph/git-graph.js';
 
 test('glyphX：字形竖线画在格子右边界，相邻位差半泳道', () => {
@@ -222,4 +222,26 @@ test('loadCommitDetail：fillFiles / fillBody 声明先于缓存命中调用（T
     // 签名单参：缓存路径只传 files（曾误传 filesWrap 把详情容器当文件数组用）
     assert.match(b, /fillFiles\(cacheHit\.files\)/);
     assert.doesNotMatch(b, /fillFiles\(filesWrap/);
+});
+
+// graphPageFailed：Go 侧 available 在跑 git log 前就置 true，坏 ref 只写 reason。
+// 「available=true + 零提交 + reason」必须判失败，否则 initialized 被置 true、列表空、连刷新都救不回。
+test('graphPageFailed：空页 / 未 available / 有 reason 零提交 都算失败', () => {
+    assert.equal(graphPageFailed(null), true, 'null 页');
+    assert.equal(graphPageFailed(undefined), true, 'undefined 页');
+    assert.equal(graphPageFailed({available: false, commits: [], reason: '不在 git 仓库内'}), true,
+        'available=false');
+    assert.equal(graphPageFailed({available: true, commits: [], reason: '非法修订'}), true,
+        'available=true 但坏 ref 零提交（Go 不撤 available）');
+});
+
+test('graphPageFailed：正常页与合法的空仓库都不算失败', () => {
+    assert.equal(graphPageFailed({available: true, commits: [{sha: 'a'}], reason: ''}), false,
+        '有提交');
+    // 空仓库：available + 零提交 + 无 reason —— 合法的「没有提交」，不算失败
+    assert.equal(graphPageFailed({available: true, commits: [], reason: ''}), false,
+        '合法空仓库');
+    // commits 缺失但无 reason：容错成空，不误判失败
+    assert.equal(graphPageFailed({available: true, reason: ''}), false,
+        'commits 缺失容错');
 });

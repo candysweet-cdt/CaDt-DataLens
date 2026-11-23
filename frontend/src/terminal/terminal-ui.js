@@ -390,7 +390,7 @@ function applyDockView() {
     }
     // tb-run 是动作按钮（点击即运行），不随运行面板开关显示选中态
     if (termOpen) sessMod.fitActiveTerm();
-    if (graphOpen) getGitGraph().show();
+    if (graphOpen) { try { getGitGraph().show(); } catch (e) { /* show 内部已兜错，防御性忽略 */ } }
 }
 
 // 左下活动栏 / 菜单 / F12 的统一入口：同一视图再点一次收起，不同视图则切换
