@@ -1,6 +1,6 @@
 # 前端拆分第四阶段：ai-panel.js 与 main.js
 
-> 状态：**阶段一 + M1 + M2 已实施并验证通过；P1 跳过；P2–P4 / M3–M7 待办**（2026-11-24）。本文件既是交接文档，也是本轮实施记录。
+> 状态：**阶段一 + M1 + M2 + P2 已实施并验证通过；P1 跳过；P3–P4 / M3–M7 待办**（2026-11-24）。本文件既是交接文档，也是本轮实施记录。
 > 用户裁定范围（2026-11-23 补充）：**本轮分两阶段串行执行——阶段一：ai/ 目录全量重组（117 文件按域归位 + 测试目录镜像 + 护栏/文档同步）；阶段二：两个低风险试点批（P1 / M1）**。验证采用完整档（静态裸引用扫描 + npm test 全量 + npm run build + 定向冒烟）。阶段二试点完成并验证通过后停下汇报，再决定是否继续后续批次（P2–P4 / M2–M7）。
 > 决策依据：phase2/phase3 已建立成熟的 deps 重写 + 分批验证方法论，但明确把这两个文件推迟（「ai-panel 交子代理消息化方案」「main.js 组合根不动」）。本次两份只读调研（ai-panel 19,636 行 / main.js 7,688 行全文逐段读取）确认：可安全拆的叶子块有限，真正的大头被密集测试护栏与硬约束锁死。
 > 前置阅读：`docs/finished-plans/frontend-split-phase2.md`（抽取模式与 tokenizer 三坑）、`docs/finished-plans/frontend-split-phase3.md`（目录归位与多域解耦）、`AGENTS.md`（代码规模与质量红线、AI 工具增删改、app_control 三处对齐）。
@@ -223,7 +223,7 @@
 | 批次 | 新模块 | 锚点区间 | ≈行 | 职责 | 风险 | 测试改动 |
 |---|---|---|---|---|---|---|
 | **P1【本轮试点】** | `ai/session/ai-session-log.js`（阶段一后落点；原写 `ai/ai-session-log.js`） | 16540–16678 | 140 | 会话对话日志落盘（getAILogRoot/ensureAILogDir/queueLogSave/openAILogDir/showSessionDiagnostics） | 低 | 0（0 个测试锚定这些函数名） |
-| P2 | `ai/ai-context-estimate.js` | 6229–6690 | 460 | buildApiMessages 瘦身组装 / 上下文估算 / Composer 统计行与弹层；4 个 lastBuild* 状态整包搬 | 中低 | 改 ai-turn-steer-wiring.test.mjs:205-210 切片路径 |
+| **P2【已实施】** | `ai/chat/ai-context-estimate.js` | 实测 buildApiMessages 6247-6441（195 行） | ~213 | buildApiMessages 瘦身组装；4 个 lastBuild* 状态**留主闭包**经 setter 写回（8+ 处读取，整包搬会大改读取点） | 中低 | 已改 ai-turn-steer-wiring.test.mjs 切片路径到新模块 |
 | P3 | `ai/ai-group-bridge.js` | 17337–17409 + 19248–19271 + 19032–19051 | 200 | 群聊视图挂载/卸载、aiGroupApi、bridgeShow* 薄转发 | 中 | 同步 main.js 接线；群聊测试不读源码 |
 | P4（动手前重评） | `ai/ai-panel-view-switch.js` | 17337–17801 | 465 | setPanelView / 浮窗几何 / 分屏互换 | 高 | ai-panel-mode-lock.test.mjs:24 钉 setMode( 恰好 5 处；ai-auto-collapse 钉显示方式菜单 |
 
@@ -329,6 +329,8 @@
   - 后续补测（用户重建 exe 后）：桌面控制打开便签独立窗，标题/尺寸正确、Alt+F4 关窗正常、无运行时错误；便签窗内容空白系数据原因（全局便签为空 + 当前未打开工作区），与 M1 无关（deps 传法已 git 对比逐字一致）。
 
 **阶段二 M2（已实施）**：从 main.js:1409-1469 拆出 5 个书签 case + `appActionBookmarkDoc` 到 `frontend/src/editor/bookmark-actions.js`（`createBookmarkActions(deps)`，93 行）；`bookmarkOverview`/`formatBookmarkListText` 纯函数直接 import，编辑器域函数（findDocByPath/openPaths/selectLineInDoc/addBookmarkAt/removeBookmarkAt/clearDocBookmarks/rememberDocView）与 docs/file 经 deps getter 注入；main.js 的 5 个 case 改为薄转发，删除原 `appActionBookmarkDoc` 定义。验证同 M1（module-scope 对无 export 顶层脚本误报，改用一次性静态扫描 + 对照验证）；`npm test` 全量 2652 项全绿、`npm run build` 成功。
+
+**阶段二 P2（已实施）**：从 ai-panel.js:6247-6441 拆出 `buildApiMessages`（195 行）到 `frontend/src/ai/chat/ai-context-estimate.js`（`createAIContextEstimate(deps)`，213 行）。14 个纯函数直接 import（ai-constants/plan-file/message-queue/tool-args/compact/context-slim），`settings`/`contextWindowOf` 与 4 个输出状态（anchor/savedTokens/shrinkPressure/shrinkRatio）经 getter/setter 注入——**状态留主闭包**（被 8+ 处读取，整包搬会大改读取点，故只搬函数体、setter 写回）。ai-panel.js 保留 5 行薄转发，清理 8 个未用 import。`ai-turn-steer-wiring.test.mjs` 的源码切片改为读新模块。验证：全量测试全绿、`npm run build` 成功、deps 静态扫描含对照验证通过。ai-panel.js 净减约 190 行。
 
 ---
 
