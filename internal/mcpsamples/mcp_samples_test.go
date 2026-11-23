@@ -98,6 +98,38 @@ func TestBuiltinMCPSamples(t *testing.T) {
 	}
 }
 
+// 内置示例的启动命令必须在「干净系统」上就能跑：tts_sapi 曾经写成 pwsh（PowerShell 7，
+// 需另装），而前置条件写的是「Windows 自带 PowerShell（pwsh 7 或 5.1）」——Win10/11 自带的
+// 是 powershell.exe(5.1)。实测干净机器上装完即 state=failed、toolCount=0，把 command 改成
+// powershell 后立刻 connected。这里按注册表整体断言，防止以后再把手写命令写成「需另装的解释器」。
+func TestBuiltinSampleCommandsResolveOnCleanSystem(t *testing.T) {
+	// 期望值 = 「干净 Win10/11 上直接可执行」的启动命令（asr 的 python 由前置条件声明为自备）
+	want := map[string]string{
+		"tts_sapi":    "powershell",
+		"ocr_windows": "powershell",
+		"asr_whisper": "python",
+	}
+	for id, command := range want {
+		def, ok := mcpSampleByID(id)
+		if !ok {
+			t.Fatalf("缺少内置示例 %s", id)
+		}
+		if def.Command != command {
+			t.Fatalf("示例 %s 的启动命令 = %q，期望 %q", id, def.Command, command)
+		}
+	}
+	tts, _ := mcpSampleByID("tts_sapi")
+	// 前置条件不能再承诺 pwsh（会让人以为要装 PowerShell 7；与 command 自相矛盾）
+	for _, item := range tts.Prerequisites {
+		if strings.Contains(strings.ToLower(item), "pwsh") {
+			t.Fatalf("tts_sapi 的前置条件仍提到 pwsh：%q", item)
+		}
+	}
+	if preview := mcpSampleCommandPreview(tts, `C:\x\tts-sapi.ps1`); !strings.HasPrefix(preview, "powershell ") {
+		t.Fatalf("命令预览应以 powershell 开头：%q", preview)
+	}
+}
+
 // overrideAppData 把应用数据目录临时指到 temp（与 TestBuiltinMCPSamples 同款手法）。
 func overrideAppData(t *testing.T) string {
 	t.Helper()

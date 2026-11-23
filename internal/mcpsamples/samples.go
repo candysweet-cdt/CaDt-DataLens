@@ -40,12 +40,16 @@ type mcpSampleDef struct {
 }
 
 var mcpSampleDefs = []mcpSampleDef{
+	// tts_sapi 的 Command 必须是 Win10/11 自带的 Windows PowerShell 5.1（powershell.exe），
+	// 不能写 pwsh：pwsh 是需另装的 PowerShell 7，干净系统上 exec 找不到它，server 直接
+	// state=failed、toolCount=0（2026-11-23 实测：装完即失败，改成 powershell 立刻 connected）。
+	// 脚本本身只用 System.Speech，5.1 下完全可用；与 ocr_windows 示例保持同一约定。
 	{
 		ID: "tts_sapi", Name: "Windows 语音合成（SAPI）",
 		Description: "用系统 SAPI 把文本合成 WAV 文件，离线、零安装。",
-		Capability:  "tts", File: "tts-sapi.ps1", Command: "pwsh",
+		Capability:  "tts", File: "tts-sapi.ps1", Command: "powershell",
 		PrepArgs: []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File"}, ToolName: "tts_sapi",
-		Prerequisites: []string{"Windows 自带 PowerShell（pwsh 7 或 5.1）", "无需联网"},
+		Prerequisites: []string{"Windows PowerShell 5.1（Win10/11 自带，无需另装 PowerShell 7）", "无需联网"},
 	},
 	{
 		ID: "ocr_windows", Name: "Windows OCR（系统引擎）",

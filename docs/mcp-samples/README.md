@@ -7,7 +7,7 @@ Python、whisper.cpp 与 ggml 模型仍由用户自备。
 
 | 能力 | 示例 | 工具名 | 运行环境 | 说明 |
 | --- | --- | --- | --- | --- |
-| 语音合成 | `tts-sapi.ps1` | `tts_sapi` | Windows PowerShell 5.1 / pwsh 7 | Windows SAPI 落盘 WAV，零安装 |
+| 语音合成 | `tts-sapi.ps1` | `tts_sapi` | **Windows PowerShell 5.1**（自带） | Windows SAPI 落盘 WAV，零安装 |
 | OCR / 文件解析 | `ocr-windows.ps1` | `ocr_windows` | **Windows PowerShell 5.1**（WinRT） | Windows.Media.Ocr；中文需语言包；PDF 先转图 |
 | 语音识别 | `asr-whisper.md` | `asr_whisper` | Python 3 + whisper.cpp | 模型自备；见文档内嵌脚本 |
 
@@ -16,7 +16,7 @@ Python、whisper.cpp 与 ggml 模型仍由用户自备。
 1. 设置 → AI → 外部工具 → MCP 服务器 → 添加服务器：
    - 名称：字母数字下划线连字符（如 `tts_sapi`）；公开工具名 = `mcp__<名称>__<工具名>`。
    - 启动命令 + 参数：
-     - TTS：`pwsh` / `-NoProfile -ExecutionPolicy Bypass -File D:\...\tts-sapi.ps1`
+     - TTS：`powershell` / `-NoProfile -ExecutionPolicy Bypass -File D:\...\tts-sapi.ps1`
      - OCR：`powershell` / `-NoProfile -ExecutionPolicy Bypass -File D:\...\ocr-windows.ps1`
      - ASR：`python` / `-u D:\...\asr-whisper.py`（环境变量见 asr-whisper.md）
    - 服务器命令会在本机执行，等同于用户自己运行它；保存前应用会要求确认。
