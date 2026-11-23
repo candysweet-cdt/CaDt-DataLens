@@ -32,6 +32,7 @@ export function createAIMcp(ctx) {
     const backend = (ctx && ctx.backend) || {};
 
     let enabled = false;
+    let loaded = false; // 是否至少收到过一次快照：区分「总开关关闭」与「还没拉过」
     let servers = []; // [{name, state, reason, toolCount, tools, staleTools, lastError, attempt, maxAttempt, nextRetryAt}]
 
     // applySnapshot 整表替换当前注册表。两个事件（tools-changed / status-changed）
@@ -39,6 +40,7 @@ export function createAIMcp(ctx) {
     function applySnapshot(snapshot) {
         if (!snapshot || typeof snapshot !== 'object') return; // 畸形载荷：保留现状，不清空
         enabled = snapshot.enabled === true;
+        loaded = true;
         const list = Array.isArray(snapshot.servers) ? snapshot.servers : [];
         servers = list.map((server) => ({
             name: String(server.name || ''),
@@ -143,6 +145,6 @@ export function createAIMcp(ctx) {
         callTool,
         refresh,
         // 状态读取口（设置页 / 诊断）：返回快照副本，调用方不得直接改内部状态
-        getState: () => ({enabled, servers: servers.map((server) => Object.assign({}, server))}),
+        getState: () => ({enabled, loaded, servers: servers.map((server) => Object.assign({}, server))}),
     };
 }

@@ -319,7 +319,7 @@ import {forkMessages, forkSettings} from './ai-session-fork.js';
 import {createAISessionSend} from './ai-session-send.js';
 import {compactTranscriptOf, computeCompactCutoff, computeCompactCutoffByBudget, compactRetainBudget, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, isAnchorUsage, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createAIMcp, mcpNotesBlock} from './ai-mcp.js';
-import {createAIDesktopControl, isDesktopToolName, controlModeActionOf, DESKTOP_MCP_SERVER} from './ai-desktop-control.js';
+import {createAIDesktopControl, isDesktopToolName, controlModeActionOf, DESKTOP_MCP_SERVER, DESKTOP_AVAILABILITY, desktopAvailability, desktopAvailabilityMessage, desktopAvailabilitySummary} from './ai-desktop-control.js';
 import {mcpConfigView, mcpServerCommandPreview, mergeMcpServerConfig, planMcpServerDelete} from './ai-mcp-config.js';
 import {createAIMcpSettings} from './ai-mcp-settings.js';
 import {
@@ -3374,7 +3374,9 @@ export function createAIPanel(options) {
         confirmFullPermission,
         // 桌面控制：确认框与「是否已安装」判定（设置 → AI → 权限 → 新会话 的默认桌面控制项）
         confirmDesktopControl,
-        desktopInstalled: () => desktopMod.installedCount() > 0,
+        // 「装了没」按配置行 + 快照 state 判（desktopInstalledForUI）：只按工具数会把
+        // 「已安装但 server 启动失败」误判成未安装，把这一项置灰。
+        desktopInstalled: () => desktopInstalledForUI(),
         invalidateSkillsCache, resolveMemoryDir, getAILogRoot, openAILogDir,
         aiNormalizePath, aiJoinPath, aiPathDir, aiPathKey, aiProjectRoot, aiWorkspaceKey,
         queryUsageForAccount, showModelListPicker, switchProfile,
@@ -7353,6 +7355,45 @@ export function createAIPanel(options) {
             updateScopeUI();
         },
     });
+    // 桌面控制可用性的真身判定（2026-11-23 修正）：只看工具数会把「已安装但 server 启动
+    // 失败」误报成「尚未安装」，用户照着提示去找安装按钮必然找不到（卡片自 2026-11-22 起
+    // 是「开关即安装」，没有安装按钮）。这里把 mcp.json 的 windows 行与 MCP 快照的
+    // state/lastError 一起看，结果缓存给权限面板、菜单与工具结果三处复用。
+    let desktopAvail = null;
+    let desktopAvailToken = 0;
+    async function refreshDesktopAvailability() {
+        const token = ++desktopAvailToken;
+        let configRow = null;
+        let configKnown = false;
+        if (typeof backend.MCPGetConfig === 'function') {
+            try {
+                const cfg = await backend.MCPGetConfig();
+                const rows = (cfg && cfg.mcpServers) || {};
+                configRow = Object.prototype.hasOwnProperty.call(rows, DESKTOP_MCP_SERVER) ? rows[DESKTOP_MCP_SERVER] : null;
+                configKnown = true;
+            } catch (e) {
+                configKnown = false; // 读盘失败：不把「读不到」当成「没装」
+            }
+        }
+        if (token !== desktopAvailToken) return desktopAvail || desktopAvailability({configKnown: false, snapshotLoaded: false});
+        const state = mcpMod.getState();
+        const server = (state.servers || []).find((item) => item && item.name === DESKTOP_MCP_SERVER) || null;
+        desktopAvail = desktopAvailability({
+            configRow,
+            server,
+            configKnown,
+            mcpEnabled: state.enabled === true,
+            snapshotLoaded: state.loaded === true,
+        });
+        return desktopAvail;
+    }
+
+    // 同步读口（菜单 / 设置项置灰用）：判定还没跑过时退回旧口径（工具数 > 0）。
+    // 装了但没连上也返回 true——否则用户被置灰的开关挡住，没有入口去修。
+    function desktopInstalledForUI() {
+        if (desktopAvail && desktopAvail.kind) return desktopAvail.kind !== DESKTOP_AVAILABILITY.NOT_INSTALLED;
+        return desktopMod.installedCount() > 0;
+    }
     // MCP 设置页（ai-mcp-settings.js）：配置读写走 Go，状态走 mcpMod 快照
     const mcpSettingsMod = createAIMcpSettings({
         backend,
@@ -7754,8 +7795,13 @@ export function createAIPanel(options) {
         if (desktopMod.enabledOn(session)) {
             return '本会话已启用桌面控制：调用 windows_control_mode（action=enter）进入控制模式即可使用桌面工具。';
         }
-        if (!desktopMod.installedCount()) {
-            return '桌面控制尚未安装：请用户在 应用页面 → 外部工具 → 桌面控制 点「安装」后再申请。';
+        // 先拉一次最新状态再判定：工具数为 0 有两种完全不同的原因——「没装」与
+        // 「装了但 server 启动失败」。旧代码一律回「尚未安装…点『安装』」，而后者的界面上
+        // 根本没有安装按钮（2026-11-23 用户实测：已安装 + 开关已开 + 工具全勾，仍被这么说）。
+        await Promise.resolve(mcpMod.refresh()).catch(() => {});
+        const avail = await refreshDesktopAvailability();
+        if (avail.kind !== DESKTOP_AVAILABILITY.READY) {
+            return desktopAvailabilityMessage(avail);
         }
         const reason = aiTextOf(params && params.reason).slice(0, 300);
         const answer = await requestActionApproval(session, ctx.toolMessage, {
@@ -10845,7 +10891,12 @@ async function requestApproval(session, toolMessage, info) {
                         + '那会绕过用户可见的「AI 正在控制你的电脑」提示与授权流程。'
                         + '若用户拒绝，就如实告知并请他自己操作或明确指示其他做法。';
                 }
-                return '桌面控制未安装：用户在 应用页面 → 外部工具 → 桌面控制 里点「安装」后即可使用。';
+                // enter 失败只剩「桌面 server 没就绪」一种可能：按真因回答（未安装 / 未启用 /
+                // 启动中 / 启动失败各说各的），别一律报「未安装」——那会把已安装却启动失败的
+                // 用户引到一个不存在的安装按钮上。
+                const avail = await refreshDesktopAvailability();
+                if (avail.kind !== DESKTOP_AVAILABILITY.READY) return desktopAvailabilityMessage(avail);
+                return '桌面工具尚未注册到本会话（可能刚要连上）：请稍后重试 windows_control_mode(action=enter)。';
             }
             case 'plan_mode': {
                 if (!ctx || !ctx.session) throw new Error('缺少会话上下文');
@@ -14286,8 +14337,16 @@ async function requestApproval(session, toolMessage, info) {
             return true;
         }
         if (desktopMod.enabledOn(target)) return true;
-        if (!desktopMod.installedCount()) {
-            flash('桌面控制尚未安装：请到 应用页面 → 外部工具 → 桌面控制 点「安装」', true);
+        // 装了但没连上（启动失败 / 启动中 / 未启用）也挡住：此刻授权也进不了控制模式。
+        // 文案按真因给短句，别一律说「尚未安装」——那会把用户引到一个不存在的安装按钮上。
+        if (desktopAvail && desktopAvail.kind !== DESKTOP_AVAILABILITY.READY) {
+            flash(desktopAvailabilitySummary(desktopAvail) || '桌面控制当前不可用：请先到 应用页面 → 外部工具 → 桌面控制 检查', true);
+            void refreshDesktopAvailability(); // 顺手刷新：下次点击看到的是最新状态
+            return false;
+        }
+        if (!desktopAvail && !desktopMod.installedCount()) {
+            flash('桌面控制尚未安装：请到 应用页面 → 外部工具 → 桌面控制 打开「启用桌面控制」开关（打开即安装）', true);
+            void refreshDesktopAvailability();
             return false;
         }
         const apply = () => {
@@ -14325,7 +14384,7 @@ async function requestApproval(session, toolMessage, info) {
             const cfg = await backend.MCPGetConfig();
             const row = cfg && cfg.mcpServers && cfg.mcpServers[DESKTOP_MCP_SERVER];
             if (!row || !row.command) {
-                return {ok: false, message: '桌面控制未安装：请用户在 应用页面 → 外部工具 → 桌面控制 点「安装」后再试。'};
+                return {ok: false, message: '桌面控制尚未安装：请用户在 应用页面 → 外部工具 → 桌面控制 打开「启用桌面控制」开关（打开即安装内置组件）后再试。'};
             }
             const args = Array.isArray(row.args) ? row.args : [];
             if (!args.includes('--no-control')) {
@@ -14555,8 +14614,10 @@ async function requestApproval(session, toolMessage, info) {
             },
             {
                 label: '桌面控制',
-                description: !desktopMod.installedCount()
-                    ? '未安装：先到 应用页面 → 外部工具 → 桌面控制 点「安装」'
+                // 描述按可用性四态给（未安装 / 已装未启用 / 启动中 / 启动失败），不能只用
+                // 工具数判「未安装」——server 启动失败时工具数也是 0（2026-11-23 实测）。
+                description: (desktopAvail && desktopAvail.kind !== DESKTOP_AVAILABILITY.READY)
+                    ? (desktopAvailabilitySummary(desktopAvail) || '不可用：请到 应用页面 → 外部工具 → 桌面控制 检查')
                     : (session && desktopMod.activeOn(session)
                         ? 'AI 正在控制你的电脑；点此关闭并立即收回'
                         : (session && desktopMod.enabledOn(session)
@@ -14564,7 +14625,8 @@ async function requestApproval(session, toolMessage, info) {
                             : '让 AI 操作第三方原生窗口：点击、输入、滚动；开启后仍需 AI 进入控制模式才动手')),
                 icon: 'cursor',
                 selected: !!(session && desktopMod.enabledOn(session)),
-                disabled: !desktopMod.installedCount(),
+                // 只有真没装才置灰；已装但没起来要让用户点得动（点了会给出真因与修法）
+                disabled: !desktopInstalledForUI(),
                 danger: !!(session && desktopMod.activeOn(session)),
                 action: () => toggleDesktopControlForCurrent(),
             },
@@ -18627,6 +18689,9 @@ async function requestApproval(session, toolMessage, info) {
         // MCP 工具清单兜底拉取：防错过启动早期事件；Go 侧 MCPSnapshot 会触发惰性启动。
         // 尽力而为路径：旧后端 / MCP 未启用时 registry 留空，失败不影响面板初始化。
         Promise.resolve(mcpMod.refresh()).catch(() => {});
+        // 桌面控制的可用性态（配置行 + 快照 state）：菜单与权限面板要按它区分「没装」与
+        // 「装了没起来」。先算一次，之后随 MCP 快照事件刷新。
+        void refreshDesktopAvailability();
         // 外部工具来源：工具可见性依赖它，尽早拉一次；失败保留默认值
         void loadExternalToolsConfig();
         if (floatWindow || settings.aiPanelOpen) {
@@ -19302,6 +19367,9 @@ async function requestApproval(session, toolMessage, info) {
             mcpMod.applySnapshot(snapshot);
             mcpSettingsMod.renderAll();
             updateScopeUI(); // 桌面 pill 的注册数与显隐随快照变化
+            // 快照带 windows server 的 state / lastError：桌面控制文案要跟着变（启动中 →
+            // connected / failed），不刷新就会一直按旧结论误导用户。
+            void refreshDesktopAvailability();
         },
         // 桌面控制状态广播（desktop-grant-changed）：别的窗口改了同一会话的启用状态时刷新本窗口 UI
         handleDesktopGrantEvent: () => {

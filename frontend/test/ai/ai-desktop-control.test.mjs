@@ -11,8 +11,12 @@ import {
     DESKTOP_MCP_SERVER,
     DESKTOP_ALL_TOOLS,
     DESKTOP_HIGH_RISK_TOOLS,
+    DESKTOP_AVAILABILITY,
     controlModeActionOf,
     createAIDesktopControl,
+    desktopAvailability,
+    desktopAvailabilityMessage,
+    desktopAvailabilitySummary,
     desktopConfigNeedsUpgrade,
     desktopServerConfigRow,
     isDesktopToolDef,
@@ -242,4 +246,72 @@ test('desktopServerConfigRow：内置 wheel（--from）+ 默认全选 + 超时�
     row.enabledTools.push('FileSystem');
     assert.equal(desktopServerConfigRow(plan).env.WINDOWS_MCP_MAX_TREE_ELEMENTS, '500');
     assert.deepEqual(desktopServerConfigRow(plan).enabledTools, ['Snapshot', 'Click']);
+});
+
+// 2026-11-23 用户实测缺陷：mcp.json 有 windows 行、开关开着、工具全勾，但 server 启动失败
+// （uv 缺失 / 依赖没下完）时工具数是 0，旧代码据此回「桌面控制尚未安装…点『安装』」，
+// 而卡片自 2026-11-22 起是「开关即安装」——界面上根本没有安装按钮，用户被指向死路。
+// 四态判定必须把「没装」与「装了没起来」分开，并带上 state 与失败原因。
+test('desktopAvailability：配置行 + 快照 state 区分未安装 / 未启用 / 启动中 / 启动失败 / 可用', () => {
+    const row = (extra) => Object.assign({command: 'uvx', args: ['--from', 'x.whl', 'windows-mcp'], enabledTools: ['Snapshot']}, extra || {});
+    const server = (extra) => Object.assign({name: DESKTOP_MCP_SERVER, state: 'connected', toolCount: 3}, extra || {});
+
+    // ① 真没装：配置行与快照里都没有
+    const none = desktopAvailability({configRow: null, server: null, configKnown: true, snapshotLoaded: true, mcpEnabled: true});
+    assert.equal(none.kind, DESKTOP_AVAILABILITY.NOT_INSTALLED);
+    assert.equal(none.installed, false);
+
+    // ② 有行但总开关关 / 行停用 / 工具勾成空
+    assert.equal(
+        desktopAvailability({configRow: row(), server: null, configKnown: true, snapshotLoaded: true, mcpEnabled: false}).kind,
+        DESKTOP_AVAILABILITY.DISABLED);
+    assert.equal(
+        desktopAvailability({configRow: row({enabled: false}), server: null, configKnown: true, snapshotLoaded: true, mcpEnabled: true}).kind,
+        DESKTOP_AVAILABILITY.DISABLED);
+    const noTools = desktopAvailability({configRow: row({enabledTools: []}), server: null, configKnown: true, snapshotLoaded: true, mcpEnabled: true});
+    assert.equal(noTools.kind, DESKTOP_AVAILABILITY.DISABLED);
+    assert.match(noTools.detail, /勾选/);
+
+    // ③ 已安装 + 开关开，但 server 启动失败：这是本次缺陷的核心回归点
+    const failed = desktopAvailability({
+        configRow: row(),
+        server: server({state: 'failed', toolCount: 0, lastError: 'uv: command not found'}),
+        configKnown: true, snapshotLoaded: true, mcpEnabled: true,
+    });
+    assert.equal(failed.kind, DESKTOP_AVAILABILITY.FAILED, '启动失败不能被判成未安装');
+    assert.equal(failed.installed, true);
+    assert.equal(failed.state, 'failed');
+    const failedText = desktopAvailabilityMessage(failed);
+    assert.match(failedText, /state=failed/, '文案必须带 state');
+    assert.match(failedText, /uv: command not found/, '文案必须带失败原因');
+    assert.match(failedText, /不是未安装/, '必须明确「不是未安装」');
+    assert.doesNotMatch(failedText, /点「安装」/, '不能再引导用户去找不存在的安装按钮');
+    assert.match(desktopAvailabilitySummary(failed), /启动失败/, '权限面板短文案要能区分失败');
+
+    // ④ 正在连（首次下载依赖要几分钟）
+    const starting = desktopAvailability({
+        configRow: row(), server: server({state: 'reconnecting', toolCount: 0}),
+        configKnown: true, snapshotLoaded: true, mcpEnabled: true,
+    });
+    assert.equal(starting.kind, DESKTOP_AVAILABILITY.STARTING);
+    assert.match(desktopAvailabilityMessage(starting), /正在连接/);
+
+    // ⑤ 可用：已连上且有工具 → 才允许走审批
+    assert.equal(
+        desktopAvailability({configRow: row(), server: server(), configKnown: true, snapshotLoaded: true, mcpEnabled: true}).kind,
+        DESKTOP_AVAILABILITY.READY);
+
+    // ⑥ 配置与快照都读不到：不许断言「没装」（宁可报异常，也不要给错误指引）
+    const unknown = desktopAvailability({configRow: null, server: null, configKnown: false, snapshotLoaded: false});
+    assert.notEqual(unknown.kind, DESKTOP_AVAILABILITY.NOT_INSTALLED);
+
+    // ⑦ 单有配置行（快照还没到）：不算没装，也不假装可用
+    const noSnapshot = desktopAvailability({configRow: row(), server: null, configKnown: true, snapshotLoaded: false});
+    assert.notEqual(noSnapshot.kind, DESKTOP_AVAILABILITY.NOT_INSTALLED);
+    assert.notEqual(noSnapshot.kind, DESKTOP_AVAILABILITY.READY);
+
+    // ⑧ 未安装的文案指向「打开开关」而不是「点安装」
+    const notInstalledText = desktopAvailabilityMessage(none);
+    assert.match(notInstalledText, /启用桌面控制/);
+    assert.doesNotMatch(notInstalledText, /点「安装」/);
 });
