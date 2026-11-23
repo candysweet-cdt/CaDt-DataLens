@@ -397,17 +397,22 @@ func TestSearchNameOnlyHit(t *testing.T) {
 	if len(res.Hits) != 3 {
 		t.Fatalf("expected 3 hits (1 content + 2 name-only), got %d: %+v", len(res.Hits), res.Hits)
 	}
-	if res.Hits[0].NameOnly || res.Hits[0].Name != "note-icons.js" {
-		t.Fatalf("content hit expected first: %+v", res.Hits[0])
+	// icons.js：文件名与查询词精确相等 → 提到整个结果集最前（含内容命中之前）
+	if !res.Hits[0].NameOnly || !res.Hits[0].nameExact || res.Hits[0].Name != "icons.js" {
+		t.Fatalf("exact name match expected first: %+v", res.Hits[0])
 	}
-	for _, hit := range res.Hits[1:] {
+	// note-icons.js：内容命中，文件名不精确相等 → 紧随精确命中之后
+	if res.Hits[1].NameOnly || res.Hits[1].Name != "note-icons.js" {
+		t.Fatalf("content hit expected second: %+v", res.Hits[1])
+	}
+	for _, hit := range res.Hits[2:] {
 		if !hit.NameOnly {
 			t.Fatalf("expected name-only hit at tail: %+v", hit)
 		}
 		if hit.Line != 0 || hit.Column != 0 {
 			t.Fatalf("name-only hit must carry no line/column: %+v", hit)
 		}
-		if hit.Name != "icons.js" && hit.Name != "icons.js.map" {
+		if hit.Name != "icons.js.map" {
 			t.Fatalf("unexpected name-only file: %+v", hit)
 		}
 		if hit.Dir != filepath.Base(dir) {

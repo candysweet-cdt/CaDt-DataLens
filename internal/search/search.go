@@ -146,7 +146,7 @@ func searchNameHit(name, needle string, caseSensitive bool) bool {
 	return strings.Contains(strings.ToLower(name), needle)
 }
 
-// sortSearchTier 档内排序：文件名命中优先，其后路径/行/列升序。
+// sortSearchTier 档内排序：文件名精确命中 > 文件名命中 > 非文件名命中，其后路径/行/列升序。
 // 模糊模式下文件名命中按子序列判断，并追加一档：字面（连续）命中排在
 // 子序列（离散）命中之前。命中数受 maxResults 约束（≤ 千级），排序开销可忽略。
 func sortSearchTier(hits []SearchHit, needle string, caseSensitive, fuzzy bool) {
@@ -165,6 +165,10 @@ func sortSearchTier(hits []SearchHit, needle string, caseSensitive, fuzzy bool) 
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
 		a, b := hits[i], hits[j]
+		// 档 0：文件名精确命中（nameExact）置顶
+		if a.nameExact != b.nameExact {
+			return a.nameExact
+		}
 		if an, bn := nameHit[a.Path], nameHit[b.Path]; an != bn {
 			return an
 		}
@@ -220,6 +224,9 @@ type SearchHit struct {
 	After      []ContextLine `json:"after,omitempty"`
 	// fuzzySplit 标记子序列（离散）命中，仅用于排序分档，不进 JSON。
 	fuzzySplit bool
+	// nameExact 标记文件名与查询词精确相等（大小写不敏感），排序时提到所有命中之前。
+	// 仅用于排序分档，不进 JSON。
+	nameExact bool
 	// nameOnly 标记文件名兜底命中：文件名含查询词但内容零命中（无行号/列号）。
 	NameOnly bool `json:"nameOnly,omitempty"`
 }
@@ -651,6 +658,7 @@ func buildSearchNameHit(path, name, relDir string, spec *searchSpec) (SearchHit,
 		MatchStart: mStart,
 		MatchEnd:   mEnd,
 		fuzzySplit: fuzzySplit,
+		nameExact:  !spec.fuzzy && strings.EqualFold(name, spec.needle),
 		NameOnly:   true,
 	}, true
 }
@@ -735,11 +743,20 @@ func appendWorkspaceNameHits(root string, spec *searchSpec, res *SearchResult) {
 	if walkErr != nil || len(hits) == 0 {
 		return
 	}
-	sort.Slice(hits, func(i, j int) bool { return hits[i].Path < hits[j].Path })
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].nameExact != hits[j].nameExact {
+			return hits[i].nameExact
+		}
+		return hits[i].Path < hits[j].Path
+	})
 	if len(hits) > nameHitMax {
 		hits = hits[:nameHitMax]
 	}
 	res.Hits = append(res.Hits, hits...)
+	// 文件名精确命中的兜底行提到整个结果集最前（稳定排序，不打乱内容命中既有顺序）。
+	sort.SliceStable(res.Hits, func(i, j int) bool {
+		return res.Hits[i].nameExact && !res.Hits[j].nameExact
+	})
 }
 
 // scanSearchFile 单文件内容扫描（文件名兜底命中统一在 searchWorkspace 的
