@@ -269,13 +269,15 @@ func (a *App) beforeCloseWindow(st *windowState) bool {
 		aiRunning = aiRunning || winReg.anyAIRunning()
 	}
 	if st.forceClosed() || (!dirty && !aiRunning && terms == 0 && bgJobs == 0) {
+		if lastMain || lastWindow {
+			// 先摘窗口再收口：teardown 可能要等 MCP 子进程 / 插件服务退出，
+			// 让用户盯着一个已经点了 X 的窗口等这档时间没有意义。
+			hideWindowsBeforeTeardown()
+			a.teardownAppServices()
+		}
 		if lastMain {
-			// 最后一个主窗口关闭 = 退出程序：先收口应用级服务，再带走附属窗口。
-			a.teardownAppServices()
+			// 最后一个主窗口关闭 = 退出程序：应用级服务已收口，再带走附属窗口。
 			closeOtherWindows(st)
-		} else if lastWindow {
-			// 没有主窗口的模式（--ai-float / --debug-console）：最后一个窗口收口。
-			a.teardownAppServices()
 		}
 		return false
 	}
@@ -298,11 +300,13 @@ func (a *App) ForceClose(ctx context.Context) {
 	isMain := st.startup().Mode == windowModeMain
 	lastMain := isMain && winReg.countMain() <= 1
 	lastWindow := winReg.count() <= 1
+	if lastMain || lastWindow {
+		// 同 beforeCloseWindow：窗口先消失，收口（可能等子进程）在后面做。
+		hideWindowsBeforeTeardown()
+		a.teardownAppServices()
+	}
 	if lastMain {
-		a.teardownAppServices()
 		closeOtherWindows(st)
-	} else if lastWindow {
-		a.teardownAppServices()
 	}
 	closeWindow(st.window())
 }

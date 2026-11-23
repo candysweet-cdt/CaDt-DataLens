@@ -99,6 +99,7 @@ func (a *App) ForceQuitAll() {
 		quitApp()
 		return
 	}
+	hideWindowsBeforeTeardown()
 	a.teardownAppServices()
 	for _, st := range states {
 		st.markForceClose()
@@ -198,6 +199,24 @@ func (a *App) gracefulAllAcked() bool {
 		}
 	}
 	return true
+}
+
+// hideWindowsBeforeTeardown 退出收尾前先把全部窗口从屏幕上摘掉。
+//
+// teardownAppServices 里有需要等外部进程的步骤：MCP server 关 stdin 后要等子进程
+// 自己退出（整批预算 8s，超时才杀进程树），插件后台服务要杀整棵进程树。这些等待
+// 如果在窗口还挂着的时候做，用户看到的就是「点了 X，窗口愣一下才消失」。
+//
+// 隐藏走 hideNativeWindowAsync（ShowWindowAsync）而不是 WebviewWindow.Hide()：
+// 钩子跑在 v3 的事件 goroutine 上，Hide() 的 InvokeSync 会去等主线程（互锁风险见
+// windowhide_windows.go）。异步隐藏只投递消息，视觉上同样等于立刻关闭；钩子返回后
+// v3 照常销毁窗口，进程与子进程的收口顺序完全不变——只改看得见的时序。
+func hideWindowsBeforeTeardown() {
+	for _, st := range winReg.list() {
+		if w := st.window(); w != nil {
+			hideNativeWindowAsync(w.NativeWindow())
+		}
+	}
 }
 
 // teardownAppServices 应用级服务收口（托盘 / MCP / 插件服务 / 工作区监听）。

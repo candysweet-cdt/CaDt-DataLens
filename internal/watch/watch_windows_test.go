@@ -152,6 +152,35 @@ func TestWatchDirectoryReceivesCreate(t *testing.T) {
 	}
 }
 
+// 关窗/换根时每个监听槽都要同步等 goroutine 退出（stopLocked / stopSlotLocked 串行
+// `<-done`）。旧实现靠 WaitForSingleObject(event, 300) 轮询 stop 通道才发现该退出，
+// 实测每次 200~300ms，几个槽叠起来就是用户能察觉的「点了 X 窗口要停一下才消失」
+// （2026-11-23 日志实测钩子内 806/855ms）。stop 现在走独立内核事件，应当即时唤醒。
+func TestWatchDirectoryStopIsPrompt(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 3; i++ {
+		stop := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = watchDirectory(dir, stop, func([]watchEvent, bool) {})
+		}()
+		time.Sleep(80 * time.Millisecond) // 等它进入读循环、挂起 ReadDirectoryChanges
+		start := time.Now()
+		close(stop)
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("第 %d 次停止超时：watcher 未退出", i+1)
+		}
+		// 150ms 上限：轮询实现下界就在 200ms 以上，事件唤醒下实际是亚毫秒级，
+		// 留够调度抖动的余量又不至于让回归悄悄通过。
+		if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+			t.Fatalf("第 %d 次停止耗时 %v，超过 150ms（stop 应即时唤醒）", i+1, elapsed)
+		}
+	}
+}
+
 // 静默门接线验证（2026-11-19 插件更新误报实录）：插件安装 / 更新 / 卸载期间
 // workspace-changed 照常推 paths（UI 要刷新），但 removed / present 两个判定分组为空，
 // 破坏判定不会把这些应用自己发起的整目录增删当成大范围文件消失。

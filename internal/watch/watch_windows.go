@@ -59,6 +59,14 @@ func parseNotifyBuffer(buf []byte, size uint32) ([]watchEvent, bool) {
 	return events, false
 }
 
+const (
+	// watchStopSignalIndex stop 事件在等待句柄数组里的下标（0 是目录通知事件）。
+	watchStopSignalIndex = 1
+	// watchWaitPollMillis 兜底轮询周期。stop 关闭后由独立的内核事件立刻唤醒等待，
+	// 这个超时只剩「SetEvent 万一失败也不至于永久卡死」的保险丝作用。
+	watchWaitPollMillis = 300
+)
+
 func watchDirectory(root string, stop <-chan struct{}, emit func(events []watchEvent, overflow bool)) error {
 	ptr, err := windows.UTF16PtrFromString(root)
 	if err != nil {
@@ -82,6 +90,30 @@ func watchDirectory(root string, stop <-chan struct{}, emit func(events []watchE
 		return err
 	}
 	defer windows.CloseHandle(event)
+	// stop 通道翻译成手动复位的内核事件：原来只能靠 300ms 轮询才发现「该退了」，
+	// 而关窗路径上每个监听槽都要同步等 goroutine 退出（见 ResourceWatcher.stopLocked /
+	// Watcher.stopSlotLocked），实测每次 200~300ms，几个槽叠起来就是「点了 X 窗口
+	// 要停一下才消失」。改成事件唤醒后取消是即时的。
+	stopEvent, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(stopEvent)
+	exited := make(chan struct{})
+	stopWatchDone := make(chan struct{})
+	go func() {
+		defer close(stopWatchDone)
+		select {
+		case <-stop:
+			_ = windows.SetEvent(stopEvent)
+		case <-exited:
+		}
+	}()
+	defer func() {
+		// 先让桥接 goroutine 退出再关 stopEvent 句柄，避免 SetEvent 撞上 CloseHandle。
+		close(exited)
+		<-stopWatchDone
+	}()
 	buf := make([]byte, 64*1024)
 	var overlapped windows.Overlapped
 	overlapped.HEvent = event
@@ -108,20 +140,20 @@ func watchDirectory(root string, stop <-chan struct{}, emit func(events []watchE
 		if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) {
 			return fmt.Errorf("ReadDirectoryChanges %s: %w", filepath.Base(root), err)
 		}
+		// 目录通知与 stop 谁先到听谁的：stop 侧走取消挂起读的收尾路径。
 		for {
-			status, waitErr := windows.WaitForSingleObject(event, 300)
+			wake, waitErr := windows.WaitForMultipleObjects(
+				[]windows.Handle{event, stopEvent}, false, watchWaitPollMillis)
 			if waitErr != nil {
 				return fmt.Errorf("等待目录通知失败：%w", waitErr)
 			}
-			if status == uint32(windows.WAIT_TIMEOUT) {
-				select {
-				case <-stop:
-					_ = windows.CancelIoEx(handle, &overlapped)
-					_ = windows.GetOverlappedResult(handle, &overlapped, &returned, true)
-					return nil
-				default:
-					continue
-				}
+			if wake == watchStopSignalIndex {
+				_ = windows.CancelIoEx(handle, &overlapped)
+				_ = windows.GetOverlappedResult(handle, &overlapped, &returned, true)
+				return nil
+			}
+			if wake == uint32(windows.WAIT_TIMEOUT) {
+				continue // 保险丝：回到内层重新等（此时挂起读仍然有效）
 			}
 			break
 		}

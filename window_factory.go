@@ -85,6 +85,10 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 	// 但没有任何窗口。这里补回同语义：导航迟迟不完成就强制露出窗口（审查 P2-4）。
 	// 托盘隐藏需要先有关窗确认流程，8 秒内不可能发生，不会误弹托盘窗口。
 	time.AfterFunc(8*time.Second, func() {
+		// 正在退出（hideWindowsBeforeTeardown 把窗口藏了）：别再把窗口塞回屏幕。
+		if a.teardownDone.Load() || st.forceClosed() {
+			return
+		}
 		if !win.IsVisible() {
 			writeAppLog("warn", "窗口 %s 导航 8s 未完成，兜底显示", win.Name())
 			win.Show()
