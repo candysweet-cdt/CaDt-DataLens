@@ -40,7 +40,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **ai-panel.js 拆出上下文组装模块（phase4 P2）**：`buildApiMessages`（195 行）从 ai-panel.js 拆到 `frontend/src/ai/chat/ai-context-estimate.js`（`createAIContextEstimate(deps)`），14 个纯函数直接 import、settings/contextWindowOf 与 4 个输出状态经 getter/setter 注入（状态留主闭包、被 8+ 处读取）；ai-panel.js 保留薄转发，相关测试源码切片同步改读新模块。
 - **再拆出插件导入器与群聊视图桥（phase4 M3/P3）**：main.js 的插件文档导入器拆到 `frontend/src/shell/plugin-importer.js`（`createPluginImporter`）；ai-panel.js 的内容视图切换（会话↔群聊，5 状态 + 4 函数）拆到 `frontend/src/ai/group/ai-group-bridge.js`（`createAIGroupBridge`），主文件引用改走 getter。均为 deps 注入 + 薄转发，用户可见行为不变。
 - **P1（会话日志块）跳过**：落盘机 `createAIConversationLog` 早已在 `ai-session-disk.js`，剩余诊断 UI 注入面超红线，强拆无收益，已在方案文档记录裁定。
-- **验证**：`npm test` 全量 2652 项全绿，`npm run build` 成功；M1/M2/M3/P2/P3 另用一次性静态扫描（含对照验证）核对 deps 契约。方案与实施记录见 `docs/unfinished-plans/frontend-split-phase4.md`。
+- **验证**：`npm test` 全量 2652 项全绿，`npm run build` 成功；M1/M2/M3/P2/P3 另用一次性静态扫描（含对照验证）核对 deps 契约。方案与实施记录见 `docs/finished-plans/frontend-split-phase4.md`（已收口，剩余批次暂缓）。
 
 ### 修复（点 X 关窗要等约 0.8 秒窗口才消失：监听取消靠 300ms 轮询 + 收尾排在关窗之前）
 

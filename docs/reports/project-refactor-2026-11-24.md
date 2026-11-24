@@ -9,7 +9,7 @@
 | [2B：TypeScript 渐进迁移](#2btypescript-渐进迁移) | TS 阶梯 0–1（类型门 + 24 个 core 文件） | TS 会话 | ✅ 已实施并提交（3 提交） |
 >
 > 两章独立提交、独立验证。后端线全程**前端零改动、绑定面零变化**；前端线的方案见
-> `docs/unfinished-plans/frontend-split-phase4.md` 与 `docs/finished-plans/frontend-typescript.md`。
+> `docs/finished-plans/frontend-split-phase4.md`（已收口）与 `docs/finished-plans/frontend-typescript.md`。
 
 ---
 
@@ -155,7 +155,7 @@ ce55d18  docs: 同步结构化的规范与方案记录               4 files, +1
 
 # 2A：前端按域拆分
 
-> 本线独立于后端重构：后端线全程未改 `frontend/`，本线也未碰 Go 文件。两条线的提交严格按文件清单 `git add`，互不卷入。方案见 `docs/unfinished-plans/frontend-split-phase4.md`。
+> 本线独立于后端重构：后端线全程未改 `frontend/`，本线也未碰 Go 文件。两条线的提交严格按文件清单 `git add`，互不卷入。方案与实施记录见 `docs/finished-plans/frontend-split-phase4.md`（已收口）。
 
 ## A1. 结论先行
 

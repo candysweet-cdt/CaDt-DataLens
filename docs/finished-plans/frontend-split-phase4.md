@@ -1,6 +1,6 @@
 # 前端拆分第四阶段：ai-panel.js 与 main.js
 
-> 状态：**阶段一 + M1 + M2 + M3 + P2 + P3 已实施并验证通过；P1 跳过；P4 / M4–M7 待办**（2026-11-24）。本文件既是交接文档，也是本轮实施记录。
+> 状态：**已收口并移入 `docs/finished-plans/`**（2026-11-24）。阶段一 + M1 + M2 + M3 + P2 + P3 已实施并验证通过；P1 跳过；P4 / M4–M7 经评估**暂缓**（边际收益低于风险，见第 9 节停止线）。本文件既是方案，也是完整实施记录。
 > 用户裁定范围（2026-11-23 补充）：**本轮分两阶段串行执行——阶段一：ai/ 目录全量重组（117 文件按域归位 + 测试目录镜像 + 护栏/文档同步）；阶段二：两个低风险试点批（P1 / M1）**。验证采用完整档（静态裸引用扫描 + npm test 全量 + npm run build + 定向冒烟）。阶段二试点完成并验证通过后停下汇报，再决定是否继续后续批次（P2–P4 / M2–M7）。
 > 决策依据：phase2/phase3 已建立成熟的 deps 重写 + 分批验证方法论，但明确把这两个文件推迟（「ai-panel 交子代理消息化方案」「main.js 组合根不动」）。本次两份只读调研（ai-panel 19,636 行 / main.js 7,688 行全文逐段读取）确认：可安全拆的叶子块有限，真正的大头被密集测试护栏与硬约束锁死。
 > 前置阅读：`docs/finished-plans/frontend-split-phase2.md`（抽取模式与 tokenizer 三坑）、`docs/finished-plans/frontend-split-phase3.md`（目录归位与多域解耦）、`AGENTS.md`（代码规模与质量红线、AI 工具增删改、app_control 三处对齐）。
@@ -225,7 +225,7 @@
 | **P1【本轮试点】** | `ai/session/ai-session-log.js`（阶段一后落点；原写 `ai/ai-session-log.js`） | 16540–16678 | 140 | 会话对话日志落盘（getAILogRoot/ensureAILogDir/queueLogSave/openAILogDir/showSessionDiagnostics） | 低 | 0（0 个测试锚定这些函数名） |
 | **P2【已实施】** | `ai/chat/ai-context-estimate.js` | 实测 buildApiMessages 6247-6441（195 行） | ~213 | buildApiMessages 瘦身组装；4 个 lastBuild* 状态**留主闭包**经 setter 写回（8+ 处读取，整包搬会大改读取点） | 中低 | 已改 ai-turn-steer-wiring.test.mjs 切片路径到新模块 |
 | **P3【已实施】** | `ai/group/ai-group-bridge.js` | 实测内容视图块 17220–17292（74 行） | ~88 | 内容视图切换（会话↔群聊）：5 状态 + 4 函数整包搬；aiGroupApi/bridgeShow* 仍是薄转发面（保持原位） | 中 | 0（群聊测试只测 ai-group-model 纯函数，不读视图切换源码） |
-| P4（动手前重评） | `ai/ai-panel-view-switch.js` | 17337–17801 | 465 | setPanelView / 浮窗几何 / 分屏互换 | 高 | ai-panel-mode-lock.test.mjs:24 钉 setMode( 恰好 5 处；ai-auto-collapse 钉显示方式菜单 |
+| ~~P4（暂缓）~~ | ~~`ai/ai-panel-view-switch.js`~~ | 原 17337–17801 | 465 | setPanelView 已在 P3 迁走；剩余浮窗几何/分屏互换被 setMode 计数锚定 | 高 | 见第 9 节停止线：暂缓 |
 
 **明确暂缓（本路线图不排期）**：
 - `bindPanelInteractions` 事件绑定（17805–18166，~360 行）：注入面 >15、热路径、ai-composer-submit-guard.test.mjs 钉 keydown 唯一性。
@@ -233,7 +233,7 @@
 
 **禁止搬迁（硬约束）**：executeTool/executeToolInner（10062–12062）、流式核心（12069–14180）、配置/会话持久化中心（910–3178）、消息渲染家族（3179–4624 + 4943–6027，11 个测试锚定）、面板几何/初始化。
 
-**预估终态**：19,636 → P1 后约 19,500 → P2/P3 全完成后约 18,900。
+**预估终态**：19,636 → 实际收口 **19,474**（P2 −190、P3 −62；P1 跳过、P4 暂缓）。
 
 ---
 
@@ -244,14 +244,14 @@
 | **M1【本轮试点】** | `shell/aux-window-modes.js` | 499–744 | 250 | 便签/监控/对比/查看/预览五种独立窗渲染（auxWindowKind/auxToast/closeAuxWindowSelf/buildAuxWindowHead + 5 个 startXxxWindowMode） | 低 | 0（无测试锚定这 5 个 starter；window-close-semantics 只锁 startConsoleWindowMode，不在本块） |
 | **M2【已实施】** | `editor/bookmark-actions.js` | 原 3614–3671（实测 main.js:1409-1469） | ~93 | 书签 UI 与 app_control 共用动作（list/add/remove/clear/goto + appActionBookmarkDoc） | 低-中 | 0（书签测试测纯函数，不读分发源码） |
 | **M3【已实施】** | `shell/plugin-importer.js` | 实测 main.js:3038-3148（111 行） | ~118 | 插件文档导入器（askConfirmAsync/importerReadContext/readFileBase64/openWithPluginImporter） | 中 | 0（plugin-importers 测试只测纯函数 findImporterFor/hexDumpToBase64） |
-| M4 | `shell/window-switch.js` | 6027–6053 | 27 | 多窗口切换列表缓存 | 中 | 改 window-switch-wiring.test.mjs:20-30 |
-| M5 | `shell/console-window.js` | 201–473 + 746–754 | 280 | 调试台 + 诊断日志单一入口 | 中高 | 改 window-close-semantics.test.mjs:22-48、session-restore.test.mjs:105-142 |
-| M6 | `shell/workspace-session.js` | 3762–3837 | 75 | 工作区打开/关闭 + 跨窗口会话复用 | 中高 | 中 |
-| M7（最后，单独评估） | `shell/app-control-actions.js` | 926–2366 | 1440 | app_control 动作表与 runAppAction 分发 | 高 | 三方对账 ai-app-actions.test.mjs + window.__lens.runAppAction + AI 面板调用，爆炸半径最大 |
+| ~~M4（暂缓）~~ | ~~`shell/window-switch.js`~~ | 原 6027–6053 | 27 | 多窗口切换列表缓存 | 中 | 收益过小（27 行），见第 9 节 |
+| ~~M5（暂缓）~~ | ~~`shell/console-window.js`~~ | 原 201–473 + 746–754 | 280 | 调试台 + 诊断日志单一入口 | 中高 | 需改 2 个测试，见第 9 节 |
+| ~~M6（暂缓）~~ | ~~`shell/workspace-session.js`~~ | 原 3762–3837 | 75 | 工作区打开/关闭 + 跨窗口会话复用 | 中高 | 收益过小（75 行），见第 9 节 |
+| ~~M7（暂缓）~~ | ~~`shell/app-control-actions.js`~~ | 原 926–2366 | 1440 | app_control 动作表与 runAppAction 分发（实测 runAppAction 1013 行） | 高 | 三方对账 + 爆炸半径最大，文档原标「最后单独评估」 |
 
 **留守组合根（不可拆）**：Wails 引导与事件桥、全局监听、appPageMounters 注入、VIRTUAL_TAB_VIEWS 分派、启动顺序硬约束、早期 hook TDZ 间接层、全局事件订阅集中区、window.__lens 活引用 getter；菜单注册表与全局快捷键。
 
-**预估终态**：7,688 → M1 后约 7,440 → M2–M6 全完成约 7,100 → 含 M7 约 5,700。
+**预估终态**：7,688 → 实际收口 **7,307**（M1/M2/M3 累计 −380；M4–M7 暂缓）。
 
 **M7 特别提示**：runAppAction(:1309-2366，约 1057 行) 是最违反 200 行函数红线的一块，收益最大但被三方对账锁死，依赖面覆盖全文件。必须在 A/B/C 类低风险批建立信心后再做。
 
@@ -308,7 +308,7 @@
 5. 多会话并行改动冲突——动手前检查工作树，若有在途未提交改动先与用户确认（phase3 的 Z 归位就因 12 个在途文件而推迟）。
 6. tokenizer 重写三坑（phase2 记录）：of-in 非声明上下文 / import 绑定进 topLevel / 对象简写位展开 `key: deps.X`。
 
-**收尾**（阶段一 + 试点完成后）：更新 AGENTS.md 目录清单与 CHANGELOG.md / README.md（用户可见行为无变化，记为 refactor）；用 cognition_edit 维护受影响条目（ai-panel.js / main.js / module-scope.test.mjs 及阶段一归位后的各 ai/ 子目录条目的 F/R/A/S）。**本文件暂留 `docs/unfinished-plans/`**（P2–P4 / M2–M7 未实施，未达「全部实施后移入 finished-plans」的条件）；待全部批次完成后再移入。
+**收尾**（阶段一 + 试点完成后）：更新 AGENTS.md 目录清单与 CHANGELOG.md / README.md（用户可见行为无变化，记为 refactor）；用 cognition_edit 维护受影响条目（ai-panel.js / main.js / module-scope.test.mjs 及阶段一归位后的各 ai/ 子目录条目的 F/R/A/S）。**本文件已移入 `docs/finished-plans/`**：低风险批次全部实施，剩余 P4 / M4–M7 经评估暂缓（第 9 节），路线收口。
 
 **不在本方案范围**：P2–P4、M2–M7 的实施；style.css 拆分（已判定必要性低）；Go 侧（结构健康，无需动）。阶段二验证通过后停下汇报，是否继续后续批次由用户另行决定。
 
@@ -336,6 +336,21 @@
 - M3：从 main.js:3038-3148 拆出插件文档导入器（askConfirmAsync / importerReadContext / readFileBase64 / openWithPluginImporter）到 `frontend/src/shell/plugin-importer.js`（`createPluginImporter(deps)`，118 行）。extOf/findImporterFor/hexDumpToBase64 直接 import，elsDialogs/openConfirmDialog/backend/openVirtualDoc/activityLog/flash 经 deps 注入；main.js 构造模块并保留 `openWithPluginImporter` 解构别名。
 - P3：从 ai-panel.js:17220-17292 拆出内容视图切换（5 个状态 panelView/panelGroupSpec/groupViewApi/groupViewRelease/groupViewFocus + applyPanelViewDom/notifyPanelView/releaseGroupView/setPanelView）到 `frontend/src/ai/group/ai-group-bridge.js`（`createAIGroupBridge(deps)`，88 行）。panel/el/open/flash/onViewChange/mountGroupChatView 经 getter 注入；模块导出 setPanelView/getPanelView/getBridgePanelView/getGroupViewFocus，主文件 3 处 panelView 读取与 return 面 bridgePanelView、groupViewFocus 全改走 getter。`aiGroupApi`/`bridgeShow*` 仍是薄转发面（保持原位，无拆分价值）。
 - 验证：全量测试全绿、`npm run build` 成功、两个模块的 deps 静态扫描（P3 对照验证抓到注入 bug）通过。
+
+---
+
+## 9. 停止线：P4 / M4–M7 为什么暂缓
+
+本轮收口评估后，剩余批次**暂缓而非待办**。理由与后端报告第 9 节「剩下 49 个为什么不再合」同源——边际收益低于边际风险：
+
+1. **投入产出倒挂**：每批都要改测试锚点 + 2652 项全量 + build + deps 扫描 + 精确 `git add`（还要防并行会话的 Go 改动）；换来的行数削减：M4=27 行、M6=75 行（小到不值得单独提交），M5=280 行、P4=465 行（各需改 1–2 个测试且文档原标高风险）。对 main.js 7307 行 / ai-panel.js 19474 行是杯水车薪。
+2. **风险递增**：已做的 M1/M2/M3/P2/P3 都是「零/单锚点 + 内聚块」；剩下的恰好相反——P4 的 `setMode` 被计数锚定、M5 要改两个测试、M7 是三方对账枢纽（文档原标「爆炸半径最大、最后单独评估」）。
+3. **痛点已缓解**：并行会话撞文件的根源不是文件行数，而是**测试用源码文本锚定函数**（35 个测试读 ai-panel.js、40+ 读 main.js）。P2 演示了正确模式：拆函数 + 同步迁测试锚点。最大几块（辅助窗/书签/导入器/上下文组装/群聊桥）已按此拆完，剩下的是锚点密集区，硬碰只会制造新冲突面。
+4. **锚点已过时**：P4 的 `setPanelView` 在 P3 已迁走，M7 的 runAppAction 实测 1013 行（文档估 1440）——真要做必须重评，不宜照旧表执行。
+
+**精确重算纠正**：初版按「下一个函数起始行」估算体量，把 `defaultFormatSettings`（实为 7 行纯函数）和 `treeShortcutSelection`（实为 5 行）后面的表驱动常量/全局监听块误算进去（620/847 行）。按括号配对重算后，main.js 129 个顶层函数只有 4 个超 100 行：`runAppAction`(1013)、`initAIPanel`(517)、`menuItems`(273)、`saveDoc`(146)。前三个是组合根枢纽/注册表，**留守**；`saveDoc` 虽零锚点但收益仅 146 行，不值得单独动。
+
+**结论**：`ai-panel.js` 与 `main.js` 已是「39 域兄弟工厂 + 组合根」的健康结构，剩余是真正需要全局视野的调度逻辑（executeToolInner/流式核心/runAppAction/initAIPanel）。**组合根行数超标是固有属性，不是「没拆干净」**——继续拆只制造接线混乱，违反 AGENTS.md「注入面 >15 不搬」红线。路线到此收口，精力转向功能开发。
 
 ---
 
