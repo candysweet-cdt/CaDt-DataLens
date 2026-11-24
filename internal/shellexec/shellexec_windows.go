@@ -12,8 +12,6 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
-
-	"datalens/internal/executil"
 )
 
 const (
@@ -66,9 +64,12 @@ func Open(path string) error {
 // RevealInFolder 在系统文件管理器里打开目录，或在其中选中文件（等价于右键「在文件夹中显示」）。
 // 路径先归一成 Windows 原生分隔符：explorer.exe 把 / 开头的段当命令行开关解析，解析失败
 // 不报错，而是静默回退打开「文档」文件夹（见 TestRevealArgsUseNativePath）。
+//
+// 注意：这里刻意不调用 executil.HideCommandWindow。explorer.exe 是 GUI 程序，本身不会闪黑窗；
+// HideWindow(SW_HIDE)/CREATE_NO_WINDOW 会把要打开的资源管理器窗口一并隐藏——进程启动成功、
+// 不报错，但窗口不出现，表现为「点了没反应」。2026-11-23 下沉时误加该调用导致所有入口失效。
 func RevealInFolder(path string, isDir bool) error {
 	cmd := exec.Command("explorer.exe", revealArgs(path, isDir)...)
-	executil.HideCommandWindow(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
