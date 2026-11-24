@@ -1,3 +1,4 @@
+// @ts-check
 // core/clipboard.js：文本剪贴板统一入口（图片走 core/image-clipboard.js）。
 // 原先三处各写一套：main.js 只走 Go 绑定（backend.CopyText），外部工具页与 app-pages/ui-kit
 // 只走 Web API（navigator.clipboard），失败文案也各不相同。
@@ -28,6 +29,10 @@ export async function copyTextToClipboard(text, options = {}) {
 }
 
 // writeWithWebApi 走浏览器异步剪贴板；不可用 / 被拒（未聚焦、无权限）返回 false。
+/**
+ * @param {string} value 要写入的文本（调用方已确保非空）
+ * @returns {Promise<boolean>}
+ */
 async function writeWithWebApi(value) {
     try {
         if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') return false;

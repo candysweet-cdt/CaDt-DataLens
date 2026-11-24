@@ -1,3 +1,4 @@
+// @ts-check
 // readonly.js：只读判定的单一来源。
 //
 // 四层只读来源，彼此独立、可叠加：
@@ -11,9 +12,24 @@
 // 文件树上的增删改（重命名 / 删除 / 剪贴板）只受全局锁约束，不走这个函数。
 
 /**
+ * 只读判定用到的文档字段子集（不需要完整的 doc 类型）。
+ * @typedef {object} ReadOnlyDoc
+ * @property {boolean} [readOnlyFixed] 固定只读（审阅快照），不可解锁
+ * @property {boolean} [readOnlyLocked] 标签页只读锁，可解锁
+ * @property {boolean} [large] 大文件
+ * @property {boolean} [binary] 二进制
+ */
+
+/**
+ * 只读判定用到的设置子集。
+ * @typedef {object} ReadOnlySettings
+ * @property {boolean} [readOnlyMode] 全局只读锁
+ */
+
+/**
  * 判定当前文档是否只读（综合四层只读来源）。
- * @param {object|null} doc 文档对象，可含 readOnlyFixed / readOnlyLocked / large / binary 字段
- * @param {object|null} settings 应用设置，可含 readOnlyMode（全局只读锁）
+ * @param {ReadOnlyDoc|null} doc 文档对象，可含 readOnlyFixed / readOnlyLocked / large / binary 字段
+ * @param {ReadOnlySettings|null} settings 应用设置，可含 readOnlyMode（全局只读锁）
  * @returns {boolean} true = 文档不可编辑/保存/运行/自动保存
  */
 export function isDocReadOnly(doc, settings) {
@@ -25,7 +41,7 @@ export function isDocReadOnly(doc, settings) {
 // 固定只读：连「解除」入口都不该出现，setDocReadOnly 也必须拒绝解锁。
 /**
  * 判定标签是否被固定只读（不可解锁，如审阅快照）。
- * @param {object|null} doc 文档对象
+ * @param {ReadOnlyDoc|null} doc 文档对象
  * @returns {boolean} true = 连「解除」入口都不该出现
  */
 export function isTabReadOnlyFixed(doc) {
@@ -35,7 +51,7 @@ export function isTabReadOnlyFixed(doc) {
 /**
  * 判定标签是否被锁（普通锁或固定锁），用于状态栏文案与标签角标。
  * 不含全局锁 / 大文件。
- * @param {object|null} doc 文档对象
+ * @param {ReadOnlyDoc|null} doc 文档对象
  * @returns {boolean} true = 标签显示锁角标
  */
 export function isTabReadOnlyLocked(doc) {

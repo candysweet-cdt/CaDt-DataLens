@@ -1,3 +1,4 @@
+// @ts-check
 // tab-kinds.js：内容区虚拟标签页类型的单一来源。
 //
 // 「一切皆标签页」的落地约定：内容区里任何值得人看或操作的东西都是一个 doc、
@@ -26,7 +27,7 @@ import {appPageOf} from './app-pages.js';
  * @property {string} kind 类型名（AI workspace_context 的 kind、视图工厂分派键）
  * @property {string} icon core/icons.js 里注册的图标名
  * @property {string} label 人读标签（AI 的 openViews 描述用）
- * @property {(doc: object) => {icon?: string, label?: string}|null} [resolve]
+ * @property {(doc: Record<string, any>|null) => {icon?: string, label?: string}|null} [resolve]
  *   同一类型下要按 doc 细分图标 / 标签时提供（只有 appPage 用到：一个类型装 N 个功能页）
  */
 
@@ -69,7 +70,7 @@ export const TAB_KINDS = [
 
 /**
  * doc → 类型项；不是视图型虚拟标签页时返回 null。
- * @param {object|null} doc
+ * @param {Record<string, any>|null} doc
  * @returns {TabKind|null}
  */
 export function tabKindOf(doc) {
@@ -83,7 +84,7 @@ export function tabKindOf(doc) {
 /**
  * 是否屏蔽文件视图下拉（浏览器 / 终端 / 便签这类没有「文本 / 树 / 预览」可言）。
  * 文本型虚拟标签页（计划文档 / 差异）**不**屏蔽——.md 计划文档该有预览选项。
- * @param {object|null} doc
+ * @param {Record<string, any>|null} doc
  */
 export function suppressesViewOptions(doc) {
     return !!tabKindOf(doc);
@@ -92,7 +93,7 @@ export function suppressesViewOptions(doc) {
 /**
  * doc → 类型元信息（kind / icon / label），已应用 resolve 细分。
  * 不是视图型虚拟标签页时返回 null。
- * @param {object|null} doc
+ * @param {Record<string, any>|null} doc
  * @returns {{kind: string, icon: string, label: string}|null}
  */
 export function tabMetaOf(doc) {
@@ -108,7 +109,7 @@ export function tabMetaOf(doc) {
 
 /**
  * 标签图标名；不是视图型虚拟标签页时返回空串（调用方回落 createFileIcon）。
- * @param {object|null} doc
+ * @param {Record<string, any>|null} doc
  */
 export function tabIconName(doc) {
     const meta = tabMetaOf(doc);

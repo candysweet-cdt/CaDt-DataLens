@@ -1,3 +1,4 @@
+// @ts-check
 // virtual-tab-doc.js：虚拟标签页（path === null）的 doc 字面量工厂。
 //
 // 背景：7 个域的 openXxxTab 各自手写了一份几乎逐字相同的 ~14 字段公共块，
@@ -22,6 +23,7 @@
  * @param {object} [data.extra] 域私有字段（browserUrl / agentViewSpec / bgTermCommand …）
  */
 export function createVirtualTabDoc(data) {
+    /** @type {Record<string, any>} */
     const doc = {
         id: data.id,
         path: null,

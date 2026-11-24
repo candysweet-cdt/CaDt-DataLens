@@ -40,7 +40,8 @@ test('el：text 为 null / undefined 时不写 textContent', () => {
 });
 
 test('el：数字 0 是合法文本（不能被 falsy 判断吃掉）', () => {
-    assert.equal(el('td', '', 0).textContent, 0);
+    // 真实 DOM 的 textContent 是字符串：赋 number 由 setter 转成 '0'，dom.js 现在显式 String()（等价）。
+    assert.equal(el('td', '', 0).textContent, '0');
 });
 
 test('el：falsy 的 cls（空串）不覆盖默认 className', () => {

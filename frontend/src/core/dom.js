@@ -1,3 +1,4 @@
+// @ts-check
 // core/dom.js：最小 DOM 工厂。
 // `el(tag, cls, text)` 原本在十几个模块里各写一遍、实现逐字一致
 // （cls 为空串/falsy 时跳过、text 为 null 或 undefined 时不设置），这里只留一份。
@@ -14,6 +15,7 @@
 export function el(tag, cls, text) {
     const node = document.createElement(tag);
     if (cls) node.className = cls;
-    if (text != null) node.textContent = text;
+    // textContent 的 setter 只收 string；这里显式 String() 与原先「传 number 靠 setter 隐式转换」等价。
+    if (text != null) node.textContent = String(text);
     return node;
 }

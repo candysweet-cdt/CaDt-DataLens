@@ -1,3 +1,4 @@
+// @ts-check
 // core/json-safe.js：容错的 JSON 解析唯一入口。
 // 原先几十处各写 `try { JSON.parse(x || '[]') } catch { … }`——空串靠 `|| 默认值` 兜、
 // 坏数据靠 catch 兜，两套兜底交织。这里统一成「空输入 → fallback，解析失败 → fallback」。

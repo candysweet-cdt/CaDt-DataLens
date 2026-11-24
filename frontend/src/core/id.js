@@ -1,3 +1,4 @@
+// @ts-check
 // core/id.js：短 id 统一生成（前缀 + 36 进制时间戳 + 可选分隔符 + 随机后缀）。
 // 原先 ai / reading / settings / core 各写一遍 `Date.now().toString(36) + Math.random()...`，
 // 后缀位数与分隔符各不相同；这里把「形状」收成两个参数，业务里不要再手拼。

@@ -1,3 +1,4 @@
+// @ts-check
 // popover-position.js：锚点浮层的视口钳制定位（唯一来源）。
 // 收口此前散落各浮层的 `Math.max(m, Math.min(x, innerWidth - w - m))` + 「底部放不下翻上方」
 // 手写数学（titlebar 下拉 / 消息中心 / 模型选择器 / 提醒弹层等）。前提：浮层 position:fixed

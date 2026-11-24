@@ -4,6 +4,14 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 工程（前端类型检查落地：420 个绑定方法有类型 + 首批 core 文件开 `@ts-check`）
+
+- **绑定面类型**：`scripts/gen-backend-types.mjs` 以 `testdata/app_bindings_baseline.txt`（`*App` 方法名基线，420 条）为名单、扫 Go 源码取签名，生成 `frontend/src/types/backend.d.ts`（`export interface Backend`）。覆盖 420/420：精确 245、具名结构体记 `unknown` 175（行上方留 `@go` 原始签名注释）、歧义 0、未找到 0。`--check` 供 CI 比对，绑定面变了没重生成即红。
+- **类型门**：新增 `frontend/tsconfig.check.json`（`strict` + `noEmit` + `checkJs: false`，按文件 `// @ts-check` 开启）与 `typescript` devDependency，`npm run typecheck` 挂在 `npm test` 最前面——不进门的类型会烂掉。**对产物零影响**：类型全被擦除，`dist` 与 exe 体积不变，`typescript` 只在 devDependencies。
+- **首批 13 个 core 模块开检查**：`escape` / `dom` / `json-safe` / `id` / `readonly` / `clipboard` / `render-cache` / `notify-throttle` / `humanize` / `popover-position` / `kv-store` / `tab-kinds` / `virtual-tab-doc` 在 `strict` 下零错误。顺带被类型揪出两处写法问题：`core/dom.js` 的 `el()` 把 `string|number` 直接赋给 `textContent`（setter 只收 `string`，改为显式 `String()`，与原先隐式转换等价）；`core/notify-throttle.js` 的 `Number.isFinite(cfg.windowMs)` 不收窄类型，改为先取局部量再判（默认值与运行时口径不变）。
+- **为什么分台阶**：306 个文件 / 134,933 行、246 处测试直接 `import` `src/*.js`、`ai-panel.js` 19,474 行仍待拆分——一把换后缀会同时打断测试链与并行开发。三级台阶与待拍板项见 `docs/unfinished-plans/frontend-typescript.md`。
+- **验证**：`npm run typecheck` 零错误，`npm test` 全绿，`npm run build` 通过。
+
 ### 重构（Go 根目录结构化二期：107 → 72 个 .go，绑定壳改为服务化嵌入 + 三层下沉）
 
 - **根目录收敛**：`package main` 从 107 个 `.go` / 9149 行（84 非测试 + 23 测试）降到 49 个 / 6923 行（30 非测试 + 19 测试、非测试 4639 行）。根目录此后只有四类文件：应用核心与生命周期、宿主接线（`host_wails.go` / `host_wiring.go` / `embed_assets.go`）、窗口宿主（`window_host.go` / `window_factory.go` / `window_geometry.go` / `window_close.go` / `window_aux.go` / `window_aux_bindings.go` / `window_route.go`）、平台 glue 与 CLI（`platform_windows.go` / `platform_other.go` 由 5 对平台文件合并）。

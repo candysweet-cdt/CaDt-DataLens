@@ -1,3 +1,4 @@
+// @ts-check
 // humanize.js：给人看的「大小 / 时间」格式化唯一来源（零依赖，可放心被任意域 import）。
 // 字节数与相对时间此前散落在 settings / ai / shell / app-pages 各域，口径已漂移
 // （带不带空格、封顶到哪档、旧时间回退成什么），统一到这里。
@@ -34,7 +35,7 @@ export function formatBytes(n, opts = {}) {
 export function formatFullTime(ts) {
     const d = ts instanceof Date ? ts : new Date(Number(ts) || 0);
     if (isNaN(d.getTime())) return '—';
-    const p = (n) => String(n).padStart(2, '0');
+    const p = (/** @type {number} */ n) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
