@@ -1,7 +1,7 @@
 // ai-paste.js：AI 输入框长文本粘贴的纯函数单一来源（零 I/O、便于单测）。
 // 三档模式（off / attachment / collapse）与折叠胶囊的标记、扫描、镜像 HTML、展开。
 // 胶囊机制沿用群聊 @ 提及的「文本是唯一真源、镜像层画胶囊」方案（ai-group-ui-model.js）：
-// 正文里胶囊 = 一段标记文本 ⟦贴N⟧，镜像层按 range 渲染成彩色 span，占据字符与原文严格等宽。
+// 正文里胶囊 = 一段占位文本【📎 摘要 · 时间 #N】，镜像层按 range 渲染成彩色 span，占据字符与原文严格等宽。
 // 配套测试：test/ai/ai-paste.test.mjs。
 
 // 超过该字符数才折叠（严格大于）。与调研 codex 口径一致。
@@ -16,8 +16,16 @@ export function normalizePasteMode(value) {
     return AI_PASTE_MODES.includes(value) ? value : DEFAULT_AI_PASTE_MODE;
 }
 
-// 胶囊标记：⟦贴N⟧。全角方括号避免与正文常见方括号冲突；短小以减少排版影响。
-const MARKER_RE_SOURCE = '⟦贴(\\d+)⟧';
+// 胶囊图标：Unicode 几何符号 ▣（U+25A3，文本呈现、非 emoji）。
+// 用文本符号而非 SVG/emoji：textarea 与镜像层逐字符等宽覆盖，SVG 图标不占文本宽度会错位，
+// emoji 则可能触发字体回退导致两边宽度不一致。几何符号在同一字体里宽度稳定。
+export const PASTE_MARKER_ICON = '▣';
+
+// 胶囊标记：【▣ 摘要 · HH:mm #N】。占位文本本身就是「文本摘要 + 时间」——
+// 镜像层 span 逐字符显示它，与 textarea 里的占位严格等宽（群聊 @ 胶囊同款：文本是唯一真源）。
+// 摘要在生成时去掉所有换行符并截断，故占位永远是单行，不会破坏 textarea 行数。
+// 结尾 #N 是序号（区分多个胶囊、回查 store），正则靠它 + 时间锚定，摘要里已剔除冲突字符。
+const MARKER_RE_SOURCE = '【' + PASTE_MARKER_ICON + ' ([^】]*?) · (\\d{1,2}:\\d{2}) #(\\d+)】';
 // 每次返回新正则，避免 lastIndex 状态污染。
 export function pasteMarkerRe() {
     return new RegExp(MARKER_RE_SOURCE, 'g');
@@ -27,8 +35,28 @@ export function pasteMarkerOneRe() {
     return new RegExp('^' + MARKER_RE_SOURCE + '$');
 }
 
-export function makePasteMarker(id) {
-    return '⟦贴' + (Number(id) || 0) + '⟧';
+// 粘贴时刻的时间戳（HH:mm）。传入 Date 便于单测，缺省取当前时刻。
+export function formatPasteTime(date) {
+    const d = date instanceof Date ? date : new Date();
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+// 摘要默认最大字符数（纯文本胶囊保持紧凑，不撑宽输入框）。
+export const PASTE_SUMMARY_MAX_LEN = 12;
+
+// 摘要：取首个非空行，去掉所有换行/制表符与会冲突的标记字符，截断到 maxLen 字符。
+// 关键：结果恒为单行——换行符一旦进入占位文本就会改变 textarea 行数、令镜像层错位。
+export function pasteSummary(text, maxLen) {
+    const full = String(text == null ? '' : text);
+    const firstLine = full.split(/\r\n|\r|\n/).map((s) => s.trim()).find(Boolean) || '';
+    const cleaned = firstLine.replace(/[【】·#\t]/g, ' ').replace(/\s+/g, ' ').trim();
+    const len = Math.max(4, Math.min(40, Number(maxLen) || PASTE_SUMMARY_MAX_LEN));
+    const clipped = cleaned.length > len ? cleaned.slice(0, len) + '…' : cleaned;
+    return clipped || '长文本';
+}
+
+export function makePasteMarker(id, summary, time) {
+    return '【' + PASTE_MARKER_ICON + ' ' + pasteSummary(summary) + ' · ' + (time || '00:00') + ' #' + (Number(id) || 0) + '】';
 }
 
 // 是否达到折叠阈值。
@@ -43,7 +71,8 @@ export function scanPasteMarkers(text) {
     const out = [];
     let m;
     while ((m = re.exec(value)) !== null) {
-        out.push({id: Number(m[1]), start: m.index, end: m.index + m[0].length, marker: m[0]});
+        // 捕获组：1=摘要 2=时间 3=序号。
+        out.push({id: Number(m[3]), start: m.index, end: m.index + m[0].length, marker: m[0]});
     }
     return out;
 }
@@ -91,7 +120,7 @@ export function buildPasteMirrorHtml(text, store) {
 export function expandPasteMarkers(text, store) {
     const value = String(text == null ? '' : text);
     const usedIds = [];
-    const out = value.replace(pasteMarkerRe(), (full, idStr) => {
+    const out = value.replace(pasteMarkerRe(), (full, summary, time, idStr) => {
         const id = Number(idStr);
         if (!store || !store.has(id)) return full;
         const entry = store.get(id);

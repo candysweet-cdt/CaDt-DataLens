@@ -10,7 +10,7 @@ import {attachmentPathHint} from '../tools/ai-file-tools.js';
 import {checkRequestBudget, checkSourceBatch, DEFAULT_IMAGE_LIMITS} from '../tools/ai-image-policy.js';
 import {AI_QUOTE_KIND, quoteChipLabel, quoteCardExcerpt, quoteFullDoc} from './ai-quote.js';
 import {normalizePasteMode, shouldFoldPaste, makePasteMarker, makePasteEntry, scanPasteMarkers,
-    markerAtCursor, buildPasteMirrorHtml, expandPasteMarkers} from './ai-paste.js';
+    markerAtCursor, buildPasteMirrorHtml, expandPasteMarkers, pasteSummary, formatPasteTime} from './ai-paste.js';
 import {iconSvg} from '../../core/icons.js';
 import {dataUrlToFile} from '../../core/image-clipboard.js';
 import {createShiftDoubleTap} from '../../core/shift-double-tap.js';
@@ -223,8 +223,12 @@ export function createAIComposer(ctx) {
     function insertPasteMarker(text) {
         if (!el.input) return false;
         const id = ++pasteSeq;
-        pasteStore.set(id, makePasteEntry(text));
-        const marker = makePasteMarker(id);
+        const entry = makePasteEntry(text);
+        pasteStore.set(id, entry);
+        // 占位文本 = 摘要 + 粘贴时刻，镜像层逐字符显示它（与 textarea 严格等宽、恒单行）。
+        entry.summary = entry.summary || pasteSummary(text);
+        entry.time = entry.time || formatPasteTime();
+        const marker = makePasteMarker(id, entry.summary, entry.time);
         const start = typeof el.input.selectionStart === 'number' ? el.input.selectionStart : el.input.value.length;
         const end = typeof el.input.selectionEnd === 'number' ? el.input.selectionEnd : start;
         try {
@@ -779,18 +783,13 @@ export function createAIComposer(ctx) {
     // ev：来自输入区手势（Enter/发送按钮）时用于生成中的排队/插话/抢占分流；
     // 斜杠技能调用传 null（只排队不抢占）。排队一律 plain: true——技能调用文本以 / 开头
     // 但已是待发消息，不能再转回 handleSlashText（会死循环）。
-    function sendComposerMessage(text, ev) {
-        if (!el.input) return;
-        // 发送前把胶囊标记原位展开成全文（含用户在虚拟标签页里编辑过的版本），再走各出口。
-        const expanded = expandPasteMarkers(text, pasteStore);
-        text = expanded.text;
-        for (const id of expanded.usedIds) pasteStore.delete(id);
-        el.input.value = text;
-        resizeInput();
-        refreshPasteMirror();
-        updateSendState();
+    async function sendComposerMessage(text, ev) {
+        if (!el.input) return false;
         // 只有本会话在生成 / 压缩时才并入排队；别的会话在跑不影响本会话直接发送。
         if (syncStreamView() || compactOf((currentSession() || {}).id)) {
+            // 排队/插话/抢占由 captureComposerMessage 从输入区读原文并展开胶囊。
+            // 这里不要预先展开、也不要改写 el.input.value——否则用户会看到胶囊在入队瞬间
+            // 「变回一大段原文」（发送后输入区随即清空，展开结果根本不需要显示出来）。
             const ctrl = !!(ev && (ev.ctrlKey || ev.metaKey));
             if (ctrl && ev.shiftKey) {
                 preemptComposerMessage({plain: true});
@@ -799,11 +798,23 @@ export function createAIComposer(ctx) {
             } else {
                 enqueueComposerMessage({plain: true});
             }
-            return;
+            return true;
         }
+        // 直发：把胶囊标记原位展开成全文（含虚拟标签页编辑后的版本）交给内核。
+        // 不把展开后的全文写回输入区：起轮成功时 onStarted 会清空输入区，写回只会让用户
+        // 在这一小段 await 窗口里看到胶囊变成一大段原文（问题「发送时变回原文」的根因）。
+        const expanded = expandPasteMarkers(text, pasteStore);
         // 返回 Promise：submitFromComposer 的防重入锁要等这次异步提交落定（起轮并清空输入区）
         // 才放行下一次提交，否则同一次 Enter 的双事件仍能在 await 窗口里各起一轮。
-        return submitText(text);
+        const ok = await submitText(expanded.text);
+        // 只在起轮成功（onStarted 已清空输入区）后清理胶囊条目。失败时输入区仍留着
+        // ⟦贴N⟧ 标记，保留 store 才能让胶囊继续渲染、用户可重试，不会退化成裸标记文本。
+        if (ok) {
+            for (const id of expanded.usedIds) pasteStore.delete(id);
+            // onStarted 清空了输入区但没派发 input 事件：手动重绘一次，撤掉可能残留的胶囊镜像。
+            refreshPasteMirror();
+        }
+        return ok;
     }
 
     function handleComposerKey(e) {
