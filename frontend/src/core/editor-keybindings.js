@@ -1,3 +1,4 @@
+// @ts-check
 // editor-keybindings.js：编辑器「内部文本编辑键」的键位单一来源（显示 + 运行时共用）。
 //
 // 与 core/keybindings.js 的分工：
@@ -21,6 +22,11 @@ export const CUSTOM_EXEC = {
 
 // 每项：{id, label, aceCommand, keys:{candysweet,jetbrains,vscode}}
 // aceCommand = Ace 内建命令名（复用其 exec），或 CUSTOM_EXEC 值（自定义实现）。
+/**
+ * @typedef {{id: string, label: string, aceCommand: string, keys: Record<string, string[]>}} EditorKeyBinding
+ */
+
+/** @type {EditorKeyBinding[]} */
 export const EDITOR_KEY_BINDINGS = [
     // 复制行 / 选区：JetBrains 与默认都是 Ctrl+D（本需求核心）；VSCode 是 Ctrl+Shift+Alt+↓
     {
@@ -75,11 +81,13 @@ export const EDITOR_KEY_BINDINGS = [
     },
 ];
 
+/** @param {string} id */
 export function isValidEditorStyle(id) {
     return KEY_STYLES.some((s) => s.id === id);
 }
 
 // 某动作在某风格下的绑定列表（Ace bindKey 写法）。
+/** @param {EditorKeyBinding} binding @param {string} [style] */
 export function editorKeyListFor(binding, style = DEFAULT_KEY_STYLE) {
     if (!binding || !binding.keys) return [];
     const list = binding.keys[style];
@@ -96,6 +104,7 @@ export function editorBindingsForStyle(style = DEFAULT_KEY_STYLE) {
 }
 
 // 展示文案：Ace 写法 'Ctrl-Shift-Alt-Down' → 'Ctrl+Shift+Alt+↓'，多组合用 ' / ' 连接。
+/** @param {string} combo */
 export function formatAceKey(combo) {
     return String(combo || '')
         .replace(/-Down$/i, '+↓').replace(/-Up$/i, '+↑')
@@ -103,6 +112,7 @@ export function formatAceKey(combo) {
         .replace(/-/g, '+');
 }
 
+/** @param {string} id @param {string} [style] */
 export function getEditorShortcut(id, style = DEFAULT_KEY_STYLE) {
     const binding = EDITOR_KEY_BINDINGS.find((b) => b.id === id);
     if (!binding) return '';
@@ -110,15 +120,18 @@ export function getEditorShortcut(id, style = DEFAULT_KEY_STYLE) {
 }
 
 // 同一风格内两个动作抢同一组合 → 冲突清单（正常应为空）。供测试守卫。
+/** @param {string} [style] */
 export function findEditorStyleConflicts(style = DEFAULT_KEY_STYLE) {
+    /** @type {Map<string, string>} */
     const seen = new Map();
+    /** @type {{combo: string, ids: string[]}[]} */
     const conflicts = [];
     for (const b of EDITOR_KEY_BINDINGS) {
         for (const combo of editorKeyListFor(b, style)) {
             if (seen.has(combo)) {
                 const hit = conflicts.find((c) => c.combo === combo);
                 if (hit) hit.ids.push(b.id);
-                else conflicts.push({combo, ids: [seen.get(combo), b.id]});
+                else conflicts.push({combo, ids: [/** @type {string} */ (seen.get(combo)), b.id]});
             } else {
                 seen.set(combo, b.id);
             }
@@ -127,9 +140,11 @@ export function findEditorStyleConflicts(style = DEFAULT_KEY_STYLE) {
     return conflicts;
 }
 
+/** @param {string} id */
 export function editorStyleVariants(id) {
     const binding = EDITOR_KEY_BINDINGS.find((b) => b.id === id);
     if (!binding) return {};
+    /** @type {Record<string, string>} */
     const out = {};
     for (const s of KEY_STYLES) {
         out[s.id] = editorKeyListFor(binding, s.id).map(formatAceKey).join(' / ');

@@ -1,11 +1,16 @@
+// @ts-check
 // 行级 diff（Myers）与结构化语义 diff，零依赖。
+
+/**
+ * @typedef {{type: 'equal'|'add'|'del', text: string}} DiffOp
+ */
 
 /**
  * 计算 a / b 两份行数组的 Myers 行级 diff 操作序列。
  * 总行数超过 20000 时自动退化为 coarseDiff（公共前缀/后缀 + 中间整段替换）。
  * @param {string[]} aLines 旧文本按行切分
  * @param {string[]} bLines 新文本按行切分
- * @returns {Array<{type: 'equal'|'add'|'del', text: string}>} 操作序列
+ * @returns {DiffOp[]} 操作序列
  */
 export function diffLineOps(aLines, bLines) {
     const n = aLines.length;
@@ -15,6 +20,7 @@ export function diffLineOps(aLines, bLines) {
     const max = n + m;
     const v = new Map();
     v.set(1, 0);
+    /** @type {Map<number, number>[]} */
     const trace = [];
     for (let d = 0; d <= max; d++) {
         trace.push(new Map(v));
@@ -36,17 +42,25 @@ export function diffLineOps(aLines, bLines) {
     return coarseDiff(aLines, bLines);
 }
 
+/**
+ * @param {Map<number, number>[]} trace
+ * @param {string[]} aLines
+ * @param {string[]} bLines
+ * @param {number} steps
+ * @returns {DiffOp[]}
+ */
 function backtrack(trace, aLines, bLines, steps) {
+    /** @type {DiffOp[]} */
     const ops = [];
     let x = aLines.length;
     let y = bLines.length;
     for (let d = steps; d >= 0; d--) {
         const v = trace[d];
         const k = x - y;
-        const left = v.has(k - 1) ? v.get(k - 1) : -Infinity;
-        const right = v.has(k + 1) ? v.get(k + 1) : -Infinity;
+        const left = v.has(k - 1) ? (v.get(k - 1) ?? -Infinity) : -Infinity;
+        const right = v.has(k + 1) ? (v.get(k + 1) ?? -Infinity) : -Infinity;
         const prevK = k === -d || (k !== d && left < right) ? k + 1 : k - 1;
-        const prevX = v.has(prevK) ? v.get(prevK) : 0;
+        const prevX = v.has(prevK) ? (v.get(prevK) ?? 0) : 0;
         const prevY = prevX - prevK;
         while (x > prevX && y > prevY) {
             ops.push({type: 'equal', text: aLines[x - 1]});
@@ -68,12 +82,18 @@ function backtrack(trace, aLines, bLines, steps) {
 }
 
 // 超大文件退化为「公共前缀/后缀 + 中间整段替换」，避免 Myers 在极端输入下耗时失控
+/**
+ * @param {string[]} aLines
+ * @param {string[]} bLines
+ * @returns {DiffOp[]}
+ */
 function coarseDiff(aLines, bLines) {
     let prefix = 0;
     while (prefix < aLines.length && prefix < bLines.length && aLines[prefix] === bLines[prefix]) prefix++;
     let suffix = 0;
     while (suffix < aLines.length - prefix && suffix < bLines.length - prefix &&
         aLines[aLines.length - 1 - suffix] === bLines[bLines.length - 1 - suffix]) suffix++;
+    /** @type {DiffOp[]} */
     const ops = [];
     for (let i = 0; i < prefix; i++) ops.push({type: 'equal', text: aLines[i]});
     for (let i = prefix; i < aLines.length - suffix; i++) ops.push({type: 'del', text: aLines[i]});
@@ -94,7 +114,7 @@ export function splitDiffLines(text) {
 }
 
 /**
- * 生成 unified diff 文本（带 @@ 头，上下文 3 行），供 <pre> 直接渲染。
+ * 生成 unified diff 文本（带 hunk 头，上下文 3 行），供 pre 元素直接渲染。
  * @param {string} aText 旧文本
  * @param {string} bText 新文本
  * @param {number} [context=3] 每个 hunk 上下文行数
@@ -163,14 +183,17 @@ export function unifiedDiff(aText, bText, context = 3) {
     return {text: out.join('\n'), ops, added, removed};
 }
 
+/** @param {*} value */
 function isPlainObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** @param {*} key */
 function pathKey(key) {
     return "['" + String(key).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "']";
 }
 
+/** @param {*} value */
 function describeValue(value) {
     if (value === undefined) return '';
     try {
@@ -189,7 +212,9 @@ function describeValue(value) {
  *   path 形如 $['key'][0]；change 项含 before/after，add 只含 after，remove 只含 before
  */
 export function semanticDiff(a, b) {
+    /** @type {Array<{kind: 'add'|'remove'|'change', path: string, before?: *, after?: *}>} */
     const out = [];
+    /** @param {*} left @param {*} right @param {string} path */
     (function walk(left, right, path) {
         if (left === right) return;
         if (isPlainObject(left) && isPlainObject(right)) {

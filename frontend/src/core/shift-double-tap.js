@@ -1,3 +1,4 @@
+// @ts-check
 // shift-double-tap.js：「双击轻按」判定（单一来源，纯逻辑，无 DOM 依赖）。
 // 键位经 opts.key 参数化：默认 'Shift'（main.js 的全局搜索触发），
 // AI 输入区「双击 Esc 停止生成」用 key: 'Escape'（ai-composer.js 接线）共用同一状态机。
@@ -18,6 +19,11 @@
 export const DOUBLE_TAP_WINDOW_MS = 400;
 
 /**
+ * 判定用到的键盘事件字段子集（不依赖真实 KeyboardEvent，便于测试传普通对象）。
+ * @typedef {{key: string, isComposing?: boolean, keyCode?: number, ctrlKey?: boolean, altKey?: boolean, metaKey?: boolean, repeat?: boolean}} TapKeyEvent
+ */
+
+/**
  * 建一个「双击轻按」判定器（JetBrains 口径：两次干净 tap 且间隔极短）。
  * 状态机只保存两个时刻，无定时器；reset() 可在失焦时手动清空。
  * @param {object} [opts] 选项
@@ -31,10 +37,12 @@ export function createShiftDoubleTap({key = 'Shift', windowMs = DOUBLE_TAP_WINDO
     let pendingDownAt = 0; // >0 表示一个干净 Shift keydown 正等待自己的 keyup
     let firstTapAt = 0;    // >0 表示第一次完整 tap 的完成时刻，等待第二次配对
 
+    /** @param {TapKeyEvent} e */
     function isComposing(e) {
         return !!(e && (e.isComposing || e.keyCode === 229));
     }
 
+    /** @param {TapKeyEvent} e */
     function isCleanTapDown(e) {
         return !!e && e.key === key && !e.ctrlKey && !e.altKey && !e.metaKey &&
             !e.repeat && !isComposing(e);
@@ -46,6 +54,7 @@ export function createShiftDoubleTap({key = 'Shift', windowMs = DOUBLE_TAP_WINDO
     }
 
     // keydown：只登记候选，真正触发在 keyup。返回恒 false，保留返回值只为对称。
+    /** @param {TapKeyEvent} e */
     function onKeyDown(e) {
         if (isComposing(e)) {
             reset();
@@ -62,6 +71,7 @@ export function createShiftDoubleTap({key = 'Shift', windowMs = DOUBLE_TAP_WINDO
     }
 
     // keyup：一次完整的目标键轻按在此结算；返回 true 表示双击成立。
+    /** @param {TapKeyEvent} e */
     function onKeyUp(e) {
         if (isComposing(e)) {
             reset();

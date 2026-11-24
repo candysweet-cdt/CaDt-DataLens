@@ -1,13 +1,17 @@
+// @ts-check
 // 零依赖 JSON Schema 常用关键字校验（type/properties/items/enum/数值与长度约束/组合关键字/本地 $ref）。
 
+/** @param {*} value */
 function isPlainObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** @param {*} key */
 function pathKey(key) {
     return "['" + String(key).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "']";
 }
 
+/** @param {*} value */
 function typeOf(value) {
     if (value === null) return 'null';
     if (Array.isArray(value)) return 'array';
@@ -16,12 +20,14 @@ function typeOf(value) {
     return typeof value; // string/boolean/object
 }
 
+/** @param {*} value @param {*} type */
 function typeMatches(value, type) {
     const actual = typeOf(value);
     if (type === 'number') return actual === 'number' || actual === 'integer';
     return actual === type;
 }
 
+/** @param {*} root @param {*} ref */
 function resolvePointer(root, ref) {
     if (!ref || typeof ref !== 'string' || ref[0] !== '#') return null;
     if (ref === '#') return root;
@@ -38,6 +44,7 @@ function resolvePointer(root, ref) {
     return current;
 }
 
+/** @param {*} a @param {*} b */
 function deepEqual(a, b) {
     if (a === b) return true;
     if (typeof a !== typeof b) return false;
@@ -62,16 +69,20 @@ function deepEqual(a, b) {
  * @returns {Array<{path: string, keyword: string, message: string}>} 错误数组，path 为 JSONPath，空数组表示校验通过
  */
 export function validateJsonSchema(data, schema, options = {}) {
+    /** @type {Array<{path: string, keyword: string, message: string}>} */
     const errors = [];
+    /** @type {Record<string, any>} */
     const root = schema && typeof schema === 'object' ? schema : {};
     const maxErrors = Math.max(1, Math.min(1000, Number(options.maxErrors) || 200));
     let budget = maxErrors * 4;
 
+    /** @param {string} path @param {string} keyword @param {string} message */
     function push(path, keyword, message) {
         if (errors.length >= maxErrors) return;
         errors.push({path, keyword, message});
     }
 
+    /** @param {*} value @param {Record<string, any>} node @param {string} path @param {number} depth */
     function validate(value, node, path, depth) {
         if (!node || typeof node !== 'object') return;
         if (depth > 64) {
@@ -87,15 +98,15 @@ export function validateJsonSchema(data, schema, options = {}) {
         }
         if (node.type != null) {
             const types = Array.isArray(node.type) ? node.type : [node.type];
-            if (!types.some((type) => typeMatches(value, type))) {
+            if (!types.some((/** @type {*} */ type) => typeMatches(value, type))) {
                 push(path, 'type', '应为 ' + types.join(' / ') + '，实际为 ' + typeOf(value));
             }
         }
         if (Object.prototype.hasOwnProperty.call(node, 'const') && !deepEqual(value, node.const)) {
             push(path, 'const', '应等于 ' + JSON.stringify(node.const));
         }
-        if (Array.isArray(node.enum) && !node.enum.some((item) => deepEqual(value, item))) {
-            push(path, 'enum', '应为枚举值之一：' + node.enum.map((item) => JSON.stringify(item)).join(', '));
+        if (Array.isArray(node.enum) && !node.enum.some((/** @type {*} */ item) => deepEqual(value, item))) {
+            push(path, 'enum', '应为枚举值之一：' + node.enum.map((/** @type {*} */ item) => JSON.stringify(item)).join(', '));
         }
         if (typeof value === 'number') {
             if (node.minimum != null && value < node.minimum) push(path, 'minimum', '不能小于 ' + node.minimum);

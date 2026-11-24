@@ -1,7 +1,9 @@
+// @ts-check
 // jsonrepair.js：把常见"坏 JSON"修成可被 JSON.parse 的文本。
 // 保守策略：只做确定性损伤的修复（注释、尾逗号、单引号、智能引号、
 // 未加引号的键、NaN/Infinity、Python 风格字面量），不做启发式猜测。
 
+/** @param {string[]} fixes @param {string} name */
 function addFix(fixes, name) {
     if (!fixes.includes(name)) fixes.push(name);
 }
@@ -58,6 +60,7 @@ function stripTrailingCommas(s, fixes) {
  *   ok=true 时 text 可被 JSON.parse；ok=false 时 error 为解析错误消息；fixes 列出应用的修复名
  */
 export function repairJson(input) {
+    /** @type {string[]} */
     const fixes = [];
     let s = String(input || '');
 
@@ -182,7 +185,7 @@ export function repairJson(input) {
     try {
         JSON.parse(text);
     } catch (e) {
-        return {ok: false, error: e.message, text, fixes};
+        return {ok: false, error: e instanceof Error ? e.message : String(e), text, fixes};
     }
     return {ok: true, text, fixes};
 }

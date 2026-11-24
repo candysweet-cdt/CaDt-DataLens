@@ -1,3 +1,4 @@
+// @ts-check
 // event-scope.js：多窗口事件范围表（唯一分类来源）。
 // 与 docs/finished-plans/wails-v3-event-filtering.md §3 对齐；新增订阅必须先登记这里。
 //
@@ -74,11 +75,16 @@ export const EVENT_SCOPES = Object.freeze({
 });
 
 // scopeOf 返回事件分类，未登记的事件按 app 处理（桥会记一条调试日志提醒登记）。
+/**
+ * @param {string} name
+ * @returns {string}
+ */
 export function scopeOf(name) {
-    return EVENT_SCOPES[name] || 'app';
+    return /** @type {Record<string, string>} */ (EVENT_SCOPES)[name] || 'app';
 }
 
 // pathKey 把路径归一成可比较的小写 key（分隔符统一、去尾斜杠）。
+/** @param {string|null|undefined} p */
 export function pathKey(p) {
     return String(p == null ? '' : p)
         .replace(/\\/g, '/')
@@ -87,6 +93,10 @@ export function pathKey(p) {
 }
 
 // acceptWorkspace 判断事件载荷是否属于本窗口工作区。
+/**
+ * @param {{root?: string}|null|undefined} payload
+ * @param {string|null|undefined} workspace
+ */
 export function acceptWorkspace(payload, workspace) {
     const root = payload && payload.root;
     if (!root || !workspace) return false;

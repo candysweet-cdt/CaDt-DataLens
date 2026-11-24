@@ -1,6 +1,6 @@
 # 前端 TypeScript 渐进迁移
 
-> 2026-11-23 立。状态：**阶梯 0 与阶梯 1 已落地**（类型门已进 `npm test`，13 个 core 文件开检查），阶梯 2–3 待开工。
+> 2026-11-23 立。状态：**阶梯 0 与阶梯 1 已落地**（类型门已进 `npm test`，24 个 core 文件开检查），阶梯 2–3 待开工。
 > 结论先行：不做「306 个文件一把换后缀」，走 checkJs → 新文件 `.ts` → 按域迁移三级台阶。
 > **日常口径**：新增/修改 `core/` 纯逻辑文件时，顺手在文件首行加 `// @ts-check` 并让 `npm run -s typecheck` 保持零错误（不写 `@ts-nocheck`）。
 
@@ -67,7 +67,9 @@ npm run -s typecheck                               # frontend/ 下；tsc -p tsco
 1. `frontend/package.json` 加 devDependency `typescript` 与 `"typecheck": "tsc -p tsconfig.check.json"`（只进 node_modules，**不进 dist、不进 exe**——类型全被擦除，`dist` 仍 15 MB）。
 2. `npm test` 前置 `typecheck`（**不挂进门的类型会烂掉**）：`npm run -s typecheck && test:ai && test:ui-core && test:ui-shell && test:maven`。
 3. 新文件以后可直接写 `.ts`：`jsconfig.json` 保持 `allowJs` / `checkJs: false`，TS 从 `.js` 模块体推断类型，`.ts` 可以 import 老 `.js`——渐进迁移能成立的关键。
-4. **首批 13 个 core 文件已开 `// @ts-check` 并在 `strict` 下零错误**：`escape` / `dom` / `json-safe` / `id` / `readonly` / `clipboard` / `render-cache` / `notify-throttle` / `humanize` / `popover-position` / `kv-store` / `tab-kinds` / `virtual-tab-doc`。
+4. **已开 `// @ts-check` 的 core 文件（24 个，strict 下零错误）**：
+   - 首批 13 个：`escape` / `dom` / `json-safe` / `id` / `readonly` / `clipboard` / `render-cache` / `notify-throttle` / `humanize` / `popover-position` / `kv-store` / `tab-kinds` / `virtual-tab-doc`
+   - 第二批 11 个纯函数模块：`diff` / `jsonrepair` / `jsonschema` / `keymap` / `event-scope` / `activity-log` / `app-pages` / `shift-double-tap` / `scratch` / `editor-keybindings` / `overlay-stack`
 5. 待办：定 Node 下限（≥22.18，存量迁移后测试链才能继续裸跑 `node --test`）或给测试引 `tsx`。**这一条需要作者拍板**。
 
 开检查的顺序建议：先把**有单测的纯函数模块**开完（`formats` / `diff` / `jsonpath` / `jsonrepair` / `jsonschema` / `keymap` / `event-scope` / `activity-log` / `app-pages` / `overlay-stack`…），再碰 DOM 重、状态多的文件。每个文件的开销主要在补 JSDoc（`noImplicitAny`）与把 `object` 型参数收窄成真形状。

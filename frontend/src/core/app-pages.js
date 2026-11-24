@@ -1,3 +1,4 @@
+// @ts-check
 // app-pages.js：应用页面注册表——「可以开成内容区标签页的功能页」的单一来源。
 //
 // 「一切皆标签页」的第二族：第一族是「一个具体业务对象」（一个子代理、一条会话、一个便签面板），
@@ -46,7 +47,7 @@ export function appPageOf(id) {
 
 /**
  * 按注册表顺序分组（菜单 / 设置页目录共用同一份分组结果）。
- * @param {object} [settings] 当前设置对象（活引用即可，调用时现取值）；
+ * @param {Record<string, any>} [settings] 当前设置对象（活引用即可，调用时现取值）；
  *   传了才对带 visibleWhen 的页面做条件过滤，不传时条件页一律隐藏。
  * @returns {{group: string, pages: AppPage[]}[]}
  */

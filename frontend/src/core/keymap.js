@@ -1,3 +1,4 @@
+// @ts-check
 // keymap.js：快捷键风格的运行时（事件归一化 + 按当前风格查表分发）。
 //
 // 组合键归一化成 'Ctrl+Shift+P' 这样的串：字母 / 数字走 e.code（物理键位），
@@ -19,6 +20,7 @@ import {
 } from './keybindings.js';
 
 // 物理键位 → 组合串里的主键名（只列有专门写法的；其余走 e.key）
+/** @type {Record<string, string>} */
 const CODE_TOKENS = {
     Backquote: '`', Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
     BracketLeft: '[', BracketRight: ']', Minus: '-', Equal: '=', Semicolon: ';', Quote: "'",
@@ -54,6 +56,7 @@ export function comboFromEvent(e) {
 }
 
 // 修饰键写法（大小写不敏感；兼容常见别名与符号）
+/** @type {Record<string, string>} */
 const MODIFIER_TOKENS = {
     ctrl: 'ctrl', control: 'ctrl', '⌃': 'ctrl',
     alt: 'alt', option: 'alt', '⌥': 'alt',
@@ -61,6 +64,7 @@ const MODIFIER_TOKENS = {
     meta: 'meta', win: 'meta', cmd: 'meta', command: 'meta', '⌘': 'meta',
 };
 
+/** @type {Record<string, {key: string, code: string}>} */
 const NAMED_KEYS = {
     enter: {key: 'Enter', code: 'Enter'}, return: {key: 'Enter', code: 'Enter'},
     esc: {key: 'Escape', code: 'Escape'}, escape: {key: 'Escape', code: 'Escape'},
@@ -77,6 +81,7 @@ const NAMED_KEYS = {
     right: {key: 'ArrowRight', code: 'ArrowRight'}, arrowright: {key: 'ArrowRight', code: 'ArrowRight'},
 };
 
+/** @type {Record<string, string>} */
 const TOKEN_TO_CODE = Object.fromEntries(Object.entries(CODE_TOKENS).map(([code, token]) => [token, code]));
 
 /**
@@ -91,7 +96,7 @@ const TOKEN_TO_CODE = Object.fromEntries(Object.entries(CODE_TOKENS).map(([code,
 export function comboSpecFromText(text) {
     const raw = String(text == null ? '' : text).trim();
     if (!raw) return {ok: false, error: '按键为空'};
-    const fail = (error) => ({ok: false, error});
+    const fail = (/** @type {string} */ error) => ({ok: false, error});
     let tokens = raw.split('+').map((part) => part.trim());
     let main = '';
     if (tokens.length >= 3 && tokens[tokens.length - 1] === '' && tokens[tokens.length - 2] === '') {
@@ -102,13 +107,13 @@ export function comboSpecFromText(text) {
         main = tokens.pop() || '';
         if (!main) return fail('组合键格式不对：' + raw + '（多余的 +）');
     }
-    const modifiers = {ctrl: false, alt: false, shift: false, meta: false};
+    const modifiers = /** @type {{ctrl: boolean, alt: boolean, shift: boolean, meta: boolean}} */ ({ctrl: false, alt: false, shift: false, meta: false});
     for (const token of tokens) {
         const modifier = MODIFIER_TOKENS[token.toLowerCase()];
         if (!modifier) {
             return fail('不认识的修饰键「' + token + '」（可用 Ctrl / Alt / Shift / Meta）');
         }
-        modifiers[modifier] = true;
+        modifiers[/** @type {'ctrl'|'alt'|'shift'|'meta'} */ (modifier)] = true;
     }
     const lower = main.toLowerCase();
     if (MODIFIER_TOKENS[lower]) {
@@ -147,6 +152,9 @@ export function comboSpecFromText(text) {
     return {ok: true, key: spec.key, code: spec.code, modifiers, combo: parts.join('+')};
 }
 
+/**
+ * @param {{bindings?: any[], styles?: any[], style?: string, onChange?: (id: string) => void}} [options]
+ */
 export function createKeymap(options = {}) {
     const bindings = options.bindings || KEY_BINDINGS;
     const styles = options.styles || KEY_STYLES;
@@ -155,6 +163,7 @@ export function createKeymap(options = {}) {
     let index = new Map();     // 组合串 → 动作 id
     let combos = new Map();    // 动作 id → Set(组合串)
     let specials = new Map();  // 动作 id → Set(特殊触发)
+    /** @type {Set<(id: string) => void>} */
     const listeners = new Set();
 
     function build() {
@@ -182,6 +191,7 @@ export function createKeymap(options = {}) {
         get style() { return style; },
         get styles() { return styles.map((s) => s.id); },
         // 切风格：重建索引 + 通知调用方（文案表要跟着重绘）。
+        /** @param {*} next */
         setStyle(next) {
             const id = String(next || '');
             if (!isValidKeyStyleId(id)) return false;
@@ -195,24 +205,30 @@ export function createKeymap(options = {}) {
             return true;
         },
         // 订阅风格变化（设置页据此重绘快捷键文案表；main.js 启动时按存档切换也会触发）。
+        /** @param {(id: string) => void} fn */
         subscribe(fn) {
             if (typeof fn !== 'function') return () => {};
             listeners.add(fn);
             return () => listeners.delete(fn);
         },
+        /** @param {KeyboardEvent} e */
         combo(e) { return comboFromEvent(e); },
         // 该组合是否触发这个动作（多组合：命中任一项即为真）。
+        /** @param {string} combo @param {string} id */
         is(combo, id) {
             const set = combos.get(id);
             return !!set && set.has(combo);
         },
         // 该组合对应哪个动作（先到先得；风格内已保证不冲突）。
+        /** @param {string} combo */
         match(combo) { return index.get(combo) || null; },
+        /** @param {string} id */
         combosFor(id) {
             const set = combos.get(id);
             return set ? [...set] : [];
         },
         // 特殊触发（如双击 Shift）在当前风格是否生效。
+        /** @param {string} id @param {string} token */
         hasSpecial(id, token) {
             const set = specials.get(id);
             return !!set && set.has(token);
