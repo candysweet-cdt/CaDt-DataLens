@@ -437,7 +437,8 @@ function openPluginEntryDialog(driver, existing) {
 }
 
 // 新建连接入口：单个按钮 + 弹出菜单选类型（窄宽度不撑横滚条）。
-// 插件驱动：单个直接列一项，多个收进子菜单；无注册驱动时提示安装途径。
+// 插件驱动：单个直接列一项，多个收进子菜单；菜单最底部另给「插件市场」直达入口
+// （没有驱动时就是安装途径，已有驱动时是「找更多驱动」）。
 function openCreateMenu(anchorRect) {
     const items = [
         {label: '新建 SQLite 数据库…', icon: 'plus', action: () => addSqliteNew()},
@@ -463,6 +464,14 @@ function openCreateMenu(anchorRect) {
             })),
         });
     }
+    // 直达设置 → 插件 → 插件市场，并预填 dataset 关键词（数据库驱动都在这个关键词下）。
+    // openSettings 的第二参数是插件市场搜索预设，见 settings-ui.js 的 openSettings。
+    items.push({sep: true});
+    items.push({
+        label: '插件市场：数据库驱动…',
+        icon: 'download',
+        action: () => deps.openSettings('plugins', 'dataset'),
+    });
     deps.ctxMenu.open(items, anchorRect.left, anchorRect.bottom + 2);
 }
 
