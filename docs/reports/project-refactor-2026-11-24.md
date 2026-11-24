@@ -5,7 +5,8 @@
 > | 章节 | 范围 | 负责人 | 状态 |
 > | --- | --- | --- | --- |
 > | [第一部分：后端（Go）结构化](#第一部分后端go结构化) | 根目录 `package main` + `internal/` 分层 | 后端会话 | ✅ 已实施并提交 |
-> | [第二部分：前端拆分与 TypeScript 迁移](#第二部分前端拆分与-typescript-迁移) | `frontend/src` 按域拆分 + TS 渐进迁移 | 前端会话 | ⏳ 由前端会话填写 |
+> | [2A：前端按域拆分](#2a前端按域拆分) | `frontend/src/ai` 按域归位 + `main.js`/`ai-panel.js` 拆叶子块 | 前端拆分会话 | ✅ 已实施并提交（4 提交） |
+| [2B：TypeScript 渐进迁移](#2btypescript-渐进迁移) | TS 阶梯 0–3 | TS 迁移会话 | ⏳ 阶梯 0 已落地，由 TS 会话填写 |
 >
 > 两章独立提交、独立验证。后端线全程**前端零改动、绑定面零变化**；前端线的方案见
 > `docs/unfinished-plans/frontend-split-phase4.md` 与 `docs/unfinished-plans/frontend-typescript.md`。
@@ -152,13 +153,117 @@ ce55d18  docs: 同步结构化的规范与方案记录               4 files, +1
 
 ---
 
-# 第二部分：前端拆分与 TypeScript 迁移
+# 2A：前端按域拆分
 
-> **占位**：本部分由前端并行会话填写。该线的工作独立于后端重构，后端线全程未改动 `frontend/` 下任何文件。
+> 本线独立于后端重构：后端线全程未改 `frontend/`，本线也未碰 Go 文件。两条线的提交严格按文件清单 `git add`，互不卷入。方案见 `docs/unfinished-plans/frontend-split-phase4.md`。
+
+## A1. 结论先行
+
+`frontend/src/ai/` 从 **117 个平铺文件**收敛为 **10 个域子目录 + 根目录 1 个组合根**（`ai-panel.js`）；`test/ai/` 的 127 个测试镜像拆到对应子目录。随后从 `main.js` / `ai-panel.js` 拆出 5 个内聚子模块。4 个提交，全程：
+
+- **纯结构改动**：函数体逐字搬移，用户可见行为零变化；
+- **全绿**：每批 `npm test` 全量 2652 项 + `npm run build`；
+- **依赖图 0 环**：迁移前后用一次性脚本核对，无悬空 import。
+
+## A2. 为什么要做
+
+`ai/` 平铺 117 个 `ai-*.js`、`ai-panel.js` 达 1.1 万行（3000 行红线的 6.5 倍），是历次并行会话**频繁撞文件**的重灾区。实测把债分成三类：
+
+| 债 | 规模 | 本质 |
+| --- | --- | --- |
+| 目录平铺 | 117 文件 | 无域分组，任何改动都散落在一层 |
+| 测试源码锚定 | 35 个测试读 `ai-panel.js` 源码文本 | 拆函数必须同步改测试，否则静默红 |
+| 组合根超线 | ai-panel 19636 行 / main 7688 行 | 39 个域已拆成兄弟工厂，剩下是高度耦合的调度核心 |
+
+## A3. 实施批次
+
+| 批 | 内容 | 结果 |
+| --- | --- | --- |
+| 阶段一 | **ai/ 全量归位**：116 文件按 agent/chat/core/gen/group/security/session/settings/tools/usage 十域归位，`ai-panel.js` 留根；127 测试镜像拆到 `test/ai/<域>/`，7 个留根 | 259 文件，+937 −884；全仓相对路径（import / read() / new URL() / 动态 import / 断言正则 / 护栏裸路径）按新旧目录重算 |
+| M1 | `main.js` 的 5 类辅助窗启动器 → `shell/aux-window-modes.js`（~250 行） | `auxWindowKind` 顶层 await 留组合根 |
+| M2 | 5 个书签 app_control case → `editor/bookmark-actions.js`（~93 行） | main.js 净减 62 行 |
+| P2 | `buildApiMessages`（195 行）→ `ai/chat/ai-context-estimate.js` | 4 个输出状态留主闭包经 setter 写回；测试切片改读新模块 |
+| M3+P3 | 插件导入器 → `shell/plugin-importer.js`（118 行）；内容视图切换（5 状态 + 4 函数）→ `ai/group/ai-group-bridge.js`（88 行） | 主文件引用改走 getter |
+
+**P1 跳过**（用户裁定）：调研发现落盘机 `createAIConversationLog` 早已在 `ai-session-disk.js`，`ai-panel.js` 剩余的会话日志只是薄别名 + 诊断 UI（注入面 20+ 符号），强拆违反「注入面 >15 不搬」红线且收益极小。
+
+## A4. 关键技术点
+
+### A4.1 相对路径重算不是「加个目录前缀」那么简单
+
+文件移入子目录后，所有相对路径层级都要变：`./ai-xxx.js` → `../core/ai-xxx.js`、`../../src/ai/xxx` → `../../../src/ai/<域>/xxx`。迁移脚本按**新旧目录算 `path.relative`** 重写每类引用点（import / read() / new URL() / 动态 import / 断言正则 / 护栏裸路径），而不是简单插字符串。踩过的坑：留根测试的层级、测试里 `read('../../' + rel)` 自带基准、断言字符串被误改、动态 import 变量路径——都靠全量测试兜住并逐个修复。
+
+### A4.2 测试锚点必须跟着一起迁
+
+35 个测试用 `read('ai/ai-panel.js')` + 正则切片断言源码文本。拆 P2 时把 `ai-turn-steer-wiring.test.mjs` 的切片改读新模块——**只搬函数不改测试 = 静默红**。这是"并行会话撞文件"的真正根源：不是文件大，是测试锚定源码文本。
+
+### A4.3 无 export 顶层脚本的护栏误报
+
+`module-scope.test.mjs` 靠「宿主顶层符号」扫描裸用，但 `main.js` 是无 export 顶层脚本，deps 对象的 getter 键（`get flash()`）会被误判成裸用宿主同名符号。按方案预案改用 `.cadt/tmp-*` 一次性静态扫描，**并做对照验证**（注入一个已知裸用 bug 确认扫描能抓到），不往 HOSTS 里硬塞 main.js。
+
+### A4.4 状态留主闭包，只搬函数体
+
+P2 的 4 个输出状态被 8+ 处读取，P3 的 5 个视图状态被 return 面读取——整包搬会大改所有读取点。做法是**状态留主闭包，函数经 deps getter/setter 读写**。这既符合「导出可变 let 状态活引用」的约定，也把注入面压到 6 项以内。
+
+## A5. 实测数据
+
+| 指标 | 起点 | 终点 |
+| --- | --- | --- |
+| `src/ai/` 顶层文件 | 117 | **1**（`ai-panel.js`）+ 10 域目录 |
+| `test/ai/` 顶层测试 | 127 | **7**（组合根/跨多域）+ 10 域目录 |
+| `ai-panel.js` 行数 | 19636 | **19474**（P2 −190、P3 −62；大头仍锁死） |
+| `main.js` 行数 | 7688 | **7307**（M1/M2/M3 累计 −380） |
+| 内部依赖边 / 环 | 260 / 0 | 迁移后复核仍 0 环 |
+| `npm test` | — | **2652 项全绿**（每批） |
+| 用户可见行为 | — | **零变化** |
+
+## A6. 验证
+
+| 项 | 结果 |
+| --- | --- |
+| `npm test`（每批） | ✅ 2652 项全绿 |
+| `npm run build`（每批） | ✅ 成功（仅既有 chunk 体积警告） |
+| 迁移前后依赖图脚本 | ✅ 0 环、无悬空 import |
+| M1/M2/M3/P2/P3 deps 静态扫描 | ✅ 含对照验证（注入已知 bug 确认能抓到） |
+| 运行态冒烟（便签独立窗） | ✅ 开窗/关窗正常、无运行时错误；内容空白系数据原因（未打开工作区 + 全局便签为空），非回归 |
+
+## A7. 提交记录
+
+```
+133dd23  refactor(frontend): AI 源码按域归位并拆出辅助窗模块   259 files, +937 −884
+c691a98  refactor(frontend): 拆出书签动作模块                  4 files, +119 −72
+db05fd3  refactor(frontend): 拆出上下文组装模块                5 files, +238 −207
+224cc70  refactor(frontend): 拆出插件导入器与群聊视图桥        6 files, +244 −196
+```
+
+## A8. 停止线：剩下为什么不拆
+
+用括号配对精确重算后，`main.js` 129 个顶层函数只有 4 个超 100 行：`runAppAction`（1013，app_control 分发枢纽，M7 文档判定"爆炸半径最大"）、`initAIPanel`（517，被 11 处调用）、`menuItems`（273，菜单注册表）、`saveDoc`（146）。`ai-panel.js` 剩下的是 `executeToolInner`（~2000）、流式核心（~1800）、初始化（~830）——与主闭包深度耦合，读写 30+ 状态，且被 35 个测试锚定。
+
+| 类别 | 理由 |
+| --- | --- |
+| 组合根调度逻辑（runAppAction / initAIPanel / executeToolInner / 流式核心） | 注入面 >15，硬拆引入循环依赖，违反 AGENTS.md 红线 |
+| 菜单/事件注册表（menuItems / 全局监听块） | 本质是组合根接线，下沉收益低风险高 |
+| 表驱动常量（`defaultSettings` 620 行） | 豁免类，不是技术债 |
+
+**判断原则：组合根行数超标是固有属性，不是"没拆干净"。** 39 个域已拆成兄弟工厂，继续拆剩下部分只会制造接线混乱。曾误判 `defaultFormatSettings`（620 行）为可拆纯函数，精确重算后实为 7 行——体量统计必须按真实函数体边界，不能把紧随的顶层常量算进去。
+
+## A9. 经验教训
+
+1. **依赖图先行**：0 环是目录重组的许可证；先跑脚本再动手，比拆到一半发现环强得多。
+2. **路径重写要算层级**：`path.relative` 重算新旧目录，别用字符串拼接；测试里的 `read()` 包装、断言字符串、动态 import 变量都是隐藏引用点。
+3. **测试锚点是真债**：35 个测试锚定源码文本，拆函数必须同步迁测试——这比拆文件本身更费时，也更关键。
+4. **对照验证不可省**：一次性扫描脚本必须注入已知 bug 证明它能抓到，否则可能是一直返回绿的假守卫。
+5. **克制**：状态留闭包 + 函数薄转发，比整包搬迁安全；注入面 >15 就不搬。文件行数不是 KPI，职责边界才是。
+
+---
+
+# 2B：TypeScript 渐进迁移
+
+> **占位**：本部分由 TS 迁移并行会话填写。该线独立于前端拆分线，拆分线全程未碰 `frontend/src/types/` 等 TS 文件。
 >
-> 已知背景（摘自前端会话自己的文档，供衔接参考，非本节结论）：
-> - 按域拆分方案：`docs/unfinished-plans/frontend-split-phase4.md`
-> - TypeScript 渐进迁移方案：`docs/unfinished-plans/frontend-typescript.md`（阶梯 0 已落地）
-> - 该线的未提交改动：`frontend/src/types/`、`frontend/tsconfig.types.json`、`scripts/gen-backend-types.mjs`、`docs/unfinished-plans/frontend-typescript.md`
+> 已知背景（摘自 TS 会话自己的文档，供衔接参考，非本节结论）：
+> - 方案：`docs/unfinished-plans/frontend-typescript.md`（阶梯 0 已落地，阶梯 1–3 待开工）
+> - 该线未提交改动：`frontend/src/types/`、`frontend/tsconfig.types.json`、`scripts/gen-backend-types.mjs`、`docs/unfinished-plans/frontend-typescript.md`
 >
-> 请前端会话补充：目标与动机、阶梯/批次、实测数据、关键技术点、验证结果、提交记录、停止线与经验教训。
+> 请 TS 会话补充：目标与动机、阶梯 0–3 的实施情况、实测数据、关键技术点、验证结果、提交记录、停止线与经验教训。
