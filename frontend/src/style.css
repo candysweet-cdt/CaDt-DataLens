@@ -2702,6 +2702,24 @@ aside[data-sidebar-view="app-pages"] #app-pages-panel { display: flex; flex: 1; 
 }
 .ai-session-group-more svg { width: 14px; height: 14px; display: block; }
 .ai-session-group-more:hover { background: var(--hover); color: var(--text); }
+/* 工作区内的自定义子分组头：比工作区头更弱、缩进更深（tag 图标 + 名称 + 条数） */
+.ai-session-subgroup-head {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    margin-top: 2px;
+    padding: 3px 10px 2px 18px;
+    color: var(--muted);
+    font: inherit;
+    font-size: 10px;
+    font-weight: 500;
+    text-align: left;
+}
+.ai-session-subgroup-icon { flex: none; width: 11px; height: 11px; display: grid; place-items: center; color: var(--muted); }
+.ai-session-subgroup-icon svg { width: 11px; height: 11px; display: block; }
+.ai-session-subgroup-name { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.ai-session-subgroup-count { flex: none; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 /* 会话条目右侧：未悬浮显示状态（运行中 / 待确认 / 已完成未查看），悬浮换成「⋯」会话操作 */
 .ai-session-side {
     flex: none;
@@ -7814,23 +7832,26 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
-/* 彩色胶囊：占据的字符与标记文本严格一致（不改排版）；不透明底盖住 textarea 原生文字 */
+/* 彩色胶囊：占据的字符与标记文本严格一致（不改排版）；不透明底盖住 textarea 原生文字。
+   柔和玻璃质感：低饱和底色 + 细描边，避免大面积实色渐变在深色输入框里过于扎眼。 */
 .ai-paste-pill {
     pointer-events: auto;
     cursor: pointer;
-    border-radius: 5px;
-    padding: 1px 3px;
-    margin: 0 -3px;
-    background: linear-gradient(135deg,
-        color-mix(in srgb, var(--accent) 88%, var(--bg)),
-        color-mix(in srgb, var(--accent) 68%, var(--bg)));
-    color: var(--on-accent, #fff);
+    border-radius: 6px;
+    padding: 1px 4px;
+    margin: 0 -4px;
+    background: color-mix(in srgb, var(--accent) 20%, var(--panel));
+    color: var(--accent);
     font-weight: 600;
-    box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 45%, transparent),
-        inset 0 0 0 1px color-mix(in srgb, var(--on-accent, #fff) 22%, transparent);
-    white-space: nowrap;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 38%, transparent);
+    /* 不设 nowrap：占位文本较长，需随镜像层的 pre-wrap / overflow-wrap:anywhere 一起折行，
+       否则 textarea 折行而胶囊不折 → 错位（群聊 .gc-pill 同款约束）。 */
+    transition: background .12s ease, box-shadow .12s ease;
 }
-.ai-paste-pill:hover { filter: brightness(1.12); }
+.ai-paste-pill:hover {
+    background: color-mix(in srgb, var(--accent) 30%, var(--panel));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 58%, transparent);
+}
 .ai-composer-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .ai-hint {
     min-width: 0;
@@ -7897,6 +7918,49 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
     mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
 }
+/* composer 状态栏额度胶囊（外显开启后）：窗口短名 + 圆环进度 + 数值，点击出详情弹层 */
+.ai-quota-pill {
+    --quota-pct: 0;
+    --quota-tone: var(--accent);
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px 2px 5px;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: var(--panel2);
+    color: var(--text);
+    font: inherit;
+    font-size: 10.5px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.ai-quota-pill.hidden { display: none; }
+.ai-quota-pill:hover { border-color: color-mix(in srgb, var(--quota-tone) 55%, var(--border)); background: var(--hover); }
+.ai-quota-pill-ring {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: conic-gradient(var(--quota-tone) calc(var(--quota-pct) * 1%), color-mix(in srgb, var(--border) 65%, transparent) 0);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+}
+/* 余额型：不画进度环，显示一个中性小点 */
+.ai-quota-pill.flat .ai-quota-pill-ring {
+    background: var(--muted);
+    -webkit-mask: none;
+    mask: none;
+    width: 6px;
+    height: 6px;
+    margin: 3px;
+}
+.ai-quota-pill-text { font-variant-numeric: tabular-nums; font-weight: 600; }
+.ai-quota-pill.pending .ai-quota-pill-text { color: var(--muted); font-weight: 400; }
+.ai-quota-pill.tone-normal .ai-quota-pill-text { color: var(--green); }
+.ai-quota-pill.tone-warning .ai-quota-pill-text { color: var(--warn); }
+.ai-quota-pill.tone-danger .ai-quota-pill-text { color: var(--red); }
 .ai-ctx-pop {
     position: absolute;
     right: 0;
@@ -9900,45 +9964,137 @@ body.console-only #app > :not(#dialog-mask) { display: none !important; }
 .ai-model-list-pop-count { color: var(--muted); font-size: 11px; }
 
 /* 用量查询弹层 */
+/* 用量详情弹层（账号卡余额行 / composer 胶囊共用）：标题栏 + 每档行卡（圆环 + 进度条 + 倒计时）+ 底部栏 */
 .ai-usage-pop {
     position: fixed;
     z-index: 260;
     background: var(--panel2);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 10px 30px var(--shadow-strong);
+    border-radius: 12px;
+    box-shadow: 0 12px 40px var(--shadow-strong);
+    overflow: hidden;
 }
 .ai-usage-pop-head {
     display: flex;
     align-items: center;
-    gap: 7px;
-    padding: 9px 12px;
+    gap: 8px;
+    padding: 10px 13px;
     border-bottom: 1px solid var(--border);
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 600;
     color: var(--text);
 }
-.ai-usage-pop-head > span:first-of-type { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.ai-usage-pop-close { border: none; background: none; color: var(--muted); font-size: 15px; cursor: pointer; line-height: 1; }
-.ai-usage-pop-close:hover { color: var(--text); }
-.ai-usage-pop-body { padding: 2px 14px 10px; display: flex; flex-direction: column; }
-/* 每条额度 = 一张小行卡：主行（档名 + 右对齐数值）+ 第二行灰色明细；条目间细分隔线 */
-.ai-usage-pop-item { padding: 8px 0; border-top: 1px solid color-mix(in srgb, var(--border) 66%, transparent); }
-.ai-usage-pop-item:first-child { border-top: none; }
+.ai-usage-pop-icon { flex: none; display: inline-flex; color: var(--accent); }
+.ai-usage-pop-icon svg { width: 14px; height: 14px; display: block; }
+.ai-usage-pop-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-usage-pop-age { flex: none; color: var(--muted); font-size: 10.5px; font-weight: 400; }
+.ai-usage-pop-close {
+    flex: none; border: none; background: none; color: var(--muted);
+    cursor: pointer; line-height: 1; display: inline-flex; padding: 2px; border-radius: 4px;
+}
+.ai-usage-pop-close svg { width: 14px; height: 14px; display: block; }
+.ai-usage-pop-close:hover { color: var(--text); background: var(--hover); }
+.ai-usage-pop-body { padding: 4px 13px 6px; display: flex; flex-direction: column; }
+/* 每档 = 左侧圆环 + 右侧（主行 + 进度条 + 明细），条目间细分隔线 */
+.ai-usage-pop-item {
+    --ring-tone: var(--green);
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 10px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.ai-usage-pop-item:last-child { border-bottom: none; }
+.ai-usage-pop-item.invalid { opacity: .75; }
+.ai-usage-pop-ring {
+    --ring-pct: 0;
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: conic-gradient(var(--ring-tone) calc(var(--ring-pct) * 1%), color-mix(in srgb, var(--border) 55%, transparent) 0);
+    position: relative;
+}
+/* 圆环中心镂空：用内层圆盖住，露出环 */
+.ai-usage-pop-ring-inner {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--panel2);
+    display: grid;
+    place-items: center;
+    font-size: 9px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--ring-tone, var(--green));
+}
+/* tone 类挂在 ring 上：conic-gradient 与中心文字共用同一色，变量从父级继承给 inner */
+.ai-usage-pop-ring.tone-normal { --ring-tone: var(--green); }
+.ai-usage-pop-ring.tone-warning { --ring-tone: var(--warn); }
+.ai-usage-pop-ring.tone-danger { --ring-tone: var(--red); }
+/* 余额型：无进度环，画一个中性图标块 */
+.ai-usage-pop-ring.flat {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+}
+.ai-usage-pop-ring.flat svg { width: 15px; height: 15px; display: block; }
+.ai-usage-pop-main { flex: 1; min-width: 0; }
 .ai-usage-pop-row {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 14px;
+    gap: 12px;
     color: var(--muted);
     font-size: 12px;
     line-height: 1.35;
 }
 .ai-usage-pop-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-usage-pop-value { flex: none; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
-.ai-usage-pop-note { margin-top: 2px; color: var(--muted); font-size: 10.5px; line-height: 1.45; overflow-wrap: anywhere; }
-.ai-usage-pop-error { color: var(--red, #e5534b); font-size: 12px; padding: 4px 0; }
+.ai-usage-pop-bar {
+    height: 5px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--border) 55%, transparent);
+    margin-top: 6px;
+    overflow: hidden;
+}
+.ai-usage-pop-bar i { display: block; height: 100%; border-radius: 3px; }
+.tone-bg-normal { background: var(--green); }
+.tone-bg-warning { background: var(--warn); }
+.tone-bg-danger { background: var(--red); }
+.ai-usage-pop-note { margin-top: 5px; color: var(--muted); font-size: 10.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.ai-usage-pop-error {
+    display: flex; align-items: center; gap: 7px;
+    color: var(--red, #e5534b); font-size: 12px; padding: 6px 0;
+}
+.ai-usage-pop-error svg { width: 14px; height: 14px; flex: none; }
+.ai-usage-pop-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 13px;
+    border-top: 1px solid var(--border);
+    font-size: 10.5px;
+    color: var(--muted);
+}
+.ai-usage-pop-refresh {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+    font-size: 10.5px;
+    cursor: pointer;
+}
+.ai-usage-pop-refresh svg { width: 12px; height: 12px; }
+.ai-usage-pop-refresh:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
 
 /* 账号额度外显：品牌图标瓦片 + 卡片余额行（只在 usage.enabled 时渲染） */
 .ai-picon-slot { flex: none; display: inline-flex; }
