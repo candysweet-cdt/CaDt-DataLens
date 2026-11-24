@@ -6,7 +6,7 @@
 > | --- | --- | --- | --- |
 > | [第一部分：后端（Go）结构化](#第一部分后端go结构化) | 根目录 `package main` + `internal/` 分层 | 后端会话 | ✅ 已实施并提交 |
 > | [2A：前端按域拆分](#2a前端按域拆分) | `frontend/src/ai` 按域归位 + `main.js`/`ai-panel.js` 拆叶子块 | 前端拆分会话 | ✅ 已实施并提交（4 提交） |
-| [2B：TypeScript 渐进迁移](#2btypescript-渐进迁移) | TS 阶梯 0–3 | TS 迁移会话 | ⏳ 阶梯 0 已落地，由 TS 会话填写 |
+| [2B：TypeScript 渐进迁移](#2btypescript-渐进迁移) | TS 阶梯 0–1（类型门 + 24 个 core 文件） | TS 会话 | ✅ 已实施并提交（3 提交） |
 >
 > 两章独立提交、独立验证。后端线全程**前端零改动、绑定面零变化**；前端线的方案见
 > `docs/unfinished-plans/frontend-split-phase4.md` 与 `docs/unfinished-plans/frontend-typescript.md`。
@@ -260,10 +260,121 @@ db05fd3  refactor(frontend): 拆出上下文组装模块                5 files,
 
 # 2B：TypeScript 渐进迁移
 
-> **占位**：本部分由 TS 迁移并行会话填写。该线独立于前端拆分线，拆分线全程未碰 `frontend/src/types/` 等 TS 文件。
->
-> 已知背景（摘自 TS 会话自己的文档，供衔接参考，非本节结论）：
-> - 方案：`docs/unfinished-plans/frontend-typescript.md`（阶梯 0 已落地，阶梯 1–3 待开工）
-> - 该线未提交改动：`frontend/src/types/`、`frontend/tsconfig.types.json`、`scripts/gen-backend-types.mjs`、`docs/unfinished-plans/frontend-typescript.md`
->
-> 请 TS 会话补充：目标与动机、阶梯 0–3 的实施情况、实测数据、关键技术点、验证结果、提交记录、停止线与经验教训。
+> 本线独立于前端拆分线（2A）与后端结构化线（第一部分）：不换任何文件后缀、不改函数体，
+> 只做「加类型 + 把类型门接进测试」。3 个提交全程 `npm test` 2652 项全绿、`npm run build` 通过，
+> 产物 `dist` 仍 15 MB（类型全在构建期擦除）。方案与决议见 `docs/unfinished-plans/frontend-typescript.md`。
+
+## B1. 结论先行
+
+给前端装上一道**类型门**，但不做「306 个文件一把换后缀」。三步：
+
+1. **绑定面有类型**：`scripts/gen-backend-types.mjs` 从绑定基线 + Go 源码生成 `backend.d.ts`，420 个 Wails 绑定方法全部有签名（精确 263 / unknown 157）；
+2. **类型门进 CI 链**：`tsconfig.check.json` + `npm run typecheck` 挂在 `npm test` 最前面，`rebuild-exe.ps1` 的测试门再加一道 `--check` 防绑定面漂移；
+3. **24 个 core 文件开 `@ts-check`**：`strict` 下零错误，历史上那 10 条 `ReferenceError` / `is not a function` 类事故从此在编译期被拦。
+
+**关键取舍**：换后缀暂缓，`checkJs` 作为当前终态。理由见 B8。
+
+## B2. 为什么要做（收益有事故记录佐证）
+
+`CHANGELOG.md` 里能数出 **10 条** `ReferenceError` / `is not a function` 类事故，全是 TS 编译期能报的：
+
+- 接线漏定义 `hideHtmlPreview` → 应用启动即崩、窗口起不来（CHANGELOG:1561）
+- `explorer-ops.js` 裸写 `newFileTypeMenuItems(...)`（真身在 `main.js`）→ 右键菜单打不开（:2286）
+- `aiReferenceFileMenuItems` 裸引用（:2514）、`oo.render is not a function`（:2568）、git-graph 缺 `kvGetJson` 导入（commit 779e5d7）
+- 图标键漏登记 → 按钮静默渲染为空、测试全绿也看不见（只能靠护栏后补）
+
+第二类是 `deps` 的 **576 个去重键** + `settings` 的 117 个键——接口化后少写一个 getter 就是编译错误，而非运行期 undefined。
+
+## B3. 现状实测（动手前）
+
+| 指标 | 数值 |
+| --- | --- |
+| `src` JS | **306 文件 / 134,933 行**（ai 117、core 48、shell 32、editor 29…） |
+| 文件规模 | >3000 行 2 个（`ai-panel.js` 19,474、`mock-backend.js` 4,501）、1500–3000 行 7、600–1500 行 45、<600 行 252 |
+| 测试 | 40,749 行 `.mjs`，**246 处直接 `import '../../src/*.js'`**，`node --test` 裸跑无转译 |
+| 存量类型 | 36 文件 / 228 个 JSDoc 标签 ≈ 0；`jsconfig.json` 是 `checkJs: false`，全仓无 `@ts-check` |
+| 后端绑定 | Go `*App` 方法 **420 个**，前端 1054 处 `backend.XXX` 调用，全走 `Call.ByName` Proxy，无任何生成类型 |
+
+三条硬成本决定了不能一把转：① 改后缀会打断 246 处测试 import 与 5 个按 `.js` 扫描的护栏；② 类型面工作量在接口设计而非改名；③ 当时前后端两线正在并行重构，大范围改名会搅烂在飞 diff。
+
+## B4. 实施批次
+
+| 批 | 内容 | 结果 |
+| --- | --- | --- |
+| 阶梯 0 | **绑定类型生成器 + 产物**：`gen-backend-types.mjs` 以 `testdata/app_bindings_baseline.txt`（420 条）为名单、扫 Go 源码取签名，生成 `backend.d.ts` | 420/420 有签名；新增独立 `tsconfig.check.json`（`strict` + `noEmit` + `checkJs:false`），`jsconfig.json` 不动 |
+| 阶梯 1a | **类型门接进测试**：`package.json` 加 `typescript@^5.9.3` devDependency + `typecheck` 脚本，`npm test` 前置 `typecheck` | 首批 13 个 core 文件开 `@ts-check`，顺带揪出 2 处真问题（见 B5.1） |
+| 阶梯 1b | **再开 11 个纯函数模块** | `diff` / `jsonrepair` / `jsonschema` / `keymap` / `event-scope` / `activity-log` / `app-pages` / `shift-double-tap` / `scratch` / `editor-keybindings` / `overlay-stack`，累计 24 个 |
+| 续作 | **精度提升 + 测试门接线** | 生成器加 `STRUCT_INTERFACES`（3 个无歧义结构体）；`[]*T` 映射 bug 修正；`rebuild-exe.ps1` 挂 `--check` |
+
+## B5. 关键技术点
+
+### B5.1 类型检查揪出的真问题（不是噪声）
+
+- `core/dom.js` 的 `el()` 把 `string|number` 直接赋给 `textContent`（setter 只收 `string`）→ 改显式 `String()`，与原先隐式转换等价；测试断言按真实 DOM 语义从 `0` 改成 `'0'`。
+- `core/notify-throttle.js` 的 `Number.isFinite(cfg.windowMs) && cfg.windowMs > 0` 不会收窄类型 → 先取局部量再判，默认值 30000 口径不变。
+
+### B5.2 名单取基线、签名扫源码——为什么要分开
+
+绑定承载类型已服务化（`*Chat` / `*GroupStore` / `*Bridge` / `*Store`…），逐个解析 `App` 的匿名嵌入链既脆弱又随重构变动。所以**方法名单一真源取绑定基线**（`UPDATE_BINDINGS_BASELINE=1 go test -run TestAppBindingBaseline .` 可随时重算），**签名扫 Go 源码按名字匹配**。平台成对文件优先取 `_windows.go`，同名方法优先取接收者为 `App` 的那条，其余才算歧义回退。
+
+### B5.3 分文件 opt-in，不全局开 checkJs
+
+`tsconfig.check.json` 的 `include` 覆盖全部 `src/**/*.js`，但 `checkJs: false`——只有文件首行写了 `// @ts-check` 的才检查。这样 306 个存量文件不会一次爆出数千错误，可以逐个开、每批零错误。禁止 `@ts-nocheck` 逃逸。
+
+### B5.4 JSDoc 注释笔误也是债
+
+加检查后暴露 3 处本就写错的注释：`diff.js` 注释里的 `@@` 与 `<pre>` 被 TS 当 JSDoc 标签解析（TS1003）、`overlay-stack.js` 的 `HTMLElement=` 可选语法写错（TS1109）。这些以前没人检查所以一直错着。
+
+### B5.5 `[]*T` 的 TS 运算符优先级 bug
+
+补 interface 后才现形：`[]*AISchedule` 映射成 `AISchedule | null[]`，被 TS 读成 `AISchedule | (null[])`（本意是 `(AISchedule | null)[]`）。修法是元素类型含 `|` 时加括号。之前元素都是 `unknown`，`unknown | null[]` 看不出问题。
+
+### B5.6 类型精度的克制
+
+`STRUCT_INTERFACES` 只收「字段全为基础类型、无嵌套具名类型、无同名歧义」的 3 个结构体（`GitOperationResult` / `PluginInfo` / `AISchedule`）。`SearchResult` / `PatchPreview` 嵌套子类型、`LeaseStatus` 有三个同名不同字段的版本（memo / sessionstore / 文档建议各一）——做全套解析器 + 包消歧的复杂度远超收益，且调用点都在未开 checkJs 的 `.js` 里，unknown 目前不产生任何误报。
+
+## B6. 实测数据
+
+| 指标 | 起点 | 终点 |
+| --- | --- | --- |
+| 开 `@ts-check` 的 core 文件 | 0 | **24**（strict 零错误） |
+| 绑定方法签名 | 无类型 | **420/420 有签名**（精确 263 / unknown 157 / 歧义 0 / 未找到 0） |
+| 具名结构体 interface | 0 | **3**（GitOperationResult / PluginInfo / AISchedule） |
+| `npm test` | 2652 项 | **2652 项全绿**（typecheck 已进前置门） |
+| `dist` 体积 | 15 MB | **15 MB**（类型擦除，产物零影响） |
+| 文件后缀改动 | — | **0 个** |
+
+## B7. 验证
+
+| 项 | 结果 |
+| --- | --- |
+| `npm run -s typecheck` | ✅ 零错误（全量 306 个 JS 在编译程序里） |
+| `npm test` | ✅ 2652 项全绿（含 typecheck 前置门） |
+| `npm run build` | ✅ 成功，`dist` 仍 15 MB |
+| `node scripts/gen-backend-types.mjs --check` | ✅ 与仓库内容一致 |
+| `go build .` | ✅ 通过 |
+| `rebuild-exe.ps1` PowerShell 语法解析 | ✅ 无错误 |
+
+## B8. 停止线：为什么不换后缀（决议）
+
+**换后缀暂缓，`checkJs` 作为当前终态。** 24 个文件开检查后，`npm test` 门已能拦住历史那 10 条事故；换后缀要动 246 处测试 import + 5 个按 `.js` 扫描的护栏（`icon-guard` 等），迁移期长期处于半迁移态，而类型全在构建期擦除、对单 exe 产物零影响，性价比不足。真需要复杂泛型时再重评。
+
+若将来换后缀：**Node 下限抬到 22.18+**（Node 只是 dev 工具，用户跑 exe 不需要；约束只在 `AGENTS.md` / `README.md` 两行文档），**不引 `tsx`**（纯新增依赖，违反「能不引入就不引入」）。
+
+## B9. 提交记录
+
+```
+b1ecff8  chore(frontend): 落地类型检查门（绑定类型生成 + 首批 13 个 core 文件）  22 files, +1198 −15
+df56275  chore(frontend): 再开 11 个 core 模块的 @ts-check（累计 24 个）          13 files, +190 −35
+b1aa18a  chore(frontend): 绑定类型精度提升与测试门接线（--check + 3 个 interface）  5 files, +141 −54
+```
+
+三次提交严格按文件清单 `git add`，未卷入并行会话的改动（后端 Go 文件、前端拆分、浏览器右键菜单）。
+
+## B10. 经验教训
+
+1. **先建门再铺量**：类型门（`npm test` 前置）先立起来，后面每批开检查才有强制力；不进门的检查会逐渐烂掉。
+2. **名单与签名分离**：方法名取受守卫的基线、签名扫源码，绕开了服务化后嵌入链难解析的问题，也让生成器不随重构漂移。
+3. **opt-in 而非全开**：`checkJs: false` + 逐文件 `@ts-check`，把「一次性数千错误」拆成「每批零错误」。
+4. **精度要克制**：嵌套类型与同名多版本的保持 unknown——做全套解析器的复杂度远超收益，尤其调用点还没开检查时。
+5. **换后缀不是目标**：类型擦除对产物零影响时，为语法好看付 246 处 import + 5 个护栏的代价不值。职责边界和性价比才是判断依据，与后端线「文件数不是 KPI」同一条原则。
