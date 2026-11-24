@@ -538,13 +538,17 @@ function clearBrowserSnapshot(doc) {
     doc.browserSnapshotEl = null;
 }
 
-let browserSyncPending = false;
+// 同步去重锁按 doc 独立，不能用全局单例：syncAllBrowserTabs 遍历多个浏览器标签时，
+// 全局锁会让第一个之外的调用全被吞掉——切标签那一刻若撞上 250ms 轮询刚占的锁，
+// 非活动标签的「隐藏」就丢了，原生 WebView2 HWND 从此永久盖在其他视图上（无重试路径）。
+// WeakSet 不污染 doc、随 doc 回收，每个标签各自去重即可。
+const browserSyncPending = new WeakSet();
 function syncBrowserTab(doc) {
-    if (!doc.browser || browserSyncPending || !deps.backend.BrowserSetBounds) return;
-    browserSyncPending = true;
+    if (!doc.browser || browserSyncPending.has(doc) || !deps.backend.BrowserSetBounds) return;
+    browserSyncPending.add(doc);
     // setTimeout 而非 rAF：后台标签页 rAF 冻结会让 bounds/可见性同步永久卡住
     setTimeout(() => {
-        browserSyncPending = false;
+        browserSyncPending.delete(doc);
         if (!deps.docs.includes(doc) || !doc.browserEl) return;
         // 窗口/分栏尺寸变了：固定视口先按新可用区重算 contain 缩放，再取矩形
         layoutFixedViewport(doc);

@@ -242,6 +242,87 @@ test('同步链路：不相交菜单不隐藏控件；相交浮层隐藏并显�
     }
 });
 
+test('syncAllBrowserTabs：多个浏览器标签各自同步，互不被全局锁吞掉', async () => {
+    const prevDocument = globalThis.document;
+    const prevWindow = globalThis.window;
+    try {
+        const calls = [];
+        const dom = fakeDom({popups: []});
+        globalThis.document = dom;
+        globalThis.window = {devicePixelRatio: 1};
+        // 共用 dom.surface 作为 browserEl：命中测试桩 elementsFromPoint 返回的就是它，
+        // 否则会被 browserHasUnknownOverlay 误判成「有浮层遮挡」而一律不显示。
+        const docA = {id: 'a', browser: true, browserEl: dom.surface, browserUrl: 'https://a.com'};
+        const docB = {id: 'b', browser: true, browserEl: dom.surface, browserUrl: 'https://b.com'};
+        const backend = {
+            BrowserSetBounds: async (id) => { calls.push(['bounds', id]); },
+            BrowserSetVisible: async (id, v) => { calls.push(['visible', id, v]); },
+            BrowserEnsureZ: async () => {},
+            BrowserSnapshot: async () => '',
+        };
+        // file 指向 A：B 是非活动标签，应被判定隐藏
+        const mod = moduleFor(docA, {file: docA, docs: [docA, docB], backend});
+        mod.syncAllBrowserTabs();
+        await nextTick();
+        assert.ok(calls.some((c) => c[0] === 'bounds' && c[1] === 'a'), '活动标签 A 应摆位/显示');
+        assert.ok(calls.some((c) => c[0] === 'visible' && c[1] === 'b' && c[2] === false),
+            '非活动标签 B 必须收到隐藏，不能被另一个标签的同步吞掉');
+    } finally {
+        if (prevDocument === undefined) delete globalThis.document;
+        else globalThis.document = prevDocument;
+        if (prevWindow === undefined) delete globalThis.window;
+        else globalThis.window = prevWindow;
+    }
+});
+
+test('syncAllBrowserTabs：非活动浏览器标签被隐藏后，切回活动态能恢复显示', async () => {
+    const prevDocument = globalThis.document;
+    const prevWindow = globalThis.window;
+    try {
+        const dom = fakeDom({popups: []});
+        globalThis.document = dom;
+        globalThis.window = {devicePixelRatio: 1};
+        // 共用 dom.surface 作为 browserEl：命中测试桩 elementsFromPoint 返回的就是它，
+        // 否则会被 browserHasUnknownOverlay 误判成「有浮层遮挡」而一律不显示。
+        const docA = {id: 'a', browser: true, browserEl: dom.surface, browserUrl: 'https://a.com'};
+        const docB = {id: 'b', browser: true, browserEl: dom.surface, browserUrl: 'https://b.com'};
+        const backend = {
+            BrowserSetBounds: async () => {},
+            BrowserSetVisible: async () => {},
+            BrowserEnsureZ: async () => {},
+            BrowserSnapshot: async () => '',
+        };
+        // 直接构造 deps（不走 moduleFor 的展开复制）：file 必须是 getter 活引用，
+        // 与 main.js 的 `get file() { return file; }` 一致——activateDoc 切换的是
+        // 宿主变量，模块内部经 deps.file 读到的应是新值。
+        let currentFile = docA;
+        const deps = {
+            get file() { return currentFile; },
+            docs: [docA, docB],
+            backend,
+            flash: () => {}, ctxMenu: null, copyText: () => {}, openBrowserTab: () => {},
+            openNameDialog: () => {}, renderTabs: () => {}, setFilename: () => {},
+            updateWindowTitle: () => {}, els: {editor: {appendChild: () => {}}},
+        };
+        const mod = createEditorBrowserTab(deps);
+        // 第一阶段：A 活动，B 隐藏
+        mod.syncAllBrowserTabs();
+        await nextTick();
+        assert.equal(docB.browserApplied.visible, false, 'B 初始应隐藏');
+        // 第二阶段：切到 B（模拟 activateDoc 改了宿主 file 变量）
+        currentFile = docB;
+        mod.syncAllBrowserTabs();
+        await nextTick();
+        assert.equal(docB.browserApplied.visible, true, '切回 B 后应重新摆位显示');
+        assert.equal(docA.browserApplied.visible, false, 'A 变为非活动应被隐藏');
+    } finally {
+        if (prevDocument === undefined) delete globalThis.document;
+        else globalThis.document = prevDocument;
+        if (prevWindow === undefined) delete globalThis.window;
+        else globalThis.window = prevWindow;
+    }
+});
+
 // ---- 固定视口：contain 等比缩放，不再把控件铺出标签页区域 ----
 
 // 动态 surface 桩：矩形跟随内联宽高（模拟真实布局：fixed 尺寸 + margin:auto 居中）
