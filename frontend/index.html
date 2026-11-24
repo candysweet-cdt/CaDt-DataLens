@@ -20,6 +20,16 @@
            首帧先隐藏 #app，探测完成后由 main.js 摘除 app-booting；
            兜底 5s 强制显示，防 JS 异常导致永久黑屏。 */
         html.app-booting #app { display: none !important; }
+        /* 启动画面：app-booting 期间盖住空白期（看板娘字标），避免纯背景色黑屏；
+           摘除 app-booting 后自动隐藏。背景色与窗口 BackgroundColour RGB(30,31,36) 一致，视觉连贯。 */
+        #app-splash {
+            position: fixed; inset: 0; display: flex;
+            align-items: center; justify-content: center;
+            background: #1e1f24;
+            user-select: none; -webkit-user-select: none; z-index: 99999;
+        }
+        #app-splash img { width: 360px; height: auto; }
+        html:not(.app-booting) #app-splash { display: none; }
     </style>
     <script>document.documentElement.classList.add("app-booting");
     setTimeout(function () { document.documentElement.classList.remove("app-booting"); }, 5000);</script>
@@ -87,6 +97,7 @@
     <script src="/vendor/xterm/addon-fit.js"></script>
 </head>
 <body data-file-drop-target>
+<div id="app-splash" aria-hidden="true"><img src="/brand/splash-lockup.png" alt=""></div>
 <div id="app">
     <header id="toolbar">
         <img id="app-logo" src="/icon.png" alt="CaDt-DataLens">
@@ -2823,6 +2834,10 @@
                     <button type="button" id="ai-ctx-btn" class="ai-ctx-btn" aria-label="上下文用量">
                         <span id="ai-ctx-ring" class="ai-ctx-ring"></span>
                         <span id="ai-stats-ctx-pct">0%</span>
+                    </button>
+                    <button type="button" id="ai-quota-pill" class="ai-quota-pill hidden" aria-label="额度用量" hidden>
+                        <span id="ai-quota-pill-ring" class="ai-quota-pill-ring"></span>
+                        <span id="ai-quota-pill-text" class="ai-quota-pill-text">待查询</span>
                     </button>
                 </div>
                 <div id="ai-session-pop" class="ai-ctx-pop ai-stat-pop hidden">

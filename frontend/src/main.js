@@ -489,6 +489,18 @@ function syncDevConsoleVisibility() {
     });
 })();
 
+// AI 浮窗探测（异步尽早开始，与 console/terminal/aux 三类窗口探测并行）：
+// bridge-ui 摘除 app-booting 前必须知道本窗口是不是浮窗，原先在那里串行 await
+// IsAIFloatWindow 多花一次 IPC 往返；提到顶层并行后四个窗口类型探测同时发出。
+const aiFloatWindowMode = (async () => {
+    try {
+        if (!(backend && backend.IsAIFloatWindow)) return false;
+        return !!(await backend.IsAIFloatWindow());
+    } catch (e) {
+        return false;
+    }
+})();
+
 // ===== 辅助独立窗（便签 / 会话监控 / 文件对比）=====
 // 与终端独立窗口同构（bridge-ui 启动编排按 auxWindowKind 分派到这里）：
 // 跳过正常启动流程，全屏渲染单一视图。数据源磁盘/进程内共享——便签走租约
@@ -6978,9 +6990,12 @@ if (rt) {
         if (doc) flash('浏览器进程异常，标签页可能需要重新打开', true);
     });
     window.addEventListener('resize', syncAllBrowserTabs);
-    // 菜单/命令面板/AI 面板全屏等浮层没有统一的开关事件：定时兜底同步内嵌浏览器的显隐
+    // 菜单/命令面板/AI 面板全屏等浮层没有统一的开关事件：定时兜底同步内嵌浏览器的显隐。
+    // 必须同步「所有」浏览器标签而非仅当前 file：切走后非活动浏览器标签靠 browserVisibleFor
+    // 的 doc !== deps.file 判定隐藏，若轮询只盯着 file，那次隐藏一旦被全局锁吞掉就再无重试
+    // 路径，原生 WebView2 HWND 会永久盖在其他视图上（只有关标签才消失）。
     setInterval(() => {
-        if (file && file.browser) syncBrowserTab(file);
+        syncAllBrowserTabs();
     }, 250);
     appEvents.onWindowOrBroadcast('term-out', (data) => {
         // 走 terminal 域的统一入口：session 未注册时先缓冲（Go 在 TermCreate 返回前就开始推输出），
@@ -7192,6 +7207,7 @@ const bridgeUI = createBridgeUI({
     get onPendingChange() { return memoPendingChanged; },
     get consoleWindowMode() { return consoleWindowMode; },
     get terminalWindowMode() { return terminalWindowMode; },
+    get aiFloatWindowMode() { return aiFloatWindowMode; },
     get auxWindowKind() { return auxWindowKind; },
     get startMemoWindowMode() { return auxWindowModes.startMemoWindowMode; },
     get startMonitorWindowMode() { return auxWindowModes.startMonitorWindowMode; },
@@ -7269,6 +7285,7 @@ const dbUi = createDbUi({
     get openDbConsoleTab() { return openDbConsoleTab; },
     get openDbRedisKeyTab() { return openDbRedisKeyTab; },
     get copyText() { return copyText; },
+    get openSettings() { return openSettings; },
 });
 dbSidebarRenderHook = () => dbUi.renderSidebar();
 

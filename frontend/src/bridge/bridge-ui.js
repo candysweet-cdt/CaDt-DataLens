@@ -188,9 +188,11 @@ function openBrowserTab(url, profileKey, opts) {
             });
         return;
     }
+    // 浮窗探测已在 main.js 顶层与其他窗口类型探测并行发出，这里直接取结果，
+    // 不再串行 await 一次 IPC（缩短 app-booting 摘除前的等待）。
     let floatWindow = false;
     try {
-        floatWindow = !!(deps.backend.IsAIFloatWindow && await deps.backend.IsAIFloatWindow());
+        floatWindow = !!(await deps.aiFloatWindowMode);
     } catch (e) {
         floatWindow = false;
     }
