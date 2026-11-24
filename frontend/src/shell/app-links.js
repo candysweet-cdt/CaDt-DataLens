@@ -21,10 +21,35 @@ const appReleasesUrl = 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases'
 // 不再以 ?raw 打进前端包，改由内置浏览器在线打开。
 const appChangelogUrl = 'https://gitee.com/candysweet-cdt/CaDt-DataLens/blob/master/CHANGELOG.md';
 
+// Wails 的 BrowserOpenURL 只接受带合法 scheme 的绝对 URL：相对路径、file:、
+// 自定义 scheme 会被 Go 侧拒绝（Invalid browser call: invalid URL: scheme not allowed），
+// 由于它返回 Promise，未接住就变成界面上的「未处理的 Promise 拒绝」红条。
+// 这里做白名单 + 接住拒绝，非法链接只在状态栏提示，不再抛到全局。
+const EXTERNAL_SCHEMES = ['http:', 'https:'];
+
+function externalScheme(url) {
+    try {
+        return new URL(String(url)).protocol; // 不带 base：相对路径直接抛错 = 不可外开
+    } catch (_) {
+        return '';
+    }
+}
+
 function openExternalUrl(url) {
-    if (!url) return;
-    if (deps.rt && deps.rt.BrowserOpenURL) deps.rt.BrowserOpenURL(url);
-    else window.open(url, '_blank', 'noopener');
+    const text = String(url == null ? '' : url).trim();
+    if (!text) return;
+    if (!EXTERNAL_SCHEMES.includes(externalScheme(text))) {
+        if (deps.flash) deps.flash('不支持的链接（只允许 http/https）：' + text.slice(0, 80), true);
+        return;
+    }
+    if (deps.rt && deps.rt.BrowserOpenURL) {
+        Promise.resolve(deps.rt.BrowserOpenURL(text)).catch((e) => {
+            if (deps.flash) deps.flash('打开链接失败：' + ((e && e.message) || e), true);
+            if (deps.logFrontend) deps.logFrontend('error', '打开外链失败：' + text + ' — ' + ((e && e.message) || e));
+        });
+    } else {
+        window.open(text, '_blank', 'noopener');
+    }
 }
 
 // openBundledDoc 按 bundledDoc 键复用已打开的虚拟文档，否则新建一个并打上该标记。

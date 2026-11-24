@@ -14982,7 +14982,7 @@ body.preview-only #enc-popover { display: none !important; }
 .db-conn-name { font-size: 12.5px; color: var(--text); }
 .db-conn-sub { font-size: 11px; color: var(--muted); }
 .db-conn-btns { display: flex; gap: 4px; }
-.db-conn-form { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; min-width: 380px; }
+.db-conn-form { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; min-width: 380px; }
 .db-conn-rowline { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text); }
 .db-conn-rowline > *:last-child { flex: 1; }
 .db-conn-label { flex: 0 0 auto; min-width: 64px; color: var(--muted); }
@@ -15011,6 +15011,17 @@ body.preview-only #enc-popover { display: none !important; }
 .db-query-output-meta { margin-left: auto; color: var(--muted); font-size: 11px; flex: 0 0 auto; }
 .db-query-output-total { border-top: 1px solid var(--border); padding-top: 4px; margin-top: 2px; color: var(--muted); font-size: 11px; }
 .db-table-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* 数据表标签页的视图切换（插件驱动声明自定义视图时出现）：表格 ↔ 图 / 画布… */
+.db-tab-views { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.db-tab-views-bar { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-bottom: 1px solid var(--border); background: var(--bg-soft, transparent); }
+.db-tab-views-label { color: var(--muted); font-size: 11px; margin-right: 2px; }
+.db-tab-view-btn { padding: 2px 10px; font-size: 12px; }
+.db-tab-view-btn.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.db-tab-views-body { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.db-tab-view-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* 兜底：.hidden 与上面的 display:flex 同特异性且位置更靠前，单靠 .hidden 藏不住表格 */
+.db-tab-views-body > .db-tab-view-pane.hidden { display: none; }
+.db-plugin-view { flex: 1; min-height: 0; overflow: hidden; position: relative; }
 .db-table-toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .db-table-title { display: flex; align-items: center; gap: 6px; margin-right: auto; min-width: 0; }
 .db-table-ic { display: inline-flex; color: var(--muted); }
@@ -15084,6 +15095,17 @@ body.preview-only #enc-popover { display: none !important; }
 .db-preview-sql { margin: 0; flex: 1; font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: 11.5px;
     background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; white-space: pre-wrap; word-break: break-all; color: var(--text); }
 .db-conn-dialog { min-width: 440px; }
+/* 插件驱动连接表单（db-plugin-entry）：字段由驱动声明、带字段级说明（fields[].hint）。
+   标签列 96px 对齐 + 行距 12px 让「地址/账号/密码/库名」不再挤成一坨；
+   左右 16px 内边距让文字离开边框（原先 padding 左右为 0，贴边）；
+   hint 缩进到输入框起始处（96 + 12 = 108px）。 */
+.db-conn-dialog.db-plugin-entry { min-width: 520px; }
+.db-plugin-entry .db-preview-head { padding: 12px 16px; }
+.db-plugin-entry .db-preview-head .db-conn-sub { font-weight: 400; margin-top: 3px; }
+.db-plugin-entry .db-conn-form { gap: 12px; padding: 12px 16px 6px; }
+.db-plugin-entry .db-conn-rowline { gap: 12px; }
+.db-plugin-entry .db-conn-label { min-width: 96px; }
+.db-plugin-entry .db-conn-hint { margin: -6px 0 0 108px; font-size: 11px; color: var(--muted); line-height: 1.6; }
 .db-open-path { font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: 12px; color: var(--muted);
     background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; word-break: break-all; }
 .db-gate { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--text); }

@@ -294,10 +294,15 @@ function openPluginEntryDialog(driver, existing) {
     return new Promise((resolve) => {
         const values = Object.assign({}, (existing && existing.config) || {});
         const panel = document.createElement('div');
-        panel.className = 'db-preview db-conn-dialog';
+        panel.className = 'db-preview db-conn-dialog db-plugin-entry';
         const head = document.createElement('div');
         head.className = 'db-preview-head';
-        head.textContent = (existing ? '编辑' : '添加') + ' · ' + driver.label + '（插件驱动 · ' + driver.pluginName + '）';
+        head.textContent = (existing ? '编辑连接' : '新建连接') + ' · ' + driver.label;
+        // 来源单独一行小字：标题行保持短，插件身份仍然可见
+        const sub = document.createElement('div');
+        sub.className = 'db-conn-sub';
+        sub.textContent = '插件驱动 · ' + driver.pluginName;
+        head.appendChild(sub);
         const form = document.createElement('div');
         form.className = 'db-conn-form';
         const nameInput = createInput({
@@ -316,6 +321,13 @@ function openPluginEntryDialog(driver, existing) {
             if (field.type === 'password') input.control.autocomplete = 'new-password';
             inputs[field.key] = input;
             formRow(form, field.label + (field.secret ? '（加密存储）' : '') + (field.required ? ' *' : ''), input.element);
+            // 字段级说明（驱动用 hint 声明）：解释语义，避免「库名填什么」这类猜测
+            if (field.hint) {
+                const hint = document.createElement('div');
+                hint.className = 'db-conn-hint';
+                hint.textContent = field.hint;
+                form.appendChild(hint);
+            }
         }
         const foot = document.createElement('div');
         foot.className = 'db-preview-foot';
@@ -374,9 +386,8 @@ function openPluginEntryDialog(driver, existing) {
             },
         });
         document.body.appendChild(mask);
-        mask.addEventListener('click', (ev) => {
-            if (ev.target === mask) close();
-        });
+        // 刻意不绑「点遮罩关闭」：连接表单是长表单（地址/账号/口令/库名），误触遮罩会丢已填内容。
+        // 关闭只走「取消」与 Esc（Esc 由 overlayStack 统一分发到 onClose）。
         cancelBtn.addEventListener('click', () => {
             settle();
             close();

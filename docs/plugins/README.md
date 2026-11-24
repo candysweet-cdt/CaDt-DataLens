@@ -425,6 +425,20 @@ cadt.registerDbDriver({
         {key: 'password', label: '密码', type: 'password'},   // password = DPAPI 加密存储，不进工作区清单
         {key: 'database', label: '默认库', type: 'text', default: 'default'},
     ],
+    views: [                             // 可选：数据表标签页的「自定义渲染视图」（≤3 个）
+        {
+            id: 'graph',                 // ^[a-z0-9][a-z0-9-]{0,63}$，驱动内唯一
+            label: '图',                  // 视图切换按钮上的名字（≤20 字）
+            mount(container, ctx) {      // container 是空的 div，铺满内容区
+                // ctx：{database, table, kind, getTheme(), query(cypher, limit), flash(), logActivity()}
+                return {
+                    resize() {},          // 容器尺寸变化（分栏拖拽 / 窗口缩放）
+                    setTheme(name) {},    // 主题切换：改配色，不要重挂
+                    destroy() {},         // 切回表格 / 关标签时调用，必须断干净
+                };
+            },
+        },
+    ],
     async connect(config) {              // config = 表单收集值（password 已合并明文）
         async function sql(query) {
             const res = await fetch(config.url, {method: 'POST', body: query});
@@ -468,6 +482,7 @@ cadt.registerDbDriver({
 - **超时**：宿主对每次插件调用包 120s 超时；插件应在 connect/query 里自设更短的超时与 `AbortController`。
 - **工作区清单**：用户添加的连接配置（非密文字段）存 `settings.dbWorkspaceDatabases`，条目形如 `{kind: 'plugin:<插件id>:<驱动id>', name, config, …}`，按工作区生效、跨窗同步。
 - **传输选择**：HTTP SQL 接口（ClickHouse/Trino/Presto 等）直接 `fetch`；数据库自带代理协议不可直连时，用 `registerService` 起本地 sidecar 再调它的 HTTP 接口；裸 TCP 协议（如 PostgreSQL wire）当前无桥接通道，做协议客户端不如把驱动下沉到核心（见 `internal/dbclient` 的 Driver 接口，MySQL/SQLite 先例）。
+- **views（自定义渲染视图）**：声明后数据表标签页顶部多一排「表格 / 图 / …」切换，网格原样留在「表格」档，插件只负责画自己那档。与 `cadt.registerViewer` 的关键差别是数据来源——**ctx 给的是库 + 表 + 只读查询出口**（`ctx.query(cypher, limit)` 走会话门面，受连接只读与行数上限约束），不是文件文本。宿主负责转达容器 `resize` 与主题 `setTheme`，`destroy` 必须自己断干净（定时器、`window` 监听、`ResizeObserver`）；上限单驱动 ≤ 3 个视图。参考实现：`plugins/db-neo4j/` 的 graph 视图（纯 SVG 力导向，零依赖）。
 - 完整可运行示例见 [`plugins/db-clickhouse-http/`](../../plugins/db-clickhouse-http/)（真实 ClickHouse HTTP 接口，零依赖）。
 
 ### `cadt.registerSettingsPanel(spec)`

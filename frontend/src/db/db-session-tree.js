@@ -38,6 +38,15 @@ export function createDbSessionTree(deps) {
     // 类型分组的折叠态（内存即可：重启回默认全展开）
     const collapsed = new Set();
 
+    // sessionApi 会话通道解析：插件驱动会话在门面（snap.api）里，内置 kind 走宿主绑定。
+    // 树的会话级调用必须经过这里——插件会话 id 是 'p:<entryId>'，只存在于前端；把这种 id
+    // 直接发给 deps.backend 时 Go 侧 sessions 里没有它，会回 ErrSessionNotFound
+    // （「连接会话不存在，可能已断开或空闲超时，请重新连接」，dbclient.go）。
+    function sessionApi(entry) {
+        const snap = getSessionState(entry.id);
+        return (snap && snap.api) || deps.backend;
+    }
+
     function treeState(id) {
         if (!cache.has(id)) {
             cache.set(id, {
@@ -69,7 +78,7 @@ export function createDbSessionTree(deps) {
         st.dbsError = '';
         render();
         try {
-            st.dbs = await deps.backend.DBListDatabases(info.id) || [];
+            st.dbs = await sessionApi(entry).DBListDatabases(info.id) || [];
             // 单库（SQLite 恒 main）直接展开到分组层
             if (st.dbs.length === 1) st.expandedDb.add(st.dbs[0]);
         } catch (e) {
@@ -87,7 +96,7 @@ export function createDbSessionTree(deps) {
         st.objects.set(db, {loading: true, list: cur && cur.list || null, error: ''});
         render();
         try {
-            const list = await deps.backend.DBListObjects(info.id, db) || [];
+            const list = await sessionApi(entry).DBListObjects(info.id, db) || [];
             st.objects.set(db, {loading: false, list, error: ''});
         } catch (e) {
             st.objects.set(db, {loading: false, list: null, error: String(e && e.message || e)});
@@ -96,6 +105,8 @@ export function createDbSessionTree(deps) {
         return st.objects.get(db);
     }
 
+    // 服务器对象是 MySQL 专属（调用点均有 isMySQL 门禁），插件驱动会话没有这个方法，
+    // 故这里固定走宿主绑定，不参与 sessionApi 分派。
     async function loadServerObjects(entry, info) {
         const st = treeState(entry.id);
         if (st.server) return;
@@ -733,7 +744,7 @@ export function createDbSessionTree(deps) {
         const snap = getSessionState(entry.id);
         if (!snap || !snap.info) return '';
         try {
-            const meta = await deps.backend.DBDescribe(snap.info.id, db, table, false);
+            const meta = await sessionApi(entry).DBDescribe(snap.info.id, db, table, false);
             return buildDDL(snap.info.kind, meta);
         } catch (e) {
             if (deps.flash) deps.flash('读取表结构失败：' + (e && e.message || e), true);
