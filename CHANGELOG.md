@@ -4,6 +4,82 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 新增（数据库「新建连接」菜单直达插件市场）
+
+- 侧栏数据库面板的「新建连接」弹出菜单最底部新增 **插件市场：数据库驱动…**（分隔线后一项）。点它打开 设置 → 插件 的插件市场，并把搜索框预填为 `dataset`——数据库驱动类插件都在该关键词下（与端侧分类器「下载语义模型」跳转预填 `onnx` 同一条通道：`openSettings('plugins', preset)`）。
+- 没有已注册的插件驱动时，这一项就是安装途径；已有驱动时是「找更多驱动」。
+- 接线：`db-ui.js` 的 `openCreateMenu` 依赖 `deps.openSettings`，由 `main.js` 创建 `createDbUi` 时注入（与其它域同样的 getter 注入）。
+- 验证：`npm run typecheck`、`npm run build` 通过。
+
+### 修复（编辑模型账号弹窗开合时先闪到左上角再回正）
+
+- **现象**：设置 → AI → 模型里点某账号的「编辑」，弹窗会先出现在窗口左上角一瞬间，再跳回正中间。
+- **根因**：`#dlg-model-editor` 用 `.dialog` 类靠 `transform: translate(-50%,-50%)` 居中，而拖拽头部会写内联 `transform:none` + `left/top` 像素值。标准弹窗打开时由 `openDialogEl` 清掉这些值，模型编辑器（及复用同类的环境变量编辑器）只移除了 `.hidden` 没清，导致入场动画结束后回落到上次拖拽残留的定位。
+- **修复**：`openModelEditor` / `openEnvVarEditor` 打开前清掉内联 `left/top/transform`，与 `openDialogEl` 对齐；新增 `ai-dialog-position-reset.test.mjs` 守卫防回归。验证：类型检查、拖拽/弹窗/清单相关测试全绿。
+
+### 优化（消息中心清空后面板平滑收缩）
+
+- 点击「清空全部」后，消息中心不再从高列表瞬间切成矮空态，而是用 180ms 高度补间平滑收缩；动画期间逐帧重新定位，底边始终贴住状态栏消息按钮。
+- 沿用 AI 面板现有布局动效参数，尊重系统「减少动画」设置；关闭面板时取消进行中的动画，避免残留帧回调。
+- 动画只由「清空全部」显式触发（首次打开 / 新消息重绘不起动画）；动画进行中若新消息到达会取消旧动画，避免把新列表压向空态高度被截断。经两轮子代理审查确认无竞态。
+- 验证：消息中心 9 例测试、弹层与定位相关 46 例测试、`npm run typecheck`、`npm run build` 均通过。
+
+### 修复（AI 面板停在「正在载入对话…」，点「新建会话」毫无反应）
+
+- **现象**：打开（或切换到）某个仓库后，AI 面板主区一直停在「正在载入对话…」——不动它也不会自己恢复；点【新建会话】只弹一句「当前会话为空，已复用」界面却不动，必须在左侧会话列表里硬点一次别的会话才恢复。
+- **根因**（三条叠加）：① 会话正文是懒加载的（启动只读 meta，占位对象带 `_stub`），而把「当前会话」换成另一个会话的路径不止 `switchSession` 一种——工作区变更（`refreshSessionList` → `adoptWorkspaceSession` 的 switch 分支）、配置读盘后的工作区对齐（`bootstrapAIConfig` 里那条「配置链晚于会话链完成」的竞态，故表现为偶发）、删除会话兜底都只改 `activeSessionId`，不调 `ensureSessionLoaded`；渲染到 `_stub` 时又只画「正在载入」不补水，于是永久停住。② `newSession` 的「当前空会话复用」判定用 `messages` 是否为空，而 `_stub` 的 `messages` 恰是空的（只是还没读），于是新建被当成「复用空会话」直接返回。③ 启动批量补水与按需补水是两条独立入口，会同时盯上同一个会话。
+- **修法**：`renderMessagesInner` 见到 `_stub` 就顺手 `ensureSessionLoaded`——「画到就一定补上」，不再依赖调用方记得先补水（并发由 `hydrateJobs` 去重，补完自行重绘；补水失败且占位已清时重绘一次退出载入态，占位还在则跳过以免自激）；`newSession` 的空会话复用判定排除 `_stub`，新建真的会新建；`ai-session-disk.js` 的 `hydrateSession` 加单会话 in-flight 去重，启动批量补水与按需补水同盯一个会话时只做一次整份重放（大文件不成倍 IO，也不会互相覆盖写入基线）。
+- 测试：新增 `frontend/test/ai/ai-session-stub-hydrate.test.mjs` 钉住三条不变量，`ai-session-disk.test.mjs` 补「并发补水只读一次正文」（均已登记 `npm test`）。
+- **验证**：`npm run typecheck`、`npm run build` 通过；新增守卫 + 会话存储 / 会话范围相关既有测试全绿。
+
+### 修复（AI 会话链并发竞态：切会话 / 起轮 / 写盘 / 对话日志）
+
+懒加载会话引入「同一会话可能有多个对象副本、正文按需补水」之后，几处长期存在的 await 窗口变成了真实故障。本轮做了全链条复查（切换补水链 / 启动配置链 / 写盘安全链三路并行审查 + 交叉核对），确认并修掉下列问题：
+
+- **起轮中遇到磁盘重读会丢整轮**：`startSessionTurn` 在起轮入口到 `attachStream` 之间有一串 await（`whenIdle` / 回合租约 / 交接重读 / 生命周期钩子，钩子可长达 600s），此时流还没注册，`applyLoadedSessions` 的 `anyStreaming` 守卫看不见它——面板打开触发的全量重读会整体替换 `sessions`，这一轮的 user 消息 + assistant 占位写进被淘汰的对象（界面看不见、`persistSessions` 也遍历不到）。修法：新增 `startingTurns` 登记（外层 `startSessionTurn` 薄壳负责登记/注销），`applyLoadedSessions` 见到起轮中的会话保留内存对象（`next` 里换成内存对象或补回），入口再按 id 重解析一次。
+- **点开未加载的大会话后马上点「新建会话」会被抢回**：`pendingSwitchId` / `switchSeq` 只由 `switchSession` 自己维护，新建 / 新建临时会话 / 删除兜底 / 工作区对齐 / 磁盘重读兜底这几处改指入口都不参与——补水回调几秒后按旧意图落地，把视图切回旧会话，并顺手把新建的空会话当成「离开的空会话」删掉。修法：`invalidatePendingSwitch()` 统一作废在飞意图，上述五处改指入口都调用。
+- **`switchSession` 的 await 之后用陈旧对象**：跨工作区探测最长 2.5s，期间目标会话可能被删除或被磁盘重读换成同 id 新对象；原实现继续用旧的 `target`，会把已删 id 写进 `ai-config.json`、并让 `clearSessionUnread` 作用在被淘汰的副本上（列表「正在看却挂绿点」）。修法：await 后按 id 重解析、目标不存在就放弃；被别的切换插队时按新工作区再对齐一次（避免「面板会话属于 A 仓、工具按 B 仓解析」）。
+- **淘汰对象的补写会把别人刚写的内容回滚**：`ensureSessionLoaded` 的 `_needsRewrite` 补写与 `hydrateStartupSessions` 的收尾补写都作用于会话对象，对象已被磁盘重读淘汰时它们代表的是更早的快照。修法：两处补写都加 `sessions.includes(session)` 身份守卫（只补内存、不写盘）。
+- **整份重放没有互斥**：`hydrateSession` / `reloadSession` / `reloadSessionForce` 是三条独立入口，会同时盯上同一会话（另一窗口写入触发的 `handleResourceChange` 对占位会话必然进 reload），成倍 IO 且后完成者覆盖前者的内存状态与基线；而且按 id 去重会误复用「补水」的 promise 当「重读」结果。修法：`replayInflight` 按会话串行、并区分 `kind`（hydrate / reload / reload-force 只复用同类同对象的 promise）。
+- **读后 stat 掩盖他人写入**：补水 / 重读原来以「读完之后的 stat」作写盘基线，若读的过程中另一窗口追加过消息，基线会把那几条吸收掉，后续交接检查误判「一致」，一次 truncate 就把对方提交的正文裁掉。修法：读前先取 `statOf`，读后 stat 不一致时基线退回读前值，让下一次握手必然发现差异并先重读。
+- **正文读取失败的会话仍可被改写**：`requireBody`（归档 / 清空 / 整份重写）原来只挡 `_stub`，`_loadError` 的会话（超限拒载、IO 失败）`_stub` 已被清掉却只有残缺正文——对它「清空会话」等于用只剩 header 的日志覆盖几百 MB 历史。修法：`requireBody` 同时拒绝 `_loadError`；`startSessionTurn` 也拒绝（否则这一轮只存在内存、重启即丢）。
+- **对话日志（.md）会被写成空文档**：`saveConversationLog` 的正文取自内存 `messages`，`SaveFile` 是整份覆盖，而 `logFile` 存在 meta 里——对占位会话重命名 / 打开日志开关会用「只有标题」的文档盖掉旧日志。修法：入口拒绝 `_stub` / `_loadError`（与 `requireBody` 同一套口径）。
+- **整份重读类操作缺忙守卫**：拒载卡片的「重试整理 / 临时加载」与设置里的「清空全部会话」都不检查在飞回合，前两者会把在飞 assistant 占位从 `messages` 甩掉、后者直接把在跑会话整体丢弃。修法：三处都补 `streamOf/compactOf` 守卫，前两者登记 `sessionReloading` 防并发重读。
+- **支线标签页状态陈旧**：会话切换通知原来只挂在 `switchSession` 末尾，另外几处改指入口漏掉 → 支线标签页里 `inPlace` 判断错误，按发送静默无反应。修法：通知收口到 `setActiveSessionId`（值变了才通知）。
+- **归档超限裁剪错位**：`pushArchivedMessages` 裁 `archived` 时没同步 `_archivedMids`，下一次整份重写按位置取 mid 会给归档消息分配别人的 mid。修法：裁剪后按 `_mid` 重建。
+- 测试：`ai-session-disk.test.mjs` 补「hydrate 与 reload 互斥」「`requireBody` 拒 `_loadError`」「对话日志不覆盖占位 / 读失败会话」；既有守卫测试同步更新（`ai-empty-session` / `ai-temp-session` / `ai-session-stub-hydrate`）。
+- **仍未修（当时记录，已在下一节全部修掉）**：① `ai-config.json` 跨窗口写盘没有 CAS；② `applyLoadedSessions` 仍以整份替换为主；③ `sessionsLoaded` 初值在 legacy 模式下乐观为 true；④ 原地编辑快照按 `index` 恢复；⑤ `sameLogStat` 只比 mtime+size。—— 见下一条「配置写盘比较-交换与三方合并 / 磁盘重读元数据保活 / 会话链三项小修」。
+- **验证**：`npm run typecheck`、`npm run build` 通过；`test:ai` 全绿（唯一红的 `ai-composer-submit-guard` 属另一未提交改动的断言漂移，与本轮无关）。
+
+### 修复（配置写盘比较-交换与三方合并 / 磁盘重读元数据保活 / 会话链三项小修）
+
+上一轮记录的五项「需要单独方案」的竞态风险，本轮全部落地（方案经作者批准）：
+
+- **`ai-config.json` 跨窗口写盘没有 CAS**（原来整份覆盖：A 窗口读盘后、写盘前，B 窗口写的新值会被 A 的旧快照回滚，全程无提示）。新增后端 `aiconfig.WriteIfUnchanged(path, base, data)`：磁盘明文仍等于我方基线才写，否则**不写**并把磁盘最新明文回传；绑定方法 `AIConfigWriteIfUnchanged`（绑定面 420 → 421，基线 + `backend.d.ts` 已重生成）。前端新增纯函数 `mergeAIConfig(base, mine, theirs, {ownWorkspaceKey})`（`frontend/src/ai/core/ai-config-merge.js`）做三方合并：标量按「本窗口改过用本窗口」，`activeSessionByWorkspace` 的本窗口工作区键永用本窗口（含清空），`profiles` / `prompts` / `genModels` / `agents` 按元素 id 走增/改/删；冲突时本窗口优先并给一次合并提示，合并后用磁盘最新值作基线重试一次（不无限重试）。`saveAIConfig` 另记一份「磁盘原文基线」（`normalizeAIConfig` 之后的序列化与磁盘原文不同，不能当比较-交换的 base）；sealed 与「配置文件损坏」两条路径保持原行为（后者先把基线对齐损坏原文，否则修复写回会永远被判冲突）。
+- **`applyLoadedSessions` 整份替换会回滚非当前会话的元数据改动**（打开面板期间对别的会话改名 / 置顶 / 归档 / 改分组 / 清未读，几秒后凭空消失）。`writeMetaIfChanged` 现在记录本窗口真正写 meta 的时刻（`_metaWrittenAt`），新增纯函数 `mergeLoadedSessions`（`frontend/src/ai/session/ai-session-merge.js`）：只有「本轮读盘开始之后被本窗口写过」的会话保留内存 meta，且只搬 meta 字段——`messageCount` / `archivedCount` / `turnTs` / `endTs` 与正文、`_mids`、写盘基线一律以磁盘重读结果为准。
+- **`sessionsLoaded` 初值乐观**（legacy 模式下 init 会拿占位会话写 `activeSessionId`）。初值改为 `false`，由 `bootstrapSessionStorage` 三条路径显式置位；`sessionsPending()` 不再看存储模式（模式被另一窗口翻转时不会瞬间「已就绪」）；legacy 直通分支补 `adoptWorkspaceSession()` + `refreshSessionUI()`，否则初值改保守后会永远停在「正在读取会话…」。
+- **原地编辑快照按 `index` 恢复**（磁盘重读换掉消息序列时会挂到别的消息上、保存按错位下标截断）。编辑态新增消息身份 `mid`：快照、恢复、保存三处都按 `_mid` 现算下标，找不到就让用户重新选择（`endInlineEdit`），绝不按旧 `index` 硬挂或截断。
+- **`sameLogStat` 只比毫秒 + 体积**（同毫秒同尺寸的写入不可见）。Go 侧 `LogStat` 增加 `mtimeNs`（零额外 IO，本来就 stat 过一次），前端比较纳秒优先、老后端缺字段时回落毫秒。
+- 测试：新增 `frontend/test/ai/core/ai-config-merge.test.mjs`（10 例）与 `frontend/test/ai/session/ai-session-merge.test.mjs`（7 例），`ai-session-disk.test.mjs` 补纳秒分支与互斥/权限护栏，`ai-inline-edit-wiring` 与 `ai-session-stub-hydrate` 补按 `_mid` 定位与会话就绪判定断言；Go 侧新增 `aiconfig.WriteIfUnchanged` 三条（一致写入 / 基线过期不写并回传 / 密文 ErrSealed 不动文件）与 `statLog` 纳秒用例。
+- **验证**：`go test ./internal/aiconfig/ ./internal/sessionstore/`、`go test -run TestAppBindingBaseline .`（421 条通过）、`go build ./...`、`node scripts/gen-backend-types.mjs --check`、`npm run typecheck`、`npm run build`、`test:ai` / `test:ui-shell` 均通过（唯一红的 `ai-composer-submit-guard` 属另一未提交改动的断言漂移，与本轮无关）。
+
+### 修复（rebuild-exe.ps1 替换 exe 步骤报「找不到 Destination 参数」）
+
+- 一键重建脚本在测试门、前端构建、syso、go build 全部成功后，替换根目录 exe 时报错退出：`Rename-Item -LiteralPath $target -Destination $aside`——`-Destination` 是 `Move-Item` 的参数，`Rename-Item` 只有 `-NewName` 且不接受完整路径。这是 87cab96（刷新 Shell 图标缓存）把原 `Move-Item` 误改成 `Rename-Item` 引入的回归，两处（改名让路 + 失败回滚）都中招。
+- 修复：两处改回 `Move-Item -LiteralPath … -Destination … -Force`，语义不变；PowerShell 语法检查 + `-WhatIf` 空跑验证通过。
+
+### 优化（启动黑屏改为看板娘启动画面 + 窗口类型探测并行提速）
+
+- 启动时窗口先显示、但前端 `app-booting` 防闪现机制把整个界面藏起来，要等窗口模式探测完才摘除；这 1~2 秒里只剩窗口背景色，观感像「黑屏」。现在 `app-booting` 期间显示看板娘 CandySweet 字标启动画面（新素材压缩到 38KB，背景色与窗口一致），界面就绪后自动隐藏，不再有空白黑屏。
+- 提速：AI 浮窗探测 `IsAIFloatWindow` 从 bridge-ui 里串行 await 提到 main.js 顶层，与 console / terminal / aux 三类窗口探测并行发出，缩短摘除 `app-booting` 前的 IPC 往返。
+- 验证：`npm run build`、`npm test`（含 typecheck）全绿；dev server 实测启动画面渲染正常。
+
+### 修复（所有「在文件资源管理器中显示」入口打不开窗口）
+
+- 标题栏仓库菜单、文件树右键、编辑器右键、AI 会话工作区菜单等所有「在文件资源管理器中显示 / 在文件管理器中显示」入口点击后无反应，资源管理器窗口不出现（进程启动成功、前端不报错）。
+- 根因：2026-11-23「代码收敛」把 `ShowInFolder` 下沉为 `internal/shellexec.RevealInFolder` 时误加了 `executil.HideCommandWindow(cmd)`（`HideWindow: SW_HIDE` + `CREATE_NO_WINDOW`）。`explorer.exe` 是 GUI 程序，本就不会闪黑窗，这两个标志反而把要打开的资源管理器窗口一并隐藏。
+- 修复：移除该调用并在源码注释中写明原因，防止再次误加。验证：`go test ./internal/shellexec/...`、`go build ./...` 全绿。
+
 ### 优化（更新日志改为内置浏览器打开 Gitee 在线页面）
 
 - 「帮助 → 更新日志」不再把本地 `CHANGELOG.md`（已近 1 MB）以 `?raw` 打进前端包、开成内嵌虚拟文档，改为用内置浏览器标签页打开 Gitee 仓库的在线更新日志页（`blob/master/CHANGELOG.md`）。重复点击复用已打开的同地址标签，不叠标签；宿主不支持内置浏览器时降级系统浏览器打开。
