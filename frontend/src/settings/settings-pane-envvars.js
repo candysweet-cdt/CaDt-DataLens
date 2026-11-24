@@ -167,6 +167,10 @@ function openEnvVarEditor(name) {
     const toggle = document.getElementById('env-opt-value-toggle');
     if (toggle) toggle.textContent = '显示';
     if (mask) mask.classList.remove('hidden');
+    // 与模型编辑器同款：清掉拖拽残留的内联定位，避免入场动画结束后跳回上次拖到的位置
+    dlg.style.left = '';
+    dlg.style.top = '';
+    dlg.style.transform = '';
     dlg.classList.remove('hidden');
     // 进全局弹层栈（modal 档，遮罩作 underEl），替代旧的 window capture 抢跑监听
     if (envEditorStackHandle) envEditorStackHandle.dispose();
