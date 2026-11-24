@@ -15184,12 +15184,12 @@ body.preview-only #enc-popover { display: none !important; }
 .db-tab-query-tag { color: var(--muted); font-size: 11px; line-height: 20px; flex: 0 0 auto; font-weight: 600; }
 .db-tab-query-input { flex: 1; min-width: 0; resize: none; font: inherit; font-size: 12px; line-height: 18px;
     padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
-    color: var(--text); outline: none; overflow-y: auto; font-family: var(--mono, Consolas, monospace); }
+    color: var(--text); outline: none; overflow-y: auto; font-family: var(--editor-font-family); }
 .db-tab-query-input:focus { border-color: var(--accent); }
 .db-tab-query-run, .db-tab-query-clear { flex: 0 0 auto; }
 .db-tab-query-out { max-height: 40vh; overflow: auto; border-top: 1px solid var(--border); }
 .db-tab-query-status { color: var(--muted); font-size: 11px; padding: 4px 10px; }
-.db-tab-query-status.error { color: var(--err, #e06c75); white-space: pre-wrap; }
+.db-tab-query-status.error { color: var(--red); white-space: pre-wrap; }
 .db-tab-query-tablewrap { overflow: auto; max-height: calc(40vh - 24px); }
 .db-tab-query-table { border-collapse: collapse; font-size: 12px; width: 100%; }
 .db-tab-query-table th { position: sticky; top: 0; z-index: 1; text-align: left; font-weight: 600;
