@@ -8,7 +8,7 @@
 // startSessionTurn 抢注册流，落败方的占位 assistant 被守卫标成 stopped。
 //
 // composer 是闭包 + DOM，node 里派发不了按键，按项目惯例（见 ai-composer-esc.test.mjs）用
-// 源码断言钉住三处接线：submitInFlight 锁覆盖异步全程 / 直发分支 return submitText / Enter 挡 repeat。
+// 源码断言钉住三处接线：submitInFlight 锁覆盖异步全程 / 直发分支交回 submitText 的 Promise / Enter 挡 repeat。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -41,13 +41,17 @@ test('ai-composer.js：锁在 finally 里释放，同步抛错也不能把输入
     assert.match(fn[0], /submitInFlight = true;/, '提交前上锁');
 });
 
-test('ai-composer.js：直发分支 return submitText 的 Promise，锁才能持有到起轮清空输入区', () => {
+test('ai-composer.js：直发分支交回 submitText 的 Promise，锁才能持有到起轮清空输入区', () => {
     const src = read('ai/chat/ai-composer.js');
-    const fn = src.match(/function sendComposerMessage\(text, ev\) \{[\s\S]*?\n    \}/);
-    assert.ok(fn, 'sendComposerMessage 应存在');
-    // 不 return 的话 Promise 立刻 resolve，锁在 startSessionTurn 的 await 窗口里就放了，
-    // 双发照样能发生——这是修复的关键一半。
-    assert.match(fn[0], /return submitText\(text\);/, '直发分支必须把 submitText 的 Promise 交回去');
+    const fn = src.match(/async function sendComposerMessage\(text, ev\) \{[\s\S]*?\n    \}/);
+    assert.ok(fn, 'sendComposerMessage 应为 async 函数');
+    // 关键不变量：submitText 的 Promise 必须被 await 或 return，submitFromComposer 的防重入锁
+    // 才能持有到起轮落定、清空输入区。既不 await 也不 return 的话 Promise 立刻 resolve，
+    // 锁在 startSessionTurn 的 await 窗口里就放了，双发照样能发生——这是修复的关键一半。
+    // 不写死 `return submitText(text)`：粘贴胶囊改动后直发分支演进成
+    // `const ok = await submitText(expanded.text); …; return ok;`，语义等价（await 交回 Promise）。
+    assert.match(fn[0], /(?:return|await)\s+submitText\(/,
+        '直发分支必须 await 或 return submitText 的 Promise，把锁持有到异步提交落定');
 });
 
 test('ai-composer.js：Enter 处理挡掉键盘重复（e.repeat），先于发送判定', () => {
