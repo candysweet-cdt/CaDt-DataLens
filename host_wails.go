@@ -1,7 +1,7 @@
 package main
 
 // Wails v3 兼容层：根壳其它文件只依赖这里的应用/主窗口/事件/剪贴板/退出动作。
-// P2 起多窗口共享一个 App 服务实例，窗口级状态经 windowmeta.go 的 windowState 归属。
+// P2 起多窗口共享一个 App 服务实例，窗口级状态经 window_host.go 的 windowState 归属。
 
 import (
 	"context"

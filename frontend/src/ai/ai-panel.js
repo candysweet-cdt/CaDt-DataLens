@@ -1815,6 +1815,14 @@ export function createAIPanel(options) {
             if (raw.agent && typeof raw.agent === 'object') {
                 const agentState = ['done', 'error', 'stopped'].includes(raw.agent.state) ? raw.agent.state : 'stopped';
                 message.agent = {
+                    // 身份字段必须随会话读回保留：HUD 的 listAgentsForHud 第 4 源靠 agent.key 去重
+                    // （缺它则回退到 toolCallId，与运行期 Map 的 agent-* 不等 → 子代理显示两次）；
+                    // id/artifactDir 供详情视图从磁盘补读转录，depth/sandboxMode 供层级与徽标展示。
+                    key: aiTextOf(raw.agent.key),
+                    id: aiTextOf(raw.agent.id),
+                    depth: Math.max(0, Number(raw.agent.depth) || 0),
+                    artifactDir: aiTextOf(raw.agent.artifactDir),
+                    sandboxMode: aiTextOf(raw.agent.sandboxMode),
                     name: aiTextOf(raw.agent.name).slice(0, 16),
                     task: aiTextOf(raw.agent.task),
                     state: agentState,

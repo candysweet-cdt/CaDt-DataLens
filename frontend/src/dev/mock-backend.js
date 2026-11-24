@@ -578,7 +578,7 @@ function mockRedisApplyOps(ops) {
     return rows;
 }
 
-// 与 frontend/src/ai/ai-file-tools.js / Go globMatchPath 同规则的简易通配（mock 专用，避免跨模块依赖）
+// 与 frontend/src/ai/tools/ai-file-tools.js / Go globMatchPath 同规则的简易通配（mock 专用，避免跨模块依赖）
 function mockGlobMatch(pattern, relPath, name) {
     const pat = String(pattern || '').trim();
     if (!pat) return true;

@@ -1,6 +1,6 @@
 // bookmark-actions.js：app_control 书签动作（list/add/remove/clear/goto）的执行体。
 // 从 main.js 的 runAppAction switch 拆出（phase4 M2），函数体逐字搬移；
-// 编辑器域函数经 deps 注入（getter 活引用），bookmark-list 纯函数直接 import。
+// 编辑器域：状态经 getter 活引用（getDocs/getFile），函数经 deps 直接注入（稳定引用）；bookmark-list 纯函数直接 import。
 
 import {bookmarkOverview, formatBookmarkListText} from './bookmark-list.js';
 

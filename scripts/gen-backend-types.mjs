@@ -106,8 +106,23 @@ function matchParen(s, i) {
     return -1;
 }
 
+// matchBracket 从 s[i]（必须是 '['）出发找配对 ']' 的下标，找不到返回 -1。
+// 与 matchParen 同理用深度扫描：map[string][]int 的 key 右括号不是 lastIndexOf(']')。
+function matchBracket(s, i) {
+    let depth = 0;
+    for (let j = i; j < s.length; j++) {
+        if (s[j] === '[') depth++;
+        else if (s[j] === ']') {
+            depth--;
+            if (depth === 0) return j;
+        }
+    }
+    return -1;
+}
+
 // stripBody 切掉返回值后面的函数体（含单行 `{ return X }` 与跨行 `{`）。
 // `interface{}` / `map[string]interface{}` 里的花括号不算函数体，按前一个词判定。
+// 前导字符要含 `]`：map[string]interface{} 里 interface 前是 ']'，不是空白/括号/逗号。
 function stripBody(s) {
     let depth = 0;
     for (let i = 0; i < s.length; i++) {
@@ -115,7 +130,7 @@ function stripBody(s) {
         if (ch === '(' || ch === '[') depth++;
         else if (ch === ')' || ch === ']') depth--;
         else if (ch === '{' && depth === 0) {
-            if (/(^|[\s(\[,])interface$/.test(s.slice(0, i))) continue;
+            if (/(^|[\s(\[, \]])interface$/.test(s.slice(0, i))) continue;
             return s.slice(0, i);
         }
     }
@@ -224,13 +239,21 @@ function goTypeToTs(goType, named) {
         // 否则 'Struct | null[]' 会被 TS 读成 'Struct | (null[])'，语义错位。
         ts = elem.includes('|') ? `(${elem})[]` : `${elem}[]`;
     } else if (t.startsWith('map[')) {
-        const inner = t.slice(4, t.lastIndexOf(']'));
-        const val = t.slice(t.lastIndexOf(']') + 1);
-        const key = SCALARS.get(inner.trim()) === 'number' ? 'number' : 'string';
-        ts = `Record<${key}, ${goTypeToTs(val, named)}>`;
-    } else if (Object.prototype.hasOwnProperty.call(STRUCT_INTERFACES, t)) {
-        // 已登记的无歧义结构体：用真 interface 名，不再记 unknown
-        ts = t;
+        // 用配对扫描找 key 的 ']'：lastIndexOf(']') 会把 map[string][]int 的值切片括号误当 key 结束，
+        // 得到 inner="string][" / val="int"，错生成 Record<string, number> 而非 Record<string, number[]。
+        const keyClose = matchBracket(t, 3);
+        if (keyClose < 0) {
+            ts = 'unknown';
+        } else {
+            const inner = t.slice(4, keyClose);
+            const val = t.slice(keyClose + 1);
+            const key = SCALARS.get(inner.trim()) === 'number' ? 'number' : 'string';
+            ts = `Record<${key}, ${goTypeToTs(val, named)}>`;
+        }
+    } else if (Object.prototype.hasOwnProperty.call(STRUCT_INTERFACES, t.split('.').pop())) {
+        // 已登记的无歧义结构体：用真 interface 名，不再记 unknown。
+        // 取末段匹配——Go 签名里常带包名（*plugins.PluginInfo → t="plugins.PluginInfo"）。
+        ts = t.split('.').pop();
     } else if (/^[A-Za-z_][A-Za-z0-9_.]*$/.test(t)) {
         // 具名类型（结构体 / 别名 / 其它包的导出类型）：暂记 unknown，登记待补
         named.add(t.split('.').pop());

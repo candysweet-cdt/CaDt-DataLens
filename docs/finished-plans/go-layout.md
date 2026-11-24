@@ -225,7 +225,7 @@ E 系列后再审根目录，确认仍有三处「壳里有引擎编排」和两
 | 0 | **绑定面基线守卫** | `app_bindings_guard_test.go` + `testdata/app_bindings_baseline.txt`：反射枚举 `*App` 方法集（**420** 条，含嵌入服务提升方法），过滤 wails 的 `internalServiceMethods`（`ServiceName` / `ServiceStartup` / `ServiceShutdown` / `ServeHTTP`），排序后逐行比对；多一个少一个都红，并禁止 `Start` / `Close` / `EnsureDir` 这类代表名进基线 |
 | 1 | **宿主接线合并**（零逻辑） | 9 个「只做 init 注入、零绑定」的壳 → `host_wiring.go`；3 个 embed 壳 → `embed_assets.go`；`wails_app.go` 更名 `host_wails.go`。**init 顺序纪律**：同包 init 按文件名字典序执行，`embed_assets.go`（e）早于 `host_wiring.go`（h），所以 `desktopmcp.Logf` 必须写成转发闭包而不是取 `mcp.Logf` 函数值（2026-11-23 审查 M3 的坑） |
 | 2 | **纯逻辑下沉** | 新增 `internal/windowreg`（`Mode` / `Spec` / `State[W]` / `Registry[W]` / `PathKey` / 辅助窗查找，约 480 行 + 测试 196 行）与 `internal/secondinstance`（`Decide` + `Plan`/`Group`/`Deps`，约 125 行 + 表驱动测试 157 行）、`internal/eventowner`（约 100 行 + 测试 99 行）；几何 key 并入 `internal/windowgeom`（`RestoreKey` / `PersistKey` + 测试）。根侧全部用类型别名 + 薄包装，**窗口族 9 个文件的调用点只做大小写导出化**（`st.name()` → `st.Name()` 等约 100 处，编译器兜底） |
-| 3 | **服务化收编 25 个绑定壳**（4 小批：存储族 / AI 族 / 开发者族 / 文件与调试族） | 删除 `memo_app` `activity_app` `sessionindex_app` `usage_stats_app` `app_preview_assets` `ai_artifact_app` `ai_catalog_app` `ai_gen_app` `ai_image_policy_app` `ai_usage_app` `ai_worklog_app` `cognition_app` `maven_app` `sandbox_app` `run_project_app` `structuredir_app` `sqlview_app` `update_app` `envvars_app` `patch_review` `webtools_app` `webtools_config` `dbclient_app` `gitinfo_app`；`init` 注入统一搬进 `host_wiring.go`。**cognition 是特例**：包内已有 `Service`（引擎），绑定承载类型叫 `Bindings`，由 `NewBindings(logf)` 构造 |
+| 3 | **服务化收编 26 个绑定壳**（4 小批：存储族 / AI 族 / 开发者族 / 文件与调试族） | 删除 `memo_app` `activity_app` `sessionindex_app` `usage_stats_app` `app_preview_assets` `ai_artifact_app` `ai_catalog_app` `ai_gen_app` `ai_image_policy_app` `ai_usage_app` `ai_worklog_app` `cognition_app` `maven_app` `sandbox_app` `run_project_app` `structuredir_app` `sqlview_app` `update_app` `envvars_app` `patch_review` `webtools_app` `webtools_config` `dbclient_app` `gitinfo_app` 等（完整清单以 `git show --diff-filter=D 77a4e76` 为准，共 27 个 `_app.go`，其中 `window_app.go` 属批 4）；`init` 注入统一搬进 `host_wiring.go`。**cognition 是特例**：包内已有 `Service`（引擎），绑定承载类型叫 `Bindings`，由 `NewBindings(logf)` 构造 |
 | 4 | **窗口宿主收敛** | `windowmeta.go` + `window_app.go` → `window_host.go`；`terminal_window.go` + `ai_float.go` + `global_hotkey.go` → `window_aux.go`；`app_close_action.go` 更名 `window_close.go`。`window_factory.go` / `window_geometry.go` 保持独立（职责单一、且是最活跃的建窗路径，不做文件级重写） |
 | 5 | **测试归位与文档** | `secondinstance_plan_test.go` → `internal/secondinstance/`；`window_geometry_test.go` + `aux_windows_test.go` → `internal/windowgeom/keys_test.go` + `internal/windowreg/windowreg_test.go`；新增 `window_route_test.go`（依赖 `winReg` 的真实路由语义留根）与 `window_aux_test.go` |
 
@@ -236,7 +236,7 @@ E 系列后再审根目录，确认仍有三处「壳里有引擎编排」和两
 | 根目录 `.go` | 107（84 非测试 + 23 测试） | **49**（30 非测试 + 19 测试） |
 | 根目录非测试行数 | 6589 | **4639**（−30%） |
 | 根目录总行数 | 9149 | **6923** |
-| `internal/` 包数 | 74 | **79**（+windowreg / +secondinstance / +eventowner / +winutil） |
+| `internal/` 包数 | 75 | **79**（+windowreg / +secondinstance / +eventowner / +winutil） |
 | 绑定方法 | 285 显式 + 提升 | **420（不变）**，基线一致 |
 | 前端改动 | — | **0 行** |
 

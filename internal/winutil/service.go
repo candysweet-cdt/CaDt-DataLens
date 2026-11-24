@@ -2,7 +2,7 @@ package winutil
 
 // service.go：Wails 绑定承载类型。App 匿名嵌入 *Service 后，GetSystemCursors
 // 自动进 *App 方法集，前端 FQN 仍是 main.App.GetSystemCursors。
-// 平台实现（SystemCursors）在 cursors_windows.go / cursors_other.go。
+// 平台实现（SystemCursors）在 winutil_windows.go / winutil_other.go。
 
 // Service 是纯平台能力的绑定承载类型。
 type Service struct{}

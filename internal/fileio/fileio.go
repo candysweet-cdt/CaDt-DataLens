@@ -1,7 +1,7 @@
 package fileio
 
 // 文件读写与编码：打开/保存（含外部修改校验）、图片与二进制判定、编码探测与转换。
-// 系统对话框与 App 生命周期留在根壳（app_fs.go / app_window.go）。
+// 系统对话框与 App 生命周期留在根壳（app_dialogs.go / app_window.go）。
 
 import (
 	"bytes"

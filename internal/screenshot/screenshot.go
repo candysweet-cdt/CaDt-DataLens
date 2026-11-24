@@ -6,7 +6,7 @@ import "context"
 // Capturer 截图引擎（无状态）。
 type Capturer struct{}
 
-// FindParent 返回要截图的窗口句柄的兜底（main/windowicon_windows.go 的
+// FindParent 返回要截图的窗口句柄的兜底（根 platform_windows.go 的
 // findWailsWindow）。v3 一进程多窗口后只在拿不到调用方窗口时兜底。
 var FindParent func() uintptr
 

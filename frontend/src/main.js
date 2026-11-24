@@ -3861,7 +3861,7 @@ function setAIPanelMode(mode) {
 }
 
 // 消息中心：状态栏【消息】入口 + 浮层面板 + 持久化队列（AI notify_send / 失败·提问·审批 / 版本更新进这里；
-// 例行「任务完成」不进——会刷屏，见 ai/ai-notify-policy.js）。
+// 例行「任务完成」不进——会刷屏，见 ai/core/ai-notify-policy.js）。
 // toast 点击与消息行点击：带 actionId 的分派动作（如打开更新对话框），否则跳转到对应 AI 会话。
 // 跳转逻辑被 focusAISession 收口：系统通知点击（ai-notify-activate 事件）走同一条路。
 function focusAISession(sessionId) {
@@ -3922,7 +3922,7 @@ const storageAutoClean = createStorageAutoClean({
 });
 storageAutoClean.start();
 
-// 工作区破坏防护控制器（ai/ai-wipeguard.js，方案 docs/finished-plans/workspace-wipe-guard.md）：
+// 工作区破坏防护控制器（ai/security/ai-wipeguard.js，方案 docs/finished-plans/workspace-wipe-guard.md）：
 // 两信号检测（watcher 滚动净消失计数为主 + 指纹兜底）→ critical 时**不停会话**，只出
 // 状态栏红条并向活跃会话插队投递应用消息（2026-11-19 作者裁定）。写前备份与恢复出口
 // 不在本处（ai-panel 写路径 + 设置页）。
@@ -5180,7 +5180,7 @@ const appPageMounters = {
         if (!aiPanel) initAIPanel();
         return aiPanel && aiPanel.bridgeMountSchedules ? aiPanel.bridgeMountSchedules(root) : null;
     },
-    // 智能体的 DOM 停靠在 #agents-park，mount 搬进 / 卸载搬出（ai/ai-agent-settings.js）
+    // 智能体的 DOM 停靠在 #agents-park，mount 搬进 / 卸载搬出（ai/agent/ai-agent-settings.js）
     'agents': (root) => {
         if (!aiPanel) initAIPanel();
         return aiPanel && aiPanel.bridgeMountAgents ? aiPanel.bridgeMountAgents(root) : null;

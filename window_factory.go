@@ -3,7 +3,7 @@ package main
 // window_factory.go：一进程多窗口的窗口工厂与投递助手（P2）。
 //
 // 三种窗口：主窗口（可多个，按工作区复用）、AI 浮窗（单例）、调试控制台（单例）。
-// 所有窗口共用同一个 App 服务实例；窗口级状态经 windowState 归属（见 windowmeta.go）。
+// 所有窗口共用同一个 App 服务实例；窗口级状态经 windowState 归属（见 window_host.go）。
 
 import (
 	"time"

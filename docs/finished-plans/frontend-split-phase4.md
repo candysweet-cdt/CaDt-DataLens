@@ -315,7 +315,7 @@
 ### 8.1 本轮实施记录（2026-11-24）
 
 **阶段一：ai/ 目录全量重组（已实施）**
-- 116 个源码文件按 10 域归位（agent/chat/core/gen/group/security/session/settings/tools/usage），`ai-panel.js` 留 `ai/` 根作组合根；127 个测试文件镜像拆到 `test/ai/<域>/`，7 个组合根/跨多域测试留根。
+- 116 个源码文件按 10 域归位（agent/chat/core/gen/group/security/session/settings/tools/usage），`ai-panel.js` 留 `ai/` 根作组合根；127 个测试文件中 91 个镜像拆到 `test/ai/<域>/`，36 个组合根/跨多域测试留根（合计 127）。
 - 一次性迁移脚本（`.cadt/tmp-*`，用完即删）按 basename 查映射表，重算所有相对路径层级（import / read() / new URL() / 动态 import / 断言正则 / HOSTS 裸路径），同步 `package.json` 的 `test:ai` 清单（127 条）。
 - 修复了迁移暴露的边角：留根测试路径层级、`read()` 自带基准包装、断言字符串被误改、动态 import 变量路径、正则字面量里的 import 断言。
 - 验证：`npm test` 全量 2652 项全绿（1495+649+487+21）；`npm run build` 成功。

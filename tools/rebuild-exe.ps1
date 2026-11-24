@@ -190,8 +190,8 @@ try {
         $ErrorActionPreference = "Continue"
 
         # 绑定面一致性：d.ts 由 testdata/app_bindings_baseline.txt 生成，后端改了绑定面却没
-        # 重跑生成器时这里当场红（typecheck 只验 d.ts 自洽，验不出它与基线脱节）。放在 Go
-        # 测试之后、前端测试之前，失败计入 feFail 走同一套失败摘要与「跳过强行构建」流程。
+        # 重跑生成器时这里当场红（typecheck 只验 d.ts 自洽，验不出它与基线脱节）。当前位于 Go
+        # 测试之前、前端测试之前，失败计入 feFail 走同一套失败摘要与「跳过强行构建」流程。
         Write-Host ""
         Write-Host "—— 绑定类型一致性（gen-backend-types --check）——" -ForegroundColor DarkGray
         Push-Location $root

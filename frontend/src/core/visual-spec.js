@@ -1,5 +1,5 @@
 // visual-spec.js：AI 可视化规范的单一来源——主题 token、尺寸预算、提示词规范文本、路由决策表。
-// 消费方：core/widget.js（SHADOW_STYLE 与限额）、ai/ai-constants.js（技能文本拼装）、图表引擎
+// 消费方：core/widget.js（SHADOW_STYLE 与限额）、ai/core/ai-constants.js（技能文本拼装）、图表引擎
 // （resolveThemeColors 给 SSR 注入当前主题的具体色值——静态 SVG 里 CSS 变量不会被解析）。
 // 阶段 1（docs/unfinished-plans/visualizer.md §4）：只搬运既有常量与文本，行为零变化。
 

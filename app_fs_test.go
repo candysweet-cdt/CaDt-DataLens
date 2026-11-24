@@ -1,6 +1,6 @@
 package main
 
-// app_fs.go 的 ReadDirTree（AI list_dir 递归树）测试。
+// internal/fsops 的 FS.ReadDirTree（AI list_dir 递归树）测试。
 
 import (
 	"datalens/internal/fsops"

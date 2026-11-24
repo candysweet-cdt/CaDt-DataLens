@@ -50,7 +50,7 @@
 - `ctx context.Context` 不出现（v3 由 Go 侧注入）；末位 `error` 不出现（reject），只 `error` 的返回映射 `Promise<void>`，多个非 error 返回值映射元组。
 - Go 基础类型 → `string` / `number` / `boolean`；切片 → `T[]`（元素带联合时加括号，`[]*T` → `(T | null)[]`）；`map` → `Record`。具名结构体中**字段全为基础类型且无同名歧义**的（`GitOperationResult` / `PluginInfo` / `AISchedule`，登记在生成器的 `STRUCT_INTERFACES`）生成 interface；其余暂记 `unknown` 并留 `@go` 注释——有嵌套子类型（`SearchResult` / `PatchPreview`）或同名多版本（`LeaseStatus` 三个版本）的做全套解析器复杂度远超收益，且调用点都在未开 checkJs 的 `.js` 里，`unknown` 目前不产生任何误报。
 - 平台成对文件优先取 `_windows.go`（本项目只发 Windows）；同名方法优先取接收者为 `App` 的那条，其余才算歧义。
-- 当前覆盖：**420/420 全部有签名，精确 263、含 unknown 157、歧义 0、未找到 0**。
+- 当前覆盖：**420/420 全部有签名，精确 265、含 unknown 155、歧义 0、未找到 0**。
 
 验证：
 
@@ -87,7 +87,7 @@ npm run -s typecheck                               # frontend/ 下；tsc -p tsco
 
 ### 阶梯 3（ai 域，最后一个）
 
-`ai/` 117 文件，其中 `ai-panel.js` 19,474 行必须**先按既有拆分方案拆完再迁**。迁移前先把 `backend.d.ts` 里 175 个 `unknown` 的返回值补成真 interface（从 Go 结构体生成），否则 ai 域大量 `await backend.X()` 的结果仍是 `unknown`。
+`ai/` 117 文件，其中 `ai-panel.js` 19,474 行必须**先按既有拆分方案拆完再迁**。迁移前先把 `backend.d.ts` 里 `unknown` 的返回值按需补成真 interface（从 Go 结构体生成，数量以生成产物头注为准），否则 ai 域大量 `await backend.X()` 的结果仍是 `unknown`。
 
 ## 4. 不变式（迁移期间别破的规矩）
 
@@ -101,5 +101,5 @@ npm run -s typecheck                               # frontend/ 下；tsc -p tsco
 
 1. **换后缀暂缓，checkJs 作为当前终态**：24 个 core 文件开 `@ts-check` 后，`npm test` 门已能拦住历史上那 10 条 `ReferenceError` 类事故；换后缀要动 246 处测试 import + 5 个按 `.js` 扫描的护栏，而类型全在构建期擦除、对单 exe 产物零影响，性价比不足。真需要复杂泛型时再重评。
 2. **Node 下限**：若将来换后缀，抬到 22.18+（Node 只是 dev 工具，用户跑 exe 不需要；约束只在 `AGENTS.md` / `README.md` 两行文档），**不引 `tsx`**（纯新增依赖）。当前不换后缀，故暂不改文档。
-3. **`--check` 已挂测试门**：`tools/rebuild-exe.ps1` 在 Go 测试后、前端测试前跑 `node scripts/gen-backend-types.mjs --check`，失败计入「绑定类型」走同一套失败摘要与强行构建流程。
-4. **unknown 按需补**：已补 3 个无歧义结构体（精确 245→263、unknown 175→157）；嵌套子类型与同名多版本的保持 unknown（理由见阶梯 0 生成口径）。
+3. **`--check` 已挂测试门**：`tools/rebuild-exe.ps1` 在 Go 测试前、前端测试前跑 `node scripts/gen-backend-types.mjs --check`，失败计入「绑定类型」走同一套失败摘要与强行构建流程。
+4. **unknown 按需补**：已补 3 个无歧义结构体（精确 245→265、unknown 175→155）；嵌套子类型与同名多版本的保持 unknown（理由见阶梯 0 生成口径）。修正包限定名（`plugins.PluginInfo`→`PluginInfo`）后 `AddPluginFromFolder` / `ImportPluginFromZip` 也命中，精确 263→265。

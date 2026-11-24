@@ -55,7 +55,7 @@
 | 0 | **绑定面守卫** | `app_bindings_guard_test.go` + `testdata/app_bindings_baseline.txt`（420 条）。反射枚举 `*App` 方法集，排序逐行比对，多一个少一个都红；禁止 `Start`/`Close`/`EnsureDir` 这类内部助手名进基线（历史事故 `Scheduler.Start`、`Manager.EnsureDir`） |
 | 1 | **宿主接线合并** | 9 个纯 init 壳 → `host_wiring.go`；3 个 embed 壳 → `embed_assets.go`；`wails_app.go` → `host_wails.go` |
 | 2 | **纯逻辑下沉** | 新增 `internal/windowreg` / `secondinstance` / `eventowner`，几何 key 并入 `internal/windowgeom`；根侧用类型别名让窗口族调用点只做大小写导出化 |
-| 3 | **服务化收编** | 26 个 `*_app.go` 删除，绑定随各域 `Service` 提升；`init` 注入统一搬进 `host_wiring.go`。含最厚的 gitinfo（37 绑定）/ dbclient（24）/ desktopmcp（异步安装作业 + 进度事件） |
+| 3 | **服务化收编** | 26 个 `*_app.go` 删除（主体提交 77a4e76 共删 27 个 `_app.go`，其中 `window_app.go` 属批 4 窗口收敛），绑定随各域 `Service` 提升；`init` 注入统一搬进 `host_wiring.go`。含最厚的 gitinfo（37 绑定）/ dbclient（24）/ desktopmcp（异步安装作业 + 进度事件） |
 | 4 | **窗口宿主收敛** | `windowmeta`+`window_app` → `window_host.go`；`terminal_window`+`ai_float`+`global_hotkey` → `window_aux.go`；`app_close_action` → `window_close.go` |
 | 5 | **平台能力下沉** | 零 App/Wails 依赖的 4 对平台文件 → 新包 `internal/winutil`；`notify` 的 init 并入 `windowicon` |
 | 6 | **文件合并** | 5 对 Wails 平台 glue → `platform_windows/other.go`；`appservices`+`resource_watch` → `app_field_bindings.go`；`app_fs`+`app_dialogs` → `app_dialogs.go`；`appdata`+`logging` → `app_infra.go`；`winutil` 包内 4 对 → 2 文件 |
@@ -107,7 +107,7 @@ type Registry[W any] struct { /* 命名策略、查找、计数 */ }
 | 根目录 `.go` | 107（84 非测试 + 23 测试） | **49**（30 非测试 + 19 测试） |
 | 根目录非测试行数 | 6589 | **4639**（−30%） |
 | 根目录总行数 | 9149 | **6923** |
-| `internal/` 包数 | 74 | **79**（+windowreg / secondinstance / eventowner / winutil） |
+| `internal/` 包数 | 75 | **79**（+windowreg / secondinstance / eventowner / winutil） |
 | 绑定方法 | 285 显式 + 提升 | **420，不变** |
 | 前端改动 | — | **0 行** |
 
@@ -210,7 +210,7 @@ P2 的 4 个输出状态被 8+ 处读取，P3 的 5 个视图状态被 return �
 | 指标 | 起点 | 终点 |
 | --- | --- | --- |
 | `src/ai/` 顶层文件 | 117 | **1**（`ai-panel.js`）+ 10 域目录 |
-| `test/ai/` 顶层测试 | 127 | **7**（组合根/跨多域）+ 10 域目录 |
+| `test/ai/` 顶层测试 | 127 | **36**（组合根/跨多域）+ 10 域目录（91 个入域，合计 127） |
 | `ai-panel.js` 行数 | 19636 | **19474**（P2 −190、P3 −62；大头仍锁死） |
 | `main.js` 行数 | 7688 | **7307**（M1/M2/M3 累计 −380） |
 | 内部依赖边 / 环 | 260 / 0 | 迁移后复核仍 0 环 |
@@ -268,7 +268,7 @@ db05fd3  refactor(frontend): 拆出上下文组装模块                5 files,
 
 给前端装上一道**类型门**，但不做「306 个文件一把换后缀」。三步：
 
-1. **绑定面有类型**：`scripts/gen-backend-types.mjs` 从绑定基线 + Go 源码生成 `backend.d.ts`，420 个 Wails 绑定方法全部有签名（精确 263 / unknown 157）；
+1. **绑定面有类型**：`scripts/gen-backend-types.mjs` 从绑定基线 + Go 源码生成 `backend.d.ts`，420 个 Wails 绑定方法全部有签名（精确 265 / unknown 155；审查中修正了 map 值切片与包限定名解析Bug，原为 263/157）；
 2. **类型门进 CI 链**：`tsconfig.check.json` + `npm run typecheck` 挂在 `npm test` 最前面，`rebuild-exe.ps1` 的测试门再加一道 `--check` 防绑定面漂移；
 3. **24 个 core 文件开 `@ts-check`**：`strict` 下零错误，历史上那 10 条 `ReferenceError` / `is not a function` 类事故从此在编译期被拦。
 
@@ -338,7 +338,7 @@ db05fd3  refactor(frontend): 拆出上下文组装模块                5 files,
 | 指标 | 起点 | 终点 |
 | --- | --- | --- |
 | 开 `@ts-check` 的 core 文件 | 0 | **24**（strict 零错误） |
-| 绑定方法签名 | 无类型 | **420/420 有签名**（精确 263 / unknown 157 / 歧义 0 / 未找到 0） |
+| 绑定方法签名 | 无类型 | **420/420 有签名**（精确 265 / unknown 155 / 歧义 0 / 未找到 0；审查修正解析 bug 后由 263/157 提升） |
 | 具名结构体 interface | 0 | **3**（GitOperationResult / PluginInfo / AISchedule） |
 | `npm test` | 2652 项 | **2652 项全绿**（typecheck 已进前置门） |
 | `dist` 体积 | 15 MB | **15 MB**（类型擦除，产物零影响） |

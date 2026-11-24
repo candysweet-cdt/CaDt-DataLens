@@ -8,7 +8,7 @@ type Notifier struct{}
 var (
 	// Logf 诊断日志（main/logging.go 的 writeAppLog）。
 	Logf func(level, format string, args ...any)
-	// IconID 是 exe 内嵌图标组编号（main/windowicon_windows.go 的 appIconID）。
+	// IconID 是 exe 内嵌图标组编号（根 platform_windows.go 的 appIconID）。
 	IconID uintptr
 	// OnToastActivation 在用户点击本应用的系统通知时被调用（Windows COM 激活回调，
 	// payload 是发通知时随 NotifySystemToast 传入的激活参数原文，如 "ai-session=<id>"）。

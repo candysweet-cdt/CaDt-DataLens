@@ -5,7 +5,7 @@ package main
 // 三个来源合并而来（原 terminal_window.go / ai_float.go / global_hotkey.go），
 // 共同点：都是「把某个已有资源换成独立窗口渲染」以及「窗口归属判定」，
 // 且都只是打开动作与启动上下文，不含窗口创建逻辑（在 window_factory.go）。
-// 便签 / 监控 / 对比 / 轻量查看 / 实时预览五类辅助窗的绑定在 aux_windows.go。
+// 便签 / 监控 / 对比 / 轻量查看 / 实时预览五类辅助窗的绑定在 window_aux_bindings.go。
 
 import (
 	"context"

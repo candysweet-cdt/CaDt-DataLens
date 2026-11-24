@@ -4,7 +4,7 @@
 // 名单由 app_bindings_guard_test.go 校验，前端 FQN 是 main.App.<Method>；
 // 运行时经 Call.ByName 动态解析（frontend/src/core/wails-runtime.js 的 createBackendProxy）。
 //
-// 本次签名覆盖：精确 263 / 含 unknown 157 / 签名冲突 0 / 未找到 0
+// 本次签名覆盖：精确 265 / 含 unknown 155 / 签名冲突 0 / 未找到 0
 // 含 unknown 的行上方有 @go 注释，写明 Go 原始签名与待补的结构体名。
 //
 // 用法（阶梯 1 之后，jsconfig 仍保持 checkJs:false）：
@@ -177,8 +177,7 @@ export interface Backend {
     ActivityClear(): Promise<void>;
     ActivityPath(): Promise<string>;
     ActivityRead(queryJSON: string): Promise<string>;
-    /** @go AddPluginFromFolder(ctx context.Context) → (*plugins.PluginInfo, error) // 待补: PluginInfo */
-    AddPluginFromFolder(): Promise<unknown>;
+    AddPluginFromFolder(): Promise<PluginInfo | null>;
     AppGracefulQuitAck(): Promise<void>;
     /** @go AppServiceList() → ([]appservices.Status) // 待补: Status */
     AppServiceList(): Promise<unknown[]>;
@@ -389,8 +388,7 @@ export interface Backend {
     GroupLeaseReleaseByOwner(owner: string): Promise<number>;
     /** @go GroupLeaseStatus(id string) → (GroupLeaseStatus, error) // 待补: GroupLeaseStatus */
     GroupLeaseStatus(id: string): Promise<unknown>;
-    /** @go ImportPluginFromZip(ctx context.Context) → (*plugins.PluginInfo, error) // 待补: PluginInfo */
-    ImportPluginFromZip(): Promise<unknown>;
+    ImportPluginFromZip(): Promise<PluginInfo | null>;
     InstallPluginFromUrl(rawUrl: string): Promise<PluginInfo | null>;
     IsAIFloatWindow(): Promise<boolean>;
     IsDebugConsoleWindow(): Promise<boolean>;
@@ -469,7 +467,7 @@ export interface Backend {
     /** @go ParseReadingDocx(path string) → (*ReadingDocx, error) // 待补: ReadingDocx */
     ParseReadingDocx(path: string): Promise<unknown>;
     /** @go PatchApply(planID string, files []string, hunks map[string][]int, mode string) → (*patch.PatchApplyResult, error) // 待补: PatchApplyResult */
-    PatchApply(planID: string, files: string[], hunks: Record<string, number>, mode: string): Promise<unknown>;
+    PatchApply(planID: string, files: string[], hunks: Record<string, number[]>, mode: string): Promise<unknown>;
     PatchDelete(id: string, root: string): Promise<void>;
     /** @go PatchList(root string, limit int) → ([]patch.PatchMeta, error) // 待补: PatchMeta */
     PatchList(root: string, limit: number): Promise<unknown[]>;

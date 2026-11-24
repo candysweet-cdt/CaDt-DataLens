@@ -23,7 +23,7 @@ const agentMod = createBridgeAgentView(deps);
 // 智能体团队详情标签页：doc.agentTeam = 会话 id（正文渲染在面板 ai-team-view.js）
 const teamMod = createBridgeTeamView(deps);
 const sideChatMod = createBridgeSideChat(deps);
-// 群聊成员详情标签页：doc.groupMember = groupId:agentId；正文渲染在 ai/ai-group-member-view.js
+// 群聊成员详情标签页：doc.groupMember = groupId:agentId；正文渲染在 ai/group/ai-group-member-view.js
 const groupMemberMod = createBridgeGroupMemberView(deps);
 // 快捷便签面板：虚拟标签页 + 数据 store（AI 经 app_control memo 动作走同一套变更通路）
 const memoMod = createBridgeMemoView(deps);

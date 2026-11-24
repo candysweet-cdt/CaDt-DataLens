@@ -7,6 +7,22 @@ import {sandboxModeLabel} from '../security/ai-sandbox-grant.js';
 import {buildAgentTree, flattenAgentTree} from './ai-agent-tree.js';
 import {agentLevelText} from '../group/ai-team-model.js';
 
+// 子代理 HUD 条目的双维度判重器：key（agent-*）与 toolCallId（模型 call.id）任一命中即视为同一条。
+// 为什么两个维度：正常数据两者都有；历史会话的 spawn_agent meta 被旧版 normalizeMessage 剥掉了
+// agent.key，兜底源只能回退到 toolCallId——若只按 key 去重就会与运行期 Map 的 agent-* 判为不同、
+// 同一个已完成子代理显示两次（5 → 10）。两个维度都登记，新数据与历史数据都能去重。
+// 纯函数，无 DOM / Wails 依赖，供 listAgentsForHud 与回归测试共用。
+export function makeHudDeduper() {
+    const keys = new Set();
+    const calls = new Set();
+    return function seen(key, callId) {
+        if ((key && keys.has(key)) || (callId && calls.has(callId))) return true;
+        if (key) keys.add(key);
+        if (callId) calls.add(callId);
+        return false;
+    };
+}
+
 export function createAIHeadHud(ctx, extras) {
     const el = ctx.el;
     const panel = ctx.panel;
@@ -112,13 +128,13 @@ export function createAIHeadHud(ctx, extras) {
     // ownerOverride：团队详情标签页按「打开时的会话」取数（用户切走后它仍显示原会话的团队）
     function listAgentsForHud(ownerOverride) {
         const out = [];
-        const seen = new Set();
+        const seen = makeHudDeduper();
         const ownerId = String(ownerOverride || '') || hudSessionId();
         const belongs = (owner) => !ownerId || !owner || owner === ownerId;
         for (const sub of subAgents.values()) {
-            seen.add(sub.key);
+            if (seen(sub.key, sub.toolCallId)) continue;
             if (!belongs(sub.rootSessionId || sub.parentSessionId)) continue;
-            out.push({toolCallId: sub.key, key: sub.key, subId: sub.id, parentSessionId: sub.parentSessionId,
+            out.push({toolCallId: sub.toolCallId || sub.key, key: sub.key, subId: sub.id, parentSessionId: sub.parentSessionId,
                 name: sub.name, task: sub.task,
                 depth: sub.depth, state: 'running', startedAt: sub.startedAt,
                 mode: sub.mode || 'blocking', continuable: true,
@@ -128,15 +144,13 @@ export function createAIHeadHud(ctx, extras) {
                 sessionTitle: sessionTitleOf(sub.parentSessionId)});
         }
         for (const [key, meta] of agentRegistry) {
-            if (seen.has(key)) continue;
-            seen.add(key);
+            if (seen(key, meta.toolCallId)) continue;
             if (!belongs(meta.rootSessionId || meta.parentSessionId)) continue;
-            out.push({...meta, toolCallId: key, key, sessionTitle: sessionTitleOf(meta.parentSessionId)});
+            out.push({...meta, toolCallId: meta.toolCallId || key, key, sessionTitle: sessionTitleOf(meta.parentSessionId)});
         }
         // 终态记录兜底：records 里还活引用着的条目比 registry / 持久化 meta 更新（含续轮后的轮次与摘要）
         for (const rec of subAgentRecords.values()) {
-            if (seen.has(rec.key)) continue;
-            seen.add(rec.key);
+            if (seen(rec.key, rec.toolCallId)) continue;
             if (!belongs(rec.rootSessionId || rec.parentSessionId)) continue;
             out.push({
                 toolCallId: rec.toolCallId || rec.key, key: rec.key, subId: rec.id,
@@ -153,10 +167,17 @@ export function createAIHeadHud(ctx, extras) {
         const session = ownerOverride && ownerId ? sessionById(ownerId) : currentSession();
         if (session) {
             for (const m of session.messages) {
-                const key = (m.agent && m.agent.key) || m.toolCallId;
-                if (m.role !== 'tool' || m.name !== 'spawn_agent' || !m.agent || seen.has(key)) continue;
-                seen.add(key);
-                out.push({toolCallId: key, key, depth: m.agent.depth || 1, name: m.agent.name || '子代理',
+                if (m.role !== 'tool' || m.name !== 'spawn_agent' || !m.agent) continue;
+                // 新数据 agent.key 有值；历史数据缺 key，回退到 m.toolCallId（与运行期 Map 的 toolCallId 同源）
+                const key = m.agent.key || '';
+                const callId = m.toolCallId || '';
+                if (seen(key || callId, callId)) continue;
+                out.push({toolCallId: callId || key, key: key || callId,
+                    // 身份字段：新数据由 normalizeMessage 保留；历史会话（agent.key 已被剥）仍可能缺，
+                    // 补 subId/parentSessionId/startedAt 让兜底条目能参与父子挂靠与排序。
+                    subId: m.agent.id || '', parentSessionId: m.agent.artifactDir || '',
+                    startedAt: m.agent.startedAt || 0,
+                    depth: m.agent.depth || 1, name: m.agent.name || '子代理',
                     task: m.agent.task || '', state: m.agent.state || 'done', summary: m.agent.summary || '',
                     rounds: m.agent.rounds || 0, ms: m.agent.ms || 0, tokens: m.agent.tokens || 0,
                     sandboxMode: m.agent.sandboxMode || '',

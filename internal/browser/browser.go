@@ -18,7 +18,7 @@ var (
 	Logf func(level, format string, args ...any)
 	// Emit 前端事件推送（main 在 startup 注入 Wails EventsEmit）。
 	Emit func(event string, data any)
-	// FindParent 返回 WebView2 控件的兜底宿主父窗口（main/windowicon_windows.go 的
+	// FindParent 返回 WebView2 控件的兜底宿主父窗口（根 platform_windows.go 的
 	// findWailsWindow）。v3 一进程多窗口后只在拿不到调用方窗口时兜底（测试/非绑定路径）。
 	FindParent func() uintptr
 	// ParentForCall 返回绑定调用方窗口的原生句柄（main 用 callerWindow+NativeWindow）。

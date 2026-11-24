@@ -1,7 +1,7 @@
 // message-center.js：状态栏消息中心（【消息】入口 + 浮层面板 + 持久化消息队列）。
 // 消息来源：AI 的 notify_send 工具、失败 / 提问 / 审批等需要用户回来处理的事件、版本更新等系统事件。
 // **例行「任务完成」不进这里**（一轮一条会把列表刷成流水账，会话列表的「已完成未查看」角标已表达同一件事），
-// 它只在软件处于后台时走 Windows 系统卡片（见 ai/ai-notify-policy.js 的 centerRecord）。
+// 它只在软件处于后台时走 Windows 系统卡片（见 ai/core/ai-notify-policy.js 的 centerRecord）。
 // 右下角 toast 只是消息的「可选弹出形态」——弹完消失后消息仍在列表里
 // （localStorage 持久化，上限 100 条，超出淘汰最旧）。
 // ctx: {
@@ -40,7 +40,7 @@ export function createMessageCenter(ctx) {
     const kindIcon = (kind) => iconSvg(KIND_ICONS[kind] || KIND_ICONS.info, 18);
 
     // 历史遗留：2026-11-17 之前每轮结束都记一条「AI 任务完成」（标题固定），一轮一条会把列表刷成流水账。
-    // 口径已改（完成不进消息中心，见 ai/ai-notify-policy.js），读取时把这类旧条目一次性剔掉，
+    // 口径已改（完成不进消息中心，见 ai/core/ai-notify-policy.js），读取时把这类旧条目一次性剔掉，
     // 免得改完之后列表里还留着上百行旧流水。只认「success + 标题完全相同」，
     // notify_send 发的自定义标题消息（哪怕内容与完成有关）一律保留。
     // 注意：必须定义在下面的 load() 调用之前——load 里要用它，const 存在 TDZ，

@@ -1,6 +1,6 @@
 // ai-group-bridge.js：面板内容视图（会话 ↔ 群聊）的挂载/卸载与切换。
 // 从 ai-panel.js 拆出（phase4 P3），5 个视图状态与 4 个函数整包搬移；
-// panel/el/open/flash/onViewChange/mountGroupChatView 经 deps 注入（getter 活引用）。
+// onViewChange/mountGroupChatView 经 getter 活引用，panel/el/open/flash 经 deps 直接注入（稳定引用）。
 
 export function createAIGroupBridge(deps) {
     // 面板的内容视图只有两种：session（现有对话）/ group（群聊接管）。

@@ -18,8 +18,6 @@ import (
 
 // ---- 任务栏图标 / 窗口显示（原 windowicon_other.go）----
 
-func applyTaskbarIcon() {}
-
 func showWindowWhenReady(win *application.WebviewWindow, maximised bool) {
 	if win == nil {
 		return

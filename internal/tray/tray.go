@@ -13,7 +13,7 @@ var Logf func(level string, format string, args ...any)
 
 // Options 是托盘的构造参数。
 type Options struct {
-	// IconID 是 exe 内嵌图标组编号（见根目录 windowicon_windows.go 的 appIconID）。
+	// IconID 是 exe 内嵌图标组编号（见根目录 platform_windows.go 的 appIconID）。
 	IconID uintptr
 	// Tooltip 是悬停提示（超长自动截断）。
 	Tooltip string

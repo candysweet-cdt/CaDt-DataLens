@@ -27,6 +27,19 @@ import (
 	"testing"
 )
 
+// checkBannedBindings 拦「内部助手被提升成绑定」的代表名。UPDATE 分支写基线前与常规校验都调用，
+// 避免误用 UPDATE 把事故名写进基线后要等下次常规运行才红。
+func checkBannedBindings(t *testing.T, names []string) {
+	t.Helper()
+	for _, banned := range []string{"Start", "Close", "EnsureDir", "ServiceStartup"} {
+		for _, name := range names {
+			if name == banned {
+				t.Errorf("基线里出现疑似内部助手 %q——它不该是前端可调的绑定", banned)
+			}
+		}
+	}
+}
+
 // wailsInternalMethods 与 wails v3 pkg/application/bindings.go:195 的
 // internalServiceMethods 同口径：这些名字不会被暴露成绑定（过滤掉才与真实
 // 绑定面一致）。
@@ -81,6 +94,10 @@ func TestAppBindingBaseline(t *testing.T) {
 		t.Fatal("方法集为空：*App 的绑定方法一个都没取到，反射口径已变")
 	}
 
+	// 负向断言：这几个名字历史上都是「内部助手被提升成绑定」的代表。
+	// 更新基线时无脑全量写入会把这些事故一起写进基线，所以 UPDATE 分支写文件前也查一遍 current。
+	checkBannedBindings(t, current)
+
 	if os.Getenv("UPDATE_BINDINGS_BASELINE") == "1" {
 		body := "# *App 的 Wails 绑定方法名基线（排序，一行一个）。\n" +
 			"# 由 app_bindings_guard_test.go 生成与校验，不要手改：\n" +
@@ -101,15 +118,8 @@ func TestAppBindingBaseline(t *testing.T) {
 		t.Fatal("绑定基线为空：基线文件被清空了")
 	}
 
-	// 负向断言：这几个名字历史上都是「内部助手被提升成绑定」的代表。
-	// 更新基线时无脑全量写入会把这些事故一起写进基线，所以连基线本身也查。
-	for _, banned := range []string{"Start", "Close", "EnsureDir", "ServiceStartup"} {
-		for _, name := range baseline {
-			if name == banned {
-				t.Errorf("基线里出现疑似内部助手 %q——它不该是前端可调的绑定", banned)
-			}
-		}
-	}
+	// 连基线本身也查（防止历史基线里已经混进事故名）
+	checkBannedBindings(t, baseline)
 
 	set := make(map[string]bool, len(current))
 	for _, name := range current {
