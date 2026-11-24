@@ -16,6 +16,7 @@ import {overlayStack} from '../core/overlay-stack.js';
 import {placePopover} from '../core/popover-position.js';
 import {iconSvg} from '../core/icons.js';
 import {kvGetJson, kvSetJson} from '../core/kv-store.js';
+import {LAYOUT_MOTION_OPTIONS, heightKeyframes, shouldAnimateLayout} from '../ai/chat/ai-layout-motion.js';
 
 export function migrateApprovalKind(m) {
     if (m && m.kind === 'error' && /AI 待(审批|填写)/.test(String(m.title || ''))) {
@@ -55,6 +56,11 @@ export function createMessageCenter(ctx) {
     let stackHandle = null;
     // 浮层定位函数（内容高度变化后重新调用，保证底部始终贴住按钮）
     let placePanel = null;
+    // 高度补间期间逐帧重定位，避免面板底边在收缩过程中离开按钮
+    let heightAnim = null;
+    // 每次起新动画 / 关面板都自增：旧动画的 finish 回调与 follow 帧链据此识别自己已过期，
+    // 不再对当前面板调用 placePanel（否则多次重入会在同一帧重复定位、甚至用旧目标干扰新动画）。
+    let heightAnimGen = 0;
 
     function load() {
         const raw = kvGetJson(KEY, []);
@@ -98,6 +104,9 @@ export function createMessageCenter(ctx) {
             btn.dataset.tip = count ? '消息中心（' + count + ' 条未读）' : '消息中心';
         }
         if (pop && pop.isConnected) {
+            // 重绘前取消进行中的高度动画：它的终值是旧内容（空态）的高度，若不取消，
+            // 新消息重绘成高列表后动画仍会把面板压向旧终值，overflow:hidden 截断内容。
+            cancelHeightAnim();
             renderPanel(pop);
             // 新消息进来（如 ask_user 提问）会让未读排前、面板变高：重新定位让底边继续贴按钮。
             // 否则顶边固定 + 内容增高会把底部顶出视口/状态栏，只露出上半截（与「清空全部」同一处理）。
@@ -199,7 +208,9 @@ export function createMessageCenter(ctx) {
         timer = setTimeout(dismiss, 9000);
     }
 
-    // 浮层面板：未读在上（其余按时间倒序），行点击标记已读；「清空全部」清队列
+    // 浮层面板：未读在上（其余按时间倒序），行点击标记已读；「清空全部」清队列。
+    // 本函数只负责渲染内容；高度动画由「清空全部」点击处理显式触发（见下方 animatePanelHeight），
+    // 避免 refreshBadge / 首次打开等重绘路径误起「从 0 展开」的错误动画。
     function renderPanel(host) {
         host.textContent = '';
         const head = document.createElement('div');
@@ -212,10 +223,10 @@ export function createMessageCenter(ctx) {
         clear.className = 'msg-center-clear';
         clear.textContent = '清空全部';
         clear.addEventListener('click', () => {
+            const oldHeight = host.offsetHeight;
             clearAll();
             renderPanel(host);
-            // 内容清空后浮层变矮：重新定位，让底部继续贴住按钮
-            if (placePanel) placePanel();
+            animatePanelHeight(host, oldHeight);
         });
         head.append(title, clear);
         host.appendChild(head);
@@ -267,15 +278,53 @@ export function createMessageCenter(ctx) {
         }
     }
 
+    // 取消进行中的高度动画：先让 gen 失效（旧帧链/回调停止），再 cancel 动画本体。
+    function cancelHeightAnim() {
+        heightAnimGen++;
+        if (heightAnim) {
+            heightAnim.cancel();
+            heightAnim = null;
+        }
+    }
+
+    function animatePanelHeight(host, oldHeight) {
+        cancelHeightAnim();
+        const newHeight = host.offsetHeight;
+        const reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        if (!shouldAnimateLayout(oldHeight, newHeight, reduce, typeof host.animate === 'function')) {
+            if (placePanel) placePanel();
+            return;
+        }
+        const gen = heightAnimGen;
+        const anim = host.animate(heightKeyframes(oldHeight, newHeight), LAYOUT_MOTION_OPTIONS);
+        heightAnim = anim;
+        const finish = () => {
+            if (heightAnim === anim) heightAnim = null;
+            if (gen !== heightAnimGen) return;
+            if (placePanel) placePanel();
+        };
+        anim.addEventListener('finish', finish, {once: true});
+        anim.addEventListener('cancel', finish, {once: true});
+        const follow = () => {
+            if (gen !== heightAnimGen) return;
+            if (anim.playState === 'finished' || anim.playState === 'idle') return;
+            if (placePanel) placePanel();
+            requestAnimationFrame(follow);
+        };
+        requestAnimationFrame(follow);
+    }
+
     function closePanel() {
         if (!pop) return;
+        // 先断链再 cancel：cancel 触发的回调因 gen 已失效不会再对新移除的面板定位
+        cancelHeightAnim();
+        placePanel = null;
         if (stackHandle) {
             stackHandle.dispose();
             stackHandle = null;
         }
         pop.remove();
         pop = null;
-        placePanel = null;
     }
 
     function togglePanel(anchor) {
