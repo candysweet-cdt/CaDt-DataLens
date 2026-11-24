@@ -63,13 +63,13 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 - 帮助菜单：检查更新（读取 Gitee Release 的版本与说明，可直接打开安装包或发布页）、更新日志、教程（内置文档，讲解搜索排除表、生命周期钩子、JSONPath、便签定位点等专门语法）、问题反馈、用户协议与隐私协议；开启开发者模式后还会出现“开发者工具”。
 - 设置 → 系统集成：可把当前程序注册到注册表（加入 JSON/JSONL/YAML/XML/CSV/文本等格式的“打开方式”）和资源管理器右键菜单（文件/文件夹/文件夹空白处）；只写 HKCU，无需管理员权限，默认程序仍需在 Windows 中确认。
 - 设置 → 系统集成 → 注册全局 Agent Skill：把 `docs/skills/cadt-datalens` 里的使用说明注册到常用的 agent 全局技能目录（`~/.agents/skills`、`~/.claude/skills`），让 AI agent 学会用命令行打开文件并跳转到指定行:列（详见 [docs/skills/README.md](docs/skills/README.md)）。
-- 设置 → 插件：文件夹 / .zip 两种方式安装插件，可启用/禁用/删除；插件可注册新的文件格式（树/表格/代码/文本视图复用）、工具菜单命令和主题，插件目录默认在 exe 旁 `plugins\`、可切换到应用数据目录（详见 [docs/plugins/README.md](docs/plugins/README.md)）。插件市场默认扫描 Gitee 组织，可在「数据源」切到 GitHub 镜像（同时影响 AI 模型配置表的默认地址，详见 [docs/plugins/README.md](docs/plugins/README.md)）。**插件与应用同权限运行**（可读写本机文件、执行命令），从仓库地址或插件市场安装前会弹确认框提示风险。AI 也可经 `app_control` 的 `install_plugin` / `uninstall_plugin` 安装卸载：full 直通、auto 仅官方市场（Gitee/GitHub 的 cadt-datalens-plugins）直通、edit 一律走动作审批、read 拒绝；卸载是永久删除，除 full 外恒审批。
+- 设置 → 插件：文件夹 / .zip 两种方式安装插件，可启用/禁用/删除；插件可注册新的文件格式（树/表格/代码/文本视图复用）、工具菜单命令，以及界面 / 代码 / 文件图标主题，插件目录默认在 exe 旁 `plugins\`、可切换到应用数据目录（详见 [docs/plugins/README.md](docs/plugins/README.md)）。插件市场默认扫描 Gitee 组织，可在「数据源」切到 GitHub 镜像（同时影响 AI 模型配置表的默认地址，详见 [docs/plugins/README.md](docs/plugins/README.md)）。**插件与应用同权限运行**（可读写本机文件、执行命令），从仓库地址或插件市场安装前会弹确认框提示风险。AI 也可经 `app_control` 的 `install_plugin` / `uninstall_plugin` 安装卸载：full 直通、auto 仅官方市场（Gitee/GitHub 的 cadt-datalens-plugins）直通、edit 一律走动作审批、read 拒绝；卸载是永久删除，除 full 外恒审批。
 - UTF-8 / GBK / GB18030 / ISO-8859-1 / US-ASCII 编码，自动检测；保留原文件换行符与 UTF-8 BOM。
 - 大文件与二进制文件自动只读。
 
 ### 外观
 
-- 界面主题只维护**深色 / 浅色**两套：深色以 IDEA Dark 为基底、浅色以 IDEA Light 为基底；编辑器配色独立于界面，可选 9 套**代码主题**（IDEA Dark、Darcula、Tokyo Night、IDEA Light、GitHub Light、Shiki（DeepSeek）、Newsprint 暖纸、Pixyll、Whitey），每套除语法 token 外还接管编辑器底色 / 行号槽 / 选区 / 缩进线——深色界面配浅色代码主题时编辑器区完整变浅（对齐 IDEA 的「UI 主题与编辑器配色方案分离」），默认「跟随软件主题」；旧版九套界面主题升级后自动迁移为对应组合。
+- 界面主题只维护**深色 / 浅色**两套：深色以 IDEA Dark 为基底、浅色以 IDEA Light 为基底；编辑器配色独立于界面，可选 9 套**代码主题**（IDEA Dark、Darcula、Tokyo Night、IDEA Light、GitHub Light、Shiki（DeepSeek）、Newsprint 暖纸、Pixyll、Whitey），每套除语法 token 外还接管编辑器底色 / 行号槽 / 选区 / 缩进线——深色界面配浅色代码主题时编辑器区完整变浅（对齐 IDEA 的「UI 主题与编辑器配色方案分离」），默认「跟随软件主题」；旧版九套界面主题升级后自动迁移为对应组合。内置主题统一定义在 `frontend/src/core/themes.json`，插件可通过继承与变量覆盖扩展同类主题，示例见 `docs/plugins/examples/theme-pack/`。
 - 内置字体：Inter、JetBrains Mono、Fira Code。
 - 界面字体、编辑器字体、界面中文字体、编辑器中文字体可分别选择，并带实时预览。
 - 固定键列与键列宽度可调。
@@ -344,7 +344,7 @@ run.go                     运行代码：准备临时副本、流式执行、GB
 frontend/src/main.js       界面、标签页、设置、编辑器、文件菜单
 frontend/src/run.js        运行代码：语言配方、运行面板、输出渲染
 frontend/src/formats.js    格式驱动（JSON/JSONL/YAML/XML/CSV/文本/字节）
-frontend/src/style.css     布局、主题、Ace/jsoneditor 样式
+frontend/src/style.css     布局、Ace/jsoneditor 样式（主题色板在 core/themes.json）
 frontend/index.html        窗口结构、菜单、设置对话框
 frontend/public/vendor     jsoneditor 及图标资源
 frontend/public/fonts      Inter / JetBrains Mono / Fira Code + OFL 许可

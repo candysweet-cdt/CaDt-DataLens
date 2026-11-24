@@ -33,6 +33,7 @@ import {decideAutoCollapse, shouldExpandEditorOnTab} from './ai/chat/ai-auto-col
 import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './core/jsonrepair.js';
 import {fileIconSpec} from './core/fileicons.js';
+import {themeRegistry} from './core/theme-registry.js';
 import {BUILTIN_FILE_TYPES, defaultNewFileMenu, fileTypeMenuItem, normalizeNewFileMenu} from './explorer/new-file-menu.js';
 import {RECIPES, activeRunConfig, extOf, SELF_TEST} from './terminal/run.js';
 import {queryJsonPath} from './core/jsonpath.js';
@@ -105,7 +106,7 @@ import {createMenuBar} from './shell/menu-bar.js';
 import {createModeSwitch} from './shell/mode-switch.js';
 import {createTitlebarPopovers} from './shell/titlebar-popovers.js';
 import {createSettingsUI} from './settings/settings-ui.js';
-import {CODE_STYLE_AUTO, CODE_STYLES, migrateLegacyTheme} from './settings/code-styles.js';
+import {CODE_STYLE_AUTO, migrateLegacyTheme} from './settings/code-styles.js';
 import {createWritingUI} from './writing/writing-ui.js';
 import {createStructurePanelController} from './editor/structure-panel.js';
 import {createEditorMenus} from './editor/editor-menus.js';
@@ -714,7 +715,8 @@ const APP_SETTING_RULES = {
     treeExpandDefault: {type: 'enum', values: ['expand', 'collapse']},
     openMode: {type: 'enum', values: ['tab', 'window']},
     theme: {type: 'theme'},
-    codeStyle: {type: 'enum', values: [CODE_STYLE_AUTO, ...CODE_STYLES.map((s) => s.id)]},
+    codeStyle: {type: 'codeStyle'},
+    iconTheme: {type: 'iconTheme'},
     sidebarWidth: {type: 'number', min: 160, max: 500},
     terminalHeight: {type: 'number', min: 120, max: 2000},
     aiPanelWidth: {type: 'number', min: 280, max: 2000},
@@ -1098,6 +1100,7 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
                 },
                 theme: settings.theme,
                 codeStyle: settings.codeStyle || CODE_STYLE_AUTO,
+                iconTheme: settings.iconTheme || 'opensource',
                 fullscreen: !!rtFullscreen,
                 alwaysOnTop: !!settings.alwaysOnTop,
                 readOnlyMode: !!settings.readOnlyMode,
@@ -1545,11 +1548,27 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
                 value = typeof rule.values[0] === 'number' ? num : value;
             } else if (rule.type === 'theme') {
                 value = String(value || '').trim();
-                if (!value) throw new Error('theme 不能为空');
+                if (!themeRegistry.hasUiTheme(value)) {
+                    throw new Error('theme 仅支持：' + themeRegistry.listUiThemes().map((theme) => theme.id).join(' / '));
+                }
+            } else if (rule.type === 'codeStyle') {
+                value = String(value || CODE_STYLE_AUTO);
+                if (!themeRegistry.hasCodeTheme(value) && value !== CODE_STYLE_AUTO) {
+                    throw new Error('codeStyle 仅支持：auto / ' + themeRegistry.listCodeThemes().map((style) => style.id).join(' / '));
+                }
+            } else if (rule.type === 'iconTheme') {
+                value = String(value || '').trim();
+                if (!themeRegistry.hasIconTheme(value)) {
+                    throw new Error('iconTheme 仅支持：' + themeRegistry.listIconThemes().map((theme) => theme.id).join(' / '));
+                }
             }
             if (key === 'theme') {
                 setTheme(value);
                 return {key, value: settings.theme};
+            }
+            if (key === 'iconTheme') {
+                setIconTheme(value);
+                return {key, value: settings.iconTheme};
             }
             settings[key] = value;
             applySettings();
@@ -2115,13 +2134,6 @@ let flashTimer = 0;
 let readingMode = null;
 
 const settingsKey = 'datalens-settings';
-// 软件主题只维护深色 / 浅色两套（2026-11-16 主题体系重构）；原其余九套降级为
-// 「代码主题」（settings.codeStyle / data-code-style 通道），老配置由
-// migrateLegacyTheme 迁移。插件可经 addTheme 追加主题（group: 'plugin'）。
-const themes = [
-    {id: 'dark', name: '深色', group: 'base', bg: '#1e1f22', accent: '#548af7'},
-    {id: 'light', name: '浅色', group: 'base', bg: '#ffffff', accent: '#3574f0'},
-];
 const uiFonts = [
     {id: 'inter', name: 'Inter', family: '"Inter"'},
     {id: 'system', name: 'Segoe UI', family: '"Segoe UI"'},
@@ -2241,6 +2253,7 @@ const defaultSettings = {
     readOnlyMode: false,
     theme: 'dark',
     codeStyle: CODE_STYLE_AUTO,
+    iconTheme: 'opensource',
     // 快捷键风格（candysweet / jetbrains / vscode）：键位单一来源在 core/keybindings.js，
     // 运行时索引在 core/keymap.js；切换立即生效。
     keyStyle: DEFAULT_KEY_STYLE,
@@ -2589,7 +2602,7 @@ const settingsUI = createSettingsUI({
     get syncAllBrowserTabs() { return syncAllBrowserTabs; },
     get syncRunButtonState() { return syncRunButtonState; },
     get syncTerminalTheme() { return syncTerminalTheme; },
-    get themes() { return themes; },
+    get themes() { return themeRegistry.listUiThemes(); },
     get uiFonts() { return uiFonts; },
     get UNLOCK_ICON() { return UNLOCK_ICON; },
     get updateAiWidthWidget() { return updateAiWidthWidget; },
@@ -2597,7 +2610,7 @@ const settingsUI = createSettingsUI({
     get updateWritingStats() { return updateWritingStats; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applyRemoteSettings, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, openSettingsAtRow, persistSettingsLight, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
+const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applyRemoteSettings, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, openSettingsAtRow, persistSettingsLight, reconcileThemes, refreshThemes, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setIconTheme, setTheme, syncIntegrationStatus, setSyncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
 const writingUI = createWritingUI({
     set flashTimer(v) { flashTimer = v; },
     set dirty(v) { dirty = v; },
@@ -2611,6 +2624,8 @@ const writingUI = createWritingUI({
     get applyImageZoom() { return applyImageZoom; },
     get applyIntegration() { return applyIntegration; },
     get applySettings() { return applySettings; },
+    get reconcileThemes() { return reconcileThemes; },
+    get refreshThemes() { return refreshThemes; },
     get autoSaveTimer() { return autoSaveTimer; },
     get backend() { return backend; },
     get baseNameOf() { return baseNameOf; },
@@ -2658,7 +2673,7 @@ const writingUI = createWritingUI({
     get syncIntegrationStatus() { return syncIntegrationStatus; },
     get termCwd() { return termCwd; },
     get textArea() { return textArea; },
-    get themes() { return themes; },
+    get themes() { return themeRegistry.listUiThemes(); },
     get updateStatus() { return updateStatus; },
     get updateWindowTitle() { return updateWindowTitle; },
     get workspaceFolder() { return workspaceFolder; },
@@ -3040,7 +3055,7 @@ const pluginImporter = createPluginImporter({
     openConfirmDialog,
     flash: (...args) => flash(...args),
     get backend() { return backend; },
-    openVirtualDoc,
+    openVirtualDoc: (...args) => openVirtualDoc(...args),
     activityLog,
 });
 const {openWithPluginImporter} = pluginImporter;
@@ -5707,7 +5722,7 @@ const quickSwitchMod = createQuickSwitch({
     get applyAceMode() { return applyAceMode; },
     get applySettings() { return applySettings; },
     get closeAllMenus() { return closeAllMenus; },
-    get CODE_STYLES() { return CODE_STYLES; },
+    get CODE_STYLES() { return themeRegistry.listCodeThemes(); },
     get CODE_STYLE_AUTO() { return CODE_STYLE_AUTO; },
     get setCodeStyle() { return setCodeStyle; },
     get currentMode() { return currentMode; },
@@ -5726,7 +5741,7 @@ const quickSwitchMod = createQuickSwitch({
     get settings() { return settings; },
     get switchMode() { return switchMode; },
     get terminalUI() { return terminalUI; },
-    get themes() { return themes; },
+    get themes() { return themeRegistry.listUiThemes(); },
     get toggleAlwaysOnTop() { return toggleAlwaysOnTop; },
     get toggleCodeWrap() { return toggleCodeWrap; },
     get windowSwitchEntries() { return windowSwitchEntries; },
@@ -6108,7 +6123,7 @@ function menuItems(kind) {
         case 'theme': {
             const items = [];
             let prevGroup = '';
-            themes.forEach((theme) => {
+            themeRegistry.listUiThemes().forEach((theme) => {
                 if (prevGroup && theme.group !== prevGroup) items.push({sep: true});
                 items.push({
                     label: theme.name,
@@ -6127,7 +6142,7 @@ function menuItems(kind) {
                 action: () => setCodeStyle(CODE_STYLE_AUTO),
             }];
             let prevCodeGroup = '';
-            CODE_STYLES.forEach((style) => {
+            themeRegistry.listCodeThemes().forEach((style) => {
                 if (prevCodeGroup && style.group !== prevCodeGroup) codeItems.push({sep: true});
                 codeItems.push({
                     label: style.name,
@@ -7151,7 +7166,7 @@ const bridgeUI = createBridgeUI({
     // 便签终端条目：run 事件订阅（mock/winctl 场景也走这里）与输出清洗（ai 域纯函数经组合根注入）
     get rt() { return rt; },
     get normalizeTermText() { return normalizeTermText; },
-    set syncedOpenMode(v) { syncedOpenMode = v; },
+    setSyncedOpenMode,
     get activateDoc() { return activateDoc; },
     get activityLog() { return activityLog; },
     get addDocToFocusedGroup() { return addDocToFocusedGroup; },
@@ -7222,7 +7237,6 @@ const bridgeUI = createBridgeUI({
     get startTerminalWindowMode() { return startTerminalWindowMode; },
     get switchSidebarView() { return switchSidebarView; },
     get syncBrowserTab() { return syncBrowserTab; },
-    get syncedOpenMode() { return syncedOpenMode; },
     get updateBrowserTitle() { return updateBrowserTitle; },
     get workspaceFolder() { return workspaceFolder; },
 });

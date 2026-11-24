@@ -9,11 +9,13 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {compileBuiltInThemeCss} from '../../src/core/theme-model.js';
 
 const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'style.css'), 'utf8');
+const themeCss = compileBuiltInThemeCss();
 
 test('所有主题的聚焦底色都走统一中性变量，不再有硬编码蓝色', () => {
-    const defs = [...css.matchAll(/--field-focus-bg:\s*([^;]+);/g)].map((m) => m[1].trim());
+    const defs = [...themeCss.matchAll(/--field-focus-bg:\s*([^;]+);/g)].map((m) => m[1].trim());
     // 2026-11-16 主题体系重构后软件主题只剩深色 / 浅色两套（原九套降级为代码主题，
     // 代码主题块只管编辑器观感，不碰聚焦底色这类界面变量）
     assert.equal(defs.length, 2, '软件主题的聚焦底色定义数量异常：' + defs.length);

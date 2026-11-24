@@ -35,3 +35,13 @@ test('plain 主题：一律通用纸页图标', () => {
     assert.ok(fileIconSpec('x.json').svg.includes('M4 1.5h5.5'), 'plain 主题应返回 PLAIN_FILE');
     setFileIconTheme('opensource', {});
 });
+
+test('插件图标主题可覆盖类型并继承 opensource 兜底', () => {
+    const custom = '<svg viewBox="0 0 16 16"><rect width="16" height="16" fill="#c58af9"/></svg>';
+    setFileIconTheme('my-icons', {'my-icons': {id: 'my-icons', mode: 'opensource', icons: {json: custom}}});
+    assert.ok(fileIconSpec('x.json').svg.includes('#c58af9'));
+    assert.ok(fileIconSpec('x.go').svg.includes('viewBox="0 0 32 32"'), '未覆盖类型应继承 opensource');
+    setFileIconTheme('my-plain', {'my-plain': {id: 'my-plain', mode: 'plain', icons: {}}});
+    assert.ok(fileIconSpec('x.json').svg.includes('M4 1.5h5.5'), '继承 plain 模式应返回通用纸页');
+    setFileIconTheme('opensource', {});
+});

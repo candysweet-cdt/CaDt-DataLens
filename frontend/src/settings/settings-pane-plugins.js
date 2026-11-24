@@ -154,13 +154,11 @@ initPluginRuntime({
     },
     openVirtualDoc: (name, content) => deps.openVirtualDoc(name, content),
     readPluginAsset: (pluginId, relPath) => deps.backend.ReadPluginAsset(pluginId, relPath),
-    addPluginTheme: (theme) => {
-        if (deps.themes.some((t) => t.id === theme.id)) {
-            throw new Error(`主题 ${theme.id} 与内置主题冲突`);
-        }
-        deps.themes.push({...theme, group: 'plugin'});
-    },
     onPluginsChanged: () => refreshPluginUI(),
+    onThemesChanged: () => {
+        if (deps.reconcileThemes()) deps.applySettings();
+        else deps.refreshThemes();
+    },
 });
 
 async function reloadPluginErrors(prefix) {

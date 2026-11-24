@@ -157,26 +157,30 @@ const BASENAMES = {
 // 主题解析链：所选主题图标 → 文字缩写+底板（mono）→ 通用文件图标（plain）
 // built-in: opensource（vscode-icons MIT）/ mono / plain；插件可通过 cadt.registerIconTheme 注册
 let activeThemeId = 'opensource';
-let pluginIconThemes = {};
+let iconThemes = {};
 
-export function setFileIconTheme(themeId, pluginThemes) {
+export function setFileIconTheme(themeId, themes) {
     activeThemeId = themeId || 'opensource';
-    pluginIconThemes = pluginThemes || {};
+    iconThemes = themes || {};
 }
 
 const PLAIN_FILE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.5h5.5L12.5 4.6V14.5H4z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>';
 
 function themeIconFor(id) {
-    if (activeThemeId === 'opensource') {
+    const theme = iconThemes[activeThemeId];
+    if (theme && theme.icons) {
+        if (theme.icons[id]) return theme.icons[id];
+        if (theme.icons['default_file']) return theme.icons['default_file'];
+    }
+    if (activeThemeId === 'opensource' || theme?.mode === 'opensource') {
         if (OS_ICONS[id]) return OS_ICONS[id];
         if (OS_EXTRA_ICONS[id]) return OS_EXTRA_ICONS[id];
     }
-    const pt = pluginIconThemes[activeThemeId];
-    if (pt && pt.icons) {
-        if (pt.icons[id]) return pt.icons[id];
-        if (pt.icons['default_file']) return pt.icons['default_file'];
-    }
     return null;
+}
+
+function isPlainTheme() {
+    return activeThemeId === 'plain' || iconThemes[activeThemeId]?.mode === 'plain';
 }
 
 // vscode-icons 的 SVG 大量复用 id="a" / "b"，内联进同一文档后 url(#a) 会命中
@@ -207,7 +211,7 @@ export function fileIconSpec(fileName) {
     if (!id) id = 'text';
     // svg 与 createFileIcon 走同一条主题解析链：右键菜单 / 标题栏 / 全局搜索等
     // 只能收 SVG 字符串的场景也要和文件树显示同一套主题图标。
-    const svg = activeThemeId === 'plain' ? PLAIN_FILE : scopeSvgIds(themeIconFor(id) || ICONS[id] || PLAIN_FILE);
+    const svg = isPlainTheme() ? PLAIN_FILE : scopeSvgIds(themeIconFor(id) || ICONS[id] || PLAIN_FILE);
     return {id, className: 'fi-' + id, svg};
 }
 
@@ -216,12 +220,22 @@ export function createFileIcon(fileName, extraClass) {
     const span = document.createElement('span');
     span.className = (extraClass ? extraClass + ' ' : '') + spec.className;
     span.dataset.fi = spec.id;
+    span.dataset.fiName = String(fileName || '');
     let svg = null;
-    if (activeThemeId === 'plain') {
+    if (isPlainTheme()) {
         svg = PLAIN_FILE; // 纯净主题：文件一律通用纸页图标
     } else {
         svg = themeIconFor(spec.id) || ICONS[spec.id] || PLAIN_FILE;
     }
     span.innerHTML = scopeSvgIds(svg);
     return span;
+}
+
+export function refreshFileIconElements() {
+    if (typeof document === 'undefined') return;
+    for (const element of document.querySelectorAll('[data-fi-name]')) {
+        const spec = fileIconSpec(element.dataset.fiName || '');
+        element.innerHTML = spec.svg;
+        element.dataset.fi = spec.id;
+    }
 }

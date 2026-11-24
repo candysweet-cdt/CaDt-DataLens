@@ -1689,11 +1689,13 @@ function setFilename(name, path) {
     icon.textContent = '';
     icon.className = 'title-icon';
     delete icon.dataset.fi;
+    delete icon.dataset.fiName;
     if (!name || name === '未打开文件') return;
     const spec = fileIconSpec(name);
     icon.innerHTML = spec.svg;
     icon.classList.add(spec.className);
     icon.dataset.fi = spec.id;
+    icon.dataset.fiName = name;
 }
 
 function updateDocChrome() {

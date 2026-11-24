@@ -300,6 +300,8 @@ function globalSearchRow(hit, index) {
         const spec = fileIconSpec(hit.name);
         icon.innerHTML = spec.svg;
         icon.classList.add(spec.className);
+        icon.dataset.fi = spec.id;
+        icon.dataset.fiName = hit.name || '';
     } catch (e) {}
     const line1 = document.createElement('div');
     line1.className = 'gs-line1';

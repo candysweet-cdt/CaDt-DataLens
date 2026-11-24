@@ -25,18 +25,15 @@
     setTimeout(function () { document.documentElement.classList.remove("app-booting"); }, 5000);</script>
     <script>
         (function () {
-            // 旧版界面主题 id → 现双主题（2026-11-16 重构：其余九套降级为代码主题）。
-            // 仅防启动瞬间闪错底色（浅色旧主题会闪深色）；正式迁移单一来源在
-            // frontend/src/settings/code-styles.js 的 LEGACY_THEMES，改表两处同步。
-            var legacy = {darcula: 'dark', 'idea-dark': 'dark', night: 'dark',
-                'idea-light': 'light', github: 'light', newsprint: 'light',
-                pixyll: 'light', whitey: 'light', harness: 'light'};
-            var theme = 'dark';
+            // 迁移表与默认值由 Vite 从 core/themes.json 注入；插件主题加载前先用内置底色。
+            var bootstrap = window.__CADT_THEME_BOOTSTRAP__ || {defaultTheme: 'dark', legacyThemes: {}};
+            var theme = bootstrap.defaultTheme;
             try {
                 var stored = JSON.parse(localStorage.getItem('datalens-settings') || '{}');
                 if (typeof stored.theme === 'string' && stored.theme) theme = stored.theme;
             } catch (e) {}
-            document.documentElement.dataset.theme = legacy[theme] || theme;
+            document.documentElement.dataset.theme = bootstrap.legacyThemes[theme] ||
+                (theme === 'dark' || theme === 'light' ? theme : bootstrap.defaultTheme);
         })();
     </script>
     <link rel="stylesheet" href="/vendor/jsoneditor.min.css"/>

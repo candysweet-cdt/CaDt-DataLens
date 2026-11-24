@@ -213,7 +213,7 @@ function openBrowserTab(url, profileKey, opts) {
             const mode = await deps.backend.GetOpenMode();
             if (mode === 'tab' || mode === 'window') {
                 deps.settings.openMode = mode;
-                deps.syncedOpenMode = mode;
+                deps.setSyncedOpenMode(mode);
                 deps.applySettings();
             }
         } catch (e) {}

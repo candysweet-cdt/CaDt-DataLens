@@ -1,6 +1,7 @@
 // 插件运行时：加载插件 JS、提供 cadt.* API、管理格式/命令/主题的注册生命周期。
 // 与 main.js 通过 initPluginRuntime(hooks) 单向注入，避免循环依赖。
 import {registerPluginFormat, unregisterAllPluginFormats} from '../core/formats.js';
+import {themeRegistry} from '../core/theme-registry.js';
 import {clearPluginAIProviders, getPluginAIProviders, registerPluginAIProvider} from './plugin-ai-providers.js';
 import {normalizePluginCommand} from './plugin-commands-model.js';
 import {
@@ -23,13 +24,12 @@ const host = {
     getActiveFile: () => null,
     getActiveText: () => null,
     openPath: () => {},
-    addPluginTheme: () => {},
     onPluginsChanged: () => {},
+    onThemesChanged: () => {},
     readPluginAsset: () => Promise.reject(new Error('当前版本不支持读取插件资产')),
 };
 
 let commands = [];
-const themeStyles = new Map();
 // 命令风险分类器（docs/finished-plans/local-command-classifier.md §4）：
 // 插件可注册 {id, label, classify(command, ctx) → {score, reason}}（可返回 Promise）。
 // score = 危险概率 [0,1]；无 deny 权——判定统一由 AI 面板按严格度阈值转 allow/ask。
@@ -49,12 +49,6 @@ export function initPluginRuntime(hooks) {
 
 export function getPluginCommands() {
     return commands;
-}
-
-const iconThemes = {};
-
-export function getPluginIconThemes() {
-    return iconThemes;
 }
 
 export function getPluginCommandClassifiers() {
@@ -104,47 +98,29 @@ function apiFor(plugin) {
             }
             commands.push(cmd);
         },
-        // 注册文件图标主题：{id, name, icons: {json: '<svg…>', default_file: '<svg…>', …}}
-        // icons 缺失的类型自动回退到内置文字缩写图标
+        // 注册文件图标主题：{id, name, extends?, icons: {json: '<svg…>', default_file: '<svg…>', …}}
         registerIconTheme(spec) {
-            if (!spec || typeof spec !== 'object') {
-                throw pluginError(plugin, 'registerIconTheme 需要一个主题对象');
+            try {
+                themeRegistry.registerIconTheme(spec, plugin);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || String(e));
             }
-            const id = String(spec.id || '').trim();
-            if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
-                throw pluginError(plugin, `图标主题 id 无效：${JSON.stringify(spec.id)}`);
-            }
-            if (!spec.icons || typeof spec.icons !== 'object') {
-                throw pluginError(plugin, 'registerIconTheme 缺少 icons 映射');
-            }
-            const icons = {};
-            for (const [k, v] of Object.entries(spec.icons)) {
-                if (typeof v === 'string' && v.includes('<svg')) icons[k] = v;
-            }
-            if (!Object.keys(icons).length) {
-                throw pluginError(plugin, 'registerIconTheme 的 icons 为空');
-            }
-            iconThemes[id] = {id, name: String(spec.name || id), icons};
-            host.addPluginIconTheme({id, name: String(spec.name || id), icons});
         },
-        // 注册主题：{id, name, bg, accent, css}，css 里用 html[data-theme="<id>"] 选择器
+        // 注册界面主题：{id, name, extends?, bg?, accent?, vars?, css?}
         addTheme(spec) {
-            if (!spec || typeof spec !== 'object') {
-                throw pluginError(plugin, 'addTheme 需要一个主题对象');
+            try {
+                themeRegistry.registerUiTheme(spec, plugin);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || String(e));
             }
-            const id = String(spec.id || '').trim();
-            if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
-                throw pluginError(plugin, `主题 id 无效：${JSON.stringify(spec.id)}`);
+        },
+        // 注册代码主题：{id, name, extends?, group?, vars?}
+        addCodeTheme(spec) {
+            try {
+                themeRegistry.registerCodeTheme(spec, plugin);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || String(e));
             }
-            if (themeStyles.has(id)) {
-                throw pluginError(plugin, `主题 ${id} 已注册`);
-            }
-            const style = document.createElement('style');
-            style.dataset.pluginTheme = id;
-            style.textContent = String(spec.css || '');
-            document.head.appendChild(style);
-            themeStyles.set(id, style);
-            host.addPluginTheme({id, name: String(spec.name || id), bg: spec.bg || '#1e1f24', accent: spec.accent || '#4f8cff'});
         },
         // 注册命令风险分类器：{id, label, classify(command, ctx) → {score, reason}}
         // ctx: {cwd, toolName, strictness, threshold, sessionId}；score = 危险概率 [0,1]，
@@ -310,7 +286,16 @@ function notifyPluginsLoaded() {
     try { window.dispatchEvent(new CustomEvent('cadt-plugins-loaded')); } catch (e) {}
 }
 
-export async function loadPlugins(backend) {
+let pluginLoadQueue = Promise.resolve();
+
+export function loadPlugins(backend) {
+    const run = pluginLoadQueue.catch(() => {}).then(() => reloadPlugins(backend));
+    pluginLoadQueue = run.then(() => {}, () => {});
+    return run;
+}
+
+async function reloadPlugins(backend) {
+    themeRegistry.clearPluginThemes();
     unregisterAllPluginFormats();
     clearPluginAIProviders();
     clearPluginDbDrivers();
@@ -321,10 +306,6 @@ export async function loadPlugins(backend) {
     clearPluginImporters();
     clearPluginViewers();
     bindServiceBackend(backend);
-    for (const style of themeStyles.values()) {
-        style.remove();
-    }
-    themeStyles.clear();
     commands = [];
     commandClassifiers.clear();
     docConverters.clear();
@@ -332,6 +313,7 @@ export async function loadPlugins(backend) {
     host.onPluginsChanged();
     if (!backend || typeof backend.GetPluginSources !== 'function') {
         console.info('[plugins] 跳过加载：宿主无 GetPluginSources 绑定');
+        host.onThemesChanged();
         notifyPluginsLoaded();
         return [];
     }
@@ -341,6 +323,7 @@ export async function loadPlugins(backend) {
     } catch (e) {
         lastLoadErrors = [`读取插件失败：${e}`];
         console.info('[plugins] 读取插件源失败：' + lastLoadErrors[0]);
+        host.onThemesChanged();
         notifyPluginsLoaded();
         return [...lastLoadErrors];
     }
@@ -350,6 +333,7 @@ export async function loadPlugins(backend) {
             const api = apiFor({id: source.id, name: source.name, dir: source.dir || ''});
             new Function('cadt', `"use strict";\n${source.code || ''}`)(api);
         } catch (e) {
+            themeRegistry.removePluginThemes(source.id);
             const message = `${source.name || source.id}：${(e && e.message) || e}`;
             errors.push(message);
         }
@@ -374,6 +358,7 @@ export async function loadPlugins(backend) {
         ' 个 · 设置面板 ' + getPluginSettingsPanels().length +
         ' 个 · 错误 ' + errors.length + (errors.length ? '：' + errors.join('；') : ''));
     host.onPluginsChanged();
+    host.onThemesChanged();
     notifyPluginsLoaded();
     return errors;
 }

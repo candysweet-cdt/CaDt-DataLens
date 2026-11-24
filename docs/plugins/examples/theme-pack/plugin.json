@@ -1,0 +1,10 @@
+{
+  "id": "theme-pack-demo",
+  "name": "紫夜主题包",
+  "version": "1.0.0",
+  "author": "CaDt-DataLens",
+  "description": "演示界面主题、代码主题与文件图标主题的结构化继承",
+  "entry": "main.js",
+  "license": "Apache-2.0",
+  "keywords": ["theme", "dark", "example"]
+}

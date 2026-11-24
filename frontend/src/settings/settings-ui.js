@@ -8,10 +8,12 @@ import {iconSvg} from '../core/icons.js';
 import {kvGetJson} from '../core/kv-store.js';
 import {isDocReadOnly} from '../core/readonly.js';
 import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from '../core/code-shot.js';
+import {refreshFileIconElements, setFileIconTheme} from '../core/fileicons.js';
+import {themeRegistry} from '../core/theme-registry.js';
+import {CODE_STYLE_AUTO, currentCodeStyleName, isValidCodeStyleId} from './code-styles.js';
 import {createSettingsDialogs} from './settings-dialogs.js';
 import {createSettingsSearch} from './settings-search.js';
 import {createSettingsSelect} from './settings-select.js';
-import {CODE_STYLE_AUTO, CODE_STYLES, currentCodeStyleName, isValidCodeStyleId} from './code-styles.js';
 import {renderShortcutsTable, KEY_STYLES, DEFAULT_KEY_STYLE, isValidKeyStyleId, keyStyleName} from '../core/keybindings.js';
 import {renderEditorShortcutsTable} from '../core/editor-keybindings.js';
 import {SCROLL_STYLES} from '../editor/editor-smooth-scroll.js';
@@ -116,6 +118,7 @@ const elsSettings = {
     openMode: document.getElementById('opt-open-mode'),
     closeAction: document.getElementById('opt-close-action'),
     codeStyle: document.getElementById('opt-code-style'),
+    iconTheme: document.getElementById('opt-icon-theme'),
     tabClose: document.getElementById('opt-tab-close'),
     dblClickClose: document.getElementById('opt-dblclick-close'),
     shiftClickClose: document.getElementById('opt-shiftclick-close'),
@@ -174,23 +177,29 @@ function fillFontSelect(select, list) {
         select.appendChild(opt);
     }
 }
-// 代码风格下拉：选项来自 code-styles.js 单一来源，必须早于 createSettingsSelect
-// 的行式下拉增强（增强时会读取 select 的 options 生成自定义面板）。
-if (elsSettings.codeStyle) {
-    const csSel = elsSettings.codeStyle;
-    csSel.textContent = '';
-    const autoOpt = document.createElement('option');
-    autoOpt.value = CODE_STYLE_AUTO;
-    autoOpt.textContent = '跟随软件主题';
-    csSel.appendChild(autoOpt);
-    for (const style of CODE_STYLES) {
-        const opt = document.createElement('option');
-        opt.value = style.id;
-        opt.textContent = style.name;
-        csSel.appendChild(opt);
+function fillThemeSelect(select, items, selected) {
+    if (!select) return;
+    select.textContent = '';
+    for (const item of items) {
+        const option = document.createElement('option');
+        option.value = item.id;
+        option.textContent = item.name;
+        select.appendChild(option);
     }
-    csSel.addEventListener('change', () => setCodeStyle(csSel.value));
+    select.value = items.some((item) => item.id === selected) ? selected : (items[0]?.id || '');
 }
+
+function refreshThemeSelects() {
+    fillThemeSelect(elsSettings.codeStyle, [
+        {id: CODE_STYLE_AUTO, name: '跟随软件主题'},
+        ...themeRegistry.listCodeThemes(),
+    ], currentCodeStyle());
+    fillThemeSelect(elsSettings.iconTheme, themeRegistry.listIconThemes(), deps.settings.iconTheme || 'opensource');
+}
+
+refreshThemeSelects();
+if (elsSettings.codeStyle) elsSettings.codeStyle.addEventListener('change', () => setCodeStyle(elsSettings.codeStyle.value));
+if (elsSettings.iconTheme) elsSettings.iconTheme.addEventListener('change', () => setIconTheme(elsSettings.iconTheme.value));
 // 快捷键风格下拉：选项来自 core/keybindings.js 单一来源（同代码主题下拉），
 // 必须早于 createSettingsSelect 的行式下拉增强（增强时会读取 options 生成自定义面板）。
 const keyStyleSelect = document.getElementById('opt-key-style');
@@ -306,6 +315,10 @@ const elsDialogs = {
 };
 
 let syncedOpenMode = null;
+function setSyncedOpenMode(value) {
+    syncedOpenMode = value;
+}
+
 function syncOpenMode() {
     if (syncedOpenMode === null) {
         syncedOpenMode = deps.settings.openMode;
@@ -340,12 +353,12 @@ function syncCloseAction() {
 
 let appliedTheme = '';
 function currentTheme() {
-    return deps.themes.find((t) => t.id === deps.settings.theme) || deps.themes[0];
+    return themeRegistry.getUiTheme(deps.settings.theme) || themeRegistry.listUiThemes()[0];
 }
 
-function applyTheme() {
-    if (appliedTheme === deps.settings.theme) return;
+function applyTheme(force = false) {
     const theme = currentTheme();
+    if (!force && appliedTheme === theme.id) return;
     document.documentElement.dataset.theme = theme.id;
     appliedTheme = theme.id;
     if (deps.backend && deps.backend.SetWindowBg) {
@@ -356,32 +369,64 @@ function applyTheme() {
     }
 }
 
-// 代码风格是独立于软件主题的第二条通道：只写 data-code-style，token 变量随之切换。
-// auto（默认）时删掉该属性，CSS 里没有任何 [data-code-style] 块命中，自动回落到
-// 软件主题里既有的 token 变量 —— 老用户升级后观感不变。
+// 代码主题独立于界面主题；auto 不写属性，让 token 自然回落到界面变量。
 let appliedCodeStyle = null;
 function currentCodeStyle() {
     return String(deps.settings.codeStyle || CODE_STYLE_AUTO);
 }
 
-function applyCodeStyle() {
-    const id = currentCodeStyle();
-    if (appliedCodeStyle === id) return;
+function applyCodeStyle(force = false) {
+    const requested = currentCodeStyle();
+    const id = isValidCodeStyleId(requested, themeRegistry.listCodeThemes()) ? requested : CODE_STYLE_AUTO;
+    if (!force && appliedCodeStyle === id) return;
     if (id === CODE_STYLE_AUTO) delete document.documentElement.dataset.codeStyle;
     else document.documentElement.dataset.codeStyle = id;
     appliedCodeStyle = id;
-    if (elsSettings.codeStyle) elsSettings.codeStyle.value = id;
+    if (elsSettings.codeStyle && [...elsSettings.codeStyle.options].some((option) => option.value === requested)) {
+        elsSettings.codeStyle.value = requested;
+    }
 }
 
 function setCodeStyle(id) {
     const value = String(id || CODE_STYLE_AUTO);
-    if (!isValidCodeStyleId(value)) return;
+    if (!isValidCodeStyleId(value, themeRegistry.listCodeThemes())) return;
     deps.settings.codeStyle = value;
-    // 走 applySettings 只为统一存盘与设置变更留痕；它不会重绘 mermaid / ECharts
-    // （那些只读 UI 语义变量，widget.js 的 MutationObserver 也只盯 data-theme），
-    // 不改窗口底色，hljs / Ace 靠 CSS 变量自动生效，无需重新高亮。
     applySettings();
-    deps.flash('代码主题：' + currentCodeStyleName(deps.settings.theme, value));
+    deps.flash('代码主题：' + currentCodeStyleName(deps.settings.theme, value, themeRegistry.listCodeThemes(), themeRegistry.listUiThemes()));
+}
+
+let appliedIconTheme = '';
+function applyFileIconTheme(force = false) {
+    const id = themeRegistry.hasIconTheme(deps.settings.iconTheme) ? deps.settings.iconTheme : 'opensource';
+    if (!force && appliedIconTheme === id) return;
+    setFileIconTheme(id, themeRegistry.iconThemeMap());
+    refreshFileIconElements();
+    appliedIconTheme = id;
+    if (elsSettings.iconTheme && [...elsSettings.iconTheme.options].some((option) => option.value === id)) {
+        elsSettings.iconTheme.value = id;
+    }
+}
+
+function setIconTheme(id) {
+    if (!themeRegistry.hasIconTheme(id)) return;
+    deps.settings.iconTheme = id;
+    applySettings();
+    deps.flash('文件图标主题：' + (themeRegistry.getIconTheme(id)?.name || id));
+}
+
+function reconcileThemes() {
+    return themeRegistry.reconcileSettings(deps.settings);
+}
+
+function refreshThemes() {
+    refreshThemeSelects();
+    applyTheme(true);
+    applyCodeStyle(true);
+    applyFileIconTheme(true);
+    if (typeof selMod.enhanceSelect === 'function') {
+        selMod.enhanceSelect(elsSettings.codeStyle);
+        selMod.enhanceSelect(elsSettings.iconTheme);
+    }
 }
 
 // 快捷键风格：切换整套键位方案（settings.keyStyle）。
@@ -400,7 +445,7 @@ function setKeyStyle(id) {
 }
 
 function setTheme(id) {
-    if (!deps.themes.some((t) => t.id === id)) return;
+    if (!themeRegistry.hasUiTheme(id)) return;
     deps.settings.theme = id;
     applySettings();
     // 主题切换后必须重绘预览：mermaid 出的 SVG 颜色是渲染时写死的，不重绘会把深色图表贴在浅色界面上。
@@ -591,6 +636,7 @@ function applySettings() {
     syncAboutBannerByTime();
     applyTheme();
     applyCodeStyle();
+    applyFileIconTheme();
     if (keyStyleSelect) keyStyleSelect.value = String(deps.settings.keyStyle || DEFAULT_KEY_STYLE);
     if (typeof deps.syncTerminalTheme === 'function') {
         try {
@@ -1039,9 +1085,10 @@ const searchDeps = Object.create(deps);
 searchDeps.selectSettingsPane = selectSettingsPane;
 searchDeps.elsSettings = elsSettings;
 const searchMod = createSettingsSearch(searchDeps);
+themeRegistry.subscribe(refreshThemes);
 
     return {
         ...dlgMod, ...selMod, ...searchMod,
-        actRel, activityLog, applyCodeStyle, applyIntegration, applyReadOnlyToDoc, applyRemoteSettings, applySettings, countWords, currentCodeStyle, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openSettings, openSettingsAtRow, persistSettingsLight, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount,
+        actRel, activityLog, applyCodeStyle, applyIntegration, applyReadOnlyToDoc, applyRemoteSettings, applySettings, countWords, currentCodeStyle, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openSettings, openSettingsAtRow, persistSettingsLight, reconcileThemes, refreshThemes, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setIconTheme, setSyncedOpenMode, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount,
     };
 }

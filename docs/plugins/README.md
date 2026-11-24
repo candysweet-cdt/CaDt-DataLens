@@ -133,31 +133,71 @@ cadt.addCommand({
 - `contexts` 里的未知值会被静默剔除；全部无效时按 `['tools']` 处理。
 - `when` 抛异常一律当「条件不满足」，一条坏命令不会阻断整个菜单渲染。
 
-### `cadt.addTheme({id, name, bg, accent, css})`
+### `cadt.addTheme({id, name, extends?, bg?, accent?, vars?, css?})`
 
-注册主题，出现在 主题(T) 菜单里。
+注册界面主题，出现在 主题(T) 菜单里。推荐只写差异项，其余变量继承内置 `dark` 或 `light`：
 
 ```js
 cadt.addTheme({
     id: 'my-theme',
     name: '我的主题',
+    extends: 'dark',
     bg: '#241f31',             // 窗口底色（菜单色块也用它）
     accent: '#c58af9',         // 强调色
-    css: `
-        html[data-theme="my-theme"] {
-            --bg: #241f31;
-            --text: #e8e3f2;
-            --muted: #9d94b8;
-            --border: #3a3350;
-            --hover: #2e2842;
-            --accent: #c58af9;
-            --on-accent: #1b1626;
-        }
-    `,
+    vars: {
+        '--bg': '#241f31',
+        '--text': '#e8e3f2',
+        '--muted': '#9d94b8',
+        '--border': '#3a3350',
+        '--accent': '#c58af9',
+        '--on-accent': '#1b1626'
+    }
 });
 ```
 
-`css` 是追加进页面的样式表，选择器用 `html[data-theme="<id>"]` 覆盖 `--*` 设计变量即可；建议完整提供 `--bg/--text/--muted/--border/--hover/--accent/--on-accent`。
+- `extends` 可继承内置主题或先注册的插件主题，最多 8 层，禁止循环。
+- `vars` 只接受应用登记的界面变量；未知变量、非法颜色、`bg` 与最终 `--bg` 不一致都会拒绝注册。
+- 不写 `bg` / `accent` 时从继承主题或对应变量推导。
+- 可选 `css` 是高级扩展，会追加到同一主题样式节点；它影响整个应用页面，不是安全隔离边界。
+- 旧式“只传 `css`”写法仍可用，但新主题应优先使用 `extends + vars`。
+
+### `cadt.addCodeTheme({id, name, extends?, group?, vars?})`
+
+注册独立于界面主题的代码配色，自动进入 主题(T) → 代码主题 与设置页：
+
+```js
+cadt.addCodeTheme({
+    id: 'my-code',
+    name: '我的代码主题',
+    extends: 'jetbrains-dark',
+    group: 'dark',
+    vars: {
+        '--editor-bg': '#241f31',
+        '--syn-keyword': '#c58af9',
+        '--syn-string': '#9ece6a'
+    }
+});
+```
+
+代码主题必须最终具备 25 项语法与编辑器变量，可通过继承补齐；禁止覆盖 `--bg` / `--text` / `--accent` 等界面变量。
+
+### `cadt.registerIconTheme({id, name, extends?, icons})`
+
+注册文件图标主题，自动进入设置页的“文件图标主题”下拉：
+
+```js
+cadt.registerIconTheme({
+    id: 'my-icons',
+    name: '我的图标',
+    extends: 'opensource',
+    icons: {
+        json: '<svg viewBox="0 0 16 16"><path d="M0 0h16v16z"/></svg>',
+        default_file: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>'
+    }
+});
+```
+
+缺失类型优先使用 `default_file`，再回退到继承主题或内置文字缩写图标。插件禁用、卸载或加载失败后，注册项与样式会一并清理；当前正在使用的主题不存在时回退到内置默认主题。
 
 ### `cadt.registerCommandClassifier(spec)`
 
