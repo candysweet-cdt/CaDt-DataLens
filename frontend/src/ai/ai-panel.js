@@ -132,7 +132,7 @@ import {parseClassifierVerdict} from './security/ai-classifier-verdict.js';
 import {GIT_ACTIONS, buildGitActionPrompt} from './tools/ai-git.js';
 import {createAIReminders, normalizeReminders, remindersForPrompt, reminderAddBlocked} from './chat/ai-reminders.js';
 import {normalizeAppMessage, appMessageIcon, detectAppMessage, appMessageMarkdownEligible} from './security/ai-app-message.js';
-import {normalizeActionApprovalSpec} from './security/ai-app-approval.js';
+import {normalizeActionApprovalSpec, browserScriptFingerprint, browserScriptRoute, browserScriptApprovalGuard} from './security/ai-app-approval.js';
 import {inspectToolArguments, safeToolArguments, detectFenceToolMisuse, fenceToolMisuseMessage} from './tools/ai-tool-args.js';
 import {patchErrorParts} from './security/ai-patch-error.js';
 import {patchAllowApply, lastUserTextOf} from './security/ai-patch-policy.js';
@@ -1503,6 +1503,9 @@ export function createAIPanel(options) {
                 ? {pane: aiTextOf(raw.locate.pane), row: aiTextOf(raw.locate.row)}
                 : null,
             ownerSessionId: raw.kind === 'action' ? aiTextOf(raw.sessionId) : '',
+            // browser_evaluate 脚本指纹与全文（动作审批卡逐字核对 + 「本会话允许相同脚本」落盘凭据）
+            scriptHash: raw.kind === 'action' && /^bs-[0-9a-f]{8}$/.test(raw.scriptHash) ? raw.scriptHash : '',
+            scriptText: raw.kind === 'action' && raw.scriptHash ? aiTextOf(raw.scriptText) : '',
             tool,
             // 网络类审批（web_fetch / read_image 网图）：卡文案与「记住」粒度按网址走
             web: raw.web === true,
@@ -1954,6 +1957,11 @@ export function createAIPanel(options) {
             approvedPaths: Array.isArray(raw.approvedPaths)
                 ? raw.approvedPaths.filter((path) => typeof path === 'string' && path).slice(0, 200)
                 : [],
+            // 本会话已批准的页面脚本签名（browser_evaluate 审批卡「本会话允许相同脚本」）：
+            // 存脚本内容哈希而非原文，命中即免弹卡；仅本会话有效，不落全局/项目规则。
+            browserScriptAllow: Array.isArray(raw.browserScriptAllow)
+                ? raw.browserScriptAllow.filter((h) => typeof h === 'string' && h).slice(0, 200)
+                : [],
             // 已批准的工作区外读根（读审批卡「本会话记住」；目录树语义，判定见 ai-read-roots.js）
             readRoots: normalizeReadRoots(raw.readRoots),
             // 支线对话：指向母会话 id（普通会话为空）。不嵌套——读盘时也压成一层的语义。
@@ -2049,6 +2057,7 @@ export function createAIPanel(options) {
             reminders: [],
             changes: [],
             approvedPaths: [],
+            browserScriptAllow: [],
             readRoots: [],
             sideOf: '',
             // OpenCode（Zen/Go）的稳定会话标识：整会话复用，用于 x-opencode-session 头。
@@ -7674,6 +7683,8 @@ async function requestActionApproval(session, toolMessage, info) {
         warnings: spec.warnings,
         origin: spec.source,
         locate: spec.locate,
+        scriptHash: spec.scriptHash,
+        scriptText: spec.scriptText,
         sessionId: session.id,
         remember: '',
     };
@@ -8395,7 +8406,13 @@ async function requestApproval(session, toolMessage, info) {
                 }
             }
         } else if (approval.kind === 'action') {
-            // 动作审批一次性授权：不落任何长期放行规则（与隔离工作区审批同口径）
+            // 动作审批默认一次性授权；唯独 browser_evaluate 审批卡勾了「本会话允许相同脚本」时，
+            // 把脚本指纹记进本会话放行集合（仅本会话有效，不落全局/项目规则）。
+            if (approved && remember === 'session' && approval.scriptHash && entry.session) {
+                aiAddUnique(entry.session.browserScriptAllow, approval.scriptHash);
+                persistSessions();
+                approval.remember = 'session';
+            }
         } else if (approved && remember === 'always') {
             aiAddUnique(config.approvedPaths, approval.path);
             saveAIConfig();
@@ -11120,6 +11137,38 @@ async function requestApproval(session, toolMessage, info) {
             case 'browser_evaluate': {
                 const script = aiTextOf(input.script);
                 if (!script.trim()) throw new Error('script 为空');
+                // 页面脚本审批闸：完全权限直通；写权限档（edit / auto）弹动作审批卡展示脚本全文，
+                // 用户勾「本会话允许相同脚本」后同指纹脚本在本会话免重复确认。
+                const scope = currentScopeOf(ctx.session);
+                // 先过一致性守卫：超长脚本无法逐字核对，直接拒绝（杜绝「看到前 2000 字符、
+                // 执行全文」的越权面）；指纹对完整脚本计算，与展示的 scriptText 是同一段。
+                const guard = browserScriptApprovalGuard(script);
+                const fingerprint = guard.ok ? guard.fingerprint : browserScriptFingerprint(script);
+                const alreadyAllowed = !!(ctx.session && Array.isArray(ctx.session.browserScriptAllow)
+                    && ctx.session.browserScriptAllow.includes(fingerprint));
+                const route = browserScriptRoute(scope, alreadyAllowed);
+                if (route === 'deny') throw new Error('只读档不允许执行页面脚本');
+                if (route === 'approve') {
+                    if (!guard.ok) throw new Error('页面脚本未执行：' + guard.reason);
+                    const answer = await requestActionApproval(ctx.session, ctx.toolMessage, {
+                        action: 'browser_evaluate',
+                        title: 'AI 请求在页面执行脚本',
+                        // 脚本全文走独立的 scriptText（不经 target 的截断）；target 只留一句摘要。
+                        target: '共 ' + script.length + ' 字符，全文见下方「脚本」栏',
+                        risk: 'high',
+                        warnings: [
+                            '将在本会话的浏览器标签页里执行这段 JavaScript，脚本可读取页面数据并操作 DOM',
+                            '脚本内容来自 AI，可能不可信：请逐字核对，确认没有敏感数据外发或破坏性操作后再批准',
+                        ],
+                        source: '本会话允许相同脚本后，相同脚本不再重复询问',
+                        scriptHash: fingerprint,
+                        scriptText: guard.text,
+                    });
+                    if (answer.error) throw new Error('页面脚本审批失败：' + answer.error);
+                    if (!answer.approved) {
+                        return answer.cancelled ? '用户已停止生成，页面脚本未执行。' : '用户拒绝了页面脚本：未执行。';
+                    }
+                }
                 const tab = await ensureBrowserTab(ctx.session);
                 const raw = await backend.BrowserEval(tab.id, script);
                 const result = browserEvalObject(raw);

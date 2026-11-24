@@ -148,6 +148,26 @@ test('桌面控制：装了就给入口，未启用不给桌面工具；启用 +
     assert.ok(!active.toolsForScope('full', true, {id: 's'}).some((t) => t.name === 'windows_control_mode'));
 });
 
+test('browser_evaluate：写权限档下发、read 档不下发、计划模式不下发', () => {
+    const api = createAIToolDefs({
+        appControlOn: () => true,
+        externalToolsOn: () => true,
+        genModelsOn: () => true,
+        desktopInstalledOn: () => false,
+    });
+    const has = (scope, planMode) => api.toolsForScope(scope, planMode).some((t) => t.name === 'browser_evaluate');
+    // 写权限档可见（执行分支弹审批卡，完全权限直通）
+    assert.equal(has('edit', false), true, 'edit 档应下发 browser_evaluate');
+    assert.equal(has('auto', false), true, 'auto 档应下发 browser_evaluate');
+    assert.equal(has('full', false), true, 'full 档应下发 browser_evaluate（直通）');
+    // read 档不下发（工具本身不在模型可见清单里）
+    assert.equal(has('read', false), false, 'read 档不应下发 browser_evaluate');
+    // 计划模式一律不下发（执行阶段能力）
+    for (const scope of ['read', 'edit', 'auto', 'full']) {
+        assert.equal(has(scope, true), false, scope + ' 档计划模式不应下发 browser_evaluate');
+    }
+});
+
 test('每个工具至少在一个权限档下发（四档 × 计划模式取并集）', () => {
     const api = createAIToolDefs({
         appControlOn: () => true,

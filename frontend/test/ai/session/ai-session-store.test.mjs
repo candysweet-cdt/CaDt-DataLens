@@ -893,3 +893,18 @@ test('buildSessionMeta：临时会话标记随 meta 落盘（启动加载据此�
     const sig = (m) => metaSignature(buildSessionMeta(m));
     assert.notEqual(sig({id: 's4'}), sig({id: 's4', temp: true}));
 });
+
+test('buildSessionMeta：browserScriptAllow 随 meta 落盘（脚本审批「本会话允许」跨重启保留）', () => {
+    const hashes = ['bs-deadbeef', 'bs-cafebabe'];
+    const meta = buildSessionMeta({id: 's1', browserScriptAllow: hashes});
+    assert.deepEqual(meta.browserScriptAllow, hashes);
+    // 缺失归一成空数组；脏值（非字符串 / 空串）剔除
+    assert.deepEqual(buildSessionMeta({id: 's2'}).browserScriptAllow, []);
+    assert.deepEqual(buildSessionMeta({id: 's3', browserScriptAllow: ['bs-ok', 42, '', null]}).browserScriptAllow, ['bs-ok']);
+    // JSON 往返不失真
+    const round = JSON.parse(JSON.stringify(meta));
+    assert.deepEqual(round.browserScriptAllow, hashes);
+    // 集合变化必须改变 meta 签名，否则 writeMetaIfChanged 不会补写
+    const sig = (m) => metaSignature(buildSessionMeta(m));
+    assert.notEqual(sig({id: 's4'}), sig({id: 's4', browserScriptAllow: ['bs-12345678']}));
+});

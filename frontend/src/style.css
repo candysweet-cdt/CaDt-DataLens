@@ -7863,6 +7863,13 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     font-family: var(--editor-font-family);
     font-size: 11px;
 }
+/* 脚本审批卡：脚本全文限高滚动，避免最长 2000 字符把审批卡撑出屏幕 */
+.ai-action-val.ai-action-script {
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
 .ai-action-note {
     display: flex;
     align-items: flex-start;

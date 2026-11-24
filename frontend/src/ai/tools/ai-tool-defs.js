@@ -897,7 +897,7 @@ export const AI_TOOL_DEFS = {
     },
     browser_evaluate: {
         name: 'browser_evaluate',
-        description: '在页面里执行任意 JavaScript 并返回结果。仅「完全权限」可用，谨慎使用。',
+        description: '在页面里执行任意 JavaScript 并返回结果。写权限档（自动审批 / 每次询问）可用，调用时弹审批卡展示脚本全文，可勾「本会话允许相同脚本」免重复确认；完全权限档直通。谨慎使用，脚本内容不可信时不要批准。',
         parameters: {
             type: 'object',
             properties: {script: {type: 'string', description: 'JavaScript 表达式'}},
@@ -1144,7 +1144,7 @@ export const AI_TOOL_CATALOG = {
     browser_select: {group: 'browser', blurb: '点选、输入、按键'},
     browser_wait: {group: 'browser', blurb: '等元素/文本/URL 出现（轮询到超时）'},
     browser_scroll: {group: 'browser', blurb: '滚动页面：到元素 / 按像素 / 到顶底'},
-    browser_evaluate: {group: 'browser', blurb: '在页面里执行脚本（完全权限）'},
+    browser_evaluate: {group: 'browser', blurb: '在页面里执行脚本（写档弹审批卡，完全权限直通）'},
     browser_resize: {group: 'browser', blurb: '调整视口宽高（模拟手机/平板等尺寸测响应式）'},
     browser_close: {group: 'browser', blurb: '关闭标签页'},
     app_control: {group: 'app', blurb: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、群聊与群消息、编辑器分栏、设置树与危险设置审批、插件安装卸载、MCP 服务器代配与内置示例安装、窗口截图、界面点击（完全权限）、操作留痕、补丁视图状态、用户快捷便签的读写（先 skill_use cadt-ui 取动作表）'},
@@ -1321,7 +1321,8 @@ export function createAIToolDefs(ctx) {
             // 会话间投递：跨会话唤醒是编排类重能力，与 spawn_agent 同档
             list.push(AI_TOOL_DEFS.session_list, AI_TOOL_DEFS.session_send);
         }
-        if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
+        // 页面脚本：写权限档可见但调用时弹审批卡（执行分支 gate），完全权限直通；计划模式不注入。
+        if (AI_WRITE_SCOPES.includes(scope) && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
         // MCP：写权限档及以上注入（能力未知，只读档不该拿到）；计划模式不注入（外部副作用不可控）。
         // getter 只读缓存整代快照（ai-mcp.js），组装路径上不塞 RPC。
         // 桌面 server（windows）的工具不走这里——它们要过「会话授权 + 懒加载揭示」双闸（下方桌面分支）。

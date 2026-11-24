@@ -417,6 +417,9 @@ export function buildSessionMeta(session) {
         reminders: Array.isArray(session && session.reminders) ? session.reminders : [],
         changes: Array.isArray(session && session.changes) ? session.changes : [],
         approvedPaths: Array.isArray(session && session.approvedPaths) ? session.approvedPaths : [],
+        // browser_evaluate 审批卡「本会话允许相同脚本」的指纹集合（随会话持久化，跨重启保留）
+        browserScriptAllow: Array.isArray(session && session.browserScriptAllow)
+            ? session.browserScriptAllow.filter((h) => typeof h === 'string' && h).slice(0, 200) : [],
         // 已批准的工作区外读根（读审批卡「本会话记住」；跨重启保留授权）
         readRoots: Array.isArray(session && session.readRoots) ? session.readRoots : [],
         // 支线对话：指向母会话 id（普通会话为空）。sideOf 不嵌套——创建时已扁平化到一层。
