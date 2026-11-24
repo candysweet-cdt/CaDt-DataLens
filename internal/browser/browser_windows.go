@@ -506,6 +506,10 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 	if err := wvInitScript(wv, `window.__cadtHost = 'datalens';`); err != nil {
 		return err
 	}
+	// 拦截 target=_blank / window.open：改为当前标签页内跳转，避免弹出脱离应用 UI 的原生浮动窗口
+	if err := wvInitScript(wv, browserNewWindowGuardScript); err != nil {
+		return err
+	}
 	// 创建即隐藏（2026-11-15）：Embed 到前端首次 SetBounds 之间，控件以库默认矩形
 	// 裸露——最大化首开时用户看到整块黑屏（页面其实已在加载，状态栏有 URL）。
 	// 先 Hide，前端第一次 BrowserSetBounds 自带 Show（w/h>0 → Resize+Show），
