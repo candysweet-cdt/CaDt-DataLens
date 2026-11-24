@@ -15,6 +15,10 @@ export const MAX_DRIVERS_TOTAL = 20;
 export const MAX_DRIVERS_PER_PLUGIN = 5;
 export const MAX_DRIVER_FIELDS = 12;
 export const MAX_DRIVER_LABEL = 40;
+// 驱动可选声明「自定义渲染视图」（如 Neo4j 的 graph）：数据表标签页多出视图切换，
+// 插件负责画（mount/destroy/setTheme 契约同 cadt.registerViewer），宿主只给数据通道。
+export const MAX_DRIVER_VIEWS = 3;
+export const MAX_VIEW_LABEL = 20;
 export const DRIVER_FIELD_TYPES = ['text', 'number', 'password'];
 
 const ID_RULE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -70,11 +74,36 @@ function normalizeFields(driverId, raw) {
             type,
             default: f.default == null ? '' : String(f.default),
             required: !!f.required,
+            // hint：字段级说明，渲染在输入框下一行（驱动用它解释语义，如「库名 = instance 内的逻辑库」）
+            hint: String(f.hint == null ? '' : f.hint).trim().slice(0, 120),
             // password 字段天然是密文面：宿主存 dpapi 凭据库，不进工作区清单（localStorage）
             secret: type === 'password' || !!f.secret,
         });
     }
     return fields;
+}
+
+// views 声明：数据表标签页可选的「自定义渲染视图」（图 / 画布 / 时间线…）。
+// 契约与 cadt.registerViewer 一致（mount 返回 {resize?, setTheme?, destroy}），
+// 差别是数据来源：ctx 给的是「库 + 表 + 查询通道」，不是文件文本。
+function normalizeViews(driverId, raw) {
+    if (raw == null) return [];
+    if (!Array.isArray(raw)) bad(`驱动 ${driverId} 的 views 必须是数组`);
+    if (raw.length > MAX_DRIVER_VIEWS) bad(`驱动 ${driverId} 的 views 超过 ${MAX_DRIVER_VIEWS} 项`);
+    const out = [];
+    for (const v of raw) {
+        if (!isPlainObject(v)) bad(`驱动 ${driverId} 的 views 项必须是对象`);
+        const id = String(v.id || '').trim();
+        if (!ID_RULE.test(id)) bad(`驱动 ${driverId} 的视图 id 无效：${JSON.stringify(v.id)}`);
+        if (typeof v.mount !== 'function') bad(`驱动 ${driverId} 的视图 ${id} 缺少 mount(container, ctx) 函数`);
+        if (out.some((x) => x.id === id)) bad(`驱动 ${driverId} 的视图 id 重复：${id}`);
+        out.push({
+            id,
+            label: String(v.label == null ? id : v.label).trim().slice(0, MAX_VIEW_LABEL) || id,
+            mount: v.mount,
+        });
+    }
+    return out;
 }
 
 export function normalizePluginDbDriver(pluginId, pluginName, spec) {
@@ -85,6 +114,7 @@ export function normalizePluginDbDriver(pluginId, pluginName, spec) {
     if (!ID_RULE.test(id)) bad(`id 无效：${JSON.stringify(spec.id)}`);
     if (typeof spec.connect !== 'function') bad(`驱动 ${id} 缺少 connect(config) 函数`);
     const fields = normalizeFields(id, spec.fields);
+    const views = normalizeViews(id, spec.views);
     const label = String(spec.label == null ? id : spec.label).trim().slice(0, MAX_DRIVER_LABEL) || id;
     return {
         key: owner + ':' + id,
@@ -94,6 +124,7 @@ export function normalizePluginDbDriver(pluginId, pluginName, spec) {
         id,
         label,
         fields,
+        views,
         connect: spec.connect,
     };
 }

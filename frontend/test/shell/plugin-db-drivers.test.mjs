@@ -40,6 +40,16 @@ test('归一化：kind 串、字段默认值、密文推断', () => {
     assert.equal(record.fields[0].secret, false);
     assert.equal(record.fields[1].secret, true, 'password 字段应推断为密文');
     assert.equal(record.fields[1].required, false);
+    assert.equal(record.fields[0].hint, '', '未声明 hint 时为空串');
+    // hint：字段级说明（宿主渲染在输入框下方），去首尾空白并截到 120 字
+    const withHint = normalizePluginDbDriver('acme', '', baseSpec({
+        fields: [
+            {key: 'host', type: 'text', hint: '  填主机名或 IP  '},
+            {key: 'long', type: 'text', hint: 'x'.repeat(200)},
+        ],
+    }));
+    assert.equal(withHint.fields[0].hint, '填主机名或 IP');
+    assert.equal(withHint.fields[1].hint.length, 120);
 });
 
 test('校验拒绝：坏 id / 缺 connect / 缺 fields / 坏字段键 / 重复键 / 未知类型回落 text', () => {
@@ -94,3 +104,35 @@ test('查询：按 kind 取驱动；插件禁用（clear）后查不到', () => 
     assert.equal(getPluginDbDriverByKind(kind), null, 'clear 后查不到（插件禁用语义）');
     assert.equal(getPluginDbDrivers().length, 0);
 });
+
+// ---------- views：数据表标签页的自定义渲染视图（图 / 画布…） ----------
+
+test('views：未声明时为 []，声明后按声明顺序归一化并保留 mount', () => {
+    const plain = normalizePluginDbDriver('acme', 'ACME', baseSpec());
+    assert.deepEqual(plain.views, [], '未声明 views 时是空数组（宿主据此不显示视图切换）');
+    const mount = () => ({destroy() {}});
+    const record = normalizePluginDbDriver('acme', 'ACME', baseSpec({
+        views: [{id: 'graph', label: '  图  ', mount}],
+    }));
+    assert.equal(record.views.length, 1);
+    assert.equal(record.views[0].id, 'graph');
+    assert.equal(record.views[0].label, '图', 'label 去首尾空白');
+    assert.equal(record.views[0].mount, mount, 'mount 原样保留（由宿主调用）');
+    // label 缺省回落到 id
+    const noLabel = normalizePluginDbDriver('acme', 'ACME', baseSpec({views: [{id: 'canvas', mount}]}));
+    assert.equal(noLabel.views[0].label, 'canvas');
+});
+
+test('views：超上限 / 非数组 / 坏 id / 缺 mount / id 重复都拒绝', () => {
+    const mount = () => ({});
+    assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({views: 'graph'})), /views 必须是数组/);
+    assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({
+        views: [{id: 'a', mount}, {id: 'b', mount}, {id: 'c', mount}, {id: 'd', mount}],
+    })), /views 超过/);
+    assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({views: [{id: 'Bad Id', mount}]})), /视图 id 无效/);
+    assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({views: [{id: 'graph'}]})), /缺少 mount/);
+    assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({
+        views: [{id: 'graph', mount}, {id: 'graph', mount}],
+    })), /视图 id 重复/);
+});
+

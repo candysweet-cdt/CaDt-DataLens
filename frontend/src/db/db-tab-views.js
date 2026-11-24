@@ -7,6 +7,7 @@ import {createDbQueryEditor} from './db-query-editor.js';
 import {createDbTablePane} from './db-table-grid.js';
 import {createDbRedisKeyPane} from './db-redis-view.js';
 import {kindLabel} from './db-model.js';
+import {isPluginDbKind, pluginDbDriverOf} from './db-plugin.js';
 import {ensureSession, getSessionState, disconnectSession, reconnectSession, subscribeSession} from './db-sessions.js';
 
 // 会话门面通道在 build 回调内按 getSessionState 动态解析（api || deps.backend）
@@ -124,10 +125,176 @@ function mountWithSession(deps, doc, build) {
     };
 }
 
-// 数据表标签页：一个表 = 一个标签页（全宽网格）
+// 插件驱动声明的自定义视图（graph / 画布 / 时间线…）：数据表标签页顶部多一排切换。
+// 与 cadt.registerViewer 的差别在数据来源——这里给的是「库 + 表 + 只读查询出口」而不是文件文本：
+//   ctx.query(cypher, limit) 走会话门面（插件会话 = 插件门面，内置会话 = 宿主绑定），
+//   受连接只读与行数上限约束，写语句由驱动侧自行拦截。
+// mount 返回 {resize?, setTheme?, destroy}；容器变化 / 主题切换由本宿主转达。
+function createDbTableViewsHost(deps, t, session, paneEl, views) {
+    const root = document.createElement('div');
+    root.className = 'db-tab-views';
+    const bar = document.createElement('div');
+    bar.className = 'db-tab-views-bar';
+    const body = document.createElement('div');
+    body.className = 'db-tab-views-body';
+    root.append(bar, body);
+
+    const tablePane = document.createElement('div');
+    tablePane.className = 'db-tab-view-pane';
+    tablePane.appendChild(paneEl);
+    body.appendChild(tablePane);
+
+    const api = () => (getSessionState(t.entryId) ? (getSessionState(t.entryId).api || deps.backend) : deps.backend);
+    const currentTheme = () => (document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+
+    let active = 'table';
+    let mounted = null; // {wrap, handle}
+    const buttons = new Map();
+
+    async function runQuery(sql, limit) {
+        const text = String(sql == null ? '' : sql).trim();
+        if (!text) throw new Error('查询语句为空');
+        const queryId = 'view-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+        const out = await api().DBQuery(session.id, queryId, text, false, Number(limit) || 500);
+        if (!out || out.status !== 'ok') throw new Error((out && out.message) || '查询未执行');
+        return out.result || {columns: [], rows: []};
+    }
+
+    function makeCtx() {
+        return {
+            database: t.db,
+            table: t.table,
+            kind: t.kind,
+            getTheme: currentTheme,
+            query: (sql, limit) => runQuery(sql, limit),
+            flash: (msg, isError) => {
+                if (deps.flash) deps.flash(String(msg == null ? '' : msg), !!isError);
+            },
+            logActivity: (action, target, meta) => {
+                if (deps.logActivity) deps.logActivity(action, target, meta);
+            },
+        };
+    }
+
+    function syncButtons() {
+        for (const [id, btn] of buttons) {
+            btn.classList.toggle('active', id === active);
+        }
+    }
+
+    function destroyMounted() {
+        if (!mounted) return;
+        const {wrap, handle} = mounted;
+        mounted = null;
+        try {
+            if (handle && typeof handle.destroy === 'function') handle.destroy();
+        } catch (_) {
+            // 插件视图的清理异常不该拖垮标签页（泄漏由插件负责，已记文档）
+        }
+        wrap.remove();
+    }
+
+    function showTable() {
+        if (active === 'table') return;
+        destroyMounted();
+        // 用内联 display 而不是 .hidden 类：本文件的 .db-tab-view-pane 也声明了 display:flex，
+        // 同特异性且写在 .hidden 之后会把它覆盖掉，表格就藏不住了（曾经的真事故）
+        tablePane.style.display = '';
+        active = 'table';
+        syncButtons();
+    }
+
+    function showView(view) {
+        if (active === view.id) return;
+        destroyMounted();
+        tablePane.style.display = 'none';
+        const wrap = document.createElement('div');
+        wrap.className = 'db-plugin-view';
+        body.appendChild(wrap);
+        let handle = null;
+        try {
+            handle = view.mount(wrap, makeCtx());
+        } catch (e) {
+            wrap.remove();
+            tablePane.style.display = '';
+            active = 'table';
+            syncButtons();
+            if (deps.flash) deps.flash('「' + view.label + '」视图加载失败：' + (e && e.message || e), true);
+            return;
+        }
+        mounted = {wrap, handle: handle || {}};
+        active = view.id;
+        syncButtons();
+    }
+
+    function addButton(id, label, onClick) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'db-btn db-tab-view-btn';
+        btn.textContent = label;
+        btn.dataset.view = id;
+        btn.addEventListener('click', onClick);
+        bar.appendChild(btn);
+        buttons.set(id, btn);
+        return btn;
+    }
+
+    bar.appendChild(Object.assign(document.createElement('span'), {
+        className: 'db-tab-views-label',
+        textContent: '视图',
+    }));
+    addButton('table', '表格', showTable);
+    for (const view of views) {
+        addButton(view.id, view.label, () => showView(view));
+    }
+    syncButtons();
+
+    // 容器尺寸变化（分栏拖拽 / 窗口缩放）与主题切换：转达给已挂载的视图，不重挂
+    let ro = null;
+    if (typeof ResizeObserver !== 'undefined') {
+        ro = new ResizeObserver(() => {
+            if (mounted && mounted.handle && typeof mounted.handle.resize === 'function') {
+                try {
+                    mounted.handle.resize();
+                } catch (_) {}
+            }
+        });
+        ro.observe(body);
+    }
+    let themeObs = null;
+    if (typeof MutationObserver !== 'undefined') {
+        themeObs = new MutationObserver(() => {
+            if (mounted && mounted.handle && typeof mounted.handle.setTheme === 'function') {
+                try {
+                    mounted.handle.setTheme(currentTheme());
+                } catch (_) {}
+            }
+        });
+        themeObs.observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+    }
+
+    return {
+        el: root,
+        destroy() {
+            destroyMounted();
+            if (ro) ro.disconnect();
+            if (themeObs) themeObs.disconnect();
+        },
+    };
+}
+
+// 数据表标签页：一个表 = 一个标签页（全宽网格）；插件驱动声明了自定义视图时多一排切换
 export function createDbTableTabView(deps, doc) {
     const t = doc.dbTableSpec; // {entryId, entry, db, table, kind}
+    let host = null;
     const view = mountWithSession(deps, doc, (ready, hooks) => {
+        // 会话恢复会重新 build：先拆掉上一轮的视图宿主（观察器要断干净）
+        if (host) {
+            try {
+                host.destroy();
+            } catch (_) {}
+            host = null;
+        }
         const session = ready.info;
         const pane = createDbTablePane(
             {
@@ -142,10 +309,22 @@ export function createDbTableTabView(deps, doc) {
                 get sessionRecovered() { return hooks.sessionRecovered; },
             },
             session, t.db, t.table);
-        return pane.el;
+        const driver = isPluginDbKind(t.entry.kind) ? pluginDbDriverOf(t.entry.kind) : null;
+        const views = driver && Array.isArray(driver.views) ? driver.views : [];
+        if (!views.length) return pane.el;
+        host = createDbTableViewsHost(deps, t, session, pane.el, views);
+        return host.el;
     });
     // 统一卸载契约：bridge 的 doc.tabUnmount 会调 doc.dbTabUnmount（dispose 撤会话订阅）
-    doc.dbTabUnmount = () => view.dispose();
+    doc.dbTabUnmount = () => {
+        if (host) {
+            try {
+                host.destroy();
+            } catch (_) {}
+            host = null;
+        }
+        view.dispose();
+    };
     return view.el;
 }
 
