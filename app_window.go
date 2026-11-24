@@ -43,22 +43,22 @@ func (a *App) SetWindowCollapsed(ctx context.Context, collapsed bool) {
 // title/位置在 Go 侧拿不到读取口，标识用窗口名 + 形态 + 工作区。
 // IsWorkspaceOpen 查询某工作区是否已被其他窗口打开（恢复路径防双开用）。
 func (a *App) IsWorkspaceOpen(ctx context.Context, dir string) bool {
-	return winReg.findByWorkspace(strings.TrimSpace(dir), callerWindowName(ctx)) != nil
+	return winReg.FindByWorkspace(strings.TrimSpace(dir), callerWindowName(ctx)) != nil
 }
 
 func (a *App) WindowList(ctx context.Context) []map[string]string {
 	self := callerWindowName(ctx)
 	out := make([]map[string]string, 0, 4)
-	for _, st := range winReg.list() {
+	for _, st := range winReg.List() {
 		item := map[string]string{
-			"name": st.name(),
-			"mode": string(st.startup().Mode),
+			"name": st.Name(),
+			"mode": string(st.Startup().Mode),
 			"self": "",
 		}
-		if st.name() == self {
+		if st.Name() == self {
 			item["self"] = "1"
 		}
-		if ws := st.workspace(); ws != "" {
+		if ws := st.Workspace(); ws != "" {
 			item["workspace"] = ws
 		}
 		out = append(out, item)
@@ -68,11 +68,11 @@ func (a *App) WindowList(ctx context.Context) []map[string]string {
 
 // WindowFocusByName 前置并聚焦指定窗口（切换器跳转用）；窗口不存在返回 false。
 func (a *App) WindowFocusByName(ctx context.Context, name string) (bool, error) {
-	st := winReg.get(strings.TrimSpace(name))
-	if st == nil || st.window() == nil {
+	st := winReg.Get(strings.TrimSpace(name))
+	if st == nil || st.Window() == nil {
 		return false, nil
 	}
-	activateWindow(st.window())
+	activateWindow(st.Window())
 	return true, nil
 }
 
@@ -206,7 +206,7 @@ func (a *App) OpenInNewWindows(paths []string) error {
 	if len(targets) == 0 {
 		return nil
 	}
-	if st := winReg.primary(); st != nil {
+	if st := winReg.Primary(); st != nil {
 		deliverOpenTargets(st, openTargetsAny(targets))
 		return nil
 	}
@@ -239,13 +239,13 @@ func (a *App) beforeCloseWindow(st *windowState) bool {
 	if st == nil {
 		return false
 	}
-	isMain := st.startup().Mode == windowModeMain
+	isMain := st.Startup().Mode == windowModeMain
 	// 设置里选了「最小化到托盘」：点 X 只是把窗口藏起来，进程与后台任务全部照旧跑。
 	// 只有主窗口参与；且只在该窗口是最后一个主窗口时才藏（否则直接关掉本窗口）。
 	if a.convert == nil && isMain && traySupported() &&
-		shouldHideOnClose(a.closeAction, true, st.forceClosed(), a.quitRequested.Load(), systemShuttingDown()) {
-		setMainWindow(st.window())
-		a.hideToTray(st.window())
+		shouldHideOnClose(a.closeAction, true, st.ForceClosed(), a.quitRequested.Load(), systemShuttingDown()) {
+		setMainWindow(st.Window())
+		a.hideToTray(st.Window())
 		return true
 	}
 	// 关窗二次确认的依据不止「AI 回合进行中」：终端会话与 AI 后台命令作业都会随
@@ -255,8 +255,8 @@ func (a *App) beforeCloseWindow(st *windowState) bool {
 	//（审查 P2-3：v2 一窗一进程时文案准确，v3 同进程后口径要跟着收）。
 	// lastMain：关闭的是最后一个主窗口，即「退出应用」——会连带关掉浮窗/调试台；
 	// lastWindow：关闭后进程里没有窗口了（--ai-float / --debug-console 单独运行）。
-	lastMain := isMain && winReg.countMain() <= 1
-	lastWindow := winReg.count() <= 1
+	lastMain := isMain && winReg.CountMain() <= 1
+	lastWindow := winReg.Count() <= 1
 	terms, bgJobs := 0, 0
 	if (isMain && lastMain) || lastWindow {
 		terms = a.Terminal.RunningSessionCount()
@@ -265,10 +265,10 @@ func (a *App) beforeCloseWindow(st *windowState) bool {
 	dirty, aiRunning := st.IsDirty(), st.IsAIRunning()
 	if lastMain {
 		// 退出应用会带走附属窗口：它们的未保存/AI 状态也要算进这次确认。
-		dirty = dirty || winReg.anyDirty()
-		aiRunning = aiRunning || winReg.anyAIRunning()
+		dirty = dirty || winReg.AnyDirty()
+		aiRunning = aiRunning || winReg.AnyAIRunning()
 	}
-	if st.forceClosed() || (!dirty && !aiRunning && terms == 0 && bgJobs == 0) {
+	if st.ForceClosed() || (!dirty && !aiRunning && terms == 0 && bgJobs == 0) {
 		if lastMain || lastWindow {
 			// 先摘窗口再收口：teardown 可能要等 MCP 子进程 / 插件服务退出，
 			// 让用户盯着一个已经点了 X 的窗口等这档时间没有意义。
@@ -281,7 +281,7 @@ func (a *App) beforeCloseWindow(st *windowState) bool {
 		}
 		return false
 	}
-	if w := st.window(); w != nil {
+	if w := st.Window(); w != nil {
 		w.EmitEvent("confirm-close", map[string]interface{}{
 			"dirty": dirty, "aiRunning": aiRunning, "terms": terms, "bgJobs": bgJobs,
 		})
@@ -294,12 +294,12 @@ func (a *App) ForceClose(ctx context.Context) {
 	if st == nil {
 		return
 	}
-	st.markForceClose()
+	st.MarkForceClose()
 	st.SetDirty(false)
 	st.SetAIRunning(false)
-	isMain := st.startup().Mode == windowModeMain
-	lastMain := isMain && winReg.countMain() <= 1
-	lastWindow := winReg.count() <= 1
+	isMain := st.Startup().Mode == windowModeMain
+	lastMain := isMain && winReg.CountMain() <= 1
+	lastWindow := winReg.Count() <= 1
 	if lastMain || lastWindow {
 		// 同 beforeCloseWindow：窗口先消失，收口（可能等子进程）在后面做。
 		hideWindowsBeforeTeardown()
@@ -308,5 +308,5 @@ func (a *App) ForceClose(ctx context.Context) {
 	if lastMain {
 		closeOtherWindows(st)
 	}
-	closeWindow(st.window())
+	closeWindow(st.Window())
 }

@@ -31,7 +31,7 @@ func (a *App) ExportDebugConsoleLog(defaultName, content string) (string, error)
 // IsDebugConsoleWindow 当前调用窗口是否是独立调试控制台窗口。
 func (a *App) IsDebugConsoleWindow(ctx context.Context) bool {
 	st := stateForCaller(ctx)
-	return st != nil && st.startup().Mode == windowModeDebug
+	return st != nil && st.Startup().Mode == windowModeDebug
 }
 
 // OpenDebugConsoleWindow 打开（或聚焦）调试控制台窗口（P2：同进程窗口）。

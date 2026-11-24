@@ -19,14 +19,14 @@ import (
 // createWindow 创建并登记窗口，随后 app.Run 会跑它。
 func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 	if spec.Name == "" {
-		spec.Name = winReg.nextName(spec.Mode)
+		spec.Name = winReg.NextName(spec.Mode)
 	}
-	st := winReg.add(spec)
+	st := winReg.Add(spec)
 	width, height, minWidth, minHeight := windowSizesFor(spec.Mode)
 	initialRect, hasInitialRect := winGeom.initialGeometry(spec, width, height, minWidth, minHeight)
-	st.setInitialGeometry(initialRect, hasInitialRect)
+	st.SetInitialGeometry(initialRect, hasInitialRect)
 	win := wailsApp.Window.NewWithOptions(windowOptionsFor(spec, initialRect, hasInitialRect))
-	st.setWindow(win)
+	st.SetWindow(win)
 	installGeometryHooks(win, st)
 	// v3 的文件拖放只回调 Go 侧监听（不会发回 JS 事件），这里收下后转成本窗口事件；
 	// 前端经事件桥按 sender 过滤消费（修复迁移期 OnFileDrop 收不到事件的回归）。
@@ -51,7 +51,7 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 	// 终端窗口收回不发交还事件，2026-11-21 用户实测）。钩子先于 v3 内部关闭
 	// 监听器执行，e.Cancel() 可以同时拦住两条路径。
 	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		writeAppLog("info", "WindowClosing 钩子触发：%s", st.name())
+		writeAppLog("info", "WindowClosing 钩子触发：%s", st.Name())
 		// 关窗前采集一次并同步落盘：拖拽刚结束就关窗时防抖计时器可能还没到点。
 		winGeom.capture(st)
 		winGeom.flush()
@@ -63,16 +63,16 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 		if !a.quitRequested.Load() && !systemShuttingDown() {
 			a.emitTerminalPopoutClosed(st)
 		}
-		winReg.remove(st.name())
+		winReg.Remove(st.Name())
 		// 窗口名下的一切按归属收口：工作区/资源监听槽、memo 写权租约、浏览器标签页
 		// （该窗口的前端已死，不回收会顶掉别的窗口的监听、泄漏 WebView2 进程）。
-		a.releaseWindowOwnedState(st.name())
+		a.releaseWindowOwnedState(st.Name())
 		if p := win.NativeWindow(); p != nil {
 			a.BrowserCloseByOwner(uintptr(p))
 		}
 		if currentWindow() == win {
-			if primary := winReg.primary(); primary != nil {
-				setMainWindow(primary.window())
+			if primary := winReg.Primary(); primary != nil {
+				setMainWindow(primary.Window())
 			} else {
 				setMainWindow(nil)
 			}
@@ -86,7 +86,7 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 	// 托盘隐藏需要先有关窗确认流程，8 秒内不可能发生，不会误弹托盘窗口。
 	time.AfterFunc(8*time.Second, func() {
 		// 正在退出（hideWindowsBeforeTeardown 把窗口藏了）：别再把窗口塞回屏幕。
-		if a.teardownDone.Load() || st.forceClosed() {
+		if a.teardownDone.Load() || st.ForceClosed() {
 			return
 		}
 		if !win.IsVisible() {
@@ -190,13 +190,13 @@ func (a *App) windowReady(st *windowState) {
 	if a.convert != nil {
 		return
 	}
-	win := st.window()
+	win := st.Window()
 	if win == nil {
 		return
 	}
-	spec := st.startup()
+	spec := st.Startup()
 	maximised := false
-	if rect, ok := st.takeInitialGeometry(); ok {
+	if rect, ok := st.TakeInitialGeometry(); ok {
 		// 首个窗口创建于 Run 之前，v3 那时还没枚举显示器；这里按当前屏幕布局
 		// 再收敛一次（窗口仍隐藏，用户看不到跳动）。后续导航重载不重复应用。
 		_, _, minW, minH := windowSizesFor(spec.Mode)
@@ -208,7 +208,7 @@ func (a *App) windowReady(st *windowState) {
 	}
 	// 显示只做一次：托盘隐藏的窗口遇到 reload（HMR / location.reload）时
 	// 不能被重新弹出（审查 P2-4）。
-	if st.markShownOnce() {
+	if st.MarkShownOnce() {
 		if spec.Mode == windowModeMain {
 			showWindowWhenReady(win, maximised)
 		} else if maximised {
@@ -224,8 +224,8 @@ func (a *App) windowReady(st *windowState) {
 // ensureFloatWindow 打开（或聚焦）AI 浮窗；targets 非空时作为该窗口的启动目标
 // （新建窗口走启动上下文，已存在的窗口直接投 open-targets 事件）。
 func (a *App) ensureFloatWindow(targets ...launchargs.OpenTarget) *application.WebviewWindow {
-	if st := winReg.get("float"); st != nil {
-		if w := st.window(); w != nil {
+	if st := winReg.Get("float"); st != nil {
+		if w := st.Window(); w != nil {
 			if len(targets) > 0 {
 				w.EmitEvent("open-targets", targets)
 			}
@@ -238,8 +238,8 @@ func (a *App) ensureFloatWindow(targets ...launchargs.OpenTarget) *application.W
 
 // ensureDebugWindow 打开（或聚焦）独立调试控制台窗口。
 func (a *App) ensureDebugWindow() *application.WebviewWindow {
-	if st := winReg.get("debug"); st != nil {
-		if w := st.window(); w != nil {
+	if st := winReg.Get("debug"); st != nil {
+		if w := st.Window(); w != nil {
 			activateWindow(w)
 			return w
 		}
@@ -251,7 +251,7 @@ func (a *App) ensureDebugWindow() *application.WebviewWindow {
 // ConPTY 会话留在进程里不动，事件归属由新窗口装载后自行接管。
 func (a *App) ensureTerminalWindow(termID, origin string) *application.WebviewWindow {
 	if st := findTerminalWindow(termID); st != nil {
-		if w := st.window(); w != nil {
+		if w := st.Window(); w != nil {
 			activateWindow(w)
 			return w
 		}
@@ -260,8 +260,8 @@ func (a *App) ensureTerminalWindow(termID, origin string) *application.WebviewWi
 }
 
 func findTerminalWindow(termID string) *windowState {
-	for _, st := range winReg.list() {
-		spec := st.startup()
+	for _, st := range winReg.List() {
+		spec := st.Startup()
 		if spec.Mode == windowModeTerminal && spec.TermID == termID {
 			return st
 		}
@@ -272,7 +272,7 @@ func findTerminalWindow(termID string) *windowState {
 // emitTerminalPopoutClosed 终端独立窗口关闭：会话还活着就广播交还事件，
 // 原窗口（不在了就当前主窗口）收到后把页签接回去。退出流程不投递。
 func (a *App) emitTerminalPopoutClosed(st *windowState) {
-	spec := st.startup()
+	spec := st.Startup()
 	if spec.Mode != windowModeTerminal || spec.TermID == "" {
 		return
 	}
@@ -294,9 +294,9 @@ func (a *App) emitTerminalPopoutClosed(st *windowState) {
 		return
 	}
 	target := spec.Origin
-	if target == "" || winReg.get(target) == nil {
-		if p := winReg.primary(); p != nil {
-			target = p.name()
+	if target == "" || winReg.Get(target) == nil {
+		if p := winReg.Primary(); p != nil {
+			target = p.Name()
 		} else {
 			target = ""
 		}
@@ -325,7 +325,7 @@ func activateWindow(w *application.WebviewWindow) {
 
 // deliverOpenTargets 把打开目标事件投给指定窗口（sender 由 v3 填窗口名）。
 func deliverOpenTargets(st *windowState, targets []any) {
-	w := st.window()
+	w := st.Window()
 	if w == nil {
 		return
 	}
@@ -336,7 +336,7 @@ func deliverOpenTargets(st *windowState, targets []any) {
 // deliverOpenSession 把「打开某个 AI 会话」投给指定窗口（替代 v2 的文件信箱）；
 // reqID 由投递方生成，目标窗口处理完经 WindowReuseResult 回执。
 func deliverOpenSession(st *windowState, reqID, workspace, sessionID string) {
-	w := st.window()
+	w := st.Window()
 	if w == nil {
 		return
 	}
@@ -355,15 +355,15 @@ func deliverOpenSession(st *windowState, reqID, workspace, sessionID string) {
 func (a *App) openMainWindow(spec windowSpec) *application.WebviewWindow {
 	spec.Mode = windowModeMain
 	if spec.Workspace != "" {
-		if st := winReg.findByWorkspace(spec.Workspace, ""); st != nil {
-			activateWindow(st.window())
+		if st := winReg.FindByWorkspace(spec.Workspace, ""); st != nil {
+			activateWindow(st.Window())
 			if spec.SessionID != "" {
-				emitWindowEventTo(st.window(), "app-open-ai-session", map[string]string{
+				emitWindowEventTo(st.Window(), "app-open-ai-session", map[string]string{
 					"workspace": spec.Workspace,
 					"sessionId": spec.SessionID,
 				})
 			}
-			return st.window()
+			return st.Window()
 		}
 	}
 	return a.createWindow(spec)
@@ -379,14 +379,14 @@ func closeWindow(w *application.WebviewWindow) {
 // closeOtherWindows 关闭除 except 外的全部窗口（最后一个主窗口退出时带走浮窗/调试台）。
 // 先置 forceClose：这些窗口的 AI 回合/未保存状态已经算进主窗口的退出确认，不再逐个弹框。
 func closeOtherWindows(except *windowState) {
-	for _, st := range winReg.list() {
+	for _, st := range winReg.List() {
 		if st == except {
 			continue
 		}
-		st.markForceClose()
+		st.MarkForceClose()
 		st.SetDirty(false)
 		st.SetAIRunning(false)
-		closeWindow(st.window())
+		closeWindow(st.Window())
 	}
 }
 

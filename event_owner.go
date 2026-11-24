@@ -1,6 +1,9 @@
 package main
 
-// event_owner.go：流式事件的窗口归属路由（P2 可选收紧，P3 后补）。
+// event_owner.go：流式事件的窗口归属路由（登记表在 internal/eventowner）。
+//
+// 本文件只剩两件与宿主有关的事：绑定方法怎么从 ctx 拿窗口名，以及命中归属后
+// 怎么用窗口对象定向发射。表的淘汰策略与载荷取字段都是纯逻辑，随包下沉。
 //
 // 终端 / 命令 / 运行 / 浏览器标签 / 阅读搜索的输出事件天然带 id。前端在创建资源后
 // 调用 RegisterEventOwner(kind, id)（调用方窗口经 ctx 归属）；引擎 emit 时按 id 查
@@ -10,55 +13,19 @@ package main
 import (
 	"context"
 	"strings"
-	"sync"
+
+	"datalens/internal/eventowner"
 )
-
-type ownerKey struct{ kind, id string }
-
-var eventOwners = struct {
-	sync.RWMutex
-	m     map[ownerKey]string
-	order []ownerKey // 插入序：表满时按最老登记淘汰，而不是全表清空
-}{m: make(map[ownerKey]string)}
-
-// eventOwnerLimit 防无界增长：浏览器标签等没有天然退出事件的资源靠上限兜底。
-const eventOwnerLimit = 8192
 
 // RegisterEventOwner 登记资源 id 属于调用方窗口。
 func (a *App) RegisterEventOwner(ctx context.Context, kind, id string) error {
-	name := callerWindowName(ctx)
-	kind = strings.TrimSpace(kind)
-	id = strings.TrimSpace(id)
-	if name == "" || kind == "" || id == "" {
-		return nil
-	}
-	key := ownerKey{kind, id}
-	eventOwners.Lock()
-	if _, exists := eventOwners.m[key]; !exists && len(eventOwners.m) >= eventOwnerLimit {
-		// 表满：淘汰最老的登记（对应资源大概率已消失，广播兜底会接管其事件），
-		// 不能整表清空——那会把所有活跃归属一次性打回广播（审查 P2-6）。
-		for len(eventOwners.order) > 0 {
-			oldest := eventOwners.order[0]
-			eventOwners.order = eventOwners.order[1:]
-			if _, live := eventOwners.m[oldest]; live {
-				delete(eventOwners.m, oldest)
-				break
-			}
-		}
-	}
-	if _, exists := eventOwners.m[key]; !exists {
-		eventOwners.order = append(eventOwners.order, key)
-	}
-	eventOwners.m[key] = name
-	eventOwners.Unlock()
+	eventowner.Register(callerWindowName(ctx), kind, id)
 	return nil
 }
 
 // UnregisterEventOwner 摘除登记（阅读搜索等一次性请求结束时调用）。
 func (a *App) UnregisterEventOwner(ctx context.Context, kind, id string) error {
-	eventOwners.Lock()
-	delete(eventOwners.m, ownerKey{strings.TrimSpace(kind), strings.TrimSpace(id)})
-	eventOwners.Unlock()
+	eventowner.Unregister(kind, id)
 	return nil
 }
 
@@ -68,20 +35,14 @@ func routeOwnedEvent(kind, event string, data any) {
 	if kind == "reading" {
 		field = "requestID"
 	}
-	id := payloadString(data, field)
+	id := eventowner.PayloadString(data, field)
 	if id != "" {
-		key := ownerKey{kind, id}
-		eventOwners.RLock()
-		name := eventOwners.m[key]
-		eventOwners.RUnlock()
-		if name != "" {
-			if st := winReg.get(name); st != nil {
-				if w := st.window(); w != nil {
+		if name, ok := eventowner.Lookup(kind, id); ok && name != "" {
+			if st := winReg.Get(name); st != nil {
+				if w := st.Window(); w != nil {
 					w.EmitEvent(event, data)
 					if strings.HasSuffix(event, "-exit") {
-						eventOwners.Lock()
-						delete(eventOwners.m, key)
-						eventOwners.Unlock()
+						eventowner.Unregister(kind, id)
 					}
 					return
 				}
@@ -89,21 +50,4 @@ func routeOwnedEvent(kind, event string, data any) {
 		}
 	}
 	emitAppEvent(event, data)
-}
-
-// payloadString 从事件载荷里取字符串字段（各引擎载荷为 map[string]string 或 map[string]interface{}）。
-func payloadString(data any, field string) string {
-	switch v := data.(type) {
-	case map[string]string:
-		return v[field]
-	case map[string]interface{}:
-		if s, ok := v[field].(string); ok {
-			return s
-		}
-	case interface{ GetID() string }:
-		if field == "id" {
-			return v.GetID()
-		}
-	}
-	return ""
 }

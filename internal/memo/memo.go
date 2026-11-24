@@ -6,6 +6,7 @@
 package memo
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -44,10 +45,12 @@ var imageExtByMIME = map[string]string{
 	"image/bmp":  "bmp",
 }
 
-// Deps 外部动作注入：全局作用域落在应用数据目录。
+// Deps 外部动作注入：全局作用域落在应用数据目录；OwnerForCall 从绑定 ctx 取
+// 调用方窗口名（多窗口写权租约的归属者）。
 type Deps struct {
-	AppDataDir func() string
-	Logf       func(format string, args ...any)
+	AppDataDir   func() string
+	Logf         func(format string, args ...any)
+	OwnerForCall func(ctx context.Context) string
 }
 
 var deps Deps

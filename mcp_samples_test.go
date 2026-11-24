@@ -22,7 +22,7 @@ func TestMCPSampleHealHookWired(t *testing.T) {
 // 运行态管理器，否则 MCPSnapshot 看不到它、不发 mcp-tools-changed——表现就是装好了列表
 // 不刷新，退出重进才出现。这里是源码接线守卫（真跑安装会拉进程，放 internal 包做集成测试）。
 func TestMCPInstallSampleAppliesConfig(t *testing.T) {
-	src, err := os.ReadFile("mcp_samples.go")
+	src, err := os.ReadFile("embed_assets.go")
 	if err != nil {
 		t.Fatal(err)
 	}

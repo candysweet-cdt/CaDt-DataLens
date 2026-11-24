@@ -581,8 +581,8 @@ func TestWailsInfoVersionMatchesAppVersion(t *testing.T) {
 }
 
 func TestConsumeStartupSettings(t *testing.T) {
-	state := winReg.add(windowSpec{Name: "test-startup-settings", Mode: windowModeMain, SettingsPane: "models"})
-	defer winReg.remove(state.name())
+	state := winReg.Add(windowSpec{Name: "test-startup-settings", Mode: windowModeMain, SettingsPane: "models"})
+	defer winReg.Remove(state.Name())
 	app := &App{}
 	if got := app.ConsumeStartupSettings(context.Background()); got != "models" {
 		t.Fatalf("first = %q", got)

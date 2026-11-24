@@ -1,14 +1,22 @@
 package main
 
+// app_dialogs.go：文件系统对话框的 Wails 绑定（打开/保存/目录选择）。
+//
+// 由 app_dialogs.go + app_fs.go 合并而来（2026-11-24 三期结构化）：两者都是
+// 文件对话框绑定，共用 dialogOwner / isDialogCancelled / dialogFilterOrAny 这组
+// 助手，本就该在一个文件里。目录/条目操作本身已下沉 internal/fsops。
+//
+// 通用对话框：打开/保存统一走这里，过滤器用预置短 id，避免把过滤模式散在各调用处。
+// 用户取消时路径返回空串，由调用方自行判断不写文件。
+
 import (
 	"context"
 	"strings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
-)
 
-// 通用文件对话框：打开/保存统一走这里，过滤器用预置短 id，避免把过滤模式散在各调用处。
-// 用户取消时路径返回空串，由调用方自行判断不写文件。
+	"datalens/internal/fsops"
+)
 
 // isDialogCancelled 识别文件对话框的取消。v2 显式吞掉取消（空值+nil），v3 的 cfd 层
 // 把取消透传成错误——该错误类型在 internal/go-common-file-dialog/cfd 里导不出来，
@@ -101,3 +109,69 @@ func (a *App) ShowSaveFileDialog(ctx context.Context, title string, defaultName 
 	}
 	return strings.TrimSpace(path), nil
 }
+
+// OpenFilesDialog 多选打开（结构化数据过滤器，供「打开文件」入口用）。
+func (a *App) OpenFilesDialog(ctx context.Context) ([]string, error) {
+	if wailsApp == nil {
+		return nil, nil
+	}
+	dialog := wailsApp.Dialog.OpenFile().
+		SetTitle("打开文件").
+		AddFilter("结构化数据 (*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv)", "*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv").
+		AddFilter("所有文件 (*.*)", "*.*")
+	if w := dialogOwner(ctx); w != nil {
+		dialog = dialog.AttachToWindow(w)
+	}
+	paths, err := dialog.PromptForMultipleSelection()
+	if isDialogCancelled(err) {
+		return nil, nil
+	}
+	return paths, err
+}
+
+// OpenFolderDialog 选择文件夹。
+func (a *App) OpenFolderDialog(ctx context.Context, defaultDir string) (string, error) {
+	if wailsApp == nil {
+		return "", nil
+	}
+	dialog := wailsApp.Dialog.OpenFile().
+		CanChooseFiles(false).
+		CanChooseDirectories(true).
+		SetTitle("打开文件夹")
+	if strings.TrimSpace(defaultDir) != "" {
+		dialog.SetDirectory(defaultDir)
+	}
+	if w := dialogOwner(ctx); w != nil {
+		dialog = dialog.AttachToWindow(w)
+	}
+	path, err := dialog.PromptForSingleSelection()
+	if isDialogCancelled(err) {
+		return "", nil
+	}
+	return path, err
+}
+
+// SaveFileDialog 简单保存对话框（默认「所有文件」过滤器）。
+func (a *App) SaveFileDialog(ctx context.Context, defaultName string) (string, error) {
+	if wailsApp == nil {
+		return "", nil
+	}
+	dialog := wailsApp.Dialog.SaveFile()
+	dialog.SetOptions(&application.SaveFileDialogOptions{Title: "保存文件"})
+	if w := dialogOwner(ctx); w != nil {
+		dialog = dialog.AttachToWindow(w)
+	}
+	path, err := dialog.
+		SetFilename(defaultName).
+		AddFilter("所有文件 (*.*)", "*.*").
+		PromptForSingleSelection()
+	if isDialogCancelled(err) {
+		return "", nil
+	}
+	return path, err
+}
+
+// 兼容别名（实现已下沉 internal/fsops）。
+type DirEntry = fsops.DirEntry
+
+type DirListing = fsops.DirListing

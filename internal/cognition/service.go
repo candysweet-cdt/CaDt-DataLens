@@ -115,9 +115,9 @@ type EntryIn struct {
 }
 
 type EditReq struct {
-	Op      string    `json:"op"`    // add / update / remove
+	Op      string    `json:"op"` // add / update / remove
 	Entries []EntryIn `json:"entries,omitempty"`
-	Meta    string    `json:"meta,omitempty"`  // 整卷替换 meta.txt（逐键校验，与条目同一 CAS 写内生效）
+	Meta    string    `json:"meta,omitempty"`   // 整卷替换 meta.txt（逐键校验，与条目同一 CAS 写内生效）
 	Ignore  string    `json:"ignore,omitempty"` // 整卷替换作用域排除文件 ignore.txt（gitignore 简化语法，校验失败整体拒绝）
 	Reason  string    `json:"reason,omitempty"`
 	Base    string    `json:"base,omitempty"` // 调用方会话登记的卷指纹（前端自动附加，模型不可见）
@@ -138,22 +138,22 @@ type DriftListJSON struct {
 }
 
 type StatusResult struct {
-	Exists           bool   `json:"exists"`
-	Hint             string `json:"hint,omitempty"`
-	Scene            string `json:"scene,omitempty"`
-	Entries          int    `json:"entries"`
-	Bytes            int    `json:"bytes"`
-	BudgetEntries    int    `json:"budgetEntries"`
-	BudgetBytes      int    `json:"budgetBytes"`
-	Fingerprint      string `json:"fingerprint,omitempty"`
-	HasBaseline      bool   `json:"hasBaseline"`
-	BaselineGenerated bool  `json:"baselineGenerated,omitempty"` // 本次调用顺手生成的（首建末批 / 恢复）
-	BadLines         int    `json:"badLines,omitempty"`
-	ScanTruncated    bool   `json:"scanTruncated,omitempty"`
-	Missing          DriftListJSON `json:"missing"`
-	Orphan           DriftListJSON `json:"orphan"`
-	Stale            DriftListJSON `json:"stale"`
-	Unbaselined      DriftListJSON `json:"unbaselined"`
+	Exists            bool          `json:"exists"`
+	Hint              string        `json:"hint,omitempty"`
+	Scene             string        `json:"scene,omitempty"`
+	Entries           int           `json:"entries"`
+	Bytes             int           `json:"bytes"`
+	BudgetEntries     int           `json:"budgetEntries"`
+	BudgetBytes       int           `json:"budgetBytes"`
+	Fingerprint       string        `json:"fingerprint,omitempty"`
+	HasBaseline       bool          `json:"hasBaseline"`
+	BaselineGenerated bool          `json:"baselineGenerated,omitempty"` // 本次调用顺手生成的（首建末批 / 恢复）
+	BadLines          int           `json:"badLines,omitempty"`
+	ScanTruncated     bool          `json:"scanTruncated,omitempty"`
+	Missing           DriftListJSON `json:"missing"`
+	Orphan            DriftListJSON `json:"orphan"`
+	Stale             DriftListJSON `json:"stale"`
+	Unbaselined       DriftListJSON `json:"unbaselined"`
 }
 
 // ---------- 读 ----------
@@ -194,7 +194,7 @@ func (s *Service) Read(ws string, req ReadReq) (ReadResult, error) {
 }
 
 // limitEntriesForUI 应用页面用的结构化命中条目：与 renderEntriesText 同一 rune 预算口径
-//（ReadRuneLimit，按 FormatEntry 渲染长度计），超出部分截断——HitCount 仍报过滤命中总数，
+// （ReadRuneLimit，按 FormatEntry 渲染长度计），超出部分截断——HitCount 仍报过滤命中总数，
 // 前端以 len(HitEntries) < HitCount 判「展示被收窄」。
 func limitEntriesForUI(entries []Entry) []EntryIn {
 	out := make([]EntryIn, 0, len(entries))
@@ -358,9 +358,9 @@ func buildHint() string {
 // ---------- 写 ----------
 
 const (
-	maxFieldLen  = 2000
-	maxLabelCnt  = 8
-	maxLabelLen  = 40
+	maxFieldLen = 2000
+	maxLabelCnt = 8
+	maxLabelLen = 40
 )
 
 func (s *Service) acquireLease(p paths, label string) (*resourcelease.Lease, error) {
@@ -686,8 +686,8 @@ func (s *Service) Status(ws string, verbose bool) (StatusResult, error) {
 	// 不催；排除文件已存在说明作用域已收窄，不再重复提示。
 	if drift.Missing.Total >= cogIgnoreHintMissing {
 		if _, serr := os.Stat(p.ignore); os.IsNotExist(serr) {
-			res.Hint = fmt.Sprintf("Missing 共 %d 条且还没有作用域排除文件。若其中大量是生成物 / 构建产物 / 数据文件（按样例判断），可在下一次 cognition_edit 里带 ignore 参数创建排除文件" +
-				"（整卷替换，与 meta 同款语义，落 .cadt/cognition/ignore.txt，用户也可手工编辑）：gitignore 简化语法，一行一条（# 注释、! 取反重新包含、" +
+			res.Hint = fmt.Sprintf("Missing 共 %d 条且还没有作用域排除文件。若其中大量是生成物 / 构建产物 / 数据文件（按样例判断），可在下一次 cognition_edit 里带 ignore 参数创建排除文件"+
+				"（整卷替换，与 meta 同款语义，落 .cadt/cognition/ignore.txt，用户也可手工编辑）：gitignore 简化语法，一行一条（# 注释、! 取反重新包含、"+
 				"不含 / 按文件名匹配任意层级、含 / 按相对根路径匹配，如 dist/ 或 *.min.js）；被排除文件不再报 Missing，其已有条目应删除。", drift.Missing.Total)
 		}
 	}
@@ -705,6 +705,12 @@ func driftListJSON(l DriftList, verbose bool) DriftListJSON {
 // LockForClear 供存储清理门闩取独占写权（对齐 memo.LockForClear：持有时清理被拒而非删一半）。
 // 用 AcquireNoShare：本进程另一窗口正 edit（refcount 共享）也算忙——清理不能借 refcount 溜进去。
 func (s *Service) LockForClear(ws string) (func(), error) {
+	return LockForClear(ws)
+}
+
+// LockForClear 是上一个方法的函数形式：锁是文件级的、不依赖引擎状态，
+// 所以根目录的 storage 门闩（包级变量构造期）不必为此持有引擎实例。
+func LockForClear(ws string) (func(), error) {
 	p := resolvePaths(ws)
 	lease, err := resourcelease.AcquireNoShare(p.lock, resourcelease.Owner{PID: os.Getpid(), Label: "cognition-clear"})
 	if err != nil {

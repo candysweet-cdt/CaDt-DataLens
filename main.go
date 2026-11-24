@@ -18,6 +18,7 @@ import (
 	"datalens/internal/launchargs"
 	"datalens/internal/patchcli"
 	"datalens/internal/previewassets"
+	"datalens/internal/winutil"
 )
 
 //go:embed all:frontend/dist
@@ -42,7 +43,7 @@ var assets embed.FS
 const miniMenuDisabledFeatures = "msWebOOUI,msPdfOOUI,msEdgeMiniMenu,msEdgeTextSelectionMenu"
 
 func disableMiniMenu() {
-	setWebViewExtraBrowserArguments("--disable-features=" + miniMenuDisabledFeatures)
+	winutil.SetWebViewExtraBrowserArguments("--disable-features=" + miniMenuDisabledFeatures)
 }
 
 // cdpDebugArgs 临时调试辅助：CADT_CDP_PORT 非空时给主窗口 WebView2 开远程调试口
@@ -65,12 +66,12 @@ func main() {
 	// 顶层 --help / --version：纯信息查询，不进单实例转发、不建窗口（在 installercli
 	// 之前判定；--convert / patchcli 各自的子命令 usage 由这里统一拼接，原分支已删）。
 	if launchargs.HasFlag(os.Args[1:], "--help") || launchargs.HasFlag(os.Args[1:], "-h") {
-		attachParentConsole()
+		winutil.AttachParentConsole()
 		fmt.Fprintln(os.Stdout, cliUsageText())
 		os.Exit(0)
 	}
 	if launchargs.HasFlag(os.Args[1:], "--version") || launchargs.HasFlag(os.Args[1:], "-v") {
-		attachParentConsole()
+		winutil.AttachParentConsole()
 		fmt.Fprintf(os.Stdout, "CaDt-DataLens %s\n", appVersion)
 		os.Exit(0)
 	}
@@ -79,7 +80,7 @@ func main() {
 	}
 	convertOpts, isConvert, convertErr := convertcli.ParseArgs(os.Args[1:])
 	if isConvert {
-		attachParentConsole()
+		winutil.AttachParentConsole()
 		if convertErr != nil {
 			fmt.Fprintln(os.Stderr, convertErr)
 			os.Exit(2)
@@ -88,7 +89,7 @@ func main() {
 
 	// 补丁命令行：不启动窗口、不依赖 AI，处理完直接退出。
 	if patchOpts, isPatch, patchErr := patchcli.ParseArgs(os.Args[1:]); isPatch {
-		attachParentConsole()
+		winutil.AttachParentConsole()
 		if patchErr != nil {
 			fmt.Fprintln(os.Stderr, patchErr)
 			os.Exit(2)

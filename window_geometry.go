@@ -84,67 +84,20 @@ func screenWorkArea(s *application.Screen) windowgeom.Rect {
 	return windowgeom.Rect{X: wa.X, Y: wa.Y, Width: wa.Width, Height: wa.Height}
 }
 
-// geometryRestoreKey 给出窗口创建时的存储 key 与级联层数。
-// modeCount 是含本窗口在内的同形态窗口数（调用时窗口已登记到注册表）。
-func geometryRestoreKey(spec windowSpec, modeCount int) (key string, cascade int) {
-	switch spec.Mode {
-	case windowModeFloat:
-		if spec.Name == "float" {
-			return "float", 0
-		}
-		return "", 0
-	case windowModeDebug:
-		if spec.Name == "debug" {
-			return "debug", 0
-		}
-		return "", 0
-	case windowModeTerminal:
-		// 终端窗口数量不定：都从 "terminal" 槽位级联，避免叠在一起。
-		return "terminal", modeCountExtra(modeCount)
-	case windowModeMemo, windowModeMonitor, windowModeDiff, windowModeLight, windowModePreview:
-		// 辅助窗（便签/监控/对比/轻量查看/实时预览）：数量不定，同形态槽位级联。
-		return string(spec.Mode), modeCountExtra(modeCount)
-	default:
-		return "main", modeCountExtra(modeCount)
-	}
+// geometryRestoreKey / geometryPersistKey 只是转调：key 规则在
+// internal/windowgeom/keys.go（纯函数，测试随包）。保留薄包装是为了让窗口族
+// 的调用点不必在 Mode 与字符串之间来回转换。
+func geometryRestoreKey(spec windowSpec, modeCount int) (string, int) {
+	return windowgeom.RestoreKey(string(spec.Mode), spec.Name, modeCount)
 }
 
-func modeCountExtra(count int) int {
-	extra := count - 1
-	if extra < 0 {
-		extra = 0
-	}
-	return extra
-}
-
-// geometryPersistKey 给出窗口移动/关闭时的存储 key；空串表示不持久化。
-// 额外主窗口（非当前 primary）只参与显示，不覆盖 main 的位置。
 func geometryPersistKey(spec windowSpec, isPrimary bool) string {
-	switch spec.Mode {
-	case windowModeFloat:
-		if spec.Name == "float" {
-			return "float"
-		}
-	case windowModeDebug:
-		if spec.Name == "debug" {
-			return "debug"
-		}
-	case windowModeTerminal:
-		// 终端窗口数量不定，全部写同一个槽位（最后一次移动的窗口生效）。
-		return "terminal"
-	case windowModeMemo, windowModeMonitor, windowModeDiff, windowModeLight, windowModePreview:
-		return string(spec.Mode)
-	default:
-		if isPrimary {
-			return "main"
-		}
-	}
-	return ""
+	return windowgeom.PersistKey(string(spec.Mode), spec.Name, isPrimary)
 }
 
 // initialGeometry 计算窗口创建时应使用的矩形。ok=false 时保持 v3 默认居中。
 func (g *windowGeometryManager) initialGeometry(spec windowSpec, defaultW, defaultH, minW, minH int) (windowgeom.Rect, bool) {
-	key, cascade := geometryRestoreKey(spec, winReg.countMode(spec.Mode))
+	key, cascade := geometryRestoreKey(spec, winReg.CountMode(spec.Mode))
 	if key == "" {
 		return windowgeom.Rect{}, false
 	}
@@ -176,12 +129,12 @@ func (g *windowGeometryManager) capture(st *windowState) {
 	if st == nil {
 		return
 	}
-	spec := st.startup()
-	key := geometryPersistKey(spec, winReg.primary() == st)
+	spec := st.Startup()
+	key := geometryPersistKey(spec, winReg.Primary() == st)
 	if key == "" {
 		return
 	}
-	w := st.window()
+	w := st.Window()
 	if w == nil || w.IsMinimised() || w.IsFullscreen() {
 		return
 	}
@@ -331,8 +284,8 @@ func (a *App) reclampVisibleWindows() {
 	if len(areas) == 0 {
 		return
 	}
-	for _, st := range winReg.list() {
-		w := st.window()
+	for _, st := range winReg.List() {
+		w := st.Window()
 		if w == nil || !w.IsVisible() || w.IsMinimised() || w.IsMaximised() || w.IsFullscreen() {
 			continue
 		}
@@ -348,6 +301,6 @@ func (a *App) reclampVisibleWindows() {
 		}
 		w.SetPosition(fixed.X, fixed.Y)
 		w.SetSize(fixed.Width, fixed.Height)
-		writeAppLog("info", "显示器布局变化：窗口 %s 收敛到 (%d,%d) %dx%d", st.name(), fixed.X, fixed.Y, fixed.Width, fixed.Height)
+		writeAppLog("info", "显示器布局变化：窗口 %s 收敛到 (%d,%d) %dx%d", st.Name(), fixed.X, fixed.Y, fixed.Width, fixed.Height)
 	}
 }
