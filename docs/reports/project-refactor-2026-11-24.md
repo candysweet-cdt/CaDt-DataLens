@@ -9,7 +9,7 @@
 | [2B：TypeScript 渐进迁移](#2btypescript-渐进迁移) | TS 阶梯 0–1（类型门 + 24 个 core 文件） | TS 会话 | ✅ 已实施并提交（3 提交） |
 >
 > 两章独立提交、独立验证。后端线全程**前端零改动、绑定面零变化**；前端线的方案见
-> `docs/unfinished-plans/frontend-split-phase4.md` 与 `docs/unfinished-plans/frontend-typescript.md`。
+> `docs/unfinished-plans/frontend-split-phase4.md` 与 `docs/finished-plans/frontend-typescript.md`。
 
 ---
 
@@ -262,7 +262,7 @@ db05fd3  refactor(frontend): 拆出上下文组装模块                5 files,
 
 > 本线独立于前端拆分线（2A）与后端结构化线（第一部分）：不换任何文件后缀、不改函数体，
 > 只做「加类型 + 把类型门接进测试」。3 个提交全程 `npm test` 2652 项全绿、`npm run build` 通过，
-> 产物 `dist` 仍 15 MB（类型全在构建期擦除）。方案与决议见 `docs/unfinished-plans/frontend-typescript.md`。
+> 产物 `dist` 仍 15 MB（类型全在构建期擦除）。方案与决议见 `docs/finished-plans/frontend-typescript.md`。
 
 ## B1. 结论先行
 
