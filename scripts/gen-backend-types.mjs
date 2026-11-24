@@ -18,8 +18,10 @@
 // 映射口径：
 //   - ctx context.Context 不出现（v3 由 Go 侧注入）；接收者是 *X / 值接收者都不影响。
 //   - 返回值的末位 error 不出现（reject），其余按数量映射为 Promise<T> / Promise<[A, B]>。
-//   - Go 基础类型 → string/number/boolean；切片 → T[]；map → Record；具名结构体暂记 unknown
-//     并在该行上方留 @go 注释，供阶梯 2 补 interface（不要靠手改本文件补类型，改 Go 或改本脚本）。
+//   - Go 基础类型 → string/number/boolean；切片 → T[]；map → Record；
+//     无歧义且字段全为基础类型的具名结构体（见 STRUCT_INTERFACES）→ 生成 interface；
+//     其余具名结构体暂记 unknown 并在该行上方留 @go 注释（含嵌套子类型或同名多版本的，
+//     做全套解析器的复杂度远超收益——调用点都在未开 checkJs 的 .js 里，unknown 不误报）。
 //
 // 用法：
 //   node scripts/gen-backend-types.mjs                     # 写 frontend/src/types/backend.d.ts
@@ -45,6 +47,30 @@ const SCALARS = new Map([
     ['float32', 'number'], ['float64', 'number'],
     ['any', 'unknown'], ['interface{}', 'unknown'], ['error', 'unknown'],
 ]);
+
+// 具名结构体 → TS interface 的字段表（手工维护，从 Go struct 的 json tag 抄）。
+// 只收「字段全是基础类型/基础切片」的无歧义结构体：有嵌套具名类型（SearchResult/PatchPreview）
+// 或同名多版本（LeaseStatus 在 memo/sessionstore 各一版）的保持 unknown——做全套解析器的
+// 复杂度远超收益，且调用点都在未开 checkJs 的 .js 里，unknown 目前不产生任何误报。
+// 改了对应 Go struct 的 json tag 就必须同步这里并重跑生成器。
+const STRUCT_INTERFACES = {
+    GitOperationResult: [
+        ['success', 'boolean'], ['output', 'string'], ['branch?', 'string'], ['path?', 'string'],
+        ['conflictFiles?', 'string[]'],
+    ],
+    PluginInfo: [
+        ['id', 'string'], ['name', 'string'], ['version?', 'string'], ['author', 'string'],
+        ['description?', 'string'], ['dir', 'string'], ['entry?', 'string'], ['extensions?', 'string[]'],
+        ['homepage?', 'string'], ['repository?', 'string'], ['license?', 'string'], ['keywords?', 'string[]'],
+        ['minAppVersion?', 'string'], ['iconData?', 'string'], ['enabled', 'boolean'], ['entryOk', 'boolean'],
+    ],
+    AISchedule: [
+        ['id', 'string'], ['name', 'string'], ['kind', 'string'], ['at?', 'string'],
+        ['intervalMinutes?', 'number'], ['cron?', 'string'], ['prompt', 'string'], ['sessionId', 'string'],
+        ['scope', 'string'], ['enabled', 'boolean'], ['createdAt', 'number'], ['lastRunAt', 'number'],
+        ['nextRunAt', 'number'], ['runCount', 'number'], ['maxRuns', 'number'], ['lastResult', 'string'],
+    ],
+};
 
 // 只在仓库根生效的跳过表：interior 目录一律要扫（internal/plugins 里就有绑定方法，
 // 不要把「根目录的 plugins/ 样例」和「internal/plugins 包」混为一谈）。
@@ -193,12 +219,18 @@ function goTypeToTs(goType, named) {
     if (SCALARS.has(t)) {
         ts = SCALARS.get(t);
     } else if (t.startsWith('[]')) {
-        ts = `${goTypeToTs(t.slice(2), named)}[]`;
+        const elem = goTypeToTs(t.slice(2), named);
+        // 元素类型带 | 联合（如 []*Struct → 'Struct | null'）时必须加括号，
+        // 否则 'Struct | null[]' 会被 TS 读成 'Struct | (null[])'，语义错位。
+        ts = elem.includes('|') ? `(${elem})[]` : `${elem}[]`;
     } else if (t.startsWith('map[')) {
         const inner = t.slice(4, t.lastIndexOf(']'));
         const val = t.slice(t.lastIndexOf(']') + 1);
         const key = SCALARS.get(inner.trim()) === 'number' ? 'number' : 'string';
         ts = `Record<${key}, ${goTypeToTs(val, named)}>`;
+    } else if (Object.prototype.hasOwnProperty.call(STRUCT_INTERFACES, t)) {
+        // 已登记的无歧义结构体：用真 interface 名，不再记 unknown
+        ts = t;
     } else if (/^[A-Za-z_][A-Za-z0-9_.]*$/.test(t)) {
         // 具名类型（结构体 / 别名 / 其它包的导出类型）：暂记 unknown，登记待补
         named.add(t.split('.').pop());
@@ -329,6 +361,13 @@ function main() {
         else stats.typed++;
     }
 
+    // 具名结构体 interface 声明块（只含 STRUCT_INTERFACES 里登记的无歧义类型）
+    const structDecls = [];
+    for (const [name, fields] of Object.entries(STRUCT_INTERFACES)) {
+        const body = fields.map(([field, ts]) => `    ${field}: ${ts};`).join('\n');
+        structDecls.push(`export interface ${name} {\n${body}\n}`);
+    }
+
     const total = names.length;
     const header = [
         '// backend.d.ts：Wails 绑定面类型——**自动生成，不要手改**。',
@@ -338,12 +377,13 @@ function main() {
         '// 运行时经 Call.ByName 动态解析（frontend/src/core/wails-runtime.js 的 createBackendProxy）。',
         '//',
         `// 本次签名覆盖：精确 ${stats.typed} / 含 unknown ${stats.fallback} / 签名冲突 ${stats.ambiguous} / 未找到 ${stats.missing}`,
-        '// 含 unknown 的行上方有 @go 注释，写明 Go 原始签名与待补的结构体名（阶梯 2 才补 interface）。',
+        '// 含 unknown 的行上方有 @go 注释，写明 Go 原始签名与待补的结构体名。',
         '//',
         '// 用法（阶梯 1 之后，jsconfig 仍保持 checkJs:false）：',
         "//   /** @type {import('../types/backend').Backend} */",
         '//   const backend = createBackendProxy(Call);',
         '',
+        ...structDecls,
         'export interface Backend {',
     ];
     const footer = ['}', '', 'export type BackendMethod = keyof Backend;', ''];

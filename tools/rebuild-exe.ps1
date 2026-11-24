@@ -189,6 +189,19 @@ try {
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
 
+        # 绑定面一致性：d.ts 由 testdata/app_bindings_baseline.txt 生成，后端改了绑定面却没
+        # 重跑生成器时这里当场红（typecheck 只验 d.ts 自洽，验不出它与基线脱节）。放在 Go
+        # 测试之后、前端测试之前，失败计入 feFail 走同一套失败摘要与「跳过强行构建」流程。
+        Write-Host ""
+        Write-Host "—— 绑定类型一致性（gen-backend-types --check）——" -ForegroundColor DarkGray
+        Push-Location $root
+        try {
+            & node scripts/gen-backend-types.mjs --check 2>&1 | Tee-Object -FilePath $testLog -Append
+            $typesFail = $LASTEXITCODE -ne 0
+        } finally {
+            Pop-Location
+        }
+
         $goFail = $false
         if ($goChoice -eq "2") {
             Write-Host "已跳过 Go 测试。" -ForegroundColor DarkGray
@@ -215,10 +228,11 @@ try {
         }
         $ErrorActionPreference = $prevEAP
 
-        if ($goFail -or $feFail) {
+        if ($goFail -or $feFail -or $typesFail) {
             Write-Host ""
             $bad = @()
             if ($goFail) { $bad += "Go" }
+            if ($typesFail) { $bad += "绑定类型" }
             if ($feFail) { $bad += "前端" }
             Write-Host ("[X] 测试未通过（" + ($bad -join " / ") + "）。失败摘要（最后 60 行）：") -ForegroundColor Red
             Get-Content $testLog -Tail 60 | ForEach-Object { Write-Host $_ }

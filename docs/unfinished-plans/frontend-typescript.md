@@ -48,9 +48,9 @@
 生成口径：
 
 - `ctx context.Context` 不出现（v3 由 Go 侧注入）；末位 `error` 不出现（reject），只 `error` 的返回映射 `Promise<void>`，多个非 error 返回值映射元组。
-- Go 基础类型 → `string` / `number` / `boolean`；切片 → `T[]`；`map` → `Record`；**具名结构体暂记 `unknown`**，该行上方留 `@go` 注释写明原始签名与待补类型名。
+- Go 基础类型 → `string` / `number` / `boolean`；切片 → `T[]`（元素带联合时加括号，`[]*T` → `(T | null)[]`）；`map` → `Record`。具名结构体中**字段全为基础类型且无同名歧义**的（`GitOperationResult` / `PluginInfo` / `AISchedule`，登记在生成器的 `STRUCT_INTERFACES`）生成 interface；其余暂记 `unknown` 并留 `@go` 注释——有嵌套子类型（`SearchResult` / `PatchPreview`）或同名多版本（`LeaseStatus` 三个版本）的做全套解析器复杂度远超收益，且调用点都在未开 checkJs 的 `.js` 里，`unknown` 目前不产生任何误报。
 - 平台成对文件优先取 `_windows.go`（本项目只发 Windows）；同名方法优先取接收者为 `App` 的那条，其余才算歧义。
-- 当前覆盖：**420/420 全部有签名，精确 245、含 unknown 175、歧义 0、未找到 0**。
+- 当前覆盖：**420/420 全部有签名，精确 263、含 unknown 157、歧义 0、未找到 0**。
 
 验证：
 
@@ -97,9 +97,9 @@ npm run -s typecheck                               # frontend/ 下；tsc -p tsco
 - **`.d.ts` 不撒谎**：类型只写在有测试或护栏覆盖的行为上；类型与运行时不符比没有类型更贵。
 - **`backend.d.ts` 永不手改**：要改就改 Go、改基线、改生成器。
 
-## 5. 待拍板
+## 5. 决议（2026-11-24）
 
-1. **Node 下限**抬到 22.18+（存量迁移后才能继续 `node --test` 裸跑）还是给测试引 `tsx`。
-2. `backend.d.ts` 里 175 个 `unknown` 什么时候补成 interface（阶梯 3 之前必须，否则 ai 域迁完仍是 `unknown`）。
-3. `node scripts/gen-backend-types.mjs --check` 要不要挂进 `tools/rebuild-exe.ps1` 的测试门（绑定面变了却没重生成时自动红）。
-3. 是否把生成器挂进 `tools/rebuild-exe.ps1` 的测试门（绑定面变了却没重生成时自动红）。
+1. **换后缀暂缓，checkJs 作为当前终态**：24 个 core 文件开 `@ts-check` 后，`npm test` 门已能拦住历史上那 10 条 `ReferenceError` 类事故；换后缀要动 246 处测试 import + 5 个按 `.js` 扫描的护栏，而类型全在构建期擦除、对单 exe 产物零影响，性价比不足。真需要复杂泛型时再重评。
+2. **Node 下限**：若将来换后缀，抬到 22.18+（Node 只是 dev 工具，用户跑 exe 不需要；约束只在 `AGENTS.md` / `README.md` 两行文档），**不引 `tsx`**（纯新增依赖）。当前不换后缀，故暂不改文档。
+3. **`--check` 已挂测试门**：`tools/rebuild-exe.ps1` 在 Go 测试后、前端测试前跑 `node scripts/gen-backend-types.mjs --check`，失败计入「绑定类型」走同一套失败摘要与强行构建流程。
+4. **unknown 按需补**：已补 3 个无歧义结构体（精确 245→263、unknown 175→157）；嵌套子类型与同名多版本的保持 unknown（理由见阶梯 0 生成口径）。

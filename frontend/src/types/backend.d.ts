@@ -4,13 +4,56 @@
 // 名单由 app_bindings_guard_test.go 校验，前端 FQN 是 main.App.<Method>；
 // 运行时经 Call.ByName 动态解析（frontend/src/core/wails-runtime.js 的 createBackendProxy）。
 //
-// 本次签名覆盖：精确 245 / 含 unknown 175 / 签名冲突 0 / 未找到 0
-// 含 unknown 的行上方有 @go 注释，写明 Go 原始签名与待补的结构体名（阶梯 2 才补 interface）。
+// 本次签名覆盖：精确 263 / 含 unknown 157 / 签名冲突 0 / 未找到 0
+// 含 unknown 的行上方有 @go 注释，写明 Go 原始签名与待补的结构体名。
 //
 // 用法（阶梯 1 之后，jsconfig 仍保持 checkJs:false）：
 //   /** @type {import('../types/backend').Backend} */
 //   const backend = createBackendProxy(Call);
 
+export interface GitOperationResult {
+    success: boolean;
+    output: string;
+    branch?: string;
+    path?: string;
+    conflictFiles?: string[];
+}
+export interface PluginInfo {
+    id: string;
+    name: string;
+    version?: string;
+    author: string;
+    description?: string;
+    dir: string;
+    entry?: string;
+    extensions?: string[];
+    homepage?: string;
+    repository?: string;
+    license?: string;
+    keywords?: string[];
+    minAppVersion?: string;
+    iconData?: string;
+    enabled: boolean;
+    entryOk: boolean;
+}
+export interface AISchedule {
+    id: string;
+    name: string;
+    kind: string;
+    at?: string;
+    intervalMinutes?: number;
+    cron?: string;
+    prompt: string;
+    sessionId: string;
+    scope: string;
+    enabled: boolean;
+    createdAt: number;
+    lastRunAt: number;
+    nextRunAt: number;
+    runCount: number;
+    maxRuns: number;
+    lastResult: string;
+}
 export interface Backend {
     AIAppDir(): Promise<string>;
     AIArtifactClear(sessionID: string): Promise<void>;
@@ -67,16 +110,14 @@ export interface Backend {
     AIRunShellCommand(command: string, cwd: string, timeoutMs: number, runId: string, shell: string): Promise<unknown>;
     /** @go AIRunShellCommandConfined(command string, cwd string, timeoutMs int, runId string, mode string, workspaceRoot string, shell string) → (*AIShellCommandResult, error) // 待补: AIShellCommandResult */
     AIRunShellCommandConfined(command: string, cwd: string, timeoutMs: number, runId: string, mode: string, workspaceRoot: string, shell: string): Promise<unknown>;
-    /** @go AIScheduleCreate(input AIScheduleInput) → (*AISchedule, error) // 待补: AIScheduleInput, AISchedule */
-    AIScheduleCreate(input: unknown): Promise<unknown>;
+    /** @go AIScheduleCreate(input AIScheduleInput) → (*AISchedule, error) // 待补: AIScheduleInput */
+    AIScheduleCreate(input: unknown): Promise<AISchedule | null>;
     AIScheduleDelete(id: string): Promise<void>;
-    /** @go AIScheduleList() → ([]*AISchedule, error) // 待补: AISchedule */
-    AIScheduleList(): Promise<unknown[]>;
+    AIScheduleList(): Promise<(AISchedule | null)[]>;
     AIScheduleSetResult(id: string, ok: boolean, note: string): Promise<void>;
-    /** @go AIScheduleToggle(id string, enabled bool) → (*AISchedule, error) // 待补: AISchedule */
-    AIScheduleToggle(id: string, enabled: boolean): Promise<unknown>;
-    /** @go AIScheduleUpdate(id string, input AIScheduleInput) → (*AISchedule, error) // 待补: AIScheduleInput, AISchedule */
-    AIScheduleUpdate(id: string, input: unknown): Promise<unknown>;
+    AIScheduleToggle(id: string, enabled: boolean): Promise<AISchedule | null>;
+    /** @go AIScheduleUpdate(id string, input AIScheduleInput) → (*AISchedule, error) // 待补: AIScheduleInput */
+    AIScheduleUpdate(id: string, input: unknown): Promise<AISchedule | null>;
     /** @go AISendChat(sessionId string, cfg aitransport.Config, messages []aitransport.Message, tools []aitransport.ToolDef, retryMax int) → (error) // 待补: Config, Message, ToolDef */
     AISendChat(sessionId: string, cfg: unknown, messages: unknown[], tools: unknown[], retryMax: number): Promise<void>;
     AISessionAppend(id: string, lines: string, allowCreate: boolean): Promise<void>;
@@ -276,8 +317,7 @@ export interface Backend {
     GetPluginMarket(): Promise<unknown[]>;
     /** @go GetPluginSources() → ([]PluginSource, error) // 待补: PluginSource */
     GetPluginSources(): Promise<unknown[]>;
-    /** @go GetPlugins() → ([]*PluginInfo, error) // 待补: PluginInfo */
-    GetPlugins(): Promise<unknown[]>;
+    GetPlugins(): Promise<(PluginInfo | null)[]>;
     GetPluginsDir(): Promise<string>;
     GetPluginsPathMode(): Promise<string>;
     GetRunTempDir(): Promise<string>;
@@ -295,29 +335,20 @@ export interface Backend {
     GetSystemCursors(): Promise<Record<string, string>>;
     /** @go GitBranchesFor(dir string, includeRemote bool) → (*GitBranchesResult, error) // 待补: GitBranchesResult */
     GitBranchesFor(dir: string, includeRemote: boolean): Promise<unknown>;
-    /** @go GitCheckoutBranch(dir string, name string, remote bool) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitCheckoutBranch(dir: string, name: string, remote: boolean): Promise<unknown>;
-    /** @go GitCheckoutRefFor(dir string, ref string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitCheckoutRefFor(dir: string, ref: string): Promise<unknown>;
-    /** @go GitCloneRepository(url string, target string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitCloneRepository(url: string, target: string): Promise<unknown>;
+    GitCheckoutBranch(dir: string, name: string, remote: boolean): Promise<GitOperationResult | null>;
+    GitCheckoutRefFor(dir: string, ref: string): Promise<GitOperationResult | null>;
+    GitCloneRepository(url: string, target: string): Promise<GitOperationResult | null>;
     /** @go GitCommitChanges(dir string, message string, paths []string, amend bool, push bool) → (*GitCommitResult, error) // 待补: GitCommitResult */
     GitCommitChanges(dir: string, message: string, paths: string[], amend: boolean, push: boolean): Promise<unknown>;
-    /** @go GitCreateBranch(dir string, name string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitCreateBranch(dir: string, name: string): Promise<unknown>;
+    GitCreateBranch(dir: string, name: string): Promise<GitOperationResult | null>;
     /** @go GitDiffFor(dir string, path string) → (*GitDiffResult, error) // 待补: GitDiffResult */
     GitDiffFor(dir: string, path: string): Promise<unknown>;
-    /** @go GitFetchFor(dir string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitFetchFor(dir: string): Promise<unknown>;
+    GitFetchFor(dir: string): Promise<GitOperationResult | null>;
     GitFileHistoryFor(dir: string, path: string, limit: number): Promise<string>;
-    /** @go GitGraphCheckout(dir string, ref string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitGraphCheckout(dir: string, ref: string): Promise<unknown>;
-    /** @go GitGraphCheckoutForce(dir string, ref string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitGraphCheckoutForce(dir: string, ref: string): Promise<unknown>;
-    /** @go GitGraphCheckoutSmart(dir string, ref string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitGraphCheckoutSmart(dir: string, ref: string): Promise<unknown>;
-    /** @go GitGraphCherryPick(dir string, sha string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitGraphCherryPick(dir: string, sha: string): Promise<unknown>;
+    GitGraphCheckout(dir: string, ref: string): Promise<GitOperationResult | null>;
+    GitGraphCheckoutForce(dir: string, ref: string): Promise<GitOperationResult | null>;
+    GitGraphCheckoutSmart(dir: string, ref: string): Promise<GitOperationResult | null>;
+    GitGraphCherryPick(dir: string, sha: string): Promise<GitOperationResult | null>;
     GitGraphCommitBody(dir: string, sha: string): Promise<string>;
     /** @go GitGraphCommitFileDiff(dir string, sha string, path string, maxLines int) → (*GitDiffResult, error) // 待补: GitDiffResult */
     GitGraphCommitFileDiff(dir: string, sha: string, path: string, maxLines: number): Promise<unknown>;
@@ -325,19 +356,15 @@ export interface Backend {
     GitGraphCommitFiles(dir: string, sha: string): Promise<unknown[]>;
     /** @go GitGraphCommits(dir string, ref string, limit int, skip int) → (*GitGraphPage, error) // 待补: GitGraphPage */
     GitGraphCommits(dir: string, ref: string, limit: number, skip: number): Promise<unknown>;
-    /** @go GitGraphCreateBranch(dir string, name string, sha string, checkout bool) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitGraphCreateBranch(dir: string, name: string, sha: string, checkout: boolean): Promise<unknown>;
+    GitGraphCreateBranch(dir: string, name: string, sha: string, checkout: boolean): Promise<GitOperationResult | null>;
     /** @go GitGraphRefs(dir string) → (*GitGraphRefsResult, error) // 待补: GitGraphRefsResult */
     GitGraphRefs(dir: string): Promise<unknown>;
-    /** @go GitGraphReset(dir string, sha string, mode string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitGraphReset(dir: string, sha: string, mode: string): Promise<unknown>;
+    GitGraphReset(dir: string, sha: string, mode: string): Promise<GitOperationResult | null>;
     /** @go GitLineMarksFor(dir string, path string, content string) → (*GitLineMarks, error) // 待补: GitLineMarks */
     GitLineMarksFor(dir: string, path: string, content: string): Promise<unknown>;
     GitPatchID(diffText: string): Promise<string>;
-    /** @go GitPullFor(dir string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitPullFor(dir: string): Promise<unknown>;
-    /** @go GitPushFor(dir string) → (*GitOperationResult, error) // 待补: GitOperationResult */
-    GitPushFor(dir: string): Promise<unknown>;
+    GitPullFor(dir: string): Promise<GitOperationResult | null>;
+    GitPushFor(dir: string): Promise<GitOperationResult | null>;
     GitRecentLogFor(dir: string, limit: number): Promise<string>;
     GitRollbackFor(dir: string, paths: string[], untracked: string[]): Promise<void>;
     /** @go GitStatusFor(dir string) → (*GitTreeStatus, error) // 待补: GitTreeStatus */
@@ -364,8 +391,7 @@ export interface Backend {
     GroupLeaseStatus(id: string): Promise<unknown>;
     /** @go ImportPluginFromZip(ctx context.Context) → (*plugins.PluginInfo, error) // 待补: PluginInfo */
     ImportPluginFromZip(): Promise<unknown>;
-    /** @go InstallPluginFromUrl(rawUrl string) → (*PluginInfo, error) // 待补: PluginInfo */
-    InstallPluginFromUrl(rawUrl: string): Promise<unknown>;
+    InstallPluginFromUrl(rawUrl: string): Promise<PluginInfo | null>;
     IsAIFloatWindow(): Promise<boolean>;
     IsDebugConsoleWindow(): Promise<boolean>;
     IsTerminalWindow(): Promise<boolean>;
@@ -566,8 +592,7 @@ export interface Backend {
     UnwatchAll(): Promise<void>;
     UnwatchWorkspace(): Promise<void>;
     UnwatchWorkspaceFor(owner: string): Promise<void>;
-    /** @go UpdatePluginFromUrl(id string, rawUrl string) → (*PluginInfo, error) // 待补: PluginInfo */
-    UpdatePluginFromUrl(id: string, rawUrl: string): Promise<unknown>;
+    UpdatePluginFromUrl(id: string, rawUrl: string): Promise<PluginInfo | null>;
     WatchWorkspace(root: string): Promise<void>;
     WatchWorkspaceFor(owner: string, root: string): Promise<void>;
     /** @go WebFetch(rawURL string, maxChars int) → (map[string]interface{}, error) */

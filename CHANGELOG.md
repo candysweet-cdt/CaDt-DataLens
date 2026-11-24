@@ -4,6 +4,13 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（内嵌浏览器点 `target="_blank"` 链接不再弹出原生浮动窗口，改为当前标签页内跳转）
+
+- **现象**：浏览器标签页里点百度首页「新闻」这类带 `target="_blank"` 的链接，会弹出一个带系统标题栏/地址栏的独立浮动窗口，脱离应用 UI，与其余标签页体验割裂。
+- **根因**：`internal/browser/browser_windows.go` 的 `browserCreateOnHost` 创建 WebView2 时只注入了 `window.__cadtHost`，未拦截 `NewWindowRequested` 事件——`target="_blank"` / `window.open` 因此走 WebView2 原生默认行为弹窗。底层 `edge.Chromium` 封装未暴露该回调，且项目有过 COM 回调 panic 闪退的教训，不宜直接改 COM 事件。
+- **修法**：`internal/browser/browser.go` 新增 `browserNewWindowGuardScript`，经已有的 `wvInitScript`（`AddScriptToExecuteOnDocumentCreated`）在页面脚本执行前注入：覆盖 `window.open` 改为 `location.href` 跳转，并在捕获阶段把 `a/area`/`form` 的 `_blank`（及 `_new`/`new`）改成 `_self`。改动只在内嵌浏览器实例，不动应用主 WebView，不碰脆弱的 COM 层。
+- **验证**：`internal/browser/browser_test.go` 新增 `TestBrowserNewWindowGuardScript` 守住脚本关键拦截片段（防回归），`go test ./internal/browser/` 全绿。
+
 ### 工程（前端类型检查落地：420 个绑定方法有类型 + 24 个 core 文件开 `@ts-check`）
 
 - **绑定面类型**：`scripts/gen-backend-types.mjs` 以 `testdata/app_bindings_baseline.txt`（`*App` 方法名基线，420 条）为名单、扫 Go 源码取签名，生成 `frontend/src/types/backend.d.ts`（`export interface Backend`）。覆盖 420/420：精确 245、具名结构体记 `unknown` 175（行上方留 `@go` 原始签名注释）、歧义 0、未找到 0。`--check` 供 CI 比对，绑定面变了没重生成即红。
@@ -12,6 +19,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **第二批 11 个纯函数模块开检查**：`diff` / `jsonrepair` / `jsonschema` / `keymap` / `event-scope` / `activity-log` / `app-pages` / `shift-double-tap` / `scratch` / `editor-keybindings` / `overlay-stack`。主要工作是补 JSDoc 参数类型与把动态索引表标成 `Record<string, …>`，另修了 3 处 JSDoc 注释笔误（`diff.js` 注释里的 `@@` / `<pre>` 被 TS 当标签解析、`overlay-stack.js` 的 `HTMLElement=` 可选语法写错——都是加检查后才暴露）。**运行时行为零改动**，这批全是类型标注与注释修正。
 - **为什么分台阶**：306 个文件 / 134,933 行、246 处测试直接 `import` `src/*.js`、`ai-panel.js` 19,474 行仍待拆分——一把换后缀会同时打断测试链与并行开发。三级台阶与待拍板项见 `docs/unfinished-plans/frontend-typescript.md`。
 - **验证**：`npm run typecheck` 零错误，`npm test` 全绿，`npm run build` 通过。
+- **绑定类型续作（三项决议落地）**：① `node scripts/gen-backend-types.mjs --check` 挂进 `tools/rebuild-exe.ps1` 测试门（Go 测试后、前端测试前，失败计入「绑定类型」），绑定面漂移当场红；② 生成器新增 `STRUCT_INTERFACES` 表，把 3 个无歧义结构体（`GitOperationResult` / `PluginInfo` / `AISchedule`）从 Go json tag 抄成 interface，精确类型 245→263、unknown 175→157；③ 顺带修正 `[]*T` 的 TS 映射优先级 bug（原 `T | null[]` 被读成 `T | (null[])`，改为 `(T | null)[]`）。嵌套子类型与同名多版本结构体保持 unknown。换后缀暂缓、checkJs 作为当前终态，决议见 `docs/unfinished-plans/frontend-typescript.md` §5。
 
 ### 重构（Go 根目录结构化二期：107 → 72 个 .go，绑定壳改为服务化嵌入 + 三层下沉）
 
