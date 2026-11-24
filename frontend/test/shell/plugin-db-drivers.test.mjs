@@ -136,3 +136,28 @@ test('views：超上限 / 非数组 / 坏 id / 缺 mount / id 重复都拒绝', 
     })), /视图 id 重复/);
 });
 
+// ---------- console：表标签页顶部的自由查询输入框 ----------
+
+test('console：未声明时为 null，声明后归一化 label / placeholder / limit', () => {
+    assert.equal(normalizePluginDbDriver('acme', '', baseSpec()).console, null, '未声明时不显示查询框');
+    const rec = normalizePluginDbDriver('acme', '', baseSpec({
+        console: {label: '  Cypher  ', placeholder: 'MATCH (n) RETURN n', limit: 50},
+    }));
+    assert.equal(rec.console.label, 'Cypher', 'label 去首尾空白');
+    assert.equal(rec.console.placeholder, 'MATCH (n) RETURN n');
+    assert.equal(rec.console.limit, 50);
+    // 缺省值
+    const bare = normalizePluginDbDriver('acme', '', baseSpec({console: {}}));
+    assert.equal(bare.console.label, '查询');
+    assert.equal(bare.console.placeholder, '');
+    assert.equal(bare.console.limit, 200);
+    // 上下界
+    assert.equal(normalizePluginDbDriver('acme', '', baseSpec({console: {limit: 99999}})).console.limit, 2000);
+    assert.equal(normalizePluginDbDriver('acme', '', baseSpec({console: {limit: -5}})).console.limit, 200);
+});
+
+test('console：非对象声明直接拒绝（不静默丢弃）', () => {
+    assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({console: 'cypher'})), /console 必须是对象/);
+});
+
+

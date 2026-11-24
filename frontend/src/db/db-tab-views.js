@@ -3,6 +3,7 @@
 // 会话经 db-sessions.js 共享：关标签页只关视图不断会话；会话失效/断开时面板给出重连入口。
 
 import {iconSvg} from '../core/icons.js';
+import {createTextarea} from '../core/form-controls.js';
 import {createDbQueryEditor} from './db-query-editor.js';
 import {createDbTablePane} from './db-table-grid.js';
 import {createDbRedisKeyPane} from './db-redis-view.js';
@@ -130,7 +131,8 @@ function mountWithSession(deps, doc, build) {
 //   ctx.query(cypher, limit) 走会话门面（插件会话 = 插件门面，内置会话 = 宿主绑定），
 //   受连接只读与行数上限约束，写语句由驱动侧自行拦截。
 // mount 返回 {resize?, setTheme?, destroy}；容器变化 / 主题切换由本宿主转达。
-function createDbTableViewsHost(deps, t, session, paneEl, views) {
+// consoleSpec（可选）在该栏之上再给一条自由查询输入框，两档视图共用。
+function createDbTableViewsHost(deps, t, session, paneEl, views, consoleSpec) {
     const root = document.createElement('div');
     root.className = 'db-tab-views';
     const bar = document.createElement('div');
@@ -158,6 +160,216 @@ function createDbTableViewsHost(deps, t, session, paneEl, views) {
         const out = await api().DBQuery(session.id, queryId, text, false, Number(limit) || 500);
         if (!out || out.status !== 'ok') throw new Error((out && out.message) || '查询未执行');
         return out.result || {columns: [], rows: []};
+    }
+
+    // 查询框专用：把 confirm（写语句 / 缺 WHERE）当作一种结果返回，交给界面弹「确认执行」，
+    // 而不是当错误抛掉——否则用户永远无法用输入框做写操作。
+    async function execQuery(sql, limit, confirmed) {
+        const text = String(sql == null ? '' : sql).trim();
+        if (!text) throw new Error('查询语句为空');
+        const queryId = 'qbar-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+        const out = await api().DBQuery(session.id, queryId, text, !!confirmed, Number(limit) || 500);
+        if (!out) throw new Error('查询未执行');
+        if (out.status === 'ok') {
+            return {kind: 'ok', result: out.result || {columns: [], rows: []}, writes: Number(out.writes) || 0};
+        }
+        if (out.status === 'confirm') {
+            return {kind: 'confirm', message: out.message || '该语句需要确认后执行', confirm: out.confirm || 'danger'};
+        }
+        throw new Error(out.message || '查询未执行');
+    }
+
+    // 查询输入框：Enter / Ctrl+Enter 执行（Shift+Enter 换行），结果就地展开成表格。
+    // 与图视图共用同一条 query 通道，插件不需要为它额外实现执行逻辑。
+    function createQueryBar(spec) {
+        const wrap = document.createElement('div');
+        wrap.className = 'db-tab-query';
+        const head = document.createElement('div');
+        head.className = 'db-tab-query-head';
+        const tag = document.createElement('span');
+        tag.className = 'db-tab-query-tag';
+        tag.textContent = spec.label;
+        const inputWrap = createTextarea({
+            rows: 1,
+            placeholder: spec.placeholder || '',
+            className: 'db-tab-query-input',
+            spellcheck: false,
+        });
+        const input = inputWrap.control;
+        const runBtn = document.createElement('button');
+        runBtn.type = 'button';
+        runBtn.className = 'db-btn db-tab-query-run';
+        runBtn.textContent = '执行';
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.className = 'db-btn db-tab-query-clear hidden';
+        clearBtn.textContent = '收起结果';
+        head.append(tag, inputWrap.element, runBtn, clearBtn);
+        wrap.appendChild(head);
+
+        const out = document.createElement('div');
+        out.className = 'db-tab-query-out';
+        out.style.display = 'none';
+        wrap.appendChild(out);
+
+        let running = false;
+
+        function setStatus(text, isError) {
+            out.textContent = '';
+            out.style.display = 'block';
+            const line = document.createElement('div');
+            line.className = 'db-tab-query-status' + (isError ? ' error' : '');
+            line.textContent = text;
+            out.appendChild(line);
+            clearBtn.classList.remove('hidden');
+        }
+
+        function renderResult(result, elapsedHint) {
+            const cols = result.columns || [];
+            const rows = result.rows || [];
+            out.textContent = '';
+            out.style.display = 'block';
+            clearBtn.classList.remove('hidden');
+            const status = document.createElement('div');
+            status.className = 'db-tab-query-status';
+            const cn = cols.length ? ' · ' + cols.length + ' 列' : '';
+            const el = result.elapsedMs != null ? ' · ' + result.elapsedMs + ' ms' : (elapsedHint || '');
+            status.textContent = '返回 ' + rows.length + ' 行' + cn + el + (result.truncated ? '（已截断，可加 LIMIT 精确定位）' : '');
+            out.appendChild(status);
+            if (!cols.length) return;
+            const scroll = document.createElement('div');
+            scroll.className = 'db-tab-query-tablewrap';
+            const table = document.createElement('table');
+            table.className = 'db-tab-query-table';
+            const thead = document.createElement('thead');
+            const htr = document.createElement('tr');
+            for (const c of cols) {
+                const th = document.createElement('th');
+                th.textContent = c;
+                htr.appendChild(th);
+            }
+            thead.appendChild(htr);
+            const tbody = document.createElement('tbody');
+            for (const row of rows) {
+                const tr = document.createElement('tr');
+                for (let i = 0; i < cols.length; i++) {
+                    const td = document.createElement('td');
+                    const value = row ? row[i] : '';
+                    td.textContent = value == null ? '' : String(value);
+                    td.title = td.textContent;
+                    tr.appendChild(td);
+                }
+                tbody.appendChild(tr);
+            }
+            table.append(thead, tbody);
+            scroll.appendChild(table);
+            out.appendChild(scroll);
+        }
+
+        async function run() {
+            if (running) return;
+            const sql = input.value.trim();
+            if (!sql) {
+                input.focus();
+                return;
+            }
+            running = true;
+            runBtn.disabled = true;
+            setStatus('执行中…', false);
+            try {
+                const outcome = await execQuery(sql, spec.limit, false);
+                if (outcome.kind === 'confirm') {
+                    showConfirm(outcome, sql);
+                    return;
+                }
+                renderResult(outcome.result);
+                if (outcome.writes) {
+                    const note = document.createElement('div');
+                    note.className = 'db-tab-query-status';
+                    note.textContent = '已执行 ' + outcome.writes + ' 条写语句';
+                    out.insertBefore(note, out.firstChild);
+                }
+            } catch (e) {
+                setStatus(String((e && e.message) || e), true);
+            } finally {
+                running = false;
+                runBtn.disabled = false;
+            }
+        }
+
+        // 写语句两阶段确认：这里显式再问一次，确认后带 confirmed 重发
+        function showConfirm(outcome, sql) {
+            out.textContent = '';
+            out.style.display = 'block';
+            clearBtn.classList.remove('hidden');
+            const line = document.createElement('div');
+            line.className = 'db-tab-query-status error';
+            line.textContent = outcome.message;
+            const actions = document.createElement('div');
+            actions.className = 'db-tab-query-status';
+            const okBtn = document.createElement('button');
+            okBtn.type = 'button';
+            okBtn.className = 'db-btn danger';
+            okBtn.textContent = '确认执行';
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'db-btn';
+            cancelBtn.textContent = '取消';
+            cancelBtn.addEventListener('click', () => {
+                out.style.display = 'none';
+                out.textContent = '';
+                clearBtn.classList.add('hidden');
+            });
+            okBtn.addEventListener('click', async () => {
+                okBtn.disabled = true;
+                setStatus('执行中…', false);
+                try {
+                    const res = await execQuery(sql, spec.limit, true);
+                    if (res.kind === 'confirm') {
+                        showConfirm(res, sql);
+                        return;
+                    }
+                    renderResult(res.result);
+                    if (deps.logActivity) {
+                        deps.logActivity('db.query.write', t.table, {via: 'query-bar', writes: res.writes || 0});
+                    }
+                } catch (e) {
+                    setStatus(String((e && e.message) || e), true);
+                } finally {
+                    okBtn.disabled = false;
+                }
+            });
+            actions.append(okBtn, cancelBtn);
+            out.append(line, actions);
+        }
+
+        input.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' && !ev.shiftKey) {
+                ev.preventDefault();
+                run();
+            } else if (ev.key === 'Escape') {
+                if (out.style.display !== 'none') {
+                    out.style.display = 'none';
+                    clearBtn.classList.add('hidden');
+                } else {
+                    input.blur();
+                }
+            }
+        });
+        // 单行自动长高，最多 5 行
+        input.addEventListener('input', () => {
+            input.style.height = 'auto';
+            const lineHeight = 18;
+            input.style.height = Math.min(5 * lineHeight, input.scrollHeight) + 'px';
+        });
+        runBtn.addEventListener('click', run);
+        clearBtn.addEventListener('click', () => {
+            out.style.display = 'none';
+            out.textContent = '';
+            clearBtn.classList.add('hidden');
+        });
+
+        return wrap;
     }
 
     function makeCtx() {
@@ -249,6 +461,13 @@ function createDbTableViewsHost(deps, t, session, paneEl, views) {
     }
     syncButtons();
 
+    // 查询输入框放在视图栏之上：表格与图两档共用，随时能跑一条临时查询
+    let queryBar = null;
+    if (consoleSpec) {
+        queryBar = createQueryBar(consoleSpec);
+        root.insertBefore(queryBar, bar);
+    }
+
     // 容器尺寸变化（分栏拖拽 / 窗口缩放）与主题切换：转达给已挂载的视图，不重挂
     let ro = null;
     if (typeof ResizeObserver !== 'undefined') {
@@ -311,8 +530,10 @@ export function createDbTableTabView(deps, doc) {
             session, t.db, t.table);
         const driver = isPluginDbKind(t.entry.kind) ? pluginDbDriverOf(t.entry.kind) : null;
         const views = driver && Array.isArray(driver.views) ? driver.views : [];
-        if (!views.length) return pane.el;
-        host = createDbTableViewsHost(deps, t, session, pane.el, views);
+        const consoleSpec = driver && driver.console ? driver.console : null;
+        // 没有自定义视图也没有查询框：保持原来的纯网格标签页，不多包一层 DOM
+        if (!views.length && !consoleSpec) return pane.el;
+        host = createDbTableViewsHost(deps, t, session, pane.el, views, consoleSpec);
         return host.el;
     });
     // 统一卸载契约：bridge 的 doc.tabUnmount 会调 doc.dbTabUnmount（dispose 撤会话订阅）
