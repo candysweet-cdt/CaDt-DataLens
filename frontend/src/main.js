@@ -50,7 +50,6 @@ import {
     patchViewSnapshot, setPatchTargetRoot, repreviewPatchView,
 } from './editor/patch-view.js';
 import {WRITING_FONTS, WRITING_PAPERS, SCENE_SEPARATOR} from './core/writing.js';
-import changelogText from '../../CHANGELOG.md?raw';
 import termsText from '../../docs/legal/terms.md?raw';
 import privacyText from '../../docs/legal/privacy.md?raw';
 import {createBridgeUI} from './bridge/bridge-ui.js';
@@ -5833,6 +5832,7 @@ const appLinks = createAppLinks({
     get docs() { return docs; },
     get flash() { return flash; },
     get logFrontend() { return logFrontend; },
+    get openBrowserTab() { return openBrowserTab; },
     get openVirtualDoc() { return openVirtualDoc; },
     get rt() { return rt; },
 });

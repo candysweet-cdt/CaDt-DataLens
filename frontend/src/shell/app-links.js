@@ -2,21 +2,24 @@
 //
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
-import changelogText from '../../../CHANGELOG.md?raw';
 import termsText from '../../../docs/legal/terms.md?raw';
 import privacyText from '../../../docs/legal/privacy.md?raw';
 import tutorialText from '../../../docs/tutorial.md?raw';
 
 /**
  * 外链与内置文档动作域（更新日志 / 用户协议 / 隐私协议 / 开发者工具）。
- * 内置文档走虚拟文档并复用已打开的标签（按 bundledDoc 键去重）。
- * @param {object} deps 依赖（rt / backend / docs / activateDoc / openVirtualDoc / flash / logFrontend）
+ * 更新日志走内置浏览器打开 Gitee 在线页面（本地 CHANGELOG.md 体积过大，不再打进前端包）；
+ * 用户协议 / 隐私协议 / 教程走内置虚拟文档并复用已打开的标签（按 bundledDoc 键去重）。
+ * @param {object} deps 依赖（rt / backend / docs / activateDoc / openVirtualDoc / openBrowserTab / flash / logFrontend）
  * @returns {object} 动作面：URL 常量与 openBundledDoc / showChangelog / showTerms / showPrivacy / openDevTools / openExternalUrl
  */
 export function createAppLinks(deps) {
 
 const appFeedbackUrl = 'https://gitee.com/candysweet-cdt/CaDt-DataLens/issues';
 const appReleasesUrl = 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases';
+// 更新日志在线地址：Gitee 仓库内的 CHANGELOG.md。本地文件已近 1 MB，
+// 不再以 ?raw 打进前端包，改由内置浏览器在线打开。
+const appChangelogUrl = 'https://gitee.com/candysweet-cdt/CaDt-DataLens/blob/master/CHANGELOG.md';
 
 function openExternalUrl(url) {
     if (!url) return;
@@ -37,8 +40,20 @@ function openBundledDoc(key, name, text, readOnlyFixed) {
     return doc;
 }
 
+// showChangelog 走内置浏览器标签页打开 Gitee 在线更新日志；已开着同地址标签就直接激活，
+// 避免叠标签。宿主未注入 openBrowserTab（mock / 旧宿主）时降级为系统浏览器，不让入口变死链。
 function showChangelog() {
-    openBundledDoc('changelog', '更新日志.md', changelogText);
+    if (typeof deps.openBrowserTab !== 'function') {
+        openExternalUrl(appChangelogUrl);
+        return;
+    }
+    // 已开着同地址的浏览器标签就直接激活，避免反复点「更新日志」叠一叠标签。
+    const existing = deps.docs.find((d) => d.browser && d.browserUrl === appChangelogUrl);
+    if (existing) {
+        deps.activateDoc(existing);
+        return;
+    }
+    deps.openBrowserTab(appChangelogUrl);
 }
 
 function showTerms() {
@@ -67,5 +82,5 @@ async function openDevTools() {
 }
 
 
-    return {appFeedbackUrl, appReleasesUrl, openBundledDoc, openDevTools, openExternalUrl, showChangelog, showPrivacy, showTerms, showTutorial};
+    return {appChangelogUrl, appFeedbackUrl, appReleasesUrl, openBundledDoc, openDevTools, openExternalUrl, showChangelog, showPrivacy, showTerms, showTutorial};
 }

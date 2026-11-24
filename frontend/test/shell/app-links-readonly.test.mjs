@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
 const src = readFileSync(new URL('../../src/shell/app-links.js', import.meta.url), 'utf8');
+const mainSrc = readFileSync(new URL('../../src/main.js', import.meta.url), 'utf8');
 
 test('openBundledDoc 把 readOnlyFixed 标记透传给 openVirtualDoc', () => {
     assert.match(src,
@@ -25,4 +26,37 @@ test('用户协议、隐私协议与教程以固定只读打开', () => {
     assert.match(terms[1], /openBundledDoc\([\s\S]*?,\s*true\)/, 'showTerms 必须传 readOnlyFixed=true');
     assert.match(privacy[1], /openBundledDoc\([\s\S]*?,\s*true\)/, 'showPrivacy 必须传 readOnlyFixed=true');
     assert.match(tutorial[1], /openBundledDoc\([\s\S]*?,\s*true\)/, 'showTutorial 必须传 readOnlyFixed=true');
+});
+
+// 更新日志不再内嵌：本地 CHANGELOG.md 已近 1 MB，必须以 ?raw 打进前端包是历史做法。
+// 现在走内置浏览器打开 Gitee 在线页面，源码与 main.js 都不许再出现 CHANGELOG.md?raw 导入。
+test('CHANGELOG.md 不再以 ?raw 打进前端包', () => {
+    assert.doesNotMatch(src, /CHANGELOG\.md\?raw/, 'app-links.js 不得再导入 CHANGELOG.md?raw');
+    assert.doesNotMatch(mainSrc, /CHANGELOG\.md\?raw/, 'main.js 不得再导入 CHANGELOG.md?raw');
+});
+
+test('更新日志在线地址指向 Gitee 仓库的 CHANGELOG.md', () => {
+    assert.match(src,
+        /appChangelogUrl\s*=\s*'https:\/\/gitee\.com\/candysweet-cdt\/CaDt-DataLens\/blob\/master\/CHANGELOG\.md'/,
+        'appChangelogUrl 必须指向 Gitee 在线更新日志');
+});
+
+test('showChangelog 走 openBrowserTab，同地址标签复用，缺省降级系统浏览器', () => {
+    const fn = src.match(/function showChangelog\(\)\s*\{([\s\S]*?)\n\}/);
+    assert.ok(fn, '必须存在 showChangelog');
+    assert.match(fn[1], /typeof deps\.openBrowserTab\s*!==\s*'function'/, '未注入时降级');
+    assert.match(fn[1], /openExternalUrl\(appChangelogUrl\)/, '降级走系统浏览器打开在线地址');
+    assert.match(fn[1], /deps\.docs\.find\(\(d\)\s*=>\s*d\.browser\s*&&\s*d\.browserUrl\s*===\s*appChangelogUrl\)/,
+        '复用已打开的同地址浏览器标签');
+    assert.match(fn[1], /deps\.activateDoc\(existing\)/, '复用时激活已有标签');
+    assert.match(fn[1], /deps\.openBrowserTab\(appChangelogUrl\)/, '新建时走内置浏览器标签');
+    // 不再用 openBundledDoc 内嵌更新日志
+    assert.doesNotMatch(fn[1], /openBundledDoc/, 'showChangelog 不得再内嵌虚拟文档');
+});
+
+test('main.js 给 createAppLinks 注入 openBrowserTab', () => {
+    const block = mainSrc.match(/createAppLinks\(\{([\s\S]*?)\n\}\)/);
+    assert.ok(block, '必须存在 createAppLinks 调用');
+    assert.match(block[1], /get openBrowserTab\(\)\s*\{\s*return openBrowserTab;\s*\}/,
+        'createAppLinks 依赖里必须注入 openBrowserTab');
 });
