@@ -206,3 +206,78 @@ E 系列后再审根目录，确认仍有三处「壳里有引擎编排」和两
 **结果**：根目录 69 → **64 个 .go**（52 非测试 + 12 测试）、main 包 4,631 → **3,961 行**（−670 行）；`internal/` 56 → **57 个包**。绑定名全部保持不变（提升方法），`frontend/wailsjs` 由 wails build 重生成；每批全量 `go test ./... -timeout 300s` 与 `wails build -devtools` 全绿。
 
 **最终停止线**：剩余根目录为 `main.go` / `app_core.go`（Wails 生命周期与 App 结构）、十余个 `*_app.go` 转发壳、`storage_app.go` 的位置映射接线，以及 `windowicon` / `cursors` / `console` / `devtools` / `webview_args` / `app_dialogs` / `ai_float` / `app_window`（config/剪贴板/资源管理器）等平台 glue。按 AGENTS 口径平台 glue 留根是本分；继续拆任何一项都需要造有状态服务或跨包搬 Windows API，收益已明确低于维护成本，布局工作收口。
+
+## 15. G 系列：Wails v3 多窗口时代的二期结构化（2026-11-24）
+
+> 上一次评估（§14）的停止线写在 v2 时代。v3 一进程多窗口迁移带来 9 个新的窗口宿主文件（约 2300 行）从未评估过，根目录又回到 **107 个 .go / 9149 行**——§14 的「收口」结论对新代码不成立。
+
+### 15.1 判定口径（本轮确立，写进 AGENTS.md「Go 侧」）
+
+1. **`internal/` 零 Wails 依赖**（实测 74 个包 grep 命中 0）。强依赖 `application.WebviewWindow` 的窗口宿主编排**留根**；纯状态用泛型参数注入句柄（`State[W]` / `Registry[W]`，根传 `W = *application.WebviewWindow`）。
+2. **绑定承载走服务化嵌入**，不再每域一个转发壳：`internal/<域>` 写 `type Service struct{}`，根用**未导出类型别名**匿名嵌入 `App`（`type memoService = memo.Service` + `*memoService`，绕开「同一类型只能匿名嵌入一次」——`App` 已有 `*sessionstore.Service`）。Wails v3 绑定面就是 `*App` 方法集（`pkg/application/bindings.go:236` 的 `ptrType.NumMethod()` 会遍历到提升方法），FQN 仍是 `main.App.<Method>`，**前端零改动**。
+3. **`Service` 只导出确实要暴露给前端的方法**，其余保持包级/小写——每个导出方法都会变成前端可调绑定（历史事故 `Scheduler.Start` / `Manager.EnsureDir`）。
+4. **先建守卫再动手**：绑定面基线测试是所有搬移的安全网，没有它就无法区分「改造出错」与「预期变化」。
+
+### 15.2 批次
+
+| 批 | 内容 | 结果 |
+| --- | --- | --- |
+| 0 | **绑定面基线守卫** | `app_bindings_guard_test.go` + `testdata/app_bindings_baseline.txt`：反射枚举 `*App` 方法集（**420** 条，含嵌入服务提升方法），过滤 wails 的 `internalServiceMethods`（`ServiceName` / `ServiceStartup` / `ServiceShutdown` / `ServeHTTP`），排序后逐行比对；多一个少一个都红，并禁止 `Start` / `Close` / `EnsureDir` 这类代表名进基线 |
+| 1 | **宿主接线合并**（零逻辑） | 9 个「只做 init 注入、零绑定」的壳 → `host_wiring.go`；3 个 embed 壳 → `embed_assets.go`；`wails_app.go` 更名 `host_wails.go`。**init 顺序纪律**：同包 init 按文件名字典序执行，`embed_assets.go`（e）早于 `host_wiring.go`（h），所以 `desktopmcp.Logf` 必须写成转发闭包而不是取 `mcp.Logf` 函数值（2026-11-23 审查 M3 的坑） |
+| 2 | **纯逻辑下沉** | 新增 `internal/windowreg`（`Mode` / `Spec` / `State[W]` / `Registry[W]` / `PathKey` / 辅助窗查找，约 480 行 + 测试 196 行）与 `internal/secondinstance`（`Decide` + `Plan`/`Group`/`Deps`，约 125 行 + 表驱动测试 157 行）、`internal/eventowner`（约 100 行 + 测试 99 行）；几何 key 并入 `internal/windowgeom`（`RestoreKey` / `PersistKey` + 测试）。根侧全部用类型别名 + 薄包装，**窗口族 9 个文件的调用点只做大小写导出化**（`st.name()` → `st.Name()` 等约 100 处，编译器兜底） |
+| 3 | **服务化收编 25 个绑定壳**（4 小批：存储族 / AI 族 / 开发者族 / 文件与调试族） | 删除 `memo_app` `activity_app` `sessionindex_app` `usage_stats_app` `app_preview_assets` `ai_artifact_app` `ai_catalog_app` `ai_gen_app` `ai_image_policy_app` `ai_usage_app` `ai_worklog_app` `cognition_app` `maven_app` `sandbox_app` `run_project_app` `structuredir_app` `sqlview_app` `update_app` `envvars_app` `patch_review` `webtools_app` `webtools_config` `dbclient_app` `gitinfo_app`；`init` 注入统一搬进 `host_wiring.go`。**cognition 是特例**：包内已有 `Service`（引擎），绑定承载类型叫 `Bindings`，由 `NewBindings(logf)` 构造 |
+| 4 | **窗口宿主收敛** | `windowmeta.go` + `window_app.go` → `window_host.go`；`terminal_window.go` + `ai_float.go` + `global_hotkey.go` → `window_aux.go`；`app_close_action.go` 更名 `window_close.go`。`window_factory.go` / `window_geometry.go` 保持独立（职责单一、且是最活跃的建窗路径，不做文件级重写） |
+| 5 | **测试归位与文档** | `secondinstance_plan_test.go` → `internal/secondinstance/`；`window_geometry_test.go` + `aux_windows_test.go` → `internal/windowgeom/keys_test.go` + `internal/windowreg/windowreg_test.go`；新增 `window_route_test.go`（依赖 `winReg` 的真实路由语义留根）与 `window_aux_test.go` |
+
+### 15.3 结果与偏差
+
+| 指标 | 起点 | 终点 |
+| --- | --- | --- |
+| 根目录 `.go` | 107（84 非测试 + 23 测试） | **49**（30 非测试 + 19 测试） |
+| 根目录非测试行数 | 6589 | **4639**（−30%） |
+| 根目录总行数 | 9149 | **6923** |
+| `internal/` 包数 | 74 | **79**（+windowreg / +secondinstance / +eventowner / +winutil） |
+| 绑定方法 | 285 显式 + 提升 | **420（不变）**，基线一致 |
+| 前端改动 | — | **0 行** |
+
+**三处有意的偏差**（按「职责单一优先于文件数」裁定）：
+
+1. `browser_app_windows.go` 带 `//go:build windows`，不能并进平台无关的 `host_wiring.go`，保持独立。
+2. `crashrecovery_app.go` 有实质逻辑（自愈清理），不是纯 init 接线，保持独立。
+3. **六个「真消费 App 状态」的壳不合并**（`patch_app` / `storage_app` / `plugins_app` / `wipeguard_app` / `oauthquota_app` / `timer_app` / `mcp_desktop_app`）：原计划塞进一个 `app_bindings_host.go`，但那是六个互不相关的域——违反「一个文件出现第二个域就必须拆」的红线。文件数比职责边界次要。
+
+### 15.4 下一轮若继续（本轮未做）
+
+- `resource_watch_app.go`（112 行，5 绑定）与 `appservices_app.go`（47 行，6 绑定）：**刻意不服务化**——它们包装的 `*watch.Watcher` / `*appservices.Registry` 本身就是 App 的嵌入字段（Watcher 的导出方法已经在绑定面里），再套一层 Service 要么重复绑定、要么把 Registry 的 `Start`/`Stop`/`Sync`/`List`/`Logs` 全部提升成前端可调方法（正是 `Scheduler.Start`、`Manager.EnsureDir` 那类事故）。要动就得先把 Registry 改成 `Service` 的未导出字段并清掉 App 上的直连，收益低于风险。
+- 平台 glue 10 个成对文件（`windowicon` / `cursors` / `console` / `devtools` / `windowhide` / `webview_args` / `screenshot` / `notify` / `trayhost`）继续留根：它们是 Windows API 对，摊进 internal 只会把平台差异散到更多包里。
+
+### 15.5 实测附带修复与平台能力下沉
+
+**`aux_windows.go` 被误判为 Windows 专用文件**：结构性收获之一——文件名里的 `_windows` 被 Go 当成 **GOOS=windows 构建约束**，非 Windows 构建里这些绑定整块消失——`tools/check-crossbuild.cmd` 报 `app.GetAuxWindowKind undefined` 才暴露。已改名 `window_aux_bindings.go` 并在文件头写明不要再改回去。**新增窗口相关文件时注意这个后缀陷阱**（只有以 `_windows.go` / `_other.go` 结尾才会被当作平台文件）。
+
+**平台能力下沉 `internal/winutil`（再收 11 个文件）**：复核发现 AGENTS「平台 glue 留根」这条口径早被 internal 现状打破——clipboard / recycle / shellexec / executil / envvars / sandbox / tray / notify / screenshot 早已是 internal 平台包。真正必须留根的只有依赖 `findWailsWindow` / `appIconID` / `wailsApp` 或 Wails 内部结构的 glue。于是把**零 App/Wails 依赖**的 4 对平台能力搬进新包 `internal/winutil`：`console`（AttachParentConsole）· `windowhide`（HideWindowAsync）· `webview_args`（SetWebViewExtraBrowserArguments）· `cursors`（SystemCursors，经 `Service` 嵌入提升 `GetSystemCursors` 绑定）。根侧只留一行转发调用点；另把 `notify_app_windows.go` 的纯 init 注入并入 `windowicon_windows.go`（两者共用 `appIconID`）。跨平台 vet 与真编三平台全绿。
+
+### 15.6 三期：同平台文件合并 + 同族绑定壳合并（再收 10 个）
+
+下沉到底之后，剩下的文件里还有一类冗余：**同 build tag 的平台文件**和**同族的绑定壳**可以按文件级合并（Go 的 `//go:build` 是文件级的，tag 相同的文件合并不改变编译语义）。
+
+| 合并 | 结果 | 说明 |
+| --- | --- | --- |
+| `windowicon_windows` + `trayhost_windows` + `devtools_windows` + `browser_app_windows` + `screenshot_app_windows` | → `platform_windows.go` | 5 个都是 `//go:build windows`，且共享 `appIconID` / `findWailsWindow` 符号，合并后依赖更清晰；`init` 里的注入按原顺序排列 |
+| 对应 4 个 `*_other.go` | → `platform_other.go` | `//go:build !windows`，保留 `OpenDevTools` 绑定桩（否则非 Windows 构建丢绑定） |
+| `appservices_app` + `resource_watch_app` | → `app_field_bindings.go` | 都是「包装 App 嵌入字段的绑定壳」（`*appservices.Registry` / `*watch.Watcher`），不服务化（会把 Registry/Watcher 的 Start/Stop 提升成绑定） |
+| `app_dialogs` + `app_fs` | → `app_dialogs.go` | 同是文件对话框绑定，共用 `dialogOwner` / `isDialogCancelled` 助手 |
+| `appdata` + `logging` | → `app_infra.go` | 应用级基础设施，logging 本就 import appdata |
+
+**没有合并的**：`event_owner.go`（事件归属路由）+ `window_route.go`（文件投递路由）——虽然都涉及窗口归属，但一个是事件分发、一个是文件路由，合进 `window_host.go` 会让职责变杂，违反「出现第二个域就拆」的红线。为行数而合并损害边界，不值。
+
+**验证**：合并后 `go build ./...` / `go test ./... -timeout 300s` 全绿，`tools/check-crossbuild.cmd` 三平台全过（这是平台文件合并最关键的正确性证明），绑定基线 420 条不变。
+
+### 15.7 最终停止线：剩下 49 个为什么收不动
+
+- **真 Wails glue（2 个平台对）**：`platform_windows.go` / `platform_other.go` 依赖 `findWailsWindow`（枚举本进程 Wails 窗口的 Win32 代码）、`appIconID`、或反射 Wails 内部结构（`OpenDevTools` 靠反射读 `mainWindow` 字段）——与 Wails v3 版本强绑定，不可下沉。
+- **真宿主编排（8 个）**：`patch_app` / `storage_app` / `plugins_app` / `wipeguard_app` / `oauthquota_app` / `timer_app` / `app_debugconsole` / `app_field_bindings`。前几个有对话框/锁/事件编排，后者包装的 `*Watcher`/`*Registry` 已是 App 嵌入字段。
+- **CLI / 变体（3 个）**：`convert_cli` / `mcp_variant` / `mcp_variant_default` 与 `main.go` 共用启动状态，且带 build tag（`mcp` 与 `!mcp` 相反，不能合并）。
+- **应用核心 + 宿主接线 + 窗口宿主（约 16 个）**：职责单一，已在 §15.2 收口。
+- **测试（19 个）**：走绑定层的集成测试留根，纯逻辑测试已随包迁走。
+

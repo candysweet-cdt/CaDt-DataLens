@@ -9,6 +9,51 @@
 > 根目录是扁平 Go 包 `main`，没有顶层 `src/`。
 
 ## Go 后端（仓库根）
+
+### 二期结构化后的根目录（2026-11-24，方案见 `docs/finished-plans/go-layout.md` §15）
+
+根目录从 **107 个 .go / 9149 行**（84 非测试 + 23 测试、285 个显式绑定方法）收敛到 **49 个 .go / 6923 行**（30 非测试 + 19 测试、非测试 4639 行）。根目录只剩四类文件：
+
+1. **应用核心与生命周期**：`main.go` · `app_core.go`（App 结构 + 启动 + 第二实例执行）· `app_window.go` · `app_infra.go`（应用数据目录 + 日志；原 appdata.go + logging.go）· `app_dialogs.go`（文件对话框；含原 app_fs.go）· `crashrecovery_app.go`
+2. **宿主接线**：`host_wails.go`（wailsApp/mainWin 指针、`emitAppEvent` / `emitWindowEventTo`、剪贴板、`quitApp`）· `host_wiring.go`（**各引擎的 deps 注入唯一入口**，含 AI 传输/定时任务/浏览器/群聊/阅读/会话存储/MCP/便签/会话索引/操作留痕/使用统计/外部工具/数据库/Git/目录结构导出）· `embed_assets.go`（`docs/skills` + `docs/mcp-samples` + `docs/mcp-desktop` 三份 `//go:embed`）
+3. **窗口宿主**：`window_host.go`（注册表别名 + `callerWindow`/`stateForCaller` + 跨窗会话复用）· `window_factory.go`（建窗，9 种形态）· `window_geometry.go`（几何记忆 + 显示器看护；key 规则在 `internal/windowgeom`）· `window_close.go`（关闭行为/托盘/优雅退出/收尾）· `window_aux.go`（终端弹出窗 + AI 浮窗 + 全局热键）· `window_aux_bindings.go`（便签/监控/对比/轻量查看/实时预览五类辅助窗绑定）· `window_route.go`（第二实例文件投递的祖先链路由）
+4. **平台 glue 与 CLI**：`platform_windows.go` / `platform_other.go`（5 对 Wails 平台 glue 合并而成：windowicon / devtools / screenshot / trayhost / browser；依赖 `findWailsWindow` / `appIconID` / Wails 内部结构，必须留根）· `convert_cli.go` · `mcp_variant.go` / `mcp_variant_default.go`。另有 `app_field_bindings.go`（包装 App 嵌入字段的 appservices/resource_watch 绑定壳合并）。
+
+**绑定承载走「服务化嵌入」**：`internal/<域>` 的 `type Service struct{}` 经根 `app_core.go` 的未导出别名（`type memoService = memo.Service` + `*memoService`）匿名嵌入 `App`，方法集提升即绑定，前端零改动。已服务化：memo · sessionindex · activity · usagestats · previewassets · aiartifact · aicatalog · aigen · aiimagepolicy · aiusage · aiworklog · cognition（`Bindings`，包内已有 `Service`）· mavenproject · sandbox · runproject · sqlview · update · envvars · patch · webtools · structuredir · dbclient · gitinfo · desktopmcp（异步安装作业 + 进度事件经注入的 `Emit` 出口）。
+
+**仍留根的绑定壳**（真宿主编排或依赖对话框/事件，不服务化）：`patch_app.go`（补丁保存/应用/撤销的根目录解析与写回备份）· `storage_app.go`（存储位置映射与清理门闩）· `plugins_app.go` · `wipeguard_app.go` · `oauthquota_app.go` · `timer_app.go` · `app_debugconsole.go`（导出对话框 + 窗口判定）· `app_fs.go`（三个系统对话框）· `appservices_app.go` / `resource_watch_app.go`（包装的 `*appservices.Registry` / `*watch.Watcher` 已是 App 的嵌入字段，再套一层 Service 会把 Registry/Watcher 的全部导出方法提升成绑定）。
+
+**新增 internal 包（二期）**：`windowreg`（窗口状态机/注册表/命名策略/辅助窗查找/路径归一，泛型 `State[W]` / `Registry[W]`，零 Wails 依赖）· `secondinstance`（第二实例转发计划 `Decide`，表驱动测试随包）· `eventowner`（流式事件资源归属表，FIFO 淘汰上限 8192）· `winutil`（纯平台能力：AttachParentConsole / HideWindowAsync / SetWebViewExtraBrowserArguments / SystemCursors，零 App/Wails 依赖，经 `Service` 嵌入提升 `GetSystemCursors` 绑定）。
+
+**绑定面守卫**：`app_bindings_guard_test.go` 反射枚举 `*App` 方法集（当前 **420** 条）与 `testdata/app_bindings_baseline.txt` 比对，多一个少一个都红；任何搬移/服务化后必跑。
+
+**旧文件名对照（下方条目里的这些名字已不存在）**：
+
+| 旧 | 现 |
+| --- | --- |
+| `windowmeta.go` + `window_app.go` | 合并为 `window_host.go`（状态机下沉 `internal/windowreg`） |
+| `terminal_window.go` + `ai_float.go` + `global_hotkey.go` | 合并为 `window_aux.go` |
+| `aux_windows.go` | 更名 `window_aux_bindings.go`（原名带 `_windows` 后缀会被 Go 当作 Windows 专用文件，非 Windows 构建缺这些绑定） |
+| `app_close_action.go` | 更名 `window_close.go` |
+| `wails_app.go` | 更名 `host_wails.go` |
+| `ai_transport_app.go` / `aischedule_app.go` / `browser_app.go` / `groupstore_app.go` / `reading_app.go` / `sessionstore_app.go` / `mcp_app.go` | 合并进 `host_wiring.go` |
+| `skills.go` / `mcp_samples.go` / `desktop_mcp.go` | 合并为 `embed_assets.go` |
+| `memo_app.go` / `activity_app.go` / `sessionindex_app.go` / `usage_stats_app.go` / `app_preview_assets.go` | 删除，绑定随 `internal/<域>` 的 `Service` 提升 |
+| `ai_artifact_app.go` / `ai_catalog_app.go` / `ai_gen_app.go` / `ai_image_policy_app.go` / `ai_usage_app.go` / `ai_worklog_app.go` / `cognition_app.go` | 同上（cognition 是 `internal/cognition.Bindings`） |
+| `maven_app.go` / `sandbox_app.go` / `run_project_app.go` / `structuredir_app.go` / `sqlview_app.go` / `update_app.go` / `envvars_app.go` / `patch_review.go` / `webtools_app.go` / `webtools_config.go` | 同上 |
+| `dbclient_app.go` / `gitinfo_app.go` | 同上（24 / 37 条绑定最厚的两个壳） |
+| `secondinstance_plan_test.go` | 随包迁 `internal/secondinstance/secondinstance_test.go`；路由专项留 `window_route_test.go` |
+| `window_geometry_test.go` / `aux_windows_test.go` | 随包迁 `internal/windowgeom/keys_test.go` / `internal/windowreg/windowreg_test.go` |
+| `console_*` / `windowhide_*` / `webview_args_*` / `cursors_*` | 下沉 `internal/winutil/`（纯平台能力，零 App/Wails 依赖）；`GetSystemCursors` 随 `Service` 嵌入提升 |
+| `notify_app_windows.go` | init 注入并入 `windowicon_windows.go`（共用 `appIconID`） |
+| 5 个 `*_windows.go`（windowicon/trayhost/devtools/browser/screenshot）+ 4 个 `*_other.go` | 合并为 `platform_windows.go` / `platform_other.go`（同 build tag 的平台文件合并，保留 `OpenDevTools` 绑定桩） |
+| `appservices_app.go` + `resource_watch_app.go` | 合并为 `app_field_bindings.go`（都是包装 App 嵌入字段的绑定壳） |
+| `app_fs.go` + `app_dialogs.go` | 合并为 `app_dialogs.go`（同是文件对话框绑定） |
+| `appdata.go` + `logging.go` | 合并为 `app_infra.go`（应用级基础设施） |
+| `app_close_action_test.go` → `window_close_test.go` · `patch_review_test.go` → `patch_bindings_test.go` · `sessionindex_app_test.go` → `sessionindex_bindings_test.go` | 只改名对齐实现（前者随 `window_close.go`，后两者测的是 App 绑定层集成、留根），测试体未改 |
+
+> 下方逐条职责记录保留为**历史沿革与暗约束**（许多条目写明了「为什么这么设计」），文件名与位置以本节对照表为准。
+
 - `main.go`：Wails 启动配置、窗口选项、`//go:embed all:frontend/dist` 资源内嵌、单实例锁
 - `app_core.go`：App 结构与生命周期（startup/domReady/单实例）、命令行目标与启动参数解析；`const appVersion` 在 `app_core.go:43`
 - `app_window.go` / `app_fs.go`：脏标记/应用配置/多窗口与资源管理器定位 · 文件/文件夹对话框 · 关窗确认与退出收口（`beforeCloseWindow` / `ForceClose` / `QuitApp`：最后一个主窗口关闭=退出程序并带走浮窗/调试台，应用级服务经幂等 `teardownAppServices` 只收口一次）；文件读写与目录条目操作已下沉 `internal/fileio` / `internal/fsops`

@@ -4,6 +4,17 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 重构（Go 根目录结构化二期：107 → 72 个 .go，绑定壳改为服务化嵌入 + 三层下沉）
+
+- **根目录收敛**：`package main` 从 107 个 `.go` / 9149 行（84 非测试 + 23 测试）降到 49 个 / 6923 行（30 非测试 + 19 测试、非测试 4639 行）。根目录此后只有四类文件：应用核心与生命周期、宿主接线（`host_wails.go` / `host_wiring.go` / `embed_assets.go`）、窗口宿主（`window_host.go` / `window_factory.go` / `window_geometry.go` / `window_close.go` / `window_aux.go` / `window_aux_bindings.go` / `window_route.go`）、平台 glue 与 CLI（`platform_windows.go` / `platform_other.go` 由 5 对平台文件合并）。
+- **绑定壳服务化**：约 26 个「只做 init 注入 + 转发」的 `*_app.go` 删除，改为 `internal/<域>` 内 `type Service struct{}` + 根 `app_core.go` 未导出类型别名匿名嵌入 `App`（`type memoService = memo.Service` + `*memoService`）。Wails v3 的绑定面是 `*App` 方法集（`bindings.go:236` 的 `ptrType.NumMethod()`），提升方法照常绑定且 FQN 仍是 `main.App.<Method>`——**前端零改动**。已服务化：memo / sessionindex / activity / usagestats / previewassets / aiartifact / aicatalog / aigen / aiimagepolicy / aiusage / aiworklog / cognition / mavenproject / sandbox / runproject / sqlview / update / envvars / patch / webtools / structuredir / dbclient（24 条绑定）/ gitinfo（37 条绑定）/ desktopmcp（异步安装作业 + 进度事件）。
+- **三层纯逻辑下沉**：新增 `internal/windowreg`（窗口状态机 + 注册表 + 命名策略 + 辅助窗查找 + 路径归一；泛型 `State[W]` / `Registry[W]`，根注入 `W = *application.WebviewWindow`，保持 `internal/` 零 Wails 依赖）、`internal/secondinstance`（第二实例转发计划 `Decide` + 表驱动测试）、`internal/eventowner`（流式事件资源归属表 + FIFO 淘汰）；窗口几何 key 并入 `internal/windowgeom`（`RestoreKey` / `PersistKey`），对应测试随包迁走。
+- **测试跟包走**：`secondinstance_plan_test.go` / `window_geometry_test.go` / `aux_windows_test.go` / `terminal_window_test.go` 随实现迁入 `internal/secondinstance` / `internal/windowgeom` / `internal/windowreg` 与根 `window_route_test.go` / `window_aux_test.go`。
+- **平台能力下沉 `internal/winutil`**：`console` / `windowhide` / `webview_args` / `cursors` 四对平台文件零 App/Wails 依赖，搬进新包 `internal/winutil`（`GetSystemCursors` 经 `Service` 嵌入提升绑定，前端零改动）；`notify_app_windows.go` 的 init 并入 `windowicon_windows.go`。留根的 5 对平台 glue（`windowicon` / `devtools` / `screenshot` / `trayhost` / `browser`）依赖 `findWailsWindow` / `appIconID` / Wails 内部结构，与 v3 版本强绑定，不可下沉。
+- **同平台/同族文件合并**：5 个 `*_windows.go` + 4 个 `*_other.go` → `platform_windows.go` / `platform_other.go`（同 build tag 合并不改变编译语义，共享 `appIconID` / `findWailsWindow` 更清晰）；`appservices_app` + `resource_watch_app` → `app_field_bindings.go`；`app_fs` + `app_dialogs` → `app_dialogs.go`；`appdata` + `logging` → `app_infra.go`。`go test ./...` 与三平台交叉编译全绿，绑定基线不变。
+- **新增绑定面守卫**：`app_bindings_guard_test.go` 反射枚举 `*App` 方法集（420 条）与 `testdata/app_bindings_baseline.txt` 逐行比对，多/少一个绑定都红，并禁止 `Start` / `Close` / `EnsureDir` 这类内部助手名进基线（历史上 `Scheduler.Start`、`Manager.EnsureDir` 都曾因意外提升变成前端可调绑定）。
+- **行为不变**：只做搬移与服务化，不改任何函数体逻辑；`go build ./...` / `go test ./... -timeout 300s` 全绿，绑定基线一致。方案与批次记录见 `docs/finished-plans/go-layout.md` §15。
+
 ### 重构（AI 源码按域归位：ai/ 下 117 文件拆进 10 个子目录，测试目录镜像；main.js 拆出辅助窗模块）
 
 - **ai/ 目录按域重组**：`frontend/src/ai/` 下 116 个 `ai-*.js` 按职责归入 `agent/`、`chat/`、`core/`、`gen/`、`group/`、`security/`、`session/`、`settings/`、`tools/`、`usage/` 十个子目录，`ai-panel.js` 留根作组合根；`frontend/test/ai/` 的 127 个测试同步镜像拆到对应子目录（7 个组合根/跨多域测试留根）。依赖图实测 0 个循环依赖，全部相对路径（import / read() / new URL() / 动态 import / 断言正则 / 护栏裸路径）按新旧目录重算，`package.json` 的 `test:ai` 清单（127 条）与 AGENTS.md / docs / 认知索引路径同步。纯目录归位，不改变任何函数体与用户可见行为。
