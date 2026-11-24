@@ -268,10 +268,19 @@ try {
 
     $version = (Get-Item $appExe).VersionInfo.ProductVersion
     if (-not $version) {
+        # exe 未内嵌版本资源时的回退：v3 info.json 的 fixed.product_version，再退到 wails.json。
+        # （v3 schema 没有顶层 productVersion，旧写法读 $info.productVersion 永远为空。）
+        # 读不到就留空，下面打印 "-"，不影响安装包本身。
         try {
             $info = Get-Content (Join-Path $root "build\windows\info.json") -Raw | ConvertFrom-Json
-            $version = [string]$info.productVersion
+            $version = [string]$info.fixed.product_version
         } catch { }
+        if (-not $version) {
+            try {
+                $wailsJson = Get-Content (Join-Path $root "wails.json") -Raw | ConvertFrom-Json
+                $version = [string]$wailsJson.info.productVersion
+            } catch { }
+        }
     }
     $sizeMB = [math]::Round((Get-Item $installerExe).Length / 1MB, 2)
     Write-Host ""

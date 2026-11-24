@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -560,23 +561,84 @@ func TestOpenDirInNewWindowValidation(t *testing.T) {
 	// 有效目录会真的拉起进程，这里只验证参数校验路径，不触发启动。
 }
 
-// wails.json 的 info.productVersion 决定安装包版本，必须与 appVersion 同步（NSIS 不接受 v 前缀）。
-func TestWailsInfoVersionMatchesAppVersion(t *testing.T) {
-	raw, err := os.ReadFile("wails.json")
-	if err != nil {
-		t.Fatal(err)
+// 版本号只有一个真源：app_core.go 的 appVersion。其余几处是不同构建阶段的输入，互相读不到：
+// build/windows/info.json（wails3 generate syso → exe 的 PE 版本资源）、wails_tools.nsh
+// （NSIS 的 !define → 安装包版本与注册表 DisplayVersion）、build/config.yml（update build-assets
+// 的模板源，会回灌前两者）、wails.json（v2 遗留，本项目作回退源与约定）。同步工具是
+// scripts/sync-version.mjs；这里逐处校验，漏改等于发出去一个版本号错的安装包。
+func TestVersionFilesInSync(t *testing.T) {
+	want := strings.TrimPrefix(appVersion, "v")
+	if want == appVersion || strings.Count(want, ".") != 2 {
+		t.Fatalf("appVersion=%q 必须是 vX.Y.Z（其余几处写去掉 v 的 X.Y.Z）", appVersion)
 	}
-	var cfg struct {
+
+	readJSON := func(path string, dst any) {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, dst); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+	}
+
+	got := map[string]string{}
+	var wailsCfg struct {
 		Info struct {
 			ProductVersion string `json:"productVersion"`
 		} `json:"info"`
 	}
-	if err := json.Unmarshal(raw, &cfg); err != nil {
+	readJSON("wails.json", &wailsCfg)
+	got["wails.json info.productVersion"] = wailsCfg.Info.ProductVersion
+
+	var infoCfg struct {
+		Fixed struct {
+			FileVersion    string `json:"file_version"`
+			ProductVersion string `json:"product_version"`
+		} `json:"fixed"`
+		Info map[string]struct {
+			FileVersion    string `json:"FileVersion"`
+			ProductVersion string `json:"ProductVersion"`
+		} `json:"info"`
+	}
+	readJSON("build/windows/info.json", &infoCfg)
+	got["build/windows/info.json fixed.file_version"] = infoCfg.Fixed.FileVersion
+	got["build/windows/info.json fixed.product_version"] = infoCfg.Fixed.ProductVersion
+	if win, ok := infoCfg.Info["0409"]; ok {
+		got["build/windows/info.json info.0409.FileVersion"] = win.FileVersion
+		got["build/windows/info.json info.0409.ProductVersion"] = win.ProductVersion
+	} else {
+		t.Error("build/windows/info.json 缺少 info.0409 资源块")
+	}
+
+	nsh, err := os.ReadFile("build/windows/installer/wails_tools.nsh")
+	if err != nil {
 		t.Fatal(err)
 	}
-	want := strings.TrimPrefix(appVersion, "v")
-	if cfg.Info.ProductVersion != want {
-		t.Fatalf("wails.json info.productVersion=%q，app.go appVersion=%q，安装包版本需与之一致", cfg.Info.ProductVersion, appVersion)
+	if m := regexp.MustCompile(`!define\s+INFO_PRODUCTVERSION\s+"([^"]+)"`).FindSubmatch(nsh); m != nil {
+		got["build/windows/installer/wails_tools.nsh INFO_PRODUCTVERSION"] = string(m[1])
+	} else {
+		t.Error("wails_tools.nsh 里找不到 INFO_PRODUCTVERSION 定义")
+	}
+
+	yml, err := os.ReadFile("build/config.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := regexp.MustCompile(`(?m)^  version:\s+"([^"]+)"`).FindSubmatch(yml); m != nil {
+		got["build/config.yml info.version"] = string(m[1])
+	} else {
+		t.Error("build/config.yml 里找不到 info.version")
+	}
+
+	if len(got) != 7 {
+		t.Fatalf("应校验 7 处版本字段，实际 %d 处：%v", len(got), got)
+	}
+	for where, v := range got {
+		if v != want {
+			t.Errorf("%s = %q，与 appVersion=%q 不一致；跑 node scripts/sync-version.mjs 同步", where, v, appVersion)
+		}
 	}
 }
 

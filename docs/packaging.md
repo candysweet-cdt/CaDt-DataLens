@@ -26,12 +26,19 @@
 
 ## 2. 版本号
 
-版本号只有一个真源：`app_core.go` 的 `appVersion`（当前 `v1.2.0`），同步四处：`wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）、`build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION` 与 `build/config.yml` 的 `version`（`wails3 update build-assets` 重新生成资产时的模板源，漏改会回灌旧版本号）。
+版本号只有一个真源：`app_core.go` 的 `appVersion`（当前 `v1.2.1`），同步四处：`wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）、`build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION` 与 `build/config.yml` 的 `version`（`wails3 update build-assets` 重新生成资产时的模板源，漏改会回灌旧版本号）。
+
+这四处消不掉：它们是四个不同阶段、不同工具链的输入，互相读不到（PE 资源靠 syso 在编译期嵌入、NSIS 是打包期独立脚本、`config.yml` 是上游生成器模板、`wails.json` 是 v2 遗留）。所以改成「只改真源 + 机器同步」：
+
+```bash
+node scripts/sync-version.mjs          # 把不一致的几处写成 appVersion 的值
+node scripts/sync-version.mjs --check  # 只检查（不一致退出码 1）
+```
 
 - `wails.json` 的 `info.productVersion` 决定 exe 文件属性与安装包版本，必须与 `appVersion` 一致（去掉 `v` 前缀）。
-- 单测 `TestWailsInfoVersionMatchesAppVersion` 只强制校验 `wails.json` 一处；info.json / wails_tools.nsh / config.yml 三处仍靠发版时人工同步。
+- 单测 `TestVersionFilesInSync` 逐处校验全部 7 个版本字段（`wails.json` 1 处、`info.json` 4 处、`wails_tools.nsh` 1 处、`config.yml` 1 处）；前端 `frontend/test/tools/sync-version.test.mjs` 另验脚本口径，两处都会在版本漂移时红。
 - NSIS 要求四段数字，Wails 会自动把 `1.0.0` 补成 `1.0.0.0`。
-- 发新版本时两处一起改，再跑测试。
+- 发新版本时改动真源再跑一次同步脚本，然后跑测试。
 
 ### Release 命名与检查更新
 
@@ -209,7 +216,7 @@ signtool verify /pa /v build/bin/CaDt-DataLens-amd64-installer.exe
 
 ## 7. 发布前检查清单
 
-- [ ] `app_core.go` 的 `appVersion` 与 `wails.json` 的 `info.productVersion` 一致。
+- [ ] 改 `app_core.go` 的 `appVersion` 后跑 `node scripts/sync-version.mjs`，`TestVersionFilesInSync` 通过（四处同步文件共 7 个字段与真源一致）。
 - [ ] `go test ./...` 通过。
 - [ ] 构建脚本产出的便携版能正常启动。
 - [ ] `tools/build-installer.ps1` 成功，并打印 `Successfully verified`。
@@ -238,7 +245,7 @@ signtool verify /pa /v build/bin/CaDt-DataLens-amd64-installer.exe
 | `tools/build-installer.ps1` | 一键构建 + 签名 + 验签 |
 | `tools/build-installer.cmd` | 双击入口（透传参数给 ps1） |
 | `build/windows/installer/project.nsi` | 安装包模板（组件、升级、卸载、签名钩子） |
-| `build/windows/installer/wails_tools.nsh` | NSIS 变量（手工维护，发版同步版本号） |
+| `build/windows/installer/wails_tools.nsh` | NSIS 变量（版本号由 `scripts/sync-version.mjs` 同步） |
 | `build/windows/info.json` | exe 文件属性（版本、公司、版权） |
-| `wails.json` | v2 遗留，仅 productVersion 仍被 rebuild-exe 作版本回退源读取 |
+| `wails.json` | v2 遗留，仅 productVersion 仍被 rebuild-exe / build-installer 作版本回退源读取 |
 | `installer_cli_windows.go` | `--integrate` / `--unintegrate` 集成命令 |

@@ -11,7 +11,7 @@ info:
   description: "轻量级多格式数据查看与编辑器"
   copyright: "Copyright © 2026 CandySweet"
   comments: "JSON / YAML / XML / CSV 等本地数据文件查看与编辑工具"
-  version: "1.2.0"
+  version: "1.2.1"
 
 
 # iOS build configuration (uncomment to customise iOS project generation)

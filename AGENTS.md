@@ -169,7 +169,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 ### 文档与提交
 - 用户可见的改动同步更新 `CHANGELOG.md` 与 `README.md` 对应小节。
 - 方案文档放 `docs/unfinished-plans/`，全部实施后移入 `docs/finished-plans/`。
-- 版本号四处需一致：`app_core.go` 的 `appVersion`、`wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）、`build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION`（见 `docs/packaging.md`）。
+- 版本号只有一个真源：`app_core.go` 的 `appVersion`；改完跑 `node scripts/sync-version.mjs` 同步 `wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）、`build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION` 与 `build/config.yml` 的 `version`（单测 `TestVersionFilesInSync` 校验全部 7 个字段）。
 
 ## 常用命令
 
