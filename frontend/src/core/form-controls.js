@@ -22,6 +22,27 @@ function applyAttrs(control, o) {
     }
 }
 
+// 空值按 Tab 时用 placeholder 填默认值（createInput / createTextarea 默认启用）。
+// 行为：空值 + Tab（非 Shift/Ctrl/Alt/Meta 组合）→ 填 placeholder，派发 input/change 让上层持久化；
+// 不 preventDefault，填完 Tab 照常移到下一个焦点。已填值 / 组合键 / 无 placeholder 一律不动。
+// 不想要此行为的输入框传 tabFillPlaceholder: false 关闭。
+export function enableTabFillPlaceholder(control) {
+    if (!control || (control.dataset && control.dataset.tabFillBound)) return control;
+    if (control.dataset) control.dataset.tabFillBound = '1';
+    control.addEventListener('keydown', (e) => {
+        if (!e || e.key !== 'Tab' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+        if (String(control.value == null ? '' : control.value).length) return;
+        const ph = control.placeholder == null ? '' : String(control.placeholder);
+        if (!ph) return;
+        control.value = ph;
+        if (typeof control.dispatchEvent === 'function') {
+            control.dispatchEvent(new Event('input', {bubbles: true}));
+            control.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+    });
+    return control;
+}
+
 function applyCommon(control, o) {
     if (o.id) control.id = o.id;
     // className 是显式指定：覆盖默认封装 class，便于迁移存量时保持各域原有外观
@@ -103,6 +124,8 @@ export function createInput(o = {}) {
     if (o.max != null) control.max = String(o.max);
     if (o.step != null) control.step = String(o.step);
     applyCommon(control, o);
+    // 默认启用「空值 Tab 填 placeholder」；显式 tabFillPlaceholder:false 可关闭
+    if (o.tabFillPlaceholder !== false) enableTabFillPlaceholder(control);
     return {element: control, control};
 }
 
@@ -111,5 +134,6 @@ export function createTextarea(o = {}) {
     control.className = CONTROL_CLASS.textarea;
     if (o.rows) control.rows = Number(o.rows);
     applyCommon(control, o);
+    if (o.tabFillPlaceholder !== false) enableTabFillPlaceholder(control);
     return {element: control, control};
 }

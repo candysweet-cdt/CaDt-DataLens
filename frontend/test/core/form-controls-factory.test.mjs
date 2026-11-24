@@ -17,6 +17,7 @@ import {
     createInput,
     createTextarea,
     createCheckbox,
+    enableTabFillPlaceholder,
 } from '../../src/core/form-controls.js';
 
 const FRONTEND = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -30,12 +31,18 @@ function fakeEl(tag) {
         attrs: {},
         dataset: {},
         listeners: {},
+        value: '',
+        placeholder: '',
         append(...nodes) { this.children.push(...nodes); },
         appendChild(node) { this.children.push(node); return node; },
         setAttribute(key, value) { this.attrs[key] = String(value); },
         addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
+        dispatchEvent(evt) { for (const fn of this.listeners[evt.type] || []) fn(evt); return true; },
     };
 }
+globalThis.Event = class Event {
+    constructor(type) { this.type = type; }
+};
 globalThis.document = {
     createElement: (tag) => fakeEl(tag),
     createTextNode: (text) => ({textContent: String(text)}),
@@ -90,6 +97,51 @@ test('createInput / createTextarea 带封装 class 且透传常用属性与事�
     // 存量迁移时显式 className 覆盖默认值，保证各域原有外观零变化
     const legacy = createInput({className: 'ai-settings-input'});
     assert.equal(legacy.control.className, 'ai-settings-input');
+});
+
+test('tabFillPlaceholder：createInput 默认启用，空值 + Tab 填 placeholder 并派发 input/change', () => {
+    const {control} = createInput({placeholder: '默认值'});
+    const inputs = [];
+    const changes = [];
+    control.addEventListener('input', () => inputs.push(control.value));
+    control.addEventListener('change', () => changes.push(control.value));
+
+    // 空值 + 普通 Tab → 填入 placeholder
+    control.listeners.keydown[0]({key: 'Tab'});
+    assert.equal(control.value, '默认值');
+    assert.deepEqual(inputs, ['默认值']);
+    assert.deepEqual(changes, ['默认值']);
+
+    // 已有值不再覆盖
+    control.listeners.keydown[0]({key: 'Tab'});
+    assert.equal(control.value, '默认值');
+    assert.equal(inputs.length, 1);
+});
+
+test('tabFillPlaceholder：Shift+Tab / 组合键 / 无 placeholder / 显式关闭 都不填', () => {
+    const {control} = createInput({placeholder: '默认值'});
+    control.listeners.keydown[0]({key: 'Tab', shiftKey: true});
+    assert.equal(control.value, '');
+    control.listeners.keydown[0]({key: 'Tab', ctrlKey: true});
+    assert.equal(control.value, '');
+    control.listeners.keydown[0]({key: 'Enter'});
+    assert.equal(control.value, '');
+
+    const noPh = createInput({tabFillPlaceholder: true});
+    noPh.control.listeners.keydown[0]({key: 'Tab'});
+    assert.equal(noPh.control.value, '');
+
+    const optedOut = createInput({placeholder: '默认值', tabFillPlaceholder: false});
+    assert.equal(optedOut.control.listeners.keydown, undefined);
+
+    // textarea 同样默认启用
+    const area = createTextarea({placeholder: '默认正文'});
+    area.control.listeners.keydown[0]({key: 'Tab'});
+    assert.equal(area.control.value, '默认正文');
+
+    // 重复绑定守卫：同一控件重复启用只挂一个 keydown
+    enableTabFillPlaceholder(control);
+    assert.equal(control.listeners.keydown.length, 1);
 });
 
 test('createCheckbox 生成紧凑行内勾选（label 内带文字），control 是值真源', () => {
