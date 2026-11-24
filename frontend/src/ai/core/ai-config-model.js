@@ -400,6 +400,8 @@ export function normalizeUsageConfig(raw) {
     }
     return {
         enabled: src.enabled === true,
+        // 输入区外显：开启后 composer 状态栏显示额度胶囊（默认关，向后兼容）。
+        showInComposer: src.showInComposer === true,
         template,
         planProvider,
         code: typeof src.code === 'string' ? src.code.slice(0, USAGE_CODE_MAX_LENGTH) : '',

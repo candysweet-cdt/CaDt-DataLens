@@ -14,7 +14,7 @@ import {
 import {iconSvg} from '../../core/icons.js';
 import {overlayStack} from '../../core/overlay-stack.js';
 import {providerIconTileHtml} from '../core/ai-provider-icons.js';
-import {formatUsageAge, formatUsageCompactText, usageCompactLine} from '../usage/ai-usage-quota.js';
+import {usageCompactLine} from '../usage/ai-usage-quota.js';
 
 export function createAIModelSettings(ctx, extras) {
 
@@ -148,7 +148,7 @@ export function createAIModelSettings(ctx, extras) {
     let dragProfileId = '';
 
     // 余额行：只在 usage.enabled 时渲染。点击 = 重新查询 + 明细弹层（ctx.queryUsageForAccount）；
-    // 失败态红字带原因（tooltip 给全文），无缓存显示「待查询」。缓存来自 ai-usage-quota 的快照层。
+    // 失败态红字带原因（详情在弹层里），无缓存显示「待查询」。缓存来自 ai-usage-quota 的快照层。
     function buildUsageLine(profile) {
         const usage = profile.usage;
         if (!usage || usage.enabled !== true || !usageQuota) return null;
@@ -189,11 +189,7 @@ export function createAIModelSettings(ctx, extras) {
         if (!snapshot) line.classList.add('pending');
         else if (snapshot.state === 'error') line.classList.add('error');
         line.append(icon, text);
-        line.dataset.tip = !snapshot
-            ? '点击查询额度'
-            : (snapshot.state === 'error'
-                ? (snapshot.error || '查询失败') + ' · 点击重试'
-                : formatUsageCompactText(snapshot) + '\n' + formatUsageAge(snapshot.at) + ' · 点击重新查询');
+        // 不再挂 hover tooltip：点击直接出美化后的用量弹层（含全量窗口 + 倒计时 + 重新查询）。
         line.addEventListener('click', (event) => queryUsageForAccount(profile, event));
         return line;
     }
@@ -273,7 +269,11 @@ export function createAIModelSettings(ctx, extras) {
         // 批次完成后重画列表；白名单外的「官方」模板不打扰
         if (usageQuota) {
             const enabled = getConfig().profiles.filter((p) => p.usage && p.usage.enabled === true);
-            if (enabled.length) usageQuota().sweep(enabled, () => renderModelList());
+            if (enabled.length) usageQuota().sweep(enabled, () => {
+                renderModelList();
+                // 自动补查完成：刷新 composer 状态栏额度胶囊（当前会话若绑定了被刷新的账号）
+                if (typeof extras.onUsageQuotaUpdated === 'function') extras.onUsageQuotaUpdated();
+            });
         }
     }
 
@@ -323,6 +323,12 @@ export function createAIModelSettings(ctx, extras) {
             opt.keyToggle.dataset.tip = '显示密钥';
         }
         if (opt.modelEditorMask) opt.modelEditorMask.classList.remove('hidden');
+        // 清掉拖拽残留的内联定位：createDialogDrag 拖头部会写 transform:none + left/top 像素值，
+        // 不清的话 ui-dialog-in 动画结束后会回落到这些值，弹窗跳到上次拖到的位置（开合闪现）。
+        // 与 settings-dialogs.js 的 openDialogEl 同款处理（该类注释也明确只有 openDialogEl 会清）。
+        opt.modelEditor.style.left = '';
+        opt.modelEditor.style.top = '';
+        opt.modelEditor.style.transform = '';
         opt.modelEditor.classList.remove('hidden');
         // 进全局弹层栈（modal 档，遮罩作 underEl）：Esc 先退编辑器（= 取消）再退设置窗
         if (modelEditorStackHandle) modelEditorStackHandle.dispose();
