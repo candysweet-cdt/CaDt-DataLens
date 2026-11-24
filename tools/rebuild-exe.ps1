@@ -39,6 +39,28 @@ function Wait-AnyKey {
     }
 }
 
+function Notify-ShellFile([string]$Path, [int]$EventId) {
+    try {
+        Add-Type -Namespace CaDtShell32 -Name Native -MemberDefinition @'
+[DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+public static extern void SHChangeNotify(int wEventId, uint uFlags, string dwItem1, string dwItem2);
+'@
+        # SHCNF_PATH：只刷新指定文件，不重启资源管理器。
+        [CaDtShell32.Native]::SHChangeNotify($EventId, 0x00000005, $Path, $null)
+    } catch {
+        Write-Host "Shell 图标缓存通知失败（不影响 exe）：$($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+}
+
+function Clear-ShellIcon([string]$Path) {
+    Notify-ShellFile $Path 0x00000000 # SHCNE_DELETE
+}
+
+function Update-ShellIcon([string]$Path) {
+    Notify-ShellFile $Path 0x00002000 # SHCNE_UPDATEITEM
+    Notify-ShellFile $Path 0x00000002 # SHCNE_CREATE
+}
+
 # ---------- 运行中的实例处理（构建替换前） ----------
 function Stop-RunningInstances {
     # 只停这两个已知路径的实例（按进程路径过滤，不动用户可能装在别处的副本）
@@ -130,6 +152,9 @@ function Build-AndReplace {
             -manifest (Join-Path $root "build\windows\wails.exe.manifest") `
             -out $syso
         if ($LASTEXITCODE -ne 0) { throw "wails3 generate syso 失败（退出码 $LASTEXITCODE）" }
+        if (-not (Test-Path -LiteralPath $syso) -or (Get-Item -LiteralPath $syso).Length -lt 1024) {
+            throw "wails3 generate syso 未生成有效资源文件：$syso"
+        }
         try {
             Write-Host ("go build -tags " + $tags + " → " + $binExe) -ForegroundColor Cyan
             & go build -tags $tags -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui" -o $binExe .
@@ -144,17 +169,23 @@ function Build-AndReplace {
     }
     if (-not (Test-Path $binExe)) { throw "构建产物不存在：$binExe" }
 
+    # Windows 按“路径 + 文件名”缓存 exe 图标；同名覆盖会保留旧白页。先移走旧文件，
+    # 让新 datalens.exe 以全新文件身份创建，运行中的 exe 也允许改名。
+    $aside = $null
+    if (Test-Path -LiteralPath $target) {
+        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $aside = Join-Path $root ("datalens.running-old-" + $stamp + ".exe")
+        Rename-Item -LiteralPath $target -Destination $aside -Force
+        Clear-ShellIcon $target
+        Write-Host "原 exe 已改名为 $(Split-Path -Leaf $aside)（下次运行本工具时清理）" -ForegroundColor DarkGray
+    }
     try {
         Copy-Item $binExe $target -Force
     } catch {
-        # 目标仍被占用：改名让路——运行中的 exe 允许改名。备份名以 .exe 结尾，
-        # 匹配 .gitignore 的 *.running-old*.exe 与本脚本的清理 filter
-        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        $aside = Join-Path $root ("datalens.running-old-" + $stamp + ".exe")
-        Rename-Item $target $aside -Force
-        Write-Host "原 exe 仍在运行，已改名为 $(Split-Path -Leaf $aside)（下次运行本工具时清理）" -ForegroundColor Yellow
-        Copy-Item $binExe $target -Force
+        if ($aside) { Rename-Item -LiteralPath $aside -Destination $target -Force }
+        throw
     }
+    Update-ShellIcon $target
 
     # exe 未必内嵌版本资源：空则回退读 wails.json 的 productVersion（版本号三处一致之一）
     $version = (Get-Item $target).VersionInfo.ProductVersion
