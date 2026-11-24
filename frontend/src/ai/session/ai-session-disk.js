@@ -305,6 +305,10 @@ export function createSessionDiskStore(options) {
         meta.updatedAt = session.updatedAt;
         await backend.AISessionWriteMeta(session.id, JSON.stringify(meta));
         session._metaSig = signature;
+        // 本窗口真正写 meta 的时刻：磁盘全量重读（applyLoadedSessions）据此判断
+        // 「这个会话的 meta 是本轮读盘开始之后我改的」，从而保留内存版本而不是被更早
+        // 的磁盘快照回滚。只是内存字段，不进 meta.json。
+        session._metaWrittenAt = Date.now();
         // 落过盘了：面板打开时的 meta 对账靠它区分「新建还没写完」和「别处删了」
         session._unsaved = false;
     }
@@ -436,6 +440,11 @@ export function createSessionDiskStore(options) {
     function requireBody(session) {
         if (session && session._stub) {
             throw new Error('会话正文尚未加载，禁止改写磁盘历史（' + session.id + '）');
+        }
+        // 正文读取失败（超限拒载 / IO 失败）的会话同理：_stub 已被清掉，但 messages 与
+        // 磁盘历史不是一个东西——拿它整份重写 = 用残缺内容覆盖真源。
+        if (session && session._loadError) {
+            throw new Error('会话正文读取失败，禁止改写磁盘历史（' + session.id + '）');
         }
     }
 
@@ -800,10 +809,45 @@ export function createSessionDiskStore(options) {
         return out;
     }
 
-    async function hydrateSession(session) {
-        if (!session || !session.id) return false;
+    // 单会话整份重放 in-flight 去重（补水与整份重读共用）：启动批量补水
+    // （hydrateSessions）、面板按需补水（ensureSessionLoaded）、另一窗口写入触发的
+    // reloadSession / reloadSessionForce 都可能同时盯上同一个会话。两份整份 JSONL
+    // 重放对大文件是成倍 IO，后完成的那份还会覆盖先完成的内存状态与写入基线。
+    // 存的是 {session, promise}：同一 id 但**换了对象**（applyLoadedSessions 整体替换
+    // 数组）时不能复用别人那份 promise——那会让「我这次补水」返回 true 而自己仍是占位。
+    // 这种情况排到它后面单独补自己（串行，不并发）。
+    const replayInflight = new Map(); // id -> {session, promise}
+
+    function withReplaySlot(session, kind, task) {
+        const running = replayInflight.get(session.id);
+        // 只有「同一对象 + 同一意图」才复用彼此的结果：hydrate 的 promise 不能当 reload 用
+        //（reload 语义是「磁盘已经变了，重读一次」，复用补水结果会读到旧内容）。
+        if (running && running.session === session && running.kind === kind) return running.promise;
+        const base = running ? running.promise.catch(() => false) : Promise.resolve(false);
+        const promise = base.then(task);
+        const entry = {session, kind, promise};
+        replayInflight.set(session.id, entry);
+        const clear = () => {
+            if (replayInflight.get(session.id) === entry) replayInflight.delete(session.id);
+        };
+        promise.then(clear, clear);
+        return promise;
+    }
+
+    function hydrateSession(session) {
+        if (!session || !session.id) return Promise.resolve(false);
+        if (!session._stub) return Promise.resolve(true);
+        return withReplaySlot(session, 'hydrate', () => hydrateStubSession(session));
+    }
+
+    async function hydrateStubSession(session) {
+        // 排队期间可能已被别人补水（同一对象的上一个 job 成功），或已被淘汰
         if (!session._stub) return true;
         requireBackend();
+        // 读前先记一次基线：读完之后再取的 stat 会把「读的过程中别人写入的内容」算进
+        // 我方基线，后续的交接检查就会误判「一致」，一次就地改写（truncate）会把对方
+        // 那几条从重放序列里裁掉。用读前的 stat 作基线，让下一次握手必然发现差异。
+        const statBefore = await statOf(session.id);
         let replay = replaySessionLog('');
         let tidy = null;
         try {
@@ -839,6 +883,12 @@ export function createSessionDiskStore(options) {
         delete session._archivedCount;
         await hydrateImages(session);
         await refreshStat(session);
+        // 读前读后不一致 = 读的过程中有人写过：基线退回读前，让下一次交接检查
+        // （startSessionTurn 的 sameLogStat）必然发现差异并先重读，而不是把对方那几条
+        // 吸收进我方基线（后续 truncate 会把它们裁掉）。
+        if (statBefore && session._logStat && !sameLogStat(statBefore, session._logStat)) {
+            session._logStat = statBefore;
+        }
         await syncArchiveSidecarMeta(session, tidy);
         if (tidy && onTidy) {
             try {
@@ -879,12 +929,31 @@ export function createSessionDiskStore(options) {
         return session._logStat;
     }
 
+    // 只取 stat、不写基线（读前的基线快照用）：接口缺失或失败一律 null。
+    async function statOf(id) {
+        if (!id || !backend.AISessionStat) return null;
+        try {
+            return await backend.AISessionStat(id) || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
     // reloadSession 在拿到回合租约、发现日志 stat 与内存基线不一致时整份重放。
     // 不能只追加：retry/edit 的 truncate 依赖 _mids 与磁盘一致，旧前缀会截掉
     // 另一个窗口已经提交的消息。
-    async function reloadSession(session) {
-        if (!session || !session.id) return false;
+    // 与补水共用同一把按会话的整份重放锁（hydrate / reload / reloadForce 三者互斥）：
+    // 两条入口并行读同一会话，后完成的那份会用旧快照覆盖新内容与写入基线。
+    function reloadSession(session) {
+        if (!session || !session.id) return Promise.resolve(false);
+        return withReplaySlot(session, 'reload', () => reloadSessionInner(session));
+    }
+
+    async function reloadSessionInner(session) {
         requireBackend();
+        // 读前基线：读完后取的 stat 会把「读的过程中别人写入的内容」算进我方基线，
+        // 后续交接检查就会误判「一致」。用读前的 stat 作基线，让下一次握手必然发现差异。
+        const statBefore = await statOf(session.id);
         let tidy = null;
         let bodyText = '';
         try {
@@ -912,6 +981,9 @@ export function createSessionDiskStore(options) {
         session._liveDominant = false;
         await hydrateImages(session);
         await refreshStat(session);
+        if (statBefore && session._logStat && !sameLogStat(statBefore, session._logStat)) {
+            session._logStat = statBefore;
+        }
         await syncArchiveSidecarMeta(session, tidy);
         if (tidy && onTidy) {
             try {
@@ -923,9 +995,14 @@ export function createSessionDiskStore(options) {
 
     // 真空角落的「临时加载」（方案 §5.4）：live 段自身超限时用户显式要求整份读入，
     // 载入后可正常对话，压缩一次即回归常态。与 reloadSession 共用装配。
-    async function reloadSessionForce(session) {
-        if (!session || !session.id) return false;
+    function reloadSessionForce(session) {
+        if (!session || !session.id) return Promise.resolve(false);
+        return withReplaySlot(session, 'reload-force', () => reloadSessionForceInner(session));
+    }
+
+    async function reloadSessionForceInner(session) {
         requireBackend();
+        const statBefore = await statOf(session.id);
         const bodyText = await backend.AISessionReadForce(session.id);
         if (!bodyText && session._logCreated) {
             const err = new Error('session-gone: 会话已被删除');
@@ -938,6 +1015,9 @@ export function createSessionDiskStore(options) {
         session._liveDominant = false;
         await hydrateImages(session);
         await refreshStat(session);
+        if (statBefore && session._logStat && !sameLogStat(statBefore, session._logStat)) {
+            session._logStat = statBefore;
+        }
         await syncArchiveSidecarMeta(session, null);
         return true;
     }
@@ -966,11 +1046,18 @@ export function createSessionDiskStore(options) {
 
     // sameLogStat 供交接协议比较 AISessionStat 与内存基线。
     function sameLogStat(a, b) {
-        const left = a || {};
-        const right = b || {};
-        return !!left.exists === !!right.exists
-            && Number(left.mtimeMs) === Number(right.mtimeMs)
-            && Number(left.size) === Number(right.size);
+        // 任一为 null 表示「基线未知」：不当成「相同」，强制走一次重读（fail-safe）。
+        if (!a || !b) return false;
+        if (!!a.exists !== !!b.exists) return false;
+        if (!a.exists) return true;
+        if (Number(a.size) !== Number(b.size)) return false;
+        // 纳秒优先：毫秒精度下「同一毫秒内、同尺寸」的两次写入会被判成没变，
+        // 交接协议于是跳过重读，后续 truncate 就按旧前缀裁掉别人的新增。
+        // 老后端只给 mtimeMs 时退回毫秒比较（不会更糟）。
+        const leftNs = Number(a.mtimeNs);
+        const rightNs = Number(b.mtimeNs);
+        if (leftNs > 0 && rightNs > 0) return leftNs === rightNs;
+        return Number(a.mtimeMs) === Number(b.mtimeMs);
     }
 
     async function hydrateImages(session) {
@@ -1237,6 +1324,10 @@ export function createAIConversationLog(ctx) {
     async function saveConversationLog(session) {
         const config = getConfig();
         if (!config.logEnabled || !session) return;
+        // 懒加载占位 / 正文读取失败的会话不能写 md 日志：正文取自内存 messages，
+        // 此时它是空的或残缺的，而 SaveFile 是整份覆盖——同一路径（logFile 存在 meta 里）
+        // 会被一份「只有标题」的文档盖掉。与 requireBody 同一套口径。
+        if (session._stub || session._loadError) return;
         if (!backend.SaveFile || !backend.SaveDataURL) return;
         try {
             const dir = await ensureLogDir();

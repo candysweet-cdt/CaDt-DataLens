@@ -18,11 +18,13 @@ import {svgToDataUrl} from '../core/widget.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {createSessionOutlineController} from './session/session-outline.js';
 import {createSessionDiskStore, createAIConversationLog} from './session/ai-session-disk.js';
+import {mergeAIConfig} from './core/ai-config-merge.js';
 import {
     AI_MASCOT_PHRASES, mascotPhraseIndex, phrasesForPhase, randomMascotSalt,
 } from './core/ai-mascot-phrases.js';
 import {createModelCatalogStore} from './core/model-catalog.js';
-import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs} from './session/ai-session-store.js';
+import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs, normalizeSessionGroup, buildSessionMeta} from './session/ai-session-store.js';
+import {mergeLoadedSessions} from './session/ai-session-merge.js';
 import {buildGuardNotice} from './security/ai-wipeguard.js';
 import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey} from './session/ai-session-scope.js';
 import {formatSessionSearchResult, sessionLogDigest} from './session/ai-session-tools.js';
@@ -276,7 +278,7 @@ import {createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGr
 import {createAIChangesUI} from './chat/ai-changes-ui.js';
 import {createAIModelPicker} from './settings/ai-model-picker.js';
 import {createAIUsageUI, aiFormatCompactTokens, aiFormatExactCount, aiFormatCompactDuration, turnUsageTotal} from './usage/ai-usage-ui.js';
-import {createAIUsageQuota, formatUsageCountdown, usageItemText, usageTone} from './usage/ai-usage-quota.js';
+import {createAIUsageQuota, formatUsageCountdown, usageItemText, usageTone, usageTightSummary} from './usage/ai-usage-quota.js';
 import {computeLineDiff, diffStats, buildDiffPreview} from './chat/ai-diff-view.js';
 import {missingFileHint} from './tools/ai-path-hints.js';
 import {aiStreamRetryBudget, shouldAutoRetryStream} from './chat/ai-stream-retry.js';
@@ -555,6 +557,9 @@ export function createAIPanel(options) {
         statsSessionBtn: panel.querySelector('#ai-stats-session'),
         statsTokenBtn: panel.querySelector('#ai-stats-token'),
         statsSep: panel.querySelector('#ai-stats-sep'),
+        quotaPill: panel.querySelector('#ai-quota-pill'),
+        quotaPillRing: panel.querySelector('#ai-quota-pill-ring'),
+        quotaPillText: panel.querySelector('#ai-quota-pill-text'),
         sessionPop: panel.querySelector('#ai-session-pop'),
         sessionPopTurns: panel.querySelector('#ai-session-pop-turns'),
         sessionModel: panel.querySelector('#ai-session-model'),
@@ -1186,6 +1191,14 @@ export function createAIPanel(options) {
     // 先把旧文件改名留档，绝不能让新配置直接把它覆盖掉。
     let configSealedBroken = false;
     let lastConfigText = '';
+    // 磁盘上的**原始明文**（IPC 读到的 / 上一次成功写入的 / 冲突时后端回传的）。
+    // 比较-交换的 base 必须是它，而不是 lastConfigText——后者是 normalizeAIConfig 之后的
+    // 序列化结果（键序、默认值、插件账号过滤都不同），拿去当 base 会永远对不上。
+    let lastConfigDiskText = '';
+    // 上一次成功读/写后的配置对象快照（三方合并的 base）。saveAIConfig 只按 lastConfigText
+    // 做本进程内容去重，那对另一个窗口的写入完全不可见；写盘冲突时要靠它算出「本窗口
+    // 改了哪些键」，因此每次读盘成功、每次写盘成功都要刷新。
+    let lastConfigSnapshot = null;
     let lastConfigLoadAt = 0;
     let configWriteChain = Promise.resolve();
     let configStoreErrorAt = 0;
@@ -1239,16 +1252,94 @@ export function createAIPanel(options) {
         }
     }
 
+    // 写盘形态：插件虚拟账号只在内存里，绝不写进磁盘配置 / localStorage 镜像。
+    function configForSave() {
+        return config.profiles.some((p) => p.pluginAI)
+            ? {...config, profiles: config.profiles.filter((p) => !p.pluginAI)}
+            : config;
+    }
+
+    // 深拷贝（配置是纯 JSON）：三方合并的 base 必须与内存对象脱钩，否则基线会跟着一起漂。
+    function cloneConfig(value) {
+        try {
+            return JSON.parse(JSON.stringify(value));
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // 写盘冲突收尾（后端回传磁盘最新明文时调用）：三方合并 + 内存就地更新 + 基线对齐磁盘。
+    // 返回 true 表示合并成功（调用方可以按磁盘最新值重试一次写入）。
+    function applyConfigConflict(diskText) {
+        let theirsRaw = null;
+        try {
+            theirsRaw = JSON.parse(diskText);
+        } catch (e) {
+            theirsRaw = null;
+        }
+        if (!theirsRaw || typeof theirsRaw !== 'object') {
+            // 磁盘内容不是合法配置（被手工编辑 / 截断）：不猜内容，只把基线对齐磁盘，
+            // 下一次保存按整份覆盖处理（与升级前的行为一致）。
+            lastConfigDiskText = diskText;
+            return false;
+        }
+        const theirs = normalizeAIConfig(theirsRaw);
+        const merged = mergeAIConfig(lastConfigSnapshot, config, theirs, {
+            ownWorkspaceKey: aiWorkspaceKey(currentWorkspacePath()),
+        });
+        config = normalizeAIConfig(merged.config);
+        syncPluginAIAccounts();
+        // 内存配置变了：设置页 / 模型下拉 / 输入区状态一起刷新（与读盘成功后同一出口）。
+        applyLoadedAIConfig();
+        lastConfigSnapshot = cloneConfig(configForSave());
+        lastConfigDiskText = diskText;
+        if (merged.conflicts.length) {
+            notifyFailure('AI 配置已在另一窗口修改',
+                '已合并两边的改动（本窗口优先）：' + merged.conflicts.slice(0, 5).join('、'),
+                {key: 'config-merge', kind: 'info'});
+        }
+        return true;
+    }
+
+    // 写盘（带比较-交换）。base = 磁盘原始明文（lastConfigDiskText）：磁盘已变时先合并，
+    // 再用磁盘最新值作基线重试一次；仍冲突就只留在内存，等下一次动作再写（不无限重试，避免活锁）。
+    function writeConfigWithCas(text, forSaveSnapshot) {
+        const finish = (currentText, snapshot) => {
+            lastConfigText = currentText;
+            lastConfigDiskText = currentText;
+            lastConfigSnapshot = snapshot;
+        };
+        if (!backend.AIConfigWriteIfUnchanged) {
+            // 旧后端 / 未更新的 dev mock 没有比较-交换：退回整份覆盖（与升级前完全一致）。
+            return backend.AIConfigWrite(text).then(() => finish(text, forSaveSnapshot));
+        }
+        return backend.AIConfigWriteIfUnchanged(lastConfigDiskText, text).then((result) => {
+            if (result && result.written) {
+                finish(text, forSaveSnapshot);
+                return undefined;
+            }
+            const diskText = String((result && result.current) || '');
+            if (!applyConfigConflict(diskText)) return undefined;
+            const retrySnapshot = cloneConfig(configForSave());
+            let retryText = '';
+            try {
+                retryText = JSON.stringify(retrySnapshot);
+            } catch (e) {
+                return undefined;
+            }
+            return backend.AIConfigWriteIfUnchanged(diskText, retryText).then((again) => {
+                if (again && again.written) finish(retryText, retrySnapshot);
+            });
+        });
+    }
+
     function saveAIConfig() {
         // 磁盘配置还没加载完时先别写，避免用启动瞬间的 localStorage 旧值覆盖文件/镜像。
         if (configUseDisk() && !configLoaded) return;
         syncActiveMirror();
+        const forSave = configForSave();
         let text = '';
         try {
-            // 插件虚拟账号只在内存里，绝不写进磁盘配置 / localStorage 镜像
-            const forSave = config.profiles.some((p) => p.pluginAI)
-                ? {...config, profiles: config.profiles.filter((p) => !p.pluginAI)}
-                : config;
             text = JSON.stringify(forSave);
         } catch (e) {
             return;
@@ -1272,6 +1363,7 @@ export function createAIPanel(options) {
             }
             configSealedBroken = false;
             lastConfigText = text;
+            lastConfigSnapshot = cloneConfig(forSave);
             configWriteChain = configWriteChain
                 .then(() => (backend.AIConfigBackupSealed ? backend.AIConfigBackupSealed() : ''))
                 .then(() => backend.AIConfigWrite(text))
@@ -1282,10 +1374,10 @@ export function createAIPanel(options) {
                 });
             return;
         }
-        lastConfigText = text;
         configWriteChain = configWriteChain
-            .then(() => backend.AIConfigWrite(text))
+            .then(() => writeConfigWithCas(text, cloneConfig(forSave)))
             .catch((e) => {
+                // 写盘失败：清掉基线，下一次 saveAIConfig 会按当前内存内容重试。
                 lastConfigText = '';
                 notifyConfigStoreError(e);
             });
@@ -1351,9 +1443,16 @@ export function createAIPanel(options) {
                 if (stored && typeof stored === 'object') {
                     config = normalizeAIConfig(stored);
                     lastConfigText = JSON.stringify(config);
+                    // 磁盘原文基线（比较-交换的 base）：必须是读到的原文，不能是归一化后的序列化。
+                    lastConfigDiskText = text;
+                    // 三方合并的基线：读盘成功才算「本窗口已知的磁盘状态」。
+                    lastConfigSnapshot = cloneConfig(configForSave());
                 } else {
                     configLoaded = true;
                     notifyConfigStoreError(new Error('ai-config.json 内容损坏，已使用本地缓存'));
+                    // 基线对齐损坏原文：比较-交换只认「磁盘内容是否变过」，内容本身合法与否
+                    // 由这里判定——不先把 base 对齐，修复写回会永远被判成冲突而写不进去。
+                    lastConfigDiskText = text;
                     saveAIConfig();
                 }
             } else {
@@ -1390,6 +1489,8 @@ export function createAIPanel(options) {
                     ? {...config, profiles: config.profiles.filter((p) => !p.pluginAI)}
                     : config;
                 lastConfigText = JSON.stringify(forSaveBaseline);
+                // sealed 时磁盘内容读不出来，合并基线只能是内存镜像（冲突时按本窗口优先）。
+                lastConfigSnapshot = cloneConfig(forSaveBaseline);
             } else {
                 configFallback = true;
                 notifyConfigStoreError(e);
@@ -1422,6 +1523,9 @@ export function createAIPanel(options) {
             const stored = JSON.parse(text);
             config = normalizeAIConfig(stored);
             lastConfigText = JSON.stringify(config);
+            // 磁盘原文基线 + 合并快照：本窗口下次写盘拿它们做比较-交换与三方合并。
+            lastConfigDiskText = text;
+            lastConfigSnapshot = cloneConfig(configForSave());
             lastConfigLoadAt = Date.now();
             // 读成功说明这份文件当前环境能解（用户可能手工换回了可用的配置）：解除留档待办。
             configSealedBroken = false;
@@ -1935,6 +2039,8 @@ export function createAIPanel(options) {
             archived: Array.isArray(raw.archived) ? raw.archived : [],
             archivedAt: Number(raw.archivedAt) || 0,
             pinned: raw.pinned === true,
+            // 会话自定义分组（工作区内归类）：随 meta 持久化，脏值归一成空串（= 未分组）
+            group: normalizeSessionGroup(raw.group),
             // 回合在飞标记（meta.turnInFlight）：进程被强杀时来不及走 finishStream，
             // 标记残留 → 读盘后挂「回合中断」横幅（appendInterruptedTurnNotice 消费并清除）。
             turnInFlight: raw.turnInFlight === true,
@@ -2047,6 +2153,8 @@ export function createAIPanel(options) {
             summary: null,
             archived: [],
             archivedAt: 0,
+            // 会话自定义分组（工作区内归类）：空 = 未分组
+            group: '',
             planMode: false,
             // 新会话的桌面控制默认值（设置 → AI → 权限 → 新会话）：默认关；只有
             // 用户在设置里开启且桌面服务器已安装时才置真。AI 仍要 windows_control_mode 才动手。
@@ -2181,7 +2289,11 @@ export function createAIPanel(options) {
             archivedSidecarPages.delete(id);
         },
     });
-    let sessionsLoaded = storageMode() === 'legacy';
+    // 会话是否已就绪：初值一律 false，由 bootstrapSessionStorage 三条路径（legacy 直通 /
+    // 磁盘读成功 / 读盘失败回退）显式置位。原实现让 legacy 模式初值就是 true，于是
+    // init() 会在「占位会话」上写 activeSessionId、adoptWorkspaceSession 也会按占位表
+    // 绑定工作区——模式翻转（另一窗口改了存储开关）时这会写进配置。
+    let sessionsLoaded = false;
     let sessionsReady = null;
     let pendingPersist = false;
     let lastDiskLoadAt = 0;
@@ -2192,7 +2304,10 @@ export function createAIPanel(options) {
     // 这时按它渲染就会先闪一个错误的会话、几秒后再跳到真正上次打开的会话——
     // 所以这段时间只给加载态，等 bootstrapSessionStorage 结束时的 refreshSessionUI 一次性画真内容。
     function sessionsPending() {
-        return !sessionsLoaded && effectiveStorageMode() === 'disk';
+        // 三条 bootstrap 路径都会置 sessionsLoaded=true（legacy 直通 / 磁盘读成功 / 失败回退），
+        // 所以「未就绪」就等于「还没走到那一步」——不再看存储模式：模式在运行中被另一窗口
+        // 翻转时，旧写法会瞬间变成「已就绪」并用占位会话写配置。
+        return !sessionsLoaded;
     }
 
     // 本窗口的当前会话 id：按工作区各记一条（config.activeSessionByWorkspace），
@@ -2203,7 +2318,20 @@ export function createAIPanel(options) {
     }
 
     function setActiveSessionId(id) {
+        const prev = activeSessionId();
         rememberActiveSession(config, aiWorkspaceKey(currentWorkspacePath()), id);
+        // 当前会话改指 → 支线对话标签页的「在位 / 失联」要重算。通知原先只挂在
+        // switchSession 末尾，另外几处改指入口（新建 / 删除兜底 / 工作区对齐 / 磁盘重读）
+        // 全被漏掉，表现为标签页里按发送毫无反应（submit 因 inPlace=false 静默 return）。
+        if (id !== prev) notifySessionSwitchListeners(id);
+    }
+
+    // 支线标签页的会话切换通知（在位/失联重算）。所有改指入口都经 setActiveSessionId，
+    // 这里统一分发，别在别处再手写一份。
+    function notifySessionSwitchListeners(id) {
+        for (const cb of sessionSwitchListeners) {
+            try { cb(id); } catch (e) {} // 监听器异常不能影响切换主流程
+        }
     }
 
     // 当前会话是否属于本窗口的工作区。activeSessionId 存在全局 ai-config.json（多窗口共享），
@@ -2236,6 +2364,8 @@ export function createAIPanel(options) {
         if (decision.action !== 'switch' && decision.action !== 'create') return false;
         const next = decision.session || createSessionData();
         if (!decision.session) sessions.push(next);
+        // 工作区对齐也会改指当前会话：作废在飞的切换意图（它按旧工作区算，已经无意义）
+        invalidatePendingSwitch();
         setActiveSessionId(next.id);
         saveAIConfig();
         return true;
@@ -2329,7 +2459,11 @@ export function createAIPanel(options) {
     // 草稿（文字 + 附件）转存到所属工作区的草稿槽，下次在该工作区新建会话时回填
     // （见 loadComposerDraft）。返回是否真的删了；渲染与 activeSessionId 由调用方收尾。
     function discardVirginOnLeave(session) {
-        if (!session || !isVirginSession(session)) return false;
+        // 对象身份守卫：磁盘重读（applyLoadedSessions）会整体替换 sessions 数组，手头这个
+        // 空会话可能已被换成同 id 的新对象（另一窗口刚往它写过内容 / 本窗口刚发出消息）。
+        // 按旧对象判「没动过」再去删磁盘，会把刚写下的历史删掉——不在内存表里的对象一律不碰。
+        if (!session || !sessions.includes(session)) return false;
+        if (!isVirginSession(session)) return false;
         // 只处理「正在看的那个会话被切走」：activeSessionId 还没改，对不上就不是离开
         if (session.id !== activeSessionId()) return false;
         // 支线有独立标签页承载：静默删掉会让那个标签页指向不存在的会话
@@ -2356,6 +2490,10 @@ export function createAIPanel(options) {
     async function bootstrapSessionStorage() {
         if (storageMode() === 'legacy') {
             sessionsLoaded = true;
+            // 初值改成 false 之后（见 sessionsLoaded 声明处），init() 画的是加载态：
+            // legacy 直通这条也要把真内容画出来，否则面板永远停在「正在读取会话…」。
+            adoptWorkspaceSession();
+            refreshSessionUI();
             return sessions;
         }
         try {
@@ -2458,7 +2596,9 @@ export function createAIPanel(options) {
         dedupeVirginSessions();
         // 上次进程在生成/工具执行中被杀过：正文补上后尽早把收尾状态写回（等价 dsh 的 recovery closer）
         for (const session of targets) {
-            if (session && session._needsRewrite) sessionStore.persistSession(session);
+            // 对象身份守卫：dedupeVirginSessions 可能刚把它从内存表剔除（空会话去重只剔内存、
+            // 不删磁盘）。对已淘汰对象整份重写会让它下次读盘又复活。
+            if (session && session._needsRewrite && sessions.includes(session)) sessionStore.persistSession(session);
         }
         const failed = targets.filter((session) => session._loadError);
         if (failed.length) {
@@ -2485,16 +2625,27 @@ export function createAIPanel(options) {
         const job = Promise.resolve()
             .then(() => sessionStore.hydrateSession(session))
             .then((ok) => {
-                if (ok && session._needsRewrite) sessionStore.persistSession(session);
+                // 对象身份守卫：磁盘重读（applyLoadedSessions）会整体替换 sessions 数组，
+                // 手头这个对象可能已被淘汰。它代表的是**更早**的磁盘快照，_needsRewrite
+                // 补写会把别人其后写入的内容回滚——对象不在内存表时只补内存、绝不写盘。
+                if (ok && session._needsRewrite && sessions.includes(session)) {
+                    sessionStore.persistSession(session);
+                }
                 return ok;
             })
             .catch(() => false)
             .then((ok) => {
                 hydrateJobs.delete(session.id);
                 scheduleSessionListRefresh();
-                if (ok && isOpen() && currentSession() === session) {
-                    renderMessages(true);
-                    updateComposerState();
+                if (ok) {
+                    // 支线对话标签页共用同一套渲染：它们的 DOM 还停在「正在载入对话…」，
+                    // 正文补上后必须叫它们重画（面板自己的重绘是下一行，两边互不重复——
+                    // notifySideChatHosts 只遍历支线宿主，面板不登记在表里）。
+                    notifySideChatHosts(session.id);
+                    if (isOpen() && currentSession() === session) {
+                        renderMessages(true);
+                        updateComposerState();
+                    }
                 }
                 return ok;
             });
@@ -2518,6 +2669,11 @@ export function createAIPanel(options) {
         const list = (session.archived || []).concat(moved);
         const overflow = Math.max(0, list.length - AI_ARCHIVE_LIMIT);
         session.archived = overflow ? list.slice(-AI_ARCHIVE_LIMIT) : list;
+        // _archivedMids 必须与 archived 同长同序：整份重写按位置取 mid，错位会给归档消息
+        // 分配别人的 mid（重复追加 / truncate 截错内容）。
+        if (Array.isArray(session._archivedMids)) {
+            session._archivedMids = session.archived.map((message) => aiTextOf(message && message._mid));
+        }
         if (overflow) notifyArchiveOverflow(overflow);
         return overflow;
     }
@@ -3350,6 +3506,7 @@ export function createAIPanel(options) {
         updateHeadHud: (...args) => updateHeadHud(...args),
         toggleSessionPin,
         renameSession,
+        setSessionGroup,
         exportSession,
         showSessionDiagnostics,
         archiveSession,
@@ -3392,6 +3549,8 @@ export function createAIPanel(options) {
         invalidateSkillsCache, resolveMemoryDir, getAILogRoot, openAILogDir,
         aiNormalizePath, aiJoinPath, aiPathDir, aiPathKey, aiProjectRoot, aiWorkspaceKey,
         queryUsageForAccount, showModelListPicker, switchProfile,
+        // 额度查询完成后刷新 composer 胶囊（自动 sweep 批次结束时回调）
+        onUsageQuotaUpdated: () => renderStats(),
         // 额度查询管线（hoisted 函数声明，弹窗/卡片惰性调用）
         usageQuota,
         showNameDialog, setAIChatFont, applyPanelSettings, createSessionData,
@@ -4112,6 +4271,14 @@ export function createAIPanel(options) {
     // 「重试整理」：再走一次自动整理（ vacuum → 重读 → 恢复会话视图）。
     async function retrySessionTidy(session) {
         if (!session || !backend.AISessionVacuum) return;
+        // 整份重读会把在飞回合的 assistant 占位从 messages 里甩掉：与右键「瘦身归档」同一套
+        // 守卫（回合/压缩中拒绝、登记 sessionReloading 防并发的 resource-change 重读）。
+        if (streamOf(session.id) || compactOf(session.id)) {
+            flash('该会话正在运行，请先停止再重试整理', true);
+            return;
+        }
+        if (sessionReloading.has(session.id)) return;
+        sessionReloading.add(session.id);
         try {
             const result = await backend.AISessionVacuum(session.id, false);
             if (result && result.liveDominant) {
@@ -4138,12 +4305,20 @@ export function createAIPanel(options) {
                 return;
             }
             flash('重试整理失败：' + msg, true);
+        } finally {
+            sessionReloading.delete(session.id);
         }
     }
 
     // 「临时加载」：真空角落整份读入（用户自担慢），载入后可正常对话与压缩。
     async function forceLoadSession(session) {
         if (!session || !backend.AISessionReadForce) return;
+        if (streamOf(session.id) || compactOf(session.id)) {
+            flash('该会话正在运行，请先停止再临时加载', true);
+            return;
+        }
+        if (sessionReloading.has(session.id)) return;
+        sessionReloading.add(session.id);
         try {
             const ok = await sessionStore.reloadSessionForce(session);
             if (!ok) return;
@@ -4153,6 +4328,8 @@ export function createAIPanel(options) {
             showNote('已临时载入超限会话：建议尽快 /compact 回归常态。');
         } catch (e) {
             flash('临时加载失败：' + String((e && e.message) || e), true);
+        } finally {
+            sessionReloading.delete(session.id);
         }
     }
 
@@ -4549,9 +4726,13 @@ export function createAIPanel(options) {
             updateChangesUI();
         }
         if (!session) return;
-        // 懒加载会话：正文还没从磁盘读上来（正常路径不会走到这里——switchSession /
-        // startSessionTurn 都会先 ensureSessionLoaded）。留着兜底：宁可显示「正在载入」，
-        // 也不能把「空 messages」当成「这个会话没有消息」画出来。
+        // 懒加载会话：正文还没从磁盘读上来。宁可先显示「正在载入」，也不能把「空 messages」
+        // 当成「这个会话没有消息」画出来——同时这里必须**顺手补水**：把「当前会话」换成
+        // 另一个会话的路径不止 switchSession 一种（工作区变更的 adoptWorkspaceSession 的
+        // switch 分支、配置读盘后的工作区对齐、删除会话兜底），那些路径不经过 switchSession，
+        // 漏一处面板就永久停在「正在载入对话…」（2026-11-24 实测：打开/切到某个仓库后当前会话
+        // 是未水合的 stub，点「新建会话」还被当成空会话复用，只能去列表里硬点一下才恢复）。
+        // 并发由 ensureSessionLoaded 的 hydrateJobs 去重；补水完成时它的回调自己重绘面板。
         if (session._stub) {
             const box = document.createElement('div');
             box.className = 'ai-empty';
@@ -4560,6 +4741,14 @@ export function createAIPanel(options) {
             box.appendChild(title);
             host.appendChild(box);
             finishRender(forPanel);
+            ensureSessionLoaded(session).then((ok) => {
+                // 补失败时 _stub 已被清掉并打了 _loadError：重绘一次让面板退出载入态
+                // （失败说明交给 composer 提示 / 拒载卡片，这里不叠 flash）。只在面板仍
+                // 停在这个会话时重绘，期间切走/支线宿主的重绘不归这里管；_stub 还在说明
+                // 这次补水压根没进到 hydrate（后端缺失等），重绘只会再画一遍载入态，跳过。
+                if (ok || session._stub || !forPanel || currentSession() !== session) return;
+                renderMessages(true);
+            });
             return;
         }
         // 拒载卡片（方案 §5.4）：只保留给两类真失败——自动整理执行失败（给「重试整理」）
@@ -6403,11 +6592,58 @@ export function createAIPanel(options) {
         node.classList.toggle('hidden', !text);
     }
 
+    // composer 状态栏额度胶囊：取「当前会话绑定账号」，开启外显时显示。
+    // 无缓存 / 失败显示「待查询」（点击触发一次查询）；有缓存取「最紧」单值——
+    // 百分比型（label 非空）画圆环，余额型（label 空）画中性小点、不画进度。
+    function renderQuotaPill() {
+        if (!el.quotaPill) return;
+        const session = currentSession();
+        const profile = session ? sessionModelRef(session).profile : null;
+        const usage = profile && normalizeUsageConfig(profile.usage);
+        if (!profile || !usage || !usage.enabled || !usage.showInComposer) {
+            el.quotaPill.classList.add('hidden');
+            el.quotaPill.hidden = true;
+            return;
+        }
+        el.quotaPill.classList.remove('hidden');
+        el.quotaPill.hidden = false;
+        el.quotaPill.dataset.profileId = profile.id;
+        const snapshot = usageQuota().peek(profile.id);
+        const pill = el.quotaPill;
+        pill.classList.remove('flat', 'pending', 'tone-normal', 'tone-warning', 'tone-danger');
+        if (!snapshot || snapshot.state === 'error' || !(snapshot.items || []).length) {
+            pill.classList.add('pending');
+            pill.style.setProperty('--quota-pct', '0');
+            if (el.quotaPillText) el.quotaPillText.textContent = '待查询';
+            return;
+        }
+        const tight = usageTightSummary(snapshot);
+        if (!tight) {
+            pill.classList.add('pending');
+            if (el.quotaPillText) el.quotaPillText.textContent = '待查询';
+            return;
+        }
+        const pct = Number.parseFloat(tight.value);
+        const hasRing = !!tight.label && Number.isFinite(pct);
+        if (!hasRing) pill.classList.add('flat');
+        pill.style.setProperty('--quota-pct', String(hasRing ? Math.min(100, Math.max(0, pct)) : 0));
+        if (tight.tone) pill.classList.add('tone-' + tight.tone);
+        const toneColor = tight.tone === 'danger' ? 'var(--red)'
+            : tight.tone === 'warning' ? 'var(--warn)'
+                : tight.tone === 'normal' ? 'var(--green)' : 'var(--accent)';
+        pill.style.setProperty('--quota-tone', toneColor);
+        if (el.quotaPillText) {
+            const label = String(tight.label || '').trim();
+            el.quotaPillText.textContent = label ? label + ' ' + tight.value : tight.value;
+        }
+    }
+
     function renderStats() {
         if (!el.stats) return;
         const session = currentSession();
         const show = !!(session && ((session.messages && session.messages.length) || (session.archived && session.archived.length)));
         el.stats.classList.toggle('hidden', !show);
+        renderQuotaPill();
         if (!show) {
             hideStatsPops();
             return;
@@ -6429,6 +6665,7 @@ export function createAIPanel(options) {
         if (popKind === 'ctx') void renderCtxPopover(false);
         else if (popKind === 'session') renderSessionPopover();
         else if (popKind === 'token') renderTokenPopover();
+        renderQuotaPill();
     }
 
     const statsPopEl = (...args) => usageMod.statsPopEl(...args);
@@ -12266,8 +12503,34 @@ async function requestApproval(session, toolMessage, info) {
     // 不碰输入区 / 附件快照 / 滑出菜单，后台注入（定时任务、计时器、通知唤醒、支线带回）
     // 全部走这条路径。submitText 只保留 UI 部分（读输入区附件、清空、渲染当前会话）后转调。
     // 返回 {ok, reason, run, ended}：reason 供调用方决定提示文案（内核不 flash 校验类错误）。
+    // 起轮中（startSessionTurn 已进入、尚未 attachStream）的会话 id。这个窗口里流还没
+    // 注册，applyLoadedSessions 的 anyStreaming 守卫看不见它——若此时磁盘重读整体替换
+    // sessions 数组，起轮流程会继续往被淘汰的对象上写用户消息与 assistant 占位（界面看不
+    // 见、persistSessions 也遍历不到）。登记后由 applyLoadedSessions 保留内存版本。
+    const startingTurns = new Set();
+
     async function startSessionTurn(session, text, options) {
+        const id = session && session.id ? String(session.id) : '';
+        if (!id) return {ok: false, reason: 'no_session'};
+        startingTurns.add(id);
+        try {
+            return await startSessionTurnInner(session, text, options);
+        } finally {
+            // attachStream 之后由 anyStreaming 接管；失败/早退路径在这里兜底清理。
+            startingTurns.delete(id);
+        }
+    }
+
+    async function startSessionTurnInner(session, text, options) {
         const opts = options || {};
+        // 磁盘重读（applyLoadedSessions）会**整体替换** sessions 数组：调用方拿进来的可能是
+        // 已被淘汰的旧对象（消息写进没人渲染的副本 = 界面看着像丢了，虽然可能已落盘）。
+        // 进函数就用 id 重新解析到当前对象；解析不到说明会话已被删，按删除处理。
+        if (session && session.id) {
+            const live = sessionById(session.id);
+            if (!live) return {ok: false, reason: 'session_deleted'};
+            session = live;
+        }
         let value = String(text == null ? '' : text).trim();
         const source = opts.attachments || {};
         const imageAttachments = (source.images || []).map(aiNormalizeImage).filter(Boolean);
@@ -12299,6 +12562,9 @@ async function requestApproval(session, toolMessage, info) {
             const ok = await ensureSessionLoaded(session);
             if (!ok || session._stub) return {ok: false, reason: 'load_failed'};
         }
+        // 正文读取失败（超限拒载 / IO 失败）的会话：写盘被写保护，这一轮只存在于内存，
+        // 重启即丢。明确拒绝并让调用方报错，好过静默丢一轮（后台注入会报回发起方）。
+        if (session._loadError) return {ok: false, reason: 'load_failed'};
         // 只有「本会话」在生成 / 压缩时才拒绝；别的会话在跑不影响这里（各自独立）。
         if (streamOf(session.id) || compactOf(session.id) || compactStarting) return {ok: false, reason: 'busy'}
         if (session.archivedAt) return {ok: false, reason: 'archived'};
@@ -12348,6 +12614,16 @@ async function requestApproval(session, toolMessage, info) {
         // 它的 assistant 占位没人收尾，永远停在流式「…」。真正落消息前再查一次忙，
         // 把这个窗口关死；队列冲刷对 busy 会自动重新入队，不会丢消息。
         if (streamOf(session.id) || compactOf(session.id) || compactStarting) return {ok: false, reason: 'busy'}
+
+        // 下面每个 await（whenIdle / 回合租约 / 交接重读 / 生命周期钩子）都是「sessions 被
+        // 整体替换」的窗口。第一道防线是 startingTurns：applyLoadedSessions 见到起轮中的
+        // 会话会保留内存对象，替换不会发生；这里按 id 再解析一次作为第二道防线（覆盖
+        // 「进函数到登记生效之间」以及未来新增的替换路径）。
+        {
+            const live = sessionById(session.id);
+            if (!live) return {ok: false, reason: 'session_deleted'};
+            session = live;
+        }
 
         // 同进程上一轮的终态写盘可能还在队列里：先等它排空再拿 stat/重读。
         // 否则会把上一轮尚未落盘的消息从内存里重读掉，随后队列按新内存写盘。
@@ -14159,6 +14435,12 @@ async function requestApproval(session, toolMessage, info) {
         const enabled = !!(session && desktopMod.enabledOn(session));
         const active = !!(session && desktopMod.activeOn(session));
         if (el.chipDesktop) {
+            // 图标只注入一次：compact 档隐藏 label 后，没有图标就只剩一个空红圈
+            const desktopIconEl = el.chipDesktop.querySelector('.ai-chip-icon');
+            if (desktopIconEl && !desktopIconEl.dataset.ready) {
+                desktopIconEl.dataset.ready = '1';
+                desktopIconEl.innerHTML = iconSvg('cursor', 12);
+            }
             el.chipDesktop.classList.toggle('hidden', !enabled);
             el.chipDesktop.classList.toggle('active', active);
             const tip = active
@@ -14723,7 +15005,6 @@ async function requestApproval(session, toolMessage, info) {
 
     let modelListPickerEl = null;
     let usagePopoverEl = null;
-    let usagePopoverDismiss = null;
     // 页面级浮层的弹层栈条目（body 浮层，popover 档）：Esc 由栈按层序退
     let modelListStackHandle = null;
     let usagePopStackHandle = null;
@@ -14846,13 +15127,16 @@ async function requestApproval(session, toolMessage, info) {
     // 用量查询（cc-switch 式）：走 ai-usage-quota 管线（官方白名单 / 脚本模板统一入口），
     // 结果写缓存后由余额行 / 明细弹层消费；调用方不区分模板类型。
     async function queryUsageForAccount(profile, anchor) {
-        // 事件派发结束 currentTarget 即置 null，锚点必须在 await 前同步捕获
-        const target = anchor && anchor.currentTarget;
+        // 锚点必须在 await 前同步捕获：事件对象的 currentTarget 派发结束即置 null。
+        // anchor 可能是事件（余额行 / 胶囊点击）或直接的 DOM 元素（弹层「重新查询」按钮）。
+        const target = anchor && (anchor.currentTarget || (anchor.getBoundingClientRect ? anchor : null));
         if (!target) {
             flash('正在查询「' + (profile.name || '账号') + '」用量…');
         }
         const snapshot = await usageQuota().queryAccountUsage(profile, {force: true});
         showUsagePopover(profile, snapshot, target);
+        // 查询完成刷新胶囊（当前会话若绑定了该账号，数值即时更新）
+        renderQuotaPill();
         return snapshot;
     }
 
@@ -14865,8 +15149,28 @@ async function requestApproval(session, toolMessage, info) {
         return n % 1 === 0 ? String(n) : n.toFixed(2);
     }
 
+    // 单条目的「可视化」数据：是否画圆环 / 进度、百分比、tone、展示文案。
+    // 余额型（无 remaining/total 比例、无 unit=% 的 used）不画圆环，只显示金额。
+    // 百分比一律按「已用」画进度（与用户例子「5h 8%」一致）；tone 仍按剩余比例着色。
+    function usageItemVisual(item) {
+        const tone = usageTone(item);
+        const invalid = !item || item.isValid === false;
+        let pct = null; // null = 余额型，不画圆环
+        if (!invalid && item.unit === '%' && Number.isFinite(item.used)) {
+            pct = Math.min(100, Math.max(0, item.used));
+        } else if (!invalid && Number.isFinite(item.remaining) && Number.isFinite(item.total) && item.total > 0) {
+            pct = Math.min(100, Math.max(0, (1 - item.remaining / item.total) * 100));
+        }
+        let text = (item && item.label && item.value) ? item.value : usageItemText(item);
+        if (item && item.planName && text.indexOf(item.planName + ' ') === 0) {
+            text = text.slice(item.planName.length + 1);
+        }
+        return {tone, invalid, pct, text};
+    }
+
     // 明细弹层：入参是 ai-usage-quota 的 snapshot {state, items, error, at}
     //（官方引擎条目 label/value 已在 officialSnapshotFromResult 折成同形状）。
+    // 账号卡余额行与 composer 额度胶囊共用这一份渲染，只换锚点。
     function showUsagePopover(profile, snapshot, anchor) {
         closeUsagePopover();
         const pop = document.createElement('div');
@@ -14874,20 +15178,29 @@ async function requestApproval(session, toolMessage, info) {
         usagePopoverEl = pop;
         const head = document.createElement('div');
         head.className = 'ai-usage-pop-head';
+        const icon = document.createElement('span');
+        icon.className = 'ai-usage-pop-icon';
+        icon.innerHTML = iconSvg('chart', 14);
         const title = document.createElement('span');
+        title.className = 'ai-usage-pop-title';
         title.textContent = '用量 · ' + (profile.name || '未命名账号');
+        const age = document.createElement('span');
+        age.className = 'ai-usage-pop-age';
+        age.textContent = snapshot && snapshot.at ? formatUsageAge(snapshot.at) : '';
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
         closeBtn.className = 'ai-usage-pop-close';
-        closeBtn.textContent = '×';
+        closeBtn.setAttribute('aria-label', '关闭');
+        closeBtn.innerHTML = iconSvg('close', 14);
         closeBtn.addEventListener('click', closeUsagePopover);
-        head.append(title, closeBtn);
+        head.append(icon, title, age, closeBtn);
         const body = document.createElement('div');
         body.className = 'ai-usage-pop-body';
         if (snapshot && snapshot.state === 'error') {
             const err = document.createElement('div');
             err.className = 'ai-usage-pop-error';
-            err.textContent = '查询失败：' + (snapshot.error || '未知错误');
+            err.innerHTML = iconSvg('info', 14);
+            err.appendChild(document.createTextNode('查询失败：' + (snapshot.error || '未知错误')));
             body.appendChild(err);
         } else {
             const items = (snapshot && snapshot.items) || [];
@@ -14898,28 +15211,48 @@ async function requestApproval(session, toolMessage, info) {
                 body.appendChild(note);
             }
             for (const item of items) {
+                const visual = usageItemVisual(item);
                 const itemBox = document.createElement('div');
-                itemBox.className = 'ai-usage-pop-item';
+                itemBox.className = 'ai-usage-pop-item' + (visual.invalid ? ' invalid' : '');
+                // 左侧圆环：余额型（pct === null）画一个中性的图标块，不画进度环
+                const ring = document.createElement('span');
+                ring.className = 'ai-usage-pop-ring' + (visual.pct === null ? ' flat' : '') +
+                    (visual.tone === 'normal' ? '' : ' tone-' + visual.tone);
+                if (visual.pct !== null) {
+                    ring.style.setProperty('--ring-pct', String(visual.pct));
+                    const inner = document.createElement('span');
+                    inner.className = 'ai-usage-pop-ring-inner';
+                    inner.textContent = Math.round(visual.pct) + '%';
+                    ring.appendChild(inner);
+                } else {
+                    ring.innerHTML = iconSvg('database', 15);
+                }
+                const main = document.createElement('div');
+                main.className = 'ai-usage-pop-main';
                 const row = document.createElement('div');
                 row.className = 'ai-usage-pop-row';
                 const label = document.createElement('span');
                 label.className = 'ai-usage-pop-label';
                 label.textContent = item.planName || item.label || '—';
                 const value = document.createElement('b');
-                const tone = usageTone(item);
-                value.className = 'ai-usage-pop-value ai-usage-value' + (tone === 'normal' ? '' : ' tone-' + tone);
-                // 左侧已显示档名/label：值只取值本身（官方条目取 value，脚本条目去掉档名前缀）
-                let text = (item.label && item.value) ? item.value : usageItemText(item);
-                if (item.planName && text.indexOf(item.planName + ' ') === 0) {
-                    text = text.slice(item.planName.length + 1);
-                }
-                value.textContent = text;
+                value.className = 'ai-usage-pop-value ai-usage-value' + (visual.tone === 'normal' ? '' : ' tone-' + visual.tone);
+                value.textContent = visual.text;
                 row.append(label, value);
-                itemBox.appendChild(row);
-                // 第二行：重置倒计时 / 剩余额度 / 附加说明（extractor 的 extra）
+                main.appendChild(row);
+                // 进度条：只有百分比型才画
+                if (visual.pct !== null) {
+                    const bar = document.createElement('div');
+                    bar.className = 'ai-usage-pop-bar';
+                    const fill = document.createElement('i');
+                    fill.className = 'tone-bg-' + visual.tone;
+                    fill.style.width = visual.pct + '%';
+                    bar.appendChild(fill);
+                    main.appendChild(bar);
+                }
+                // 明细行：倒计时 / 剩余额度 / extra / 失效原因
                 const meta = [];
                 const countdown = formatUsageCountdown(item.resetAt);
-                if (countdown) meta.push('重置 ' + countdown);
+                if (countdown) meta.push(countdown + ' 后重置');
                 if (item.unit === '%' && Number.isFinite(item.remaining)) {
                     meta.push('剩余 ' + formatCountCompact(item.remaining));
                 }
@@ -14929,14 +15262,30 @@ async function requestApproval(session, toolMessage, info) {
                     const note = document.createElement('div');
                     note.className = 'ai-usage-pop-note';
                     note.textContent = meta.join(' · ');
-                    itemBox.appendChild(note);
+                    main.appendChild(note);
                 }
+                itemBox.append(ring, main);
                 body.appendChild(itemBox);
             }
         }
-        pop.append(head, body);
+        const foot = document.createElement('div');
+        foot.className = 'ai-usage-pop-foot';
+        const legend = document.createElement('span');
+        legend.textContent = '颜色按剩余：>20% 绿 · <20% 橙 · ≤0 红';
+        const refresh = document.createElement('button');
+        refresh.type = 'button';
+        refresh.className = 'ai-usage-pop-refresh';
+        refresh.innerHTML = iconSvg('refresh', 12);
+        refresh.appendChild(document.createTextNode('重新查询'));
+        refresh.addEventListener('click', () => {
+            closeUsagePopover();
+            void queryUsageForAccount(profile, anchor);
+        });
+        foot.append(legend, refresh);
+        pop.append(head, body, foot);
         document.body.appendChild(pop);
-        const width = Math.min(380, window.innerWidth - 16);
+        const width = Math.min(400, window.innerWidth - 16);
+        pop.style.width = width + 'px';
         let left = window.innerWidth / 2 - width / 2;
         let top = window.innerHeight / 2 - pop.offsetHeight / 2;
         if (anchor && anchor.getBoundingClientRect) {
@@ -14947,22 +15296,20 @@ async function requestApproval(session, toolMessage, info) {
         }
         pop.style.left = Math.max(8, left) + 'px';
         pop.style.top = Math.max(8, top) + 'px';
-        pop.style.width = width + 'px';
-        const onDocMouseDown = (e) => {
-            if (usagePopoverEl && pop.contains(e.target)) return;
-            closeUsagePopover();
-        };
-        usagePopoverDismiss = () => {
-            document.removeEventListener('mousedown', onDocMouseDown, true);
-        };
-        document.addEventListener('mousedown', onDocMouseDown, true);
+        // 外点 / Esc 收口到全局弹层栈（弹层硬规范）：anchor 支持元素或选择器
+        if (usagePopStackHandle) usagePopStackHandle.dispose();
+        const anchors = anchor ? [anchor] : [];
+        usagePopStackHandle = overlayStack.open({
+            id: 'ai-usage-detail', kind: 'popover', el: pop,
+            closeOnOutsideClick: true, anchors,
+            onClose: () => { closeUsagePopover(); return true; },
+        });
     }
 
     function closeUsagePopover() {
-        if (usagePopoverDismiss) {
-            const dispose = usagePopoverDismiss;
-            usagePopoverDismiss = null;
-            dispose();
+        if (usagePopStackHandle) {
+            usagePopStackHandle.dispose();
+            usagePopStackHandle = null;
         }
         if (usagePopoverEl) {
             usagePopoverEl.remove();
@@ -15604,6 +15951,9 @@ async function requestApproval(session, toolMessage, info) {
         const state = {
             sessionId: session.id,
             index,
+            // 消息身份（_mid）：整面重绘 / 磁盘重读可能换掉消息序列，恢复编辑态与保存时的
+            // 截断位置都按它定位，不能只靠 index（会挂到别的消息上、截断错位置）。
+            mid: aiTextOf(message && message._mid),
             wrap,
             items: loaded.items,
             text: loaded.body,
@@ -15622,9 +15972,13 @@ async function requestApproval(session, toolMessage, info) {
     // 光标位置从当前 textarea 读——恢复后原样放回，用户打字位置不跳。
     function snapshotInlineEdit(state) {
         const input = state.wrap && state.wrap.querySelector('.ai-edit-input');
+        const session = sessionById(state.sessionId);
+        const message = session && Array.isArray(session.messages) ? session.messages[state.index] : null;
         return {
             sessionId: state.sessionId,
             index: state.index,
+            // 优先用编辑态自己记的 mid；老状态（构造时还没这字段）从当前消息现取。
+            mid: aiTextOf(state.mid || (message && message._mid)),
             items: state.items.slice(),
             text: state.text,
             legacyPacked: state.legacyPacked,
@@ -15633,21 +15987,26 @@ async function requestApproval(session, toolMessage, info) {
         };
     }
 
-    // 重绘后在新消息节点上恢复编辑态。校验：会话仍是当前查看的、index 对应消息仍可编辑
-    // （重读可能换掉消息内容 / 切走会话），任一不满足就放弃恢复（静默，不报错）。
+    // 重绘后在新消息节点上恢复编辑态。定位优先按消息 _mid：磁盘重读可能换掉消息序列，
+    // index 会指到别的消息上（原来的实现就是这么挂错的）。mid 找不到就放弃恢复（静默）。
+    // 其余校验照旧：会话仍是当前查看的、目标消息仍可编辑。
     function restoreInlineEdit(snap) {
         if (!snap) return;
         const session = sessionById(snap.sessionId);
         if (!session || session !== currentSession()) return;
-        const message = session.messages[snap.index];
+        const mids = Array.isArray(session._mids) ? session._mids : [];
+        const index = snap.mid ? mids.indexOf(snap.mid) : snap.index;
+        if (!(index >= 0) || index >= session.messages.length) return;
+        const message = session.messages[index];
         if (!canInlineEdit(message, session)) return;
         const host = msgHost();
         if (!host) return;
-        const wrap = host.querySelector('.ai-msg[data-ai-idx="' + snap.index + '"]');
+        const wrap = host.querySelector('.ai-msg[data-ai-idx="' + index + '"]');
         if (!wrap) return;
         const state = {
             sessionId: snap.sessionId,
-            index: snap.index,
+            index,
+            mid: snap.mid,
             wrap,
             items: snap.items,
             text: snap.text,
@@ -15701,6 +16060,16 @@ async function requestApproval(session, toolMessage, info) {
             flash('该会话正在生成，结束后再保存', true);
             return;
         }
+        // 编辑期间可能发生过磁盘重读（另一窗口写入）：按 mid 现算目标下标。
+        // 找不到说明这条消息已被换掉——宁可让用户重新选择，也不能按错位下标截断历史。
+        const mids = Array.isArray(session._mids) ? session._mids : [];
+        const targetIndex = state.mid ? mids.indexOf(state.mid) : state.index;
+        if (!(targetIndex >= 0) || targetIndex >= session.messages.length) {
+            flash('这条消息已不在会话里（可能被另一窗口改写），请重新选择要编辑的消息', true);
+            endInlineEdit();
+            return;
+        }
+        state.index = targetIndex;
         const payload = inlineEditPayload(state.items, state.text);
         if (!payload.value && !payload.images.length && !payload.videos.length && !payload.texts.length) {
             flash('消息不能为空', true);
@@ -15996,9 +16365,19 @@ async function requestApproval(session, toolMessage, info) {
     // 切换序号令牌：switchSession 在工作区对齐（syncWorkspaceToSession）处 await——
     // 复用探测最长等 2.5s，期间用户又点别的会话时以最后那次为准（并发交错守卫）。
     let switchSeq = 0;
+
+    // 「当前会话不是由 switchSession 改的」入口（新建 / 新建临时会话 / 删除兜底 / 工作区
+    // 对齐 / 磁盘重读兜底）必须调用它：否则在飞的切换与补水回调会按**旧意图**继续落地，
+    // 把用户刚新建的会话切走并顺手当成空会话删掉（实测：点开未加载的大会话后立刻点
+    // 「新建会话」，几秒后界面又跳回旧会话，新建的空会话也不见了）。
+    function invalidatePendingSwitch() {
+        switchSeq += 1;
+        pendingSwitchId = '';
+    }
+
     async function switchSession(id) {
         const mySeq = ++switchSeq;
-        const target = sessions.find((s) => s.id === id);
+        let target = sessions.find((s) => s.id === id);
         if (!target) return;
         // 切会话即退出原地编辑（编辑区 DOM 属于旧会话的消息气泡）；内容不丢，重画即可
         if (inlineEdit && inlineEdit.sessionId !== id) {
@@ -16024,8 +16403,19 @@ async function requestApproval(session, toolMessage, info) {
         }
         pendingSwitchId = '';
         const sync = await syncWorkspaceToSession(target);
-        // await 期间又触发了别的切换（连点/软切换）：以最后那次为准，本半段作废
-        if (mySeq !== switchSeq) return;
+        // await 期间又触发了别的切换（连点/软切换/新建会话）：以最后那次为准，本半段作废。
+        // 工作区切换是 sync 的既成副作用（openFolderWorkspace 已落地），这里按新工作区
+        // 再对齐一次，避免「面板会话属于 A 仓、工具却按 B 仓解析」的错配。
+        if (mySeq !== switchSeq) {
+            if (adoptWorkspaceSession()) refreshSessionUI();
+            return;
+        }
+        // await 期间目标会话可能被删除、或被磁盘重读换成了同 id 的新对象：
+        // 按 id 重新解析（stale 对象会让后续 syncActiveFromSession / clearSessionUnread
+        // 作用在已淘汰的副本上，并把已删 id 写进 activeSessionId）。
+        const fresh = sessions.find((s) => s.id === id);
+        if (!fresh) return;
+        target = fresh;
         // 软切换：目标会话属于另一个工作区，新窗口会带着该会话启动，本窗口保持原状态；
         // 'reused'（复用别的窗口）已在 syncWorkspaceToSession 里映射成 'window' 同样短路。
         if (sync === 'window') return;
@@ -16078,10 +16468,9 @@ async function requestApproval(session, toolMessage, info) {
         // 头部弹层（智能体团队 / 后台终端）是「上个会话的」列表：切会话就收起来
         if (chipsPopKind) hideChipsPop();
         setTimeout(() => flushMessageQueue(id), 0);
-        // 面板切了会话：支线标签页据此重新判定「在位 / 失联」
-        for (const cb of sessionSwitchListeners) {
-            try { cb(id); } catch (e) {}
-        }
+        // 面板切了会话：支线标签页据此重新判定「在位 / 失联」（统一收口在
+        // notifySessionSwitchListeners：其余改指入口也走同一处）
+        notifySessionSwitchListeners(id);
     }
 
     function newSession() {
@@ -16090,7 +16479,11 @@ async function requestApproval(session, toolMessage, info) {
         const current = currentSession();
         // 当前会话还没发过消息时复用它，避免连点新建刷出一堆空会话。
         // 临时会话不参与复用（它不绑工作区，复用等于把一次性会话拉进工作区）。
-        if (current && !current.archivedAt && !isTransientSession(current) && !(current.messages || []).length) {
+        // 懒加载占位（_stub）也不算「没发过消息」——它的 messages 空只是正文还没读上来，
+        // 复用等于什么都不做（实测：停在「正在载入对话…」时点新建，只弹一句「当前会话为空，
+        // 已复用」，看上去像按钮失灵）。
+        if (current && !current._stub && !current.archivedAt && !isTransientSession(current) &&
+            !(current.messages || []).length) {
             const target = sessionWorkspacePath(current);
             const now = currentWorkspacePath();
             if (!target || !now || aiWorkspaceKey(target) === aiWorkspaceKey(now)) {
@@ -16144,6 +16537,9 @@ async function requestApproval(session, toolMessage, info) {
         discardVirginOnLeave(current);
         const session = createSessionData();
         pendingEdit = null;
+        // 用户显式新建：让在飞的会话切换 / 补水回调作废（否则几秒后会被切回旧会话，
+        // 这个新建的空会话还会被当成「离开的空会话」删掉）。
+        invalidatePendingSwitch();
         sessions.push(session);
         setActiveSessionId(session.id);
         // 立刻落盘：不写的话磁盘上的 activeSessionId 还是别的工作区那条老会话，
@@ -16178,6 +16574,8 @@ async function requestApproval(session, toolMessage, info) {
         discardVirginOnLeave(current);
         const session = createSessionData(AI_TEMP_SESSION_TITLE, {transient: true});
         pendingEdit = null;
+        // 同 newSession：新建即作废在飞的切换意图
+        invalidatePendingSwitch();
         sessions.push(session);
         setActiveSessionId(session.id);
         // 立刻落盘，理由同 newSession：别的工作区那条老会话不能把面板带回去
@@ -16257,6 +16655,39 @@ async function requestApproval(session, toolMessage, info) {
                 renderSessionList();
                 queueLogSave(session);
             },
+        });
+    }
+
+    // 会话自定义分组（工作区内归类）：随会话 meta 持久化，与 pinned 同策略（不进 JSONL meta 事件）。
+    // 空值 = 移出分组（归「未分组」）；占位会话也能直接改——group 只写 meta.json，不需要正文。
+    function setSessionGroup(target, presetValue) {
+        const session = target && target.id ? target : currentSession();
+        if (!session) return;
+        const apply = (value) => {
+            const next = normalizeSessionGroup(value);
+            if (next === normalizeSessionGroup(session.group)) return;
+            session.group = next;
+            logActivity('ai.session', session.id, {op: 'set-group', group: next, title: session.title || ''}, {actor: 'user', source: 'user'});
+            persistSessions();
+            renderSessionList();
+            flash(next ? '已把会话移入分组：' + next : '已把会话移出分组');
+        };
+        const current = normalizeSessionGroup(session.group);
+        if (presetValue != null) {
+            apply(presetValue);
+            return;
+        }
+        if (!showNameDialog) {
+            const next = window.prompt('设置会话分组（留空 = 未分组）', current);
+            if (next != null) apply(next);
+            return;
+        }
+        showNameDialog({
+            title: '设置会话分组',
+            label: '分组名称（留空 = 未分组）',
+            value: current,
+            okLabel: '保存',
+            onSubmit: (value) => apply(value),
         });
     }
 
@@ -16342,6 +16773,9 @@ async function requestApproval(session, toolMessage, info) {
             // （数组头 = 最旧的会话，列表里看着像「跳到了最后一个对话」）；删对话的意图
             // 通常是「从这里开新的」。删别的会话时当前选中不变。
             if (!sessions.some((s) => s.id === activeSessionId())) {
+                // 删会话也会改指当前会话：作废在飞的切换/补水回调，避免它把视图切回
+                // 一个刚被删掉的会话
+                invalidatePendingSwitch();
                 const fresh = createSessionData();
                 sessions.push(fresh);
                 setActiveSessionId(fresh.id);
@@ -17428,12 +17862,26 @@ async function requestApproval(session, toolMessage, info) {
         floatSizeBeforeCollapse = null;
     }
 
-    function applyLoadedSessions(next) {
+    function applyLoadedSessions(next, readStartedAt) {
         if (!next || !next.length) return;
         // 生成中绝不替换 sessions 数组：新会话的 user/占位 assistant 只存在内存里（磁盘可能还是空会话），
         // 替换后 stream 指向被丢弃的对象，后续 ai-chunk/ai-done 全部落空，消息丢失。
         // 典型触发：定时任务 open() 触发的磁盘重读恰好在 submitText 之后完成。
         if (anyStreaming() || oneShot) return;
+        // 读盘期间用户改过的元数据（改名 / 置顶 / 归档 / 分组 / 未读 / 待办）不能被更早的
+        // 磁盘快照回滚：只把「本轮读盘开始之后被本窗口写过 meta」的会话按 meta 字段保留
+        // 内存版本，正文基线仍用磁盘的（见 ai-session-merge.js）。
+        mergeLoadedSessions(sessions, next, {readStartedAt, metaOf: buildSessionMeta});
+        // 起轮中（已进 startSessionTurn，流还没注册）的会话：任何Streaming 守卫看不见它，
+        // 但它内存里的 user 消息 + assistant 占位只存在这个对象上（磁盘还是旧的）。整体替换
+        // 会让这一轮写进被淘汰的对象——界面看不见、persistSessions 也遍历不到，等于丢一轮。
+        // 处理：next 里同 id 的项换成内存对象；next 里没有（磁盘已无此会话）也补回来。
+        for (const session of sessions) {
+            if (!startingTurns.has(session.id)) continue;
+            const index = next.findIndex((item) => item.id === session.id);
+            if (index >= 0) next[index] = session;
+            else next.push(session);
+        }
         // 磁盘可能落后于内存（上一轮收尾追加的消息还在写盘队列里）：此时用磁盘覆盖内存
         // 会让「本轮文件改动汇总卡」这类轮尾追加的内容在重开面板后凭空消失。
         // 只对当前会话做保护，且仅在内存消息更全时保留内存版本，并把差异补写回磁盘。
@@ -17456,6 +17904,8 @@ async function requestApproval(session, toolMessage, info) {
             && !next.some((item) => item.id === session.id));
         sessions = keptTransient.length ? next.concat(keptTransient) : next;
         if (!sessions.some((session) => session.id === activeSessionId())) {
+            // 兜底改指（原会话已不在磁盘列表）：作废在飞切换，别让它把视图带回不存在的会话
+            invalidatePendingSwitch();
             setActiveSessionId(sessions[0] ? sessions[0].id : '');
         }
         // 磁盘重读会把别处写下的「已完成未查看」带回来，而用户此刻正看着这个会话：
@@ -17526,6 +17976,9 @@ async function requestApproval(session, toolMessage, info) {
         if (anyStreaming() || oneShot || pendingEdit) return;
         // 先只读 meta（一次 IPC）：没有变化就到此为止；只有真变了（别的窗口写了东西 /
         // 会话被增删）才走全量读+合并那条重路。
+        // 记下读盘起点：这段时间里用户对任何会话做的 meta 改动，合并时按「本窗口写得更晚」
+        // 保留内存版本（见 ai-session-merge.js）。
+        const readStartedAt = Date.now();
         sessionStore.loadMetas()
             .then((metas) => {
                 lastDiskLoadAt = Date.now();
@@ -17536,7 +17989,7 @@ async function requestApproval(session, toolMessage, info) {
                 return sessionStore.flush()
                     .then(() => sessionStore.loadAll((raw) => normalizeSession(raw, 0)))
                     .then((loaded) => {
-                        if (loaded.length) applyLoadedSessions(loaded);
+                        if (loaded.length) applyLoadedSessions(loaded, readStartedAt);
                         return null;
                     });
             })
@@ -17781,6 +18234,20 @@ async function requestApproval(session, toolMessage, info) {
             e.stopPropagation();
             toggleCtxPop();
         });
+        // 额度胶囊：取当前会话绑定账号；无缓存点一次触发查询，有缓存直接出详情弹层。
+        if (el.quotaPill) el.quotaPill.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const session = currentSession();
+            const profile = session ? sessionModelRef(session).profile : null;
+            if (!profile) return;
+            const snapshot = usageQuota().peek(profile.id);
+            if (!snapshot || snapshot.state === 'error' || !(snapshot.items || []).length) {
+                // 传事件对象，queryUsageForAccount 会在 await 前同步捕获 currentTarget 作锚点
+                void queryUsageForAccount(profile, e);
+            } else {
+                showUsagePopover(profile, snapshot, el.quotaPill);
+            }
+        });
         if (el.ctxPopCompact) el.ctxPopCompact.addEventListener('click', () => {
             hideCtxPop();
             startCompact();
@@ -17939,7 +18406,9 @@ async function requestApproval(session, toolMessage, info) {
             });
             el.input.addEventListener('keyup', handleComposerKeyUp);
             el.input.addEventListener('paste', handleInputPaste);
-            el.input.addEventListener('click', handleComposerClick);
+            // 不在 textarea 上挂 click 开胶囊：光标落在行尾空白时 selectionStart 会落在
+            // 标记右边界（markerAtCursor 含 end），点一整行任意位置都会误开标签页。
+            // 胶囊点击只认镜像层 span 的精确命中（handlePasteMirrorClick，绑在 input 父节点）。
             el.input.addEventListener('scroll', () => {
                 const mirror = el.input.parentNode && el.input.parentNode.querySelector('.ai-paste-mirror');
                 if (mirror) {

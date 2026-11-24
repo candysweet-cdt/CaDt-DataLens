@@ -54,6 +54,25 @@ test('非末条：先二次确认，取消时编辑态保留', () => {
     assert.match(save, /askConfirm\('重新发送这条消息？将丢弃它之后的 ' \+ tail \+ ' 条对话。'/);
 });
 
+test('编辑态按消息 _mid 定位（重读换掉消息序列时不挂到别的消息上）', () => {
+    // 快照带 mid
+    const snap = sliceFunction(panel, 'function snapshotInlineEdit(state) {');
+    assert.match(snap, /mid: aiTextOf\(state\.mid \|\| \(message && message\._mid\)\)/);
+    // 恢复：按 _mid 现算下标，找不到就放弃（不能退回 snap.index 硬挂）
+    const restore = sliceFunction(panel, 'function restoreInlineEdit(snap) {');
+    assert.match(restore, /const index = snap\.mid \? mids\.indexOf\(snap\.mid\) : snap\.index;/);
+    assert.match(restore, /if \(!\(index >= 0\) \|\| index >= session\.messages\.length\) return;/);
+    assert.match(restore, /host\.querySelector\('\.ai-msg\[data-ai-idx="' \+ index \+ '"\]'\)/);
+    // 保存：按 _mid 现算截断点，找不到就让用户重选（宁可不动历史也不能截错位置）
+    const save = sliceFunction(panel, 'function saveInlineEdit(skipConfirm) {');
+    assert.match(save, /const targetIndex = state\.mid \? mids\.indexOf\(state\.mid\) : state\.index;/);
+    assert.match(save, /if \(!\(targetIndex >= 0\) \|\| targetIndex >= session\.messages\.length\) \{/);
+    assert.match(save, /endInlineEdit\(\);/);
+    // 进入编辑态时记下 mid
+    const begin = sliceFunction(panel, 'function beginInlineEdit(wrap, session, index) {');
+    assert.match(begin, /mid: aiTextOf\(message && message\._mid\),/);
+});
+
 test('保存成功：编辑态作废不能只按对象身份清（重画快照恢复会换掉对象）', () => {
     // startSessionTurn 成功起轮会在当前会话重画消息区，renderMessages 的快照恢复
     // 机制把编辑态原样搬到新消息节点上（防异步重读丢内容），inlineEdit 已换成

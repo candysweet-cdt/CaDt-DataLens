@@ -1,10 +1,10 @@
 // backend.d.ts：Wails 绑定面类型——**自动生成，不要手改**。
 //
-// 生成：node scripts/gen-backend-types.mjs（名单来自 testdata/app_bindings_baseline.txt，420 个方法）
+// 生成：node scripts/gen-backend-types.mjs（名单来自 testdata/app_bindings_baseline.txt，421 个方法）
 // 名单由 app_bindings_guard_test.go 校验，前端 FQN 是 main.App.<Method>；
 // 运行时经 Call.ByName 动态解析（frontend/src/core/wails-runtime.js 的 createBackendProxy）。
 //
-// 本次签名覆盖：精确 265 / 含 unknown 155 / 签名冲突 0 / 未找到 0
+// 本次签名覆盖：精确 265 / 含 unknown 156 / 签名冲突 0 / 未找到 0
 // 含 unknown 的行上方有 @go 注释，写明 Go 原始签名与待补的结构体名。
 //
 // 用法（阶梯 1 之后，jsconfig 仍保持 checkJs:false）：
@@ -72,6 +72,8 @@ export interface Backend {
     AIConfigBackupSealed(): Promise<string>;
     AIConfigRead(): Promise<string>;
     AIConfigWrite(data: string): Promise<void>;
+    /** @go AIConfigWriteIfUnchanged(base string, data string) → (WriteResult, error) // 待补: WriteResult */
+    AIConfigWriteIfUnchanged(base: string, data: string): Promise<unknown>;
     AIEnsureDir(dir: string): Promise<void>;
     AIExePath(): Promise<string>;
     /** @go AIGenHTTPRequest(specJSON string) → (HTTPResult) // 待补: HTTPResult */

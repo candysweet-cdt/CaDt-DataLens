@@ -14,6 +14,7 @@ AICommandStop
 AIConfigBackupSealed
 AIConfigRead
 AIConfigWrite
+AIConfigWriteIfUnchanged
 AIEnsureDir
 AIExePath
 AIGenHTTPRequest

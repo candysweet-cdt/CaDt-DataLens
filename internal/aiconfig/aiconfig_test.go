@@ -174,6 +174,72 @@ func TestAIConfigBackupSealed(t *testing.T) {
 		t.Fatalf("明文文件不应留档：%q, %v", again, err)
 	}
 }
+// 比较-交换：基线一致才写；不一致回传磁盘最新明文且绝不改文件。
+func TestWriteIfUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ai-config.json")
+	base := `{"profiles":[],"activeSessionId":"a"}`
+	if err := WriteFile(path, base); err != nil {
+		t.Fatal(err)
+	}
+	mine := `{"profiles":[],"activeSessionId":"b"}`
+	res, err := WriteIfUnchanged(path, base, mine)
+	if err != nil || !res.Written {
+		t.Fatalf("基线一致时应写入：%+v, %v", res, err)
+	}
+	if got, err := ReadFile(path); err != nil || got != mine {
+		t.Fatalf("写入后 = %q, %v", got, err)
+	}
+
+	// 另一个窗口在这之后写了 theirs：我方基线（mine）已过期。
+	theirs := `{"profiles":[],"activeSessionId":"c"}`
+	if err := WriteFile(path, theirs); err != nil {
+		t.Fatal(err)
+	}
+	res, err = WriteIfUnchanged(path, mine, `{"profiles":[],"activeSessionId":"d"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Written {
+		t.Fatal("基线过期时不得写入（否则会回滚另一窗口的修改）")
+	}
+	if res.Current != theirs {
+		t.Fatalf("Current = %q, want %q", res.Current, theirs)
+	}
+	if got, err := ReadFile(path); err != nil || got != theirs {
+		t.Fatalf("冲突时不得改动文件：%q, %v", got, err)
+	}
+}
+
+// 空基线（文件不存在 = 首次写）照常写入。
+func TestWriteIfUnchangedEmptyBase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ai-config.json")
+	res, err := WriteIfUnchanged(path, "", `{"profiles":[]}`)
+	if err != nil || !res.Written {
+		t.Fatalf("空基线应写入：%+v, %v", res, err)
+	}
+	if got, err := ReadFile(path); err != nil || got != `{"profiles":[]}` {
+		t.Fatalf("read = %q, %v", got, err)
+	}
+}
+
+// 解不开的密文不能被当成「空配置」覆盖：必须报 ErrSealed 让调用方先留档。
+func TestWriteIfUnchangedSealed(t *testing.T) {
+	if !dpapi.Supported() {
+		t.Skip("当前平台没有 DPAPI")
+	}
+	path := filepath.Join(t.TempDir(), "ai-config.json")
+	broken := sealedPrefix + "bm90LWRwYXBpLWRhdGE="
+	if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteIfUnchanged(path, "", `{"profiles":[]}`); !errors.Is(err, ErrSealed) {
+		t.Fatalf("err = %v, want ErrSealed", err)
+	}
+	if raw, err := os.ReadFile(path); err != nil || string(raw) != broken {
+		t.Fatalf("失败路径不得改动文件：%q, %v", string(raw), err)
+	}
+}
+
 func TestAIConfigSealedUnreadable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ai-config.json")
 	if !dpapi.Supported() {

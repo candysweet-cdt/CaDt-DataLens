@@ -22,7 +22,9 @@ const panel = readFileSync(join(SRC, 'ai', 'ai-panel.js'), 'utf8');
 
 test('空会话切走即删：只处理正在看的那个会话，且不碰支线/运行中/压缩中', () => {
     assert.match(panel, /function discardVirginOnLeave\(session\) \{/);
-    assert.match(panel, /if \(!session \|\| !isVirginSession\(session\)\) return false;/);
+    // 身份守卫 + virgin 判定：不在内存表里的对象（磁盘重读已替换）一律不碰
+    assert.match(panel, /if \(!session \|\| !sessions\.includes\(session\)\) return false;/);
+    assert.match(panel, /if \(!isVirginSession\(session\)\) return false;/);
     // E1：activeSessionId 还没改，对不上就不是「离开」（工作区分桶后经 activeSessionId() 取本工作区条目）
     assert.match(panel, /if \(session\.id !== activeSessionId\(\)\) return false;/);
     // E2：支线有独立标签页承载；有流 / 正在压缩的不能删

@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createSessionDiskStore} from '../../../src/ai/session/ai-session-disk.js';
+import {createSessionDiskStore, createAIConversationLog} from '../../../src/ai/session/ai-session-disk.js';
 import {
     buildSessionMeta,
     encodeMessageEvent,
@@ -120,6 +120,75 @@ test('hydrateSession 就地补正文：引用不变、标记清干净、条数�
     assert.equal(calls.read, 1);
 });
 
+test('并发补水去重：同一会话同时 hydrate 只读一次正文', async () => {
+    const {store, calls, normalizeSession} = makeStore({a: 3});
+    const stubs = store.toStubs(await store.loadMetas(), normalizeSession);
+    const stub = stubs[0];
+    // 启动批量补水（hydrateSessions）与「渲染到占位就补水」的按需补水面是两条独立入口，
+    // 会同时盯上同一个会话：两份整份 JSONL 重放对大文件是成倍 IO，后完成的那份还会
+    // 覆盖先完成的写入基线（_logStat）。
+    const [first, second] = await Promise.all([
+        store.hydrateSession(stub),
+        store.hydrateSession(stub),
+    ]);
+    assert.equal(first, true);
+    assert.equal(second, true);
+    assert.equal(calls.read, 1, '同一会话并发补水只能读一次正文');
+    assert.equal(stub.messages.length, 3);
+});
+
+test('hydrateSession 与 reloadSession 互斥：同一会话不会并行整份重放', async () => {
+    const {store, calls, normalizeSession} = makeStore({a: 3});
+    const stubs = store.toStubs(await store.loadMetas(), normalizeSession);
+    const stub = stubs[0];
+    // 按需补水（ensureSessionLoaded）与另一窗口写入触发的整份重读（handleResourceChange）
+    // 是两条独立入口：并行读同一会话会成倍 IO，后完成的还会用旧快照覆盖新内容与基线。
+    const [hydrated, reloaded] = await Promise.all([
+        store.hydrateSession(stub),
+        store.reloadSession(stub),
+    ]);
+    assert.equal(hydrated, true);
+    assert.equal(reloaded, true);
+    assert.equal(calls.read, 2, '两次整份重放是串行执行，不会并行');
+    assert.equal(stub.messages.length, 3);
+});
+
+test('requireBody 同时拒绝正文读取失败的会话（不能拿残缺内容覆盖真源）', async () => {
+    const {store} = makeStore({a: 3});
+    const broken = {id: 'a', title: 'a', messages: [], archived: [], _loadError: 'session-too-large: …'};
+    assert.throws(() => store.resetSession(broken), /读取失败/);
+    assert.throws(() => store.rewriteSession(broken), /读取失败/);
+    assert.throws(() => store.archiveSession(broken, 0, null), /读取失败/);
+});
+
+test('对话日志：占位 / 正文读取失败的会话不写 md（SaveFile 整份覆盖会抹掉历史）', async () => {
+    const saved = [];
+    const log = createAIConversationLog({
+        backend: {
+            SaveFile: async (path, text) => { saved.push({path, text}); },
+            SaveDataURL: async () => {},
+            AIEnsureDir: async () => {},
+        },
+        getConfig: () => ({logEnabled: true, profiles: []}),
+        ensureLogDir: async () => 'D:/logs',
+        persistSessions: () => {},
+        flash: () => {},
+        notifyFailure: () => {},
+        askStateLabel: () => '',
+        askResultText: () => '',
+        joinPath: (a, b) => a + '/' + b,
+    });
+    const stub = {id: 's1', title: 't', messages: [], archived: [], _stub: true};
+    await log.saveConversationLog(stub);
+    assert.equal(saved.length, 0, '占位会话不能覆盖 md 日志');
+    const broken = {id: 's2', title: 't', messages: [], archived: [], _loadError: '超限'};
+    await log.saveConversationLog(broken);
+    assert.equal(saved.length, 0, '正文读取失败的会话不能覆盖 md 日志');
+    const healthy = {id: 's3', title: 't', messages: [{role: 'user', content: 'hi', ts: 1}], archived: []};
+    await log.saveConversationLog(healthy);
+    assert.equal(saved.length, 1, '正常会话照常落 md');
+});
+
 test('hydrateSession 读失败：清占位 + 打 _loadError（等于禁止写盘）', async () => {
     const writes = {meta: 0, append: 0, rewrite: 0};
     const store = createSessionDiskStore({
@@ -144,12 +213,26 @@ test('hydrateSession 读失败：清占位 + 打 _loadError（等于禁止写盘
     assert.equal(writes.rewrite, 0);
 });
 
-test('sameLogStat 比较 exists/mtime/size', () => {
+test('sameLogStat 比较 exists/mtime/size，纳秒优先', () => {
     const {store} = makeStore({a: 0});
     assert.equal(store.sameLogStat({exists: true, mtimeMs: 1, size: 2}, {exists: true, mtimeMs: 1, size: 2}), true);
     assert.equal(store.sameLogStat({exists: true, mtimeMs: 1, size: 2}, {exists: true, mtimeMs: 2, size: 2}), false);
     assert.equal(store.sameLogStat({exists: true, mtimeMs: 1, size: 2}, {exists: false, mtimeMs: 1, size: 2}), false);
     assert.equal(store.sameLogStat(null, {exists: false, mtimeMs: 0, size: 0}), false, '未知基线不能当成“相同”');
+    // 同一毫秒、同尺寸、内容不同：只有纳秒能看出来（否则交接协议跳过重读，后续 truncate 裁掉对方新增）
+    assert.equal(store.sameLogStat(
+        {exists: true, mtimeMs: 100, mtimeNs: 100000000, size: 2},
+        {exists: true, mtimeMs: 100, mtimeNs: 100500000, size: 2},
+    ), false, '纳秒不同必须判成变了');
+    assert.equal(store.sameLogStat(
+        {exists: true, mtimeMs: 100, mtimeNs: 100000000, size: 2},
+        {exists: true, mtimeMs: 100, mtimeNs: 100000000, size: 2},
+    ), true);
+    // 老后端只给毫秒：退回毫秒比较，不能因为缺 mtimeNs 就永远判「变了」
+    assert.equal(store.sameLogStat(
+        {exists: true, mtimeMs: 100, size: 2},
+        {exists: true, mtimeMs: 100, size: 2},
+    ), true);
 });
 
 test('whenIdle 等写队列排空后再返回成功', async () => {

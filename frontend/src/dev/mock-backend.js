@@ -865,6 +865,15 @@ const mockBackend = {
         mockAIConfigText = String(data || '');
         return null;
     },
+    // 比较-交换写：dev 模式下也要能复现「另一窗口改过配置」的冲突路径。
+    async AIConfigWriteIfUnchanged(base, data) {
+        const current = String(mockAIConfigText || '');
+        if (current !== String(base == null ? '' : base)) {
+            return {written: false, current};
+        }
+        mockAIConfigText = String(data || '');
+        return {written: true, current: ''};
+    },
     // 使用统计 mock：确定性生成的 30 天演示数据（只走面板渲染链路）
     async AIUsageStatsRecord() {
         return '';

@@ -39,6 +39,29 @@ func TestServiceSessionLeaseRefcount(t *testing.T) {
 	}
 }
 
+// statLog 必须带亚毫秒时刻：毫秒精度下「同一毫秒内、同尺寸」的两次写入会被交接协议
+// 判成「没变」，于是跳过重读，后续 truncate 就按旧前缀裁掉另一个窗口刚写的内容。
+func TestStatLogCarriesNanosecondMtime(t *testing.T) {
+	withServiceAppData(t)
+	svc := &Service{}
+	if err := svc.AISessionAppend("s1", `{"t":"header"}`, true); err != nil {
+		t.Fatal(err)
+	}
+	stat, err := svc.AISessionStat("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stat.Exists {
+		t.Fatalf("会话正文应存在：%+v", stat)
+	}
+	if stat.MtimeNs <= 0 {
+		t.Fatalf("mtimeNs 缺失：%+v", stat)
+	}
+	if stat.MtimeNs/1_000_000 != stat.MtimeMs {
+		t.Fatalf("毫秒与纳秒不一致：%d vs %d", stat.MtimeNs, stat.MtimeMs)
+	}
+}
+
 // 回合租约与写路径同进程共享：Append/WriteMeta 不应被自己的回合锁挡住。
 func TestSessionWriteSharesTurnLease(t *testing.T) {
 	withServiceAppData(t)

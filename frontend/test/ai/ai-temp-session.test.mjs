@@ -59,7 +59,8 @@ test('newTempSession 用 transient 造会话，且不接工作区草稿', () => 
 });
 
 test('起轮路径不回绑工作区（临时会话发第一条消息也不能被收养）', () => {
-    const fn = sliceFunction(panel, 'function startSessionTurn(', '\n    async function ');
+    // 起轮内核现在是 startSessionTurnInner（外层 startSessionTurn 只做起轮中的登记/注销）
+    const fn = sliceFunction(panel, 'async function startSessionTurnInner(', '\n    async function ');
     assert.match(fn, /if \(!session\.workspace && !isTransientSession\(session\)\)/,
         'startSessionTurn 会把空 workspace 回填成当前工作区——这条最常走的路径必须挡住');
 });
@@ -116,7 +117,7 @@ test('临时会话不被吸附到工作区：adopt / sync / 空会话复用三�
 });
 
 test('磁盘重读不把临时会话弄丢、也不把它当「别处删了」', () => {
-    const apply = sliceFunction(panel, 'function applyLoadedSessions(next)');
+    const apply = sliceFunction(panel, 'function applyLoadedSessions(next, readStartedAt)');
     assert.match(apply, /const keptTransient = sessions\.filter\(\(session\) => isTransientSession\(session\)/);
     assert.match(apply, /sessions = keptTransient\.length \? next\.concat\(keptTransient\) : next;/);
 

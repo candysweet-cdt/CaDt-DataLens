@@ -151,6 +151,44 @@ func Read() (string, error) { return ReadFile(Path()) }
 // Write 写入默认配置路径。
 func Write(data string) error { return WriteFile(Path(), data) }
 
+// WriteResult 是 WriteIfUnchanged 的结果。Written=false 时 Current 是磁盘上的最新明文，
+// 调用方拿它做三方合并后可以重试（base 换成 Current）。
+type WriteResult struct {
+	Written bool   `json:"written"`
+	Current string `json:"current,omitempty"`
+}
+
+// WriteIfUnchanged 是「比较-交换」写：只有磁盘当前明文等于 base 时才写入 data。
+//
+// 多窗口（主窗 / 浮窗 / 两个工作区窗口）共享同一份 ai-config.json，而 saveAIConfig 是
+// 整份覆盖：A 窗口读盘后、写盘前，B 窗口写入的新值会被 A 的旧快照回滚（A 自己察觉不到，
+// 因为它只比对内存基线）。加一层「基线不符就不写」把冲突显式暴露给调用方。
+//
+// base 传空串表示「我读到的是空配置（文件不存在或刚被清空）」。
+// 解不开的密文（ErrSealed）原样返回，交由调用方先走 BackupSealed 留档——绝不能在这里
+// 把「读不出来」当成「文件为空」直接覆盖。
+func WriteIfUnchanged(path, base, data string) (WriteResult, error) {
+	if path == "" {
+		return WriteResult{}, appdata.ErrNoRoot
+	}
+	current, err := ReadFile(path)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	if current != base {
+		return WriteResult{Written: false, Current: current}, nil
+	}
+	if err := WriteFile(path, data); err != nil {
+		return WriteResult{}, err
+	}
+	return WriteResult{Written: true}, nil
+}
+
+// WriteIfUnchangedForBase 是默认路径版的 WriteIfUnchanged。
+func WriteIfUnchangedForBase(base, data string) (WriteResult, error) {
+	return WriteIfUnchanged(Path(), base, data)
+}
+
 // BackupSealed 把「解不开的密文配置」改名留档，返回留档路径（没有可留档的文件时返回空串）。
 // 用途：用户换了机器 / 换了 Windows 用户，文件解不开又不该被静默覆盖——
 // 前端在首次写回前调它，把旧密文挪到 ai-config.json.sealed-<时间>.bak 再写新配置。
@@ -191,6 +229,12 @@ type Store struct{}
 func (*Store) AIConfigRead() (string, error) { return Read() }
 
 func (*Store) AIConfigWrite(data string) error { return Write(data) }
+
+// AIConfigWriteIfUnchanged 见 WriteIfUnchanged：只有磁盘内容仍等于 base 才写入，
+// 否则回传磁盘最新明文让前端合并后重试（多窗口共享同一份配置的乐观并发控制）。
+func (*Store) AIConfigWriteIfUnchanged(base, data string) (WriteResult, error) {
+	return WriteIfUnchangedForBase(base, data)
+}
 
 // AIConfigBackupSealed 见 BackupSealed。
 func (*Store) AIConfigBackupSealed() (string, error) { return BackupSealed() }

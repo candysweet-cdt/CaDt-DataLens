@@ -1317,6 +1317,13 @@ export function createAISettingsDialog(ctx) {
         if (opt.modelExportBtn) opt.modelExportBtn.addEventListener('click', ioMod.exportAccountModels);
         if (opt.modelImportBtn) opt.modelImportBtn.addEventListener('click', ioMod.importAccountModels);
         if (opt.clearSessions) opt.clearSessions.addEventListener('click', () => {
+            // 有回合在跑时清空会把这些会话对象整体丢弃：在飞的那一轮消息既不落盘也不再属于
+            // 任何会话（流仍往孤儿对象写）。与「删除会话」同一套守卫，先让用户停止。
+            const running = getSessions().filter((session) => streamOf(session.id) || compactOf(session.id));
+            if (running.length) {
+                setSettingsStatus('有会话正在生成或压缩，请先停止再清空', 'error');
+                return;
+            }
             askConfirm('清空全部 AI 会话（含消息、任务清单与变更记录）？', () => {
                 setSessions([createSessionData()]);
                 permMod.commandApprovalRules.clear();
@@ -1360,6 +1367,7 @@ export function createAISettingsDialog(ctx) {
         setSettingsStatus,
         refreshSettingsPane,
         renderModelList: () => modelMod.renderModelList(),
+        onUsageQuotaUpdated: ctx.onUsageQuotaUpdated,
         testUsageConfig: (profile, draft) => ctx.usageQuota().testConfig(profile, draft),
         // OAuth 额度模板的登录/状态/登出绑定（通用引擎，provider 参数化）
         oauth: {
@@ -1374,6 +1382,7 @@ export function createAISettingsDialog(ctx) {
         refreshSettingsPane,
         openUsageConfigDialog: usageMod.openUsageConfigDialog,
         usageQuota: () => ctx.usageQuota(),
+        onUsageQuotaUpdated: ctx.onUsageQuotaUpdated,
     });
     // 生图与视频模型 pane：自管 DOM（列表 + 编辑器弹窗），refreshSettingsPane 驱动列表刷新
     const genMod = createAIGenSettings(ctx, {setSettingsStatus, refreshSettingsPane});
