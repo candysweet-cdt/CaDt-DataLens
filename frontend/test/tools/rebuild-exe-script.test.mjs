@@ -15,11 +15,11 @@ test('rebuild-exe 校验 syso 非空，避免无图标资源静默构建', () =>
 });
 
 test('rebuild-exe 先移走旧文件，避免同名覆盖保留白页缓存', () => {
-    const renameAt = script.indexOf('Rename-Item -LiteralPath $target -Destination $aside -Force');
+    const moveAt = script.indexOf('Move-Item -LiteralPath $target -Destination $aside -Force');
     const clearAt = script.indexOf('Clear-ShellIcon $target');
     const copyAt = script.indexOf('Copy-Item $binExe $target -Force');
     const updateAt = script.indexOf('Update-ShellIcon $target');
-    assert.ok(renameAt > 0 && clearAt > renameAt && copyAt > clearAt && updateAt > copyAt);
+    assert.ok(moveAt > 0 && clearAt > moveAt && copyAt > clearAt && updateAt > copyAt);
 });
 
 test('rebuild-exe 通知 Shell 删除旧项并刷新新项图标缓存', () => {

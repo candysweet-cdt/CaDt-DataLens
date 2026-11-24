@@ -175,14 +175,16 @@ function Build-AndReplace {
     if (Test-Path -LiteralPath $target) {
         $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
         $aside = Join-Path $root ("datalens.running-old-" + $stamp + ".exe")
-        Rename-Item -LiteralPath $target -Destination $aside -Force
+        # 必须用 Move-Item：-Destination 是它的参数；Rename-Item 只有 -NewName（且不接受完整路径）。
+        # 这里要跨目录改名到 $aside（含 $root 前缀），Move-Item 语义等价且支持 -LiteralPath。
+        Move-Item -LiteralPath $target -Destination $aside -Force
         Clear-ShellIcon $target
         Write-Host "原 exe 已改名为 $(Split-Path -Leaf $aside)（下次运行本工具时清理）" -ForegroundColor DarkGray
     }
     try {
         Copy-Item $binExe $target -Force
     } catch {
-        if ($aside) { Rename-Item -LiteralPath $aside -Destination $target -Force }
+        if ($aside) { Move-Item -LiteralPath $aside -Destination $target -Force }
         throw
     }
     Update-ShellIcon $target
