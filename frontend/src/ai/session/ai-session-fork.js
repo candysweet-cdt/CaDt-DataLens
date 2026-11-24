@@ -38,6 +38,8 @@ export function forkSettings(source) {
     const src = source || {};
     return {
         workspace: src.workspace || '',
+        // 自定义分组随支线继承：母会话在某分组下，派生支线默认同一分组
+        group: src.group || '',
         scope: src.scope || 'read',
         // 临时会话派生出来的会话仍是临时会话：语义（一次性、不绑工作区、不注入工作区知识）
         // 不能因为「分了个支 / 开了个支线」就漂移成重启后还留着的普通会话。

@@ -3,7 +3,7 @@
 // 磁盘存储才有「复制会话路径」；普通对话不再出现一排灰掉的无关项。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention, workspaceGroupExpanded, sessionOverLimitOf, sessionOverLimitTip, sessionFilterHit} from '../../../src/ai/session/ai-session-list.js';
+import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention, workspaceGroupExpanded, sessionOverLimitOf, sessionOverLimitTip, sessionFilterHit, buildWorkspaceSubgroups, subgroupPageKey} from '../../../src/ai/session/ai-session-list.js';
 import {ICONS} from '../../../src/core/icons.js';
 
 const baseEnv = {pendingNoticeCount: () => 0, diskStorage: true};
@@ -294,4 +294,43 @@ test('sessionFilterHit：无标题会话按显示文案「新会话」命中', (
     assert.equal(sessionFilterHit({id: 's1'}, '新'), true);
     assert.equal(sessionFilterHit(null, ''), true, '空词时缺会话对象也放行');
     assert.equal(sessionFilterHit(null, 'x'), false, '有词时缺会话对象不命中');
+});
+
+test('会话菜单有「设置分组…」项（tag 图标已注册）', () => {
+    const item = buildSessionMenuItems({id: 's1'}, baseEnv).find((it) => it.act === 'setGroup');
+    assert.ok(item, '应有设置分组项');
+    assert.equal(item.label, '设置分组…');
+    assert.ok(ICONS[item.icon], '设置分组图标应已注册');
+});
+
+test('buildWorkspaceSubgroups：按 group 切桶，未分组置底', () => {
+    const list = [
+        {id: 'a', group: '前端'},
+        {id: 'b', group: ''},
+        {id: 'c', group: '后端'},
+        {id: 'd', group: '前端'},
+        {id: 'e', group: '   '}, // 纯空白归未分组
+    ];
+    const subs = buildWorkspaceSubgroups(list);
+    assert.deepEqual(subs.map((s) => s.name).slice().sort(), ['', '前端', '后端'], '三个桶齐全');
+    assert.equal(subs[subs.length - 1].name, '', '未分组恒置底');
+    const bucket = (name) => subs.find((s) => s.name === name);
+    assert.deepEqual(bucket('前端').sessions.map((s) => s.id), ['a', 'd'], '同组会话归一起');
+    assert.deepEqual(bucket('').sessions.map((s) => s.id), ['b', 'e'], '空与纯空白都归未分组');
+    assert.equal(subs.reduce((n, s) => n + s.sessions.length, 0), 5, '不丢会话');
+});
+
+test('buildWorkspaceSubgroups：无分组时只有一个未分组桶（渲染层据此不加子头）', () => {
+    const subs = buildWorkspaceSubgroups([{id: 'a'}, {id: 'b'}]);
+    assert.equal(subs.length, 1);
+    assert.equal(subs[0].name, '');
+    assert.equal(subs[0].sessions.length, 2);
+    assert.deepEqual(buildWorkspaceSubgroups(null), [], '空输入不报错');
+});
+
+test('subgroupPageKey：归档标志 + 工作区 + 子分组名三段唯一', () => {
+    assert.equal(subgroupPageKey(false, 'ws1', '前端'), 'active:ws1:前端');
+    assert.equal(subgroupPageKey(true, 'ws1', '前端'), 'archived:ws1:前端');
+    assert.notEqual(subgroupPageKey(false, 'ws1', '前端'), subgroupPageKey(false, 'ws1', '后端'), '不同子分组分页互不影响');
+    assert.equal(subgroupPageKey(false, 'ws1', ''), 'active:ws1:', '未分组桶也有独立键');
 });

@@ -356,6 +356,13 @@ export function replaySessionLog(text) {
     return result;
 }
 
+// 会话自定义分组名归一：trim + 上限截断，空/脏值一律归 ''（= 未分组）。
+// 与 normalizeSession（读回）和 buildSessionMeta（写盘）共用单一口径，避免两处判定漂移。
+export const AI_SESSION_GROUP_MAX = 24;
+export function normalizeSessionGroup(value) {
+    return textOf(value).trim().slice(0, AI_SESSION_GROUP_MAX);
+}
+
 export function buildSessionMeta(session) {
     const summary = session && session.summary && typeof session.summary === 'object' ? session.summary : null;
     return {
@@ -396,6 +403,8 @@ export function buildSessionMeta(session) {
         round: Number(session && session.round) || 0,
         archivedAt: Number(session && session.archivedAt) || 0,
         pinned: !!(session && session.pinned),
+        // 会话自定义分组（工作区内归类）：随 meta 持久化，与 normalizeSession 同一归一口径
+        group: normalizeSessionGroup(session && session.group),
         // 回合在飞标记：起轮置位、finishStream 清除。进程被外部强杀（重建脚本 / 任务管理器）
         // 时来不及走收尾，标记残留在 meta.json 里——下次读盘据此挂「回合中断」横幅，
         // 把「进程死了」与「用户自己停了」区分开（后者经 stopGeneration→finishStream，标记已清）。

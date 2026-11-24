@@ -99,6 +99,38 @@ export function workspaceGroupExpanded(key, group, env) {
     return key === (env && env.firstKey);
 }
 
+// 工作区内的自定义分组桶（纯函数，配 ai-session-list.test.mjs）：
+// 把某工作区的 sessions 按 session.group 切成子分组。空分组名归「未分组」并置底，
+// 其余按组名排序（中文用 localeCompare 的 zh 排序），保证同一批会话的分组顺序稳定。
+// 每个桶带 name（'' = 未分组）/ sessions / latest（桶内最近活动时间，供渲染排序用）。
+export function buildWorkspaceSubgroups(sessions) {
+    const list = Array.isArray(sessions) ? sessions : [];
+    const byName = new Map();
+    for (const session of list) {
+        const name = String((session && session.group) || '').trim();
+        let bucket = byName.get(name);
+        if (!bucket) {
+            bucket = {name, sessions: [], latest: 0};
+            byName.set(name, bucket);
+        }
+        bucket.sessions.push(session);
+        const ts = sessionActivityTs(session);
+        if (ts > bucket.latest) bucket.latest = ts;
+    }
+    const buckets = [...byName.values()];
+    buckets.sort((a, b) => {
+        if (!!a.name !== !!b.name) return a.name ? -1 : 1; // 未分组置底
+        if (!a.name) return 0;
+        return a.name.localeCompare(b.name, 'zh');
+    });
+    return buckets;
+}
+
+// 子分组分页键（纯函数）：工作区分组内的每个子分组各自记可见条数，避免点 A 的「···」展开 B。
+export function subgroupPageKey(archived, groupKey, subName) {
+    return (archived ? 'archived:' : 'active:') + String(groupKey || '') + ':' + String(subName || '');
+}
+
 // 会话是否挂「超限」胶囊（纯函数，配 ai-session-list.test.mjs）：判定线 = 新版读取上限
 // 256 MB（严格超限，与 session-too-large: 的产出口径一致）。
 // 三类可判定来源：① hydrate/打开时自动整理失败（_tidyFailed）；② live 段自身超限
@@ -141,6 +173,7 @@ export function buildSessionMenuItems(session, env) {
         {sep: true},
         {label: session.pinned ? '取消置顶' : '置顶会话', icon: 'pin', disabled: archived, act: 'togglePin'},
         {label: '重命名会话…', icon: 'rename', act: 'rename'},
+        {label: '设置分组…', icon: 'tag', act: 'setGroup'},
         {label: '导出会话…', icon: 'export', act: 'export'},
         {label: '会话数据诊断…', icon: 'chart', act: 'diagnostics'},
         // 监控窗（辅助窗第一批）：只读镜像，不改会话归属；绑定缺失（旧 mock）时灰置
@@ -240,6 +273,8 @@ export function createAISessionList(ctx) {
     const updateHeadHud = ctx.updateHeadHud;
     const toggleSessionPin = ctx.toggleSessionPin;
     const renameSession = ctx.renameSession;
+    // 会话自定义分组：缺省空操作，保证浮窗/测试不报错
+    const setSessionGroup = typeof ctx.setSessionGroup === 'function' ? ctx.setSessionGroup : () => {};
     const exportSession = ctx.exportSession;
     const showSessionDiagnostics = ctx.showSessionDiagnostics;
     const archiveSession = ctx.archiveSession;
@@ -710,29 +745,55 @@ export function createAISessionList(ctx) {
                     sessionListEl.appendChild(head);
                     if (collapsed) continue;
                 }
-                const pageKey = (archived ? 'archived:' : 'active:') + group.key;
-                const total = group.sessions.length;
-                // 过滤时分页失效：命中集本来就小，再藏一批反而像丢结果
-                let visible = sessionFilterText ? total : Math.min(workspaceGroupVisibleCounts.get(pageKey) || AI_SESSION_GROUP_PAGE, total);
-                // 当前会话即使排在分页之外也保持可见，避免切换后高亮条目凭空消失。
-                if (current) {
-                    const activeIndex = group.sessions.findIndex((session) => session.id === current.id);
-                    if (activeIndex >= visible) visible = Math.min(total, activeIndex + 1);
-                }
-                for (const session of group.sessions.slice(0, visible)) renderItem(session, archived);
-                if (visible < total) {
-                    const remaining = total - visible;
-                    const more = document.createElement('button');
-                    more.type = 'button';
-                    more.className = 'ai-session-group-more';
-                    more.innerHTML = iconSvg('more', 14);
-                    const moreTip = '还有 ' + remaining + ' 条会话，点击再显示 ' + Math.min(AI_SESSION_GROUP_PAGE, remaining) + ' 条';
-                    more.setAttribute('aria-label', moreTip);
-                    more.addEventListener('click', () => {
-                        workspaceGroupVisibleCounts.set(pageKey, Math.min(total, visible + AI_SESSION_GROUP_PAGE));
-                        renderSessionList();
-                    });
-                    sessionListEl.appendChild(more);
+                // 工作区内按自定义分组二次归类。只有出现 ≥2 个桶（即用户真的分了组）才显示
+                // 子分组头；否则维持原来的一层列表，不给所有会话凭空加一级。
+                const subgroups = buildWorkspaceSubgroups(group.sessions);
+                const showSubHeaders = subgroups.length > 1;
+                const renderBucket = (sub, pageKey) => {
+                    const bucketList = sub.sessions;
+                    const total = bucketList.length;
+                    // 过滤时分页失效：命中集本来就小，再藏一批反而像丢结果
+                    let visible = sessionFilterText ? total : Math.min(workspaceGroupVisibleCounts.get(pageKey) || AI_SESSION_GROUP_PAGE, total);
+                    // 当前会话即使排在分页之外也保持可见，避免切换后高亮条目凭空消失。
+                    if (current) {
+                        const activeIndex = bucketList.findIndex((session) => session.id === current.id);
+                        if (activeIndex >= visible) visible = Math.min(total, activeIndex + 1);
+                    }
+                    for (const session of bucketList.slice(0, visible)) renderItem(session, archived);
+                    if (visible < total) {
+                        const remaining = total - visible;
+                        const more = document.createElement('button');
+                        more.type = 'button';
+                        more.className = 'ai-session-group-more';
+                        more.innerHTML = iconSvg('more', 14);
+                        const moreTip = '还有 ' + remaining + ' 条会话，点击再显示 ' + Math.min(AI_SESSION_GROUP_PAGE, remaining) + ' 条';
+                        more.setAttribute('aria-label', moreTip);
+                        more.addEventListener('click', () => {
+                            workspaceGroupVisibleCounts.set(pageKey, Math.min(total, visible + AI_SESSION_GROUP_PAGE));
+                            renderSessionList();
+                        });
+                        sessionListEl.appendChild(more);
+                    }
+                };
+                if (showSubHeaders) {
+                    for (const sub of subgroups) {
+                        const subHead = document.createElement('div');
+                        subHead.className = 'ai-session-subgroup-head';
+                        const subIcon = document.createElement('span');
+                        subIcon.className = 'ai-session-subgroup-icon';
+                        subIcon.innerHTML = iconSvg(sub.name ? 'tag' : 'circle', 11);
+                        const subName = document.createElement('span');
+                        subName.className = 'ai-session-subgroup-name';
+                        subName.textContent = sub.name || '未分组';
+                        const subCount = document.createElement('span');
+                        subCount.className = 'ai-session-subgroup-count';
+                        subCount.textContent = String(sub.sessions.length);
+                        subHead.append(subIcon, subName, subCount);
+                        sessionListEl.appendChild(subHead);
+                        renderBucket(sub, subgroupPageKey(archived, group.key, sub.name));
+                    }
+                } else {
+                    renderBucket(subgroups[0] || {sessions: []}, subgroupPageKey(archived, group.key, ''));
                 }
             }
         };
@@ -796,6 +857,7 @@ export function createAISessionList(ctx) {
             newSide: () => { ensureOpen(); openSideChat({session}); },
             togglePin: () => toggleSessionPin(session),
             rename: () => renameSession(session),
+            setGroup: () => setSessionGroup(session),
             export: () => exportSession(session),
             diagnostics: () => showSessionDiagnostics(session),
             promote: () => promoteSideChat(session),
@@ -854,6 +916,7 @@ export function createAISessionList(ctx) {
             {sep: true},
             {label: session && session.pinned ? '取消置顶当前会话' : '置顶当前会话', disabled: !session || !!(session && session.archivedAt), action: () => toggleSessionPin(session)},
             {label: '重命名当前会话…', disabled: !session, action: () => renameSession(session)},
+            {label: '设置当前会话分组…', disabled: !session, action: () => setSessionGroup(session)},
             {label: '导出当前会话…', disabled: !session, action: () => exportSession(session)},
             {label: '会话数据诊断…', disabled: !session, action: () => showSessionDiagnostics(session)},
             {label: session && session.archivedAt ? '取消归档当前会话' : '归档当前会话', disabled: !session, action: () => archiveSession(session, !(session && session.archivedAt))},

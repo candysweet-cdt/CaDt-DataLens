@@ -19,6 +19,8 @@ import {
     buildSessionMeta,
     metaSignature,
     messageFingerprint,
+    normalizeSessionGroup,
+    AI_SESSION_GROUP_MAX,
 } from '../../../src/ai/session/ai-session-store.js';
 import {createSessionDiskStore} from '../../../src/ai/session/ai-session-disk.js';
 
@@ -103,6 +105,24 @@ test('buildSessionMeta：turnInFlight 随 meta 持久化（进程强杀的中断
     // 标记变化必须改变 meta 签名：否则 writeMetaIfChanged 会漏写置位/清除
     const sig = (m) => metaSignature(buildSessionMeta(m));
     assert.notEqual(sig({id: 's1'}), sig({id: 's1', turnInFlight: true}));
+});
+
+test('会话分组：normalizeSessionGroup trim/截断/脏值归一', () => {
+    assert.equal(normalizeSessionGroup('  前端  '), '前端');
+    assert.equal(normalizeSessionGroup(''), '');
+    assert.equal(normalizeSessionGroup('   '), '');
+    assert.equal(normalizeSessionGroup(null), '');
+    assert.equal(normalizeSessionGroup(12345), '12345');
+    assert.equal(normalizeSessionGroup('x'.repeat(AI_SESSION_GROUP_MAX + 10)).length, AI_SESSION_GROUP_MAX);
+});
+
+test('buildSessionMeta：group 随 meta 持久化，且变化改变签名', () => {
+    assert.equal(buildSessionMeta({id: 's1'}).group, '');
+    assert.equal(buildSessionMeta({id: 's1', group: '前端'}).group, '前端');
+    assert.equal(buildSessionMeta({id: 's1', group: '  后端  '}).group, '后端', '写盘前也走归一');
+    const sig = (m) => metaSignature(buildSessionMeta(m));
+    assert.notEqual(sig({id: 's1'}), sig({id: 's1', group: '前端'}), '改分组必须触发 meta 重写');
+    assert.notEqual(sig({id: 's1', group: '前端'}), sig({id: 's1', group: '后端'}));
 });
 
 test('messageFingerprint：思考循环守卫状态变化要能触发重写', () => {
