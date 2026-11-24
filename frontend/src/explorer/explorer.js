@@ -394,7 +394,8 @@ export function createExplorer(options) {
             row.focus({preventScroll: true});
             const onChevron = node.isDir && e.target && e.target.closest ? e.target.closest('.sb-chev') : null;
             if (onChevron) {
-                if (e.detail > 1) return;
+                // 连点箭头每次都即时 toggle：不再用 e.detail>1 吞掉双击窗口内的点击
+                // （浏览器双击间隔 ~500ms，会让快速连续展开/收起明显不跟手）。
                 if (!selectionHas(node.path)) selectOnly(node);
                 toggleNode(node);
                 return;
