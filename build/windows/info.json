@@ -1,12 +1,12 @@
 {
 	"fixed": {
-		"file_version": "1.2.1",
-		"product_version": "1.2.1"
+		"file_version": "1.2.2",
+		"product_version": "1.2.2"
 	},
 	"info": {
 		"0409": {
-			"FileVersion": "1.2.1",
-			"ProductVersion": "1.2.1",
+			"FileVersion": "1.2.2",
+			"ProductVersion": "1.2.2",
 			"CompanyName": "CandySweet",
 			"FileDescription": "CaDt-DataLens",
 			"LegalCopyright": "Copyright © 2026 CandySweet",
