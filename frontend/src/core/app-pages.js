@@ -25,14 +25,16 @@
  */
 
 /** @type {readonly AppPage[]} */
+// group 名刻意不与设置侧栏 section（界面与编辑 / 安全与权限 / 集成与自动化 / 维护与诊断）撞名：
+// 同一词在两处指代不同集合会让用户困惑。这里按「页面对象」命名，侧栏按「作用域」命名。
 export const APP_PAGES = [
-    {id: 'usage-stats', label: '使用统计', icon: 'chart', group: '数据', desc: 'Token 用量、热力图、模型分布与请求日志'},
-    {id: 'external-tools', label: '外部工具', icon: 'globe', group: 'AI', desc: 'AI 联网能力来源矩阵、服务提供商、MCP 服务器与桌面控制'},
-    {id: 'agents', label: '智能体', icon: 'agents', group: 'AI', desc: '群聊（圆桌讨论）成员管理：模型绑定、人设与职责'},
-    {id: 'cognition', label: '认知索引', icon: 'tree', group: 'AI', visibleWhen: 'aiCognition', desc: '浏览工作区认知索引：路径地图、条目 FRAS 详情与治理状态'},
-    {id: 'schedules', label: '定时任务', icon: 'clock', group: '自动化', desc: '按时间自动触发会话，可查看下次运行与最近结果'},
-    {id: 'activity', label: '操作记录', icon: 'history', group: '诊断', desc: '按月的操作留痕，可按来源与关键词筛选、导出'},
-    {id: 'patches', label: '补丁库', icon: 'git', group: '开发', desc: '.cadt/patches 的补丁列表、审阅与删除'},
+    {id: 'usage-stats', label: '使用统计', icon: 'chart', group: '统计', desc: 'Token 用量、热力图、模型分布与请求日志'},
+    {id: 'external-tools', label: '外部工具', icon: 'globe', group: 'AI 工具', desc: 'AI 联网能力来源矩阵、服务提供商、MCP 服务器与桌面控制'},
+    {id: 'agents', label: '智能体', icon: 'agents', group: 'AI 工具', desc: '群聊（圆桌讨论）成员管理：模型绑定、人设与职责'},
+    {id: 'cognition', label: '认知索引', icon: 'tree', group: 'AI 工具', visibleWhen: 'aiCognition', desc: '浏览工作区认知索引：路径地图、条目 FRAS 详情与治理状态'},
+    {id: 'schedules', label: '定时任务', icon: 'clock', group: '定时', desc: '按时间自动触发会话，可查看下次运行与最近结果'},
+    {id: 'activity', label: '操作记录', icon: 'history', group: '记录', desc: '按月的操作留痕，可按来源与关键词筛选、导出'},
+    {id: 'patches', label: '补丁库', icon: 'git', group: '补丁', desc: '.cadt/patches 的补丁列表、审阅与删除'},
 ];
 
 /**

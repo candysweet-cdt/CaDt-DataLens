@@ -297,25 +297,10 @@
                     <input id="settings-search" class="settings-search" type="text" placeholder="搜索设置…" spellcheck="false" autocomplete="off" data-esc-local>
                     <div id="settings-search-results" class="settings-search-results hidden"></div>
                 </div>
-                <div class="snav-section">设置</div>
+                <div class="snav-section">界面与编辑</div>
                 <button type="button" class="snav-item active" data-pane="general"><span class="snav-ic" data-icon="gear"></span><span>通用设置</span></button>
                 <button type="button" class="snav-item" data-pane="editor-tabs"><span class="snav-ic" data-icon="doc"></span><span>编辑器与写作</span></button>
-                <div id="snav-ai" class="snav-group expanded">
-                    <button type="button" class="snav-item snav-parent" aria-expanded="true">
-                        <span class="snav-chev" aria-hidden="true"></span>
-                        <span class="snav-ic" data-icon="sparkles"></span>
-                        <span>AI</span>
-                    </button>
-                    <div class="snav-children">
-                        <button type="button" class="snav-item snav-child" data-pane="models"><span class="snav-ic" data-icon="zap"></span><span>模型</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="gen-models"><span class="snav-ic" data-icon="image"></span><span>生图与视频</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="ai"><span class="snav-ic" data-icon="sparkles"></span><span>AI 助手</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="permissions"><span class="snav-ic" data-icon="shield"></span><span>权限</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="persona"><span class="snav-ic" data-icon="star"></span><span>个性化</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="context"><span class="snav-ic" data-icon="paste"></span><span>上下文注入</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="preferences"><span class="snav-ic" data-icon="list"></span><span>用户偏好</span></button>
-                    </div>
-                </div>
+                <button type="button" class="snav-item" data-pane="shortcuts"><span class="snav-ic" data-icon="keyboard"></span><span>快捷键</span></button>
                 <div id="snav-formats" class="snav-group expanded">
                     <button type="button" class="snav-item snav-parent" aria-expanded="true">
                         <span class="snav-chev" aria-hidden="true"></span>
@@ -334,20 +319,34 @@
                     </button>
                     <div class="snav-children" id="snav-lang-children"></div>
                 </div>
-                <div class="snav-section">页面</div>
-                <button type="button" class="snav-item" data-pane="app-pages"><span class="snav-ic" data-icon="apps"></span><span>应用页面</span></button>
-                <div class="snav-section">功能</div>
+                <div id="snav-ai" class="snav-group expanded">
+                    <button type="button" class="snav-item snav-parent" aria-expanded="true">
+                        <span class="snav-chev" aria-hidden="true"></span>
+                        <span class="snav-ic" data-icon="sparkles"></span>
+                        <span>AI</span>
+                    </button>
+                    <div class="snav-children">
+                        <button type="button" class="snav-item snav-child" data-pane="models"><span class="snav-ic" data-icon="zap"></span><span>模型</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="gen-models"><span class="snav-ic" data-icon="image"></span><span>生图与视频</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="ai"><span class="snav-ic" data-icon="sparkles"></span><span>AI 助手</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="persona"><span class="snav-ic" data-icon="star"></span><span>个性化</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="context"><span class="snav-ic" data-icon="paste"></span><span>上下文注入</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="preferences"><span class="snav-ic" data-icon="list"></span><span>用户偏好</span></button>
+                    </div>
+                </div>
+                <div class="snav-section">安全与权限</div>
+                <button type="button" class="snav-item" data-pane="permissions"><span class="snav-ic" data-icon="shield"></span><span>权限</span></button>
+                <div class="snav-section">集成与自动化</div>
                 <button type="button" class="snav-item" data-pane="new-file-menu"><span class="snav-ic" data-icon="list"></span><span>菜单管理</span></button>
-                <button type="button" class="snav-item" data-pane="shortcuts"><span class="snav-ic" data-icon="keyboard"></span><span>快捷键</span></button>
                 <button type="button" class="snav-item" data-pane="run"><span class="snav-ic" data-icon="play"></span><span>运行</span></button>
                 <button type="button" class="snav-item" data-pane="lifecycle"><span class="snav-ic" data-icon="lifecycle"></span><span>生命周期</span></button>
                 <button type="button" class="snav-item" data-pane="plugins"><span class="snav-ic" data-icon="download"></span><span>插件</span></button>
                 <button type="button" class="snav-item" data-pane="integration"><span class="snav-ic" data-icon="export"></span><span>系统集成</span></button>
                 <button type="button" class="snav-item" data-pane="envvars"><span class="snav-ic" data-icon="code"></span><span>环境变量</span></button>
-                <div class="snav-section">诊断</div>
+                <div class="snav-section">维护与诊断</div>
+                <button type="button" class="snav-item" data-pane="app-pages"><span class="snav-ic" data-icon="apps"></span><span>应用页面</span></button>
                 <button type="button" class="snav-item" data-pane="developer"><span class="snav-ic" data-icon="terminal"></span><span>开发者</span></button>
                 <button type="button" class="snav-item" data-pane="storage"><span class="snav-ic" data-icon="eraser"></span><span>存储与清理</span></button>
-                <div class="snav-section">其他</div>
                 <button type="button" class="snav-item" data-pane="about"><span class="snav-ic" data-icon="info"></span><span>关于我们</span></button>
                 </div>
                 <div class="settings-content">

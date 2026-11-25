@@ -27,7 +27,7 @@ test('APP_PAGES 注册 cognition：图标在册、条件键是 aiCognition', () 
     const page = appPageOf('cognition');
     assert.ok(page, 'core/app-pages.js 必须注册 cognition 应用页面');
     assert.equal(page.label, '认知索引');
-    assert.equal(page.group, 'AI');
+    assert.equal(page.group, 'AI 工具');
     assert.equal(page.visibleWhen, 'aiCognition', '条件可见键必须是 settings.aiCognition');
     assert.ok(ICONS[page.icon], '页面图标 ' + page.icon + ' 必须先登记 core/icons.js');
 });
