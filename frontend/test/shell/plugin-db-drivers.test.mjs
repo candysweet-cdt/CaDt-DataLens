@@ -160,4 +160,18 @@ test('console：非对象声明直接拒绝（不静默丢弃）', () => {
     assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({console: 'cypher'})), /console 必须是对象/);
 });
 
+test('console：limit 的脏输入归一（字符串 / NaN / Infinity / 小数 / 0 / 负数）', () => {
+    const lim = (v) => normalizePluginDbDriver('acme', '', baseSpec({console: {limit: v}})).console.limit;
+    assert.equal(lim('50'), 50, '数字字符串按数值处理');
+    assert.equal(lim('abc'), 200, 'NaN 回落默认');
+    assert.equal(lim(NaN), 200, 'NaN 回落默认');
+    assert.equal(lim(Infinity), 200, 'Infinity 回落默认（不是夹到上限）');
+    assert.equal(lim(50.7), 50, '小数向下取整');
+    assert.equal(lim(0), 200, '0 视为未设置');
+    assert.equal(lim(-3), 200, '负数回落默认（夹到 1 会把结果截成一行）');
+    assert.equal(lim(5000), 2000, '超上限夹到 2000');
+    assert.equal(lim(null), 200, 'null 回落默认');
+});
+
+
 
