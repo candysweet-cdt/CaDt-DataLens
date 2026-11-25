@@ -274,11 +274,11 @@ import {createAISystemContext, truncateSkillDescription} from './core/ai-system-
 import {createAICognition, resolveNeedsReread} from './settings/ai-cognition.js';
 import {createAIWorktree, normalizeWorktreeState, worktreeRelPath, agentWorktreeWriteVerdict, mainRootWriteVerdict} from './tools/ai-worktree.js';
 import {createAITodos, shouldSendTodosCheck, todosCheckText, todosCheckTextFromMessage} from './chat/ai-todos.js';
-import {createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth, STRICT_BOTTOM_PX} from './chat/ai-scroll-follow.js';
+import {anchorScrollDelta, createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth, STRICT_BOTTOM_PX} from './chat/ai-scroll-follow.js';
 import {createAIChangesUI} from './chat/ai-changes-ui.js';
 import {createAIModelPicker} from './settings/ai-model-picker.js';
 import {createAIUsageUI, aiFormatCompactTokens, aiFormatExactCount, aiFormatCompactDuration, turnUsageTotal} from './usage/ai-usage-ui.js';
-import {createAIUsageQuota, formatUsageCountdown, usageItemText, usageTone, usageTightSummary} from './usage/ai-usage-quota.js';
+import {createAIUsageQuota, formatUsageAge, formatUsageCountdown, usageItemText, usageTone, usageTightSummary} from './usage/ai-usage-quota.js';
 import {computeLineDiff, diffStats, buildDiffPreview} from './chat/ai-diff-view.js';
 import {missingFileHint} from './tools/ai-path-hints.js';
 import {aiStreamRetryBudget, shouldAutoRetryStream} from './chat/ai-stream-retry.js';
@@ -686,6 +686,7 @@ export function createAIPanel(options) {
         showThinking: document.getElementById('ai-opt-show-thinking'),
         alwaysCollapse: document.getElementById('ai-opt-always-collapse'),
         showUsage: document.getElementById('ai-opt-show-usage'),
+        showQuotaPill: document.getElementById('ai-opt-show-quota-pill'),
         msgActions: document.getElementById('ai-opt-msg-actions'),
         turnMetaAll: document.getElementById('ai-opt-turn-meta-all'),
         contextSlim: document.getElementById('ai-opt-context-slim'),
@@ -3464,7 +3465,6 @@ export function createAIPanel(options) {
     const sessionListMod = createAISessionList({
         el,
         sessionListEl,
-        sessionMoreBtn,
         // 会话过滤（漏斗 + 过滤行 + 输入）：交互与状态都在会话列表域内
         sessionFilterBtn,
         sessionFilterRow,
@@ -3515,7 +3515,6 @@ export function createAIPanel(options) {
         vacuumSessionArchive: (...args) => vacuumSessionArchiveAction(...args),
         newSession,
         newSessionInWorkspace,
-        openAILogDir,
         showContextMenu,
         workspaceMenu,
         getSessions: () => sessions,
@@ -3527,7 +3526,22 @@ export function createAIPanel(options) {
     const setSessionUnread = (...args) => sessionListMod.setSessionUnread(...args);
     const renderSessionList = () => sessionListMod.renderSessionList();
     const showSessionMenu = (...args) => sessionListMod.showSessionMenu(...args);
-    const showSessionListMenu = (...args) => sessionListMod.showSessionListMenu(...args);
+    // 侧栏「AI 会话」面板头部的「⋯」：会话列表级操作（新建 / 自动化 / 投递 / 搜索 / 日志目录）。
+    // 单条会话的置顶 / 重命名 / 分组 / 导出 / 归档 / 删除走会话条目右键菜单（showSessionMenu），不在这里。
+    function showSessionListMenu() {
+        if (!sessionMoreBtn || !showContextMenu) return;
+        const rect = sessionMoreBtn.getBoundingClientRect();
+        showContextMenu([
+            {label: '新建会话', icon: 'plus', action: () => { ensureOpen(); newSession(); }},
+            {label: '新建临时会话', icon: 'clock', action: () => { ensureOpen(); newTempSession(); }},
+            {sep: true},
+            {label: '自动化（定时任务）', icon: 'lifecycle', action: () => { ensureOpen(); openSchedulesPage(); }},
+            {label: '投递：发给其他会话', icon: 'forward', action: () => { ensureOpen(); openDeliverComposer(); }},
+            {label: '搜索会话', icon: 'search', action: () => { ensureOpen(); if (typeof opts.onHeadSearch === 'function') opts.onHeadSearch(); }},
+            {sep: true},
+            {label: '打开对话日志目录', icon: 'open-folder', action: openAILogDir},
+        ], rect.left - 120, rect.bottom + 4);
+    }
     const clearSessionUnread = (...args) => sessionListMod.clearSessionUnread(...args);
 
     // AI 设置页（阶段 3 拆出：ai-settings-dialog.js；config 经 getConfig 读，sessions 写经 setSessions）
@@ -5381,6 +5395,10 @@ export function createAIPanel(options) {
                 head.append(chev, label);
                 head.addEventListener('click', () => {
                     if (!hasBody) return;
+                    // 以用户点的折叠头为锚：开合会改变消息区高度（同一轮被提问卡隔开的续段
+                    // 也跟着一起开合），不补偿就把正在看的这行顶走。先量锚点在视口里的位置。
+                    const anchorBefore = head.getBoundingClientRect().top;
+                    const scrollBefore = host.scrollTop;
                     const next = fold.classList.contains('collapsed');
                     processFoldState.set(key, next);
                     // 轮次还在跑时记下「用户手动碰过」，等轮次结束后丢弃这条记忆。
@@ -5391,6 +5409,17 @@ export function createAIPanel(options) {
                     if (next) segEnsureBody.forEach((fn) => fn());
                     for (const node of host.querySelectorAll('.ai-process')) {
                         if (node.dataset.processKey === key) node.classList.toggle('collapsed', !next);
+                    }
+                    // 开合后把锚点拉回原来的视口位置。用 scrollTop 的差值而非直接写回
+                    // scrollBefore：若用户此刻贴底（在底部点开最后一条），补偿后仍应贴底，
+                    // 不该被拽回原位。量不到布局（后台宿主 display:none）就跳过。
+                    if (host.clientHeight > 0) {
+                        const delta = anchorScrollDelta(anchorBefore, head.getBoundingClientRect().top);
+                        if (delta) host.scrollTop = scrollBefore + delta;
+                        // 同步滚动监听的基准，避免这次程序位移被当成用户上滚而解除贴底。
+                        scrollLastTop = host.scrollTop;
+                        scrollGesture.reset();
+                        shrinkBurst.reset();
                     }
                 });
                 fold.appendChild(head);
@@ -5630,29 +5659,15 @@ export function createAIPanel(options) {
         }
     }
 
-    // 对话内模型切换记录：分隔线 + 文案 + 信息图标（悬停看账号 / 推理等级 / 切换时间，
-    // 走全局 tooltip 的 data-tip 通道；之前只挂了 aria-label，图标是个摆设）。
+    // 对话内模型切换记录：分隔线 + 文案。原先末尾挂了个 info 图标想显示账号/推理等级/
+    // 切换时间，但悬停 tooltip 实际不弹出、图标成了摆设，按用户反馈去掉，只留文案。
     function renderModelSwitchNote(wrap, message) {
-        const note = message.modelNote && typeof message.modelNote === 'object' ? message.modelNote : {};
         const row = document.createElement('div');
         row.className = 'ai-model-switch';
         const text = document.createElement('span');
         text.className = 'ai-model-switch-text';
         text.textContent = message.content || '模型已切换';
-        const info = document.createElement('span');
-        info.className = 'ai-model-switch-info';
-        info.innerHTML = iconSvg('info', 12);
-        info.setAttribute('aria-label', '模型切换信息');
-        const tipLines = [];
-        if (note.account) tipLines.push('账号：' + note.account);
-        if (note.effort) tipLines.push('推理等级：' + note.effort);
-        if (message.ts) {
-            const at = new Date(Number(message.ts) || 0);
-            const pad = (n) => String(n).padStart(2, '0');
-            tipLines.push('切换时间：' + pad(at.getHours()) + ':' + pad(at.getMinutes()));
-        }
-        if (tipLines.length) info.dataset.tip = tipLines.join('\n');
-        row.append(text, info);
+        row.appendChild(text);
         wrap.appendChild(row);
     }
 
@@ -6592,7 +6607,7 @@ export function createAIPanel(options) {
         node.classList.toggle('hidden', !text);
     }
 
-    // composer 状态栏额度胶囊：取「当前会话绑定账号」，开启外显时显示。
+    // composer 状态栏额度胶囊：全局开关（settings.aiShowQuotaPill）+ 当前会话绑定账号启用查询时显示。
     // 无缓存 / 失败显示「待查询」（点击触发一次查询）；有缓存取「最紧」单值——
     // 百分比型（label 非空）画圆环，余额型（label 空）画中性小点、不画进度。
     function renderQuotaPill() {
@@ -6600,7 +6615,7 @@ export function createAIPanel(options) {
         const session = currentSession();
         const profile = session ? sessionModelRef(session).profile : null;
         const usage = profile && normalizeUsageConfig(profile.usage);
-        if (!profile || !usage || !usage.enabled || !usage.showInComposer) {
+        if (!settings.aiShowQuotaPill || !profile || !usage || !usage.enabled) {
             el.quotaPill.classList.add('hidden');
             el.quotaPill.hidden = true;
             return;
@@ -10417,7 +10432,8 @@ async function requestApproval(session, toolMessage, info) {
                         excludePattern: opts.excludePattern,
                         outputMode: opts.outputMode,
                         context: opts.context,
-                        maxResults: opts.maxResults,
+                        offset: opts.offset,
+                        limit: opts.limit,
                         fileOnly,
                         includeIgnored: !!input.includeIgnored,
                     });
@@ -10427,10 +10443,11 @@ async function requestApproval(session, toolMessage, info) {
                     if (advanced) {
                         return '当前后端不支持高级搜索参数（regex / wholeWord / excludePattern / outputMode / context / includeIgnored），请更新应用后重试';
                     }
-                    // 旧后端：有 filePattern 时把窗口放大到 1000，前端过滤后再截，避免先截 200 漏掉目标文件。
+                    // 旧后端不支持分页：把扫描窗口放大到 offset+limit，前端过滤后再截。
+                    const legacyCap = Math.min(1000, opts.offset + opts.limit);
                     result = (pattern && backend.SearchWorkspaceFiltered)
                         ? await backend.SearchWorkspaceFiltered(searchRoot, query, !!input.caseSensitive, 1000, pattern)
-                        : await backend.SearchWorkspace(searchRoot, query, !!input.caseSensitive, pattern ? 1000 : opts.maxResults);
+                        : await backend.SearchWorkspace(searchRoot, query, !!input.caseSensitive, pattern ? 1000 : legacyCap);
                 }
                 const rootNorm = aiNormalizePath(parentRoot).replace(/\/+$/, '');
                 const filtered = filterSearchResult(result, pattern, rootNorm, globMatchPath);
@@ -14388,6 +14405,14 @@ async function requestApproval(session, toolMessage, info) {
         return '只读访问';
     }
 
+    // 权限档图标单一来源：菜单与 composer 胶囊共用，避免两处各写一套映射而漂移。
+    function scopeIcon(scope) {
+        if (scope === 'full') return 'warn';
+        if (scope === 'auto') return 'zap';
+        if (scope === 'edit') return 'shield';
+        return 'eye';
+    }
+
     function scopeDescription(scope) {
         if (scope === 'full') return '不再询问，可自由访问用户的文件、终端和网络';
         if (scope === 'auto') return '仅在检测到潜在风险时询问';
@@ -14399,12 +14424,20 @@ async function requestApproval(session, toolMessage, info) {
         const session = currentSession();
         if (el.permission) {
             const scope = currentScope();
-            el.permission.textContent = scopeLabel(scope);
+            // 权限档图标必须外显：菜单里认得出的四档，胶囊上也一眼可见
+            const icon = document.createElement('span');
+            icon.className = 'ai-permission-icon';
+            icon.setAttribute('aria-hidden', 'true');
+            icon.innerHTML = iconSvg(scopeIcon(scope), 12);
+            const label = document.createElement('span');
+            label.className = 'ai-permission-label';
+            label.textContent = scopeLabel(scope);
             // 这是「选择器」而不是开关：文字后带下拉箭头，避免被当成和「计划」一样的点亮态开关
             const chev = document.createElement('span');
             chev.className = 'ai-chip-chev';
+            chev.setAttribute('aria-hidden', 'true');
             chev.innerHTML = iconSvg('chevron-down', 12);
-            el.permission.appendChild(chev);
+            el.permission.replaceChildren(icon, label, chev);
             el.permission.setAttribute('aria-label', '权限：' + scopeLabel(scope));
             el.permission.classList.toggle('active', scope === 'auto' || scope === 'full');
             // 完全权限是高危档：胶囊用警告红（而非 accent 蓝），与权限菜单里的 danger 项一致
@@ -14789,7 +14822,7 @@ async function requestApproval(session, toolMessage, info) {
         const items = modeItems.concat(AI_SCOPES.map((value) => ({
             label: scopeLabel(value),
             description: scopeDescription(value),
-            icon: value === 'read' ? 'eye' : (value === 'edit' ? 'shield' : (value === 'auto' ? 'zap' : 'warn')),
+            icon: scopeIcon(value),
             selected: scope === value,
             danger: value === 'full',
             // 分类器开启时在「自动审批」旁标注 AI 胶囊，提示该档位会额外请求模型判定
@@ -15068,7 +15101,9 @@ async function requestApproval(session, toolMessage, info) {
             const box = document.createElement('input');
             box.type = 'checkbox';
             box.value = id;
-            box.checked = false;
+            // 已添加的模型默认勾选（回显当前账号已有的模型）；未添加的保持未勾选。
+            // 添加时只取「勾选且尚未存在」的，已存在的勾不会重复建条目。
+            box.checked = existing.has(id);
             const text = document.createElement('span');
             text.textContent = id + (existing.has(id) ? '（已添加）' : '');
             label.append(box, text);
@@ -15084,9 +15119,10 @@ async function requestApproval(session, toolMessage, info) {
         addBtn.className = 'dlg-btn primary';
         addBtn.textContent = '添加选中';
         const syncCount = () => {
-            const picked = boxes.filter((box) => box.checked).length;
-            count.textContent = '已选 ' + picked + ' 个';
-            addBtn.disabled = picked === 0;
+            // 只统计「勾选且尚未添加」的：已添加的默认勾选只是回显，不该计入新增数。
+            const added = boxes.filter((box) => box.checked && !existing.has(box.value)).length;
+            count.textContent = added ? '新增 ' + added + ' 个' : '已选中的都已添加';
+            addBtn.disabled = added === 0;
         };
         listBox.addEventListener('change', syncCount);
         addBtn.addEventListener('click', () => {
@@ -15168,9 +15204,85 @@ async function requestApproval(session, toolMessage, info) {
         return {tone, invalid, pct, text};
     }
 
-    // 明细弹层：入参是 ai-usage-quota 的 snapshot {state, items, error, at}
-    //（官方引擎条目 label/value 已在 officialSnapshotFromResult 折成同形状）。
-    // 账号卡余额行与 composer 额度胶囊共用这一份渲染，只换锚点。
+    // 把 snapshot 画进弹层 body（可重复调用：重新查询时原地刷新，不关弹层）。
+    // 官方引擎条目 label/value 已在 officialSnapshotFromResult 折成同形状。
+    function paintUsageBody(body, snapshot) {
+        body.innerHTML = '';
+        if (snapshot && snapshot.state === 'error') {
+            const err = document.createElement('div');
+            err.className = 'ai-usage-pop-error';
+            err.innerHTML = iconSvg('info', 14);
+            err.appendChild(document.createTextNode('查询失败：' + (snapshot.error || '未知错误')));
+            body.appendChild(err);
+            return;
+        }
+        const items = (snapshot && snapshot.items) || [];
+        if (!items.length) {
+            const note = document.createElement('div');
+            note.className = 'ai-usage-pop-note';
+            note.textContent = '该服务商暂不支持用量查询（已内置 DeepSeek / OpenRouter / SiliconFlow）；其他服务商可在「用量配置」里选脚本模板。';
+            body.appendChild(note);
+        }
+        for (const item of items) {
+            const visual = usageItemVisual(item);
+            const itemBox = document.createElement('div');
+            itemBox.className = 'ai-usage-pop-item' + (visual.invalid ? ' invalid' : '');
+            // 左侧圆环：余额型（pct === null）画一个中性的图标块，不画进度环
+            const ring = document.createElement('span');
+            ring.className = 'ai-usage-pop-ring' + (visual.pct === null ? ' flat' : '') +
+                (visual.tone === 'normal' ? '' : ' tone-' + visual.tone);
+            if (visual.pct !== null) {
+                ring.style.setProperty('--ring-pct', String(visual.pct));
+                const inner = document.createElement('span');
+                inner.className = 'ai-usage-pop-ring-inner';
+                inner.textContent = Math.round(visual.pct) + '%';
+                ring.appendChild(inner);
+            } else {
+                ring.innerHTML = iconSvg('database', 15);
+            }
+            const main = document.createElement('div');
+            main.className = 'ai-usage-pop-main';
+            const row = document.createElement('div');
+            row.className = 'ai-usage-pop-row';
+            const label = document.createElement('span');
+            label.className = 'ai-usage-pop-label';
+            label.textContent = item.planName || item.label || '—';
+            const value = document.createElement('b');
+            value.className = 'ai-usage-pop-value ai-usage-value' + (visual.tone === 'normal' ? '' : ' tone-' + visual.tone);
+            value.textContent = visual.text;
+            row.append(label, value);
+            main.appendChild(row);
+            // 进度条：只有百分比型才画
+            if (visual.pct !== null) {
+                const bar = document.createElement('div');
+                bar.className = 'ai-usage-pop-bar';
+                const fill = document.createElement('i');
+                fill.className = 'tone-bg-' + visual.tone;
+                fill.style.width = visual.pct + '%';
+                bar.appendChild(fill);
+                main.appendChild(bar);
+            }
+            // 明细行：倒计时 / 剩余额度 / extra / 失效原因
+            const meta = [];
+            const countdown = formatUsageCountdown(item.resetAt);
+            if (countdown) meta.push(countdown + ' 后重置');
+            if (item.unit === '%' && Number.isFinite(item.remaining)) {
+                meta.push('剩余 ' + formatCountCompact(item.remaining));
+            }
+            if (item.extra) meta.push(item.extra);
+            if (item.isValid === false) meta.unshift(item.invalidMessage || '已失效');
+            if (meta.length) {
+                const note = document.createElement('div');
+                note.className = 'ai-usage-pop-note';
+                note.textContent = meta.join(' · ');
+                main.appendChild(note);
+            }
+            itemBox.append(ring, main);
+            body.appendChild(itemBox);
+        }
+    }
+
+    // 明细弹层：账号卡余额行与 composer 额度胶囊共用这一份渲染，只换锚点。
     function showUsagePopover(profile, snapshot, anchor) {
         closeUsagePopover();
         const pop = document.createElement('div');
@@ -15196,92 +15308,34 @@ async function requestApproval(session, toolMessage, info) {
         head.append(icon, title, age, closeBtn);
         const body = document.createElement('div');
         body.className = 'ai-usage-pop-body';
-        if (snapshot && snapshot.state === 'error') {
-            const err = document.createElement('div');
-            err.className = 'ai-usage-pop-error';
-            err.innerHTML = iconSvg('info', 14);
-            err.appendChild(document.createTextNode('查询失败：' + (snapshot.error || '未知错误')));
-            body.appendChild(err);
-        } else {
-            const items = (snapshot && snapshot.items) || [];
-            if (!items.length) {
-                const note = document.createElement('div');
-                note.className = 'ai-usage-pop-note';
-                note.textContent = '该服务商暂不支持用量查询（已内置 DeepSeek / OpenRouter / SiliconFlow）；其他服务商可在「用量配置」里选脚本模板。';
-                body.appendChild(note);
-            }
-            for (const item of items) {
-                const visual = usageItemVisual(item);
-                const itemBox = document.createElement('div');
-                itemBox.className = 'ai-usage-pop-item' + (visual.invalid ? ' invalid' : '');
-                // 左侧圆环：余额型（pct === null）画一个中性的图标块，不画进度环
-                const ring = document.createElement('span');
-                ring.className = 'ai-usage-pop-ring' + (visual.pct === null ? ' flat' : '') +
-                    (visual.tone === 'normal' ? '' : ' tone-' + visual.tone);
-                if (visual.pct !== null) {
-                    ring.style.setProperty('--ring-pct', String(visual.pct));
-                    const inner = document.createElement('span');
-                    inner.className = 'ai-usage-pop-ring-inner';
-                    inner.textContent = Math.round(visual.pct) + '%';
-                    ring.appendChild(inner);
-                } else {
-                    ring.innerHTML = iconSvg('database', 15);
-                }
-                const main = document.createElement('div');
-                main.className = 'ai-usage-pop-main';
-                const row = document.createElement('div');
-                row.className = 'ai-usage-pop-row';
-                const label = document.createElement('span');
-                label.className = 'ai-usage-pop-label';
-                label.textContent = item.planName || item.label || '—';
-                const value = document.createElement('b');
-                value.className = 'ai-usage-pop-value ai-usage-value' + (visual.tone === 'normal' ? '' : ' tone-' + visual.tone);
-                value.textContent = visual.text;
-                row.append(label, value);
-                main.appendChild(row);
-                // 进度条：只有百分比型才画
-                if (visual.pct !== null) {
-                    const bar = document.createElement('div');
-                    bar.className = 'ai-usage-pop-bar';
-                    const fill = document.createElement('i');
-                    fill.className = 'tone-bg-' + visual.tone;
-                    fill.style.width = visual.pct + '%';
-                    bar.appendChild(fill);
-                    main.appendChild(bar);
-                }
-                // 明细行：倒计时 / 剩余额度 / extra / 失效原因
-                const meta = [];
-                const countdown = formatUsageCountdown(item.resetAt);
-                if (countdown) meta.push(countdown + ' 后重置');
-                if (item.unit === '%' && Number.isFinite(item.remaining)) {
-                    meta.push('剩余 ' + formatCountCompact(item.remaining));
-                }
-                if (item.extra) meta.push(item.extra);
-                if (item.isValid === false) meta.unshift(item.invalidMessage || '已失效');
-                if (meta.length) {
-                    const note = document.createElement('div');
-                    note.className = 'ai-usage-pop-note';
-                    note.textContent = meta.join(' · ');
-                    main.appendChild(note);
-                }
-                itemBox.append(ring, main);
-                body.appendChild(itemBox);
-            }
-        }
+        paintUsageBody(body, snapshot);
         const foot = document.createElement('div');
         foot.className = 'ai-usage-pop-foot';
-        const legend = document.createElement('span');
-        legend.textContent = '颜色按剩余：>20% 绿 · <20% 橙 · ≤0 红';
         const refresh = document.createElement('button');
         refresh.type = 'button';
         refresh.className = 'ai-usage-pop-refresh';
         refresh.innerHTML = iconSvg('refresh', 12);
         refresh.appendChild(document.createTextNode('重新查询'));
-        refresh.addEventListener('click', () => {
-            closeUsagePopover();
-            void queryUsageForAccount(profile, anchor);
+        // 原地刷新：不关弹层、不依赖锚点（锚点可能被重渲染销毁）。查询期间禁用按钮 + 文案反馈。
+        refresh.addEventListener('click', async () => {
+            if (refresh.disabled) return;
+            refresh.disabled = true;
+            refresh.classList.add('loading');
+            refresh.lastChild.textContent = '查询中…';
+            try {
+                const fresh = await usageQuota().queryAccountUsage(profile, {force: true});
+                // 弹层可能在外点 / Esc / 切会话时被关掉，关掉后不再往游离节点写
+                if (usagePopoverEl !== pop) return;
+                paintUsageBody(body, fresh);
+                age.textContent = fresh && fresh.at ? formatUsageAge(fresh.at) : '';
+                renderQuotaPill();
+            } finally {
+                refresh.disabled = false;
+                refresh.classList.remove('loading');
+                refresh.lastChild.textContent = '重新查询';
+            }
         });
-        foot.append(legend, refresh);
+        foot.appendChild(refresh);
         pop.append(head, body, foot);
         document.body.appendChild(pop);
         const width = Math.min(400, window.innerWidth - 16);
@@ -18466,7 +18520,7 @@ async function requestApproval(session, toolMessage, info) {
     }
 
     function syncChatFontControls() {
-        const value = aiClampInt(settings.aiChatFont, 10, 32, 13);
+        const value = aiClampInt(settings.aiChatFont, 10, 32, 14);
         if (opt.chatFont) opt.chatFont.value = String(value);
         if (opt.chatFontVal) opt.chatFontVal.value = String(value);
     }
@@ -18480,8 +18534,8 @@ async function requestApproval(session, toolMessage, info) {
     }
 
     function setAIChatFont(value, options) {
-        const next = aiClampInt(value, 10, 32, 13);
-        const current = aiClampInt(settings.aiChatFont, 10, 32, 13);
+        const next = aiClampInt(value, 10, 32, 14);
+        const current = aiClampInt(settings.aiChatFont, 10, 32, 14);
         if (next !== current) {
             settings.aiChatFont = next;
             applyPanelSettings();
@@ -18493,7 +18547,7 @@ async function requestApproval(session, toolMessage, info) {
 
     function applyPanelSettings() {
         if (!panel) return;
-        const font = aiClampInt(settings.aiChatFont, 10, 32, 13);
+        const font = aiClampInt(settings.aiChatFont, 10, 32, 14);
         panel.style.setProperty('--ai-chat-font', font + 'px');
         const stacks = aiChatFontStacks();
         panel.style.setProperty('--ai-chat-font-family', stacks.chat);
@@ -18508,6 +18562,8 @@ async function requestApproval(session, toolMessage, info) {
         if (changed && isOpen()) renderMessages(true);
         updateSendState();
         positionOverlays();
+        // 额度胶囊是全局外显开关：设置变化后立即按新开关显示 / 隐藏
+        renderQuotaPill();
         // 注入开关 / 输出语言等设置变化会影响系统提示词：面板可见时按节流重建估算。
         refreshSystemPromptEstimate(false);
     }
@@ -18759,6 +18815,7 @@ async function requestApproval(session, toolMessage, info) {
     const referenceSelection = (...args) => composerMod.referenceSelection(...args);
     const addMessageQuote = (...args) => composerMod.addMessageQuote(...args);
     const attachFilesDialog = (...args) => composerMod.attachFilesDialog(...args);
+    const attachPaths = (...args) => composerMod.attachPaths(...args);
     const showSkillPicker = (...args) => composerMod.showSkillPicker(...args);
     const attachSkillByName = (...args) => composerMod.attachSkillByName(...args);
     const resizeInput = (...args) => composerMod.resizeInput(...args);
@@ -19480,12 +19537,16 @@ async function requestApproval(session, toolMessage, info) {
                         excludePattern: opts.excludePattern,
                         outputMode: opts.outputMode,
                         context: opts.context,
-                        maxResults: opts.maxResults,
+                        offset: opts.offset,
+                        limit: opts.limit,
+                        includeIgnored: !!input.includeIgnored,
                     });
                 } else {
+                    // 旧后端不支持分页：放大扫描窗口到 offset+limit，由 formatSearchAnswer 本地切片兜底。
+                    const legacyCap = Math.min(1000, opts.offset + opts.limit);
                     result = (opts.pattern && backend.SearchWorkspaceFiltered)
                         ? await backend.SearchWorkspaceFiltered(root, query, !!input.caseSensitive, 1000, opts.pattern)
-                        : await backend.SearchWorkspace(root, query, !!input.caseSensitive, opts.maxResults);
+                        : await backend.SearchWorkspace(root, query, !!input.caseSensitive, opts.pattern ? 1000 : legacyCap);
                 }
                 const rootNorm = aiNormalizePath(root).replace(/\/+$/, '');
                 const filtered = filterSearchResult(result, opts.pattern, rootNorm, globMatchPath);
@@ -19676,6 +19737,8 @@ async function requestApproval(session, toolMessage, info) {
         refreshContext,
         closeModelEditor,
         attachPath,
+        // 外部拖放：整块 AI 面板作为落点，一次可拖多个文件进输入区附件条
+        attachPaths,
         attachSelection,
         referencePath,
         referenceSelection,

@@ -233,7 +233,6 @@ export function buildWorkspaceMenuItems(group, env) {
 export function createAISessionList(ctx) {
     const el = ctx.el;
     const sessionListEl = ctx.sessionListEl;
-    const sessionMoreBtn = ctx.sessionMoreBtn;
     // 会话过滤（侧栏头部漏斗按钮 + 分段下方的过滤行，同文件树的过滤交互）
     const sessionFilterBtn = ctx.sessionFilterBtn;
     const sessionFilterRow = ctx.sessionFilterRow;
@@ -283,7 +282,6 @@ export function createAISessionList(ctx) {
     const vacuumSessionArchive = typeof ctx.vacuumSessionArchive === 'function' ? ctx.vacuumSessionArchive : () => {};
     const newSession = ctx.newSession;
     const newSessionInWorkspace = ctx.newSessionInWorkspace;
-    const openAILogDir = ctx.openAILogDir;
     const showContextMenu = ctx.showContextMenu;
     // 工作区管理菜单的宿主能力（由 main.js 注入；缺省空操作，浮窗/测试不报错）
     const workspaceMenuHost = ctx.workspaceMenu || {};
@@ -899,34 +897,6 @@ export function createAISessionList(ctx) {
         showContextMenu(items, x, y);
     }
 
-    function showSessionListMenu(x, y) {
-        if (!showContextMenu) return;
-        // 不传坐标时按面板头部的「⋯」定位；工作区分组头复用同一菜单，按被点的图标定位。
-        let left = x;
-        let top = y;
-        if (typeof left !== 'number' || typeof top !== 'number') {
-            if (!sessionMoreBtn) return;
-            const rect = sessionMoreBtn.getBoundingClientRect();
-            left = rect.left;
-            top = rect.bottom + 4;
-        }
-        const session = currentSession();
-        showContextMenu([
-            {label: '新建会话', action: () => { ensureOpen(); newSession(); }},
-            {sep: true},
-            {label: session && session.pinned ? '取消置顶当前会话' : '置顶当前会话', disabled: !session || !!(session && session.archivedAt), action: () => toggleSessionPin(session)},
-            {label: '重命名当前会话…', disabled: !session, action: () => renameSession(session)},
-            {label: '设置当前会话分组…', disabled: !session, action: () => setSessionGroup(session)},
-            {label: '导出当前会话…', disabled: !session, action: () => exportSession(session)},
-            {label: '会话数据诊断…', disabled: !session, action: () => showSessionDiagnostics(session)},
-            {label: session && session.archivedAt ? '取消归档当前会话' : '归档当前会话', disabled: !session, action: () => archiveSession(session, !(session && session.archivedAt))},
-            {sep: true},
-            {label: '删除当前会话', danger: true, disabled: !session, action: () => deleteSession(session)},
-            {sep: true},
-            {label: '打开对话日志目录', action: openAILogDir},
-        ], left, top);
-    }
-
     function showWorkspaceMenu(group, x, y) {
         if (!showContextMenu) return;
         const path = group && group.path ? group.path : '';
@@ -970,7 +940,6 @@ export function createAISessionList(ctx) {
         setSessionUnread,
         renderSessionList,
         showSessionMenu,
-        showSessionListMenu,
         showWorkspaceMenu,
         clearSessionUnread,
         refreshBadge,
