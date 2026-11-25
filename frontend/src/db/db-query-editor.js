@@ -91,7 +91,7 @@ try {
     if (ace && typeof ace.edit === 'function') {
         sqlEditor = ace.edit(sqlAceEl);
         sqlEditor.setOptions({showPrintMargin: false, useSoftTabs: true, tabSize: 2});
-        try { sqlEditor.setFontSize((deps.settings && deps.settings.editorFont) || 13); } catch (e) {}
+        try { sqlEditor.setFontSize((deps.settings && deps.settings.editorFont) || 15); } catch (e) {}
         sqlEditor.session.setMode('ace/mode/sql');
         try { sqlEditor.setOption('placeholder', placeholderText(null)); } catch (e) {}
         // 容器脱离/进入 DOM、三栏尺寸变化都要 resize（Ace 只监听 window resize 不够）

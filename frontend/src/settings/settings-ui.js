@@ -89,6 +89,8 @@ const elsSettings = {
     widthVal: document.getElementById('opt-key-width-val'),
     font: document.getElementById('opt-font-size'),
     fontVal: document.getElementById('opt-font-size-val'),
+    editorLineHeight: document.getElementById('opt-editor-line-height'),
+    editorLineHeightVal: document.getElementById('opt-editor-line-height-val'),
     sidebarFont: document.getElementById('opt-sidebar-font'),
     sidebarFontVal: document.getElementById('opt-sidebar-font-val'),
     treeGuides: document.getElementById('opt-tree-guides'),
@@ -670,6 +672,8 @@ function applySettings() {
     elsSettings.widthVal.textContent = String(deps.settings.keyWidth);
     elsSettings.font.value = String(deps.settings.editorFont);
     elsSettings.fontVal.textContent = String(deps.settings.editorFont);
+    if (elsSettings.editorLineHeight) elsSettings.editorLineHeight.value = String(deps.settings.editorLineHeight);
+    if (elsSettings.editorLineHeightVal) elsSettings.editorLineHeightVal.textContent = String(deps.settings.editorLineHeight);
     elsSettings.sidebarFont.value = String(deps.settings.sidebarFont);
     elsSettings.sidebarFontVal.textContent = String(deps.settings.sidebarFont);
     elsSettings.treeGuides.checked = !!deps.settings.treeGuides;
@@ -709,6 +713,9 @@ function applySettings() {
     syncOpenMode();
     syncCloseAction();
     document.documentElement.style.setProperty('--editor-font', deps.settings.editorFont + 'px');
+    // 代码编辑器行高：Ace 从字体度量（measureNode.clientHeight）算行高，measureNode 用 font:inherit
+    // 继承 .ace_editor 的 line-height；变量须在下方 setFontSize（触发度量重算）之前写入。
+    document.documentElement.style.setProperty('--editor-line-height', String(deps.settings.editorLineHeight));
     document.documentElement.style.setProperty('--sidebar-font', deps.settings.sidebarFont + 'px');
     const uiFace = deps.uiFonts.find((f) => f.id === deps.settings.uiFont) || deps.uiFonts[0];
     const editorFace = deps.editorFonts.find((f) => f.id === deps.settings.editorFontFamily) || deps.editorFonts[0];
@@ -734,7 +741,13 @@ function applySettings() {
     elsSettings.writingDailyGoal.value = String(deps.settings.writingDailyGoal || 0);
     if (deps.editor && deps.editor.aceEditor) {
         try {
-            deps.editor.aceEditor.setFontSize(deps.settings.editorFont);
+            const ace = deps.editor.aceEditor;
+            ace.setFontSize(deps.settings.editorFont);
+            // 行高由 --editor-line-height 驱动；setFontSize 在字号未变时会跳过度量重算，
+            // 这里显式触发一次，让 Ace 重新测量 measureNode.clientHeight 并更新每行像素。
+            if (ace.renderer && ace.renderer.$textLayer && typeof ace.renderer.$textLayer.checkForSizeChanges === 'function') {
+                ace.renderer.$textLayer.checkForSizeChanges();
+            }
         } catch (e) {}
     }
     applyCodeWrap();
