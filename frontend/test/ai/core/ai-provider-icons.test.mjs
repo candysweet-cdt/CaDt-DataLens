@@ -35,6 +35,17 @@ test('providerIconSvg：外壳 fill currentColor，未注册返回空串', () =>
     assert.equal(providerIconSvg(undefined), '');
 });
 
+test('providerIconSvg：带渐变定义的图标（qwen）每次渲染 id 唯一且引用自洽', () => {
+    const a = providerIconSvg('qwen', 18);
+    const b = providerIconSvg('qwen', 18);
+    assert.notEqual(a, b, '两次渲染的 defs id 必须不同，避免多实例 id 冲突');
+    const idOf = (svg) => (svg.match(/id="(lobe-icons-qwen-fill[^"]*)"/) || [])[1];
+    const refOf = (svg) => (svg.match(/url\(#(lobe-icons-qwen-fill[^)]*)\)/) || [])[1];
+    assert.ok(idOf(a) && refOf(a), 'qwen svg 应含渐变定义与引用');
+    assert.equal(idOf(a), refOf(a), '同一 svg 内 id 与 url(#) 引用必须一致');
+    assert.notEqual(idOf(a), idOf(b));
+});
+
 test('host 匹配：精确 / 子域 / 端口剥离 / userinfo / 大小写', () => {
     assert.equal(providerIconKeyForHost('https://api.deepseek.com/v1'), 'deepseek');
     assert.equal(providerIconKeyForHost('https://api.deepseek.com:443/v1'), 'deepseek');

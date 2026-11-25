@@ -59,6 +59,8 @@ export function createAIModelSettings(ctx, extras) {
     const queryUsageForAccount = ctx.queryUsageForAccount;
     const switchProfile = ctx.switchProfile;
     const getConfig = ctx.getConfig;
+    // 「更多」菜单里的测试连接：由设置页注入（复用 AITestConnection 通道）
+    const testConnection = typeof extras.testConnection === 'function' ? extras.testConnection : null;
 
     function editorEntryOf(profile) {
         if (!profile) return null;
@@ -146,6 +148,70 @@ export function createAIModelSettings(ctx, extras) {
     }
 
     let dragProfileId = '';
+
+    // 账号卡右侧图标按钮（编辑 / 用量查询 / 更多）：替代原来一整行文字按钮。
+    // 更多菜单含复制 / 测试连接 / 删除，走全局弹层栈（popover），Esc 与外点由栈处理。
+    let cardMenuHandle = null;
+    function iconAction(iconName, tip, onClick) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ai-model-icon-btn';
+        btn.dataset.tip = tip;
+        btn.setAttribute('aria-label', tip);
+        btn.innerHTML = iconSvg(iconName, 14);
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            onClick(event);
+        });
+        return btn;
+    }
+
+    function closeCardMenu() {
+        if (cardMenuHandle) {
+            cardMenuHandle.dispose();
+            cardMenuHandle = null;
+        }
+    }
+
+    function openCardMenu(profile, anchor, event) {
+        closeCardMenu();
+        const rect = (event && event.currentTarget || anchor).getBoundingClientRect();
+        const menu = document.createElement('div');
+        menu.className = 'ai-model-card-menu';
+        const items = [
+            {label: '复制', icon: 'copy', run: () => duplicateModel(profile.id)},
+            {label: '测试连接', icon: 'zap', run: () => {
+                if (typeof testConnection === 'function') testConnection(profile);
+            }},
+            {label: '删除', icon: 'trash', danger: true, run: () => deleteModel(profile.id)},
+        ];
+        for (const item of items) {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'ai-model-card-menu-item' + (item.danger ? ' danger' : '');
+            row.innerHTML = iconSvg(item.icon, 13);
+            const text = document.createElement('span');
+            text.textContent = item.label;
+            row.appendChild(text);
+            row.addEventListener('click', () => {
+                closeCardMenu();
+                item.run();
+            });
+            menu.appendChild(row);
+        }
+        document.body.appendChild(menu);
+        const width = menu.offsetWidth || 132;
+        let left = rect.right - width;
+        let top = rect.bottom + 4;
+        if (top + menu.offsetHeight > window.innerHeight - 8) top = Math.max(8, rect.top - menu.offsetHeight - 4);
+        menu.style.left = Math.max(8, left) + 'px';
+        menu.style.top = top + 'px';
+        cardMenuHandle = overlayStack.open({
+            id: 'ai-model-card-menu', kind: 'popover', el: menu,
+            closeOnOutsideClick: true, anchors: [anchor],
+            onClose: () => { closeCardMenu(); return true; },
+        });
+    }
 
     // 余额行：只在 usage.enabled 时渲染。点击 = 重新查询 + 明细弹层（ctx.queryUsageForAccount）；
     // 失败态红字带原因（详情在弹层里），无缓存显示「待查询」。缓存来自 ai-usage-quota 的快照层。
@@ -243,25 +309,25 @@ export function createAIModelSettings(ctx, extras) {
                 profile.baseURL || '未填写 Base URL',
                 profile.apiKey ? 'Key 已配置' : 'Key 未配置',
             ].join(' · ');
+            // 操作收进卡片右侧 3 个图标：编辑 / 用量查询 / 更多（复制 / 测试连接 / 删除）。
+            // 原「设为当前」整行文字按钮删掉——当前账号由卡片高亮 + 徽标标识，切换走
+            // 模型选择器；「用量配置」入口保留在余额行/未开启账号的用量查询图标里。
             const actions = document.createElement('div');
             actions.className = 'ai-model-actions';
-
-            if (profile.id !== getConfig().activeProfileId) {
-                actions.appendChild(dialogButton('设为当前', 'dlg-btn', () => switchProfile(profile.id)));
-            }
-            // 旧的「查询用量」按钮退役：开启查询的账号走余额行（点击即查 + 明细），
-            // 未开启的不显示任何查询按钮——统一只有「用量配置」入口
-            if (openUsageConfigDialog) {
-                actions.appendChild(dialogButton('用量配置', 'dlg-btn', () => openUsageConfigDialog(profile.id)));
-            } else {
-                actions.appendChild(dialogButton('查询用量', 'dlg-btn', (event) => queryUsageForAccount(profile, event)));
-            }
-            actions.appendChild(dialogButton('编辑', 'dlg-btn', () => openModelEditor(profile.id)));
-            actions.appendChild(dialogButton('复制', 'dlg-btn', () => duplicateModel(profile.id)));
-            actions.appendChild(dialogButton('删除', 'dlg-btn', () => deleteModel(profile.id)));
+            actions.appendChild(iconAction('rename', '编辑账号', () => openModelEditor(profile.id)));
+            actions.appendChild(iconAction('chart', '用量查询', (event) => {
+                if (openUsageConfigDialog) openUsageConfigDialog(profile.id);
+                else queryUsageForAccount(profile, event);
+            }));
+            actions.appendChild(iconAction('more', '更多操作', (event) => openCardMenu(profile, event.currentTarget, event)));
+            // 卡片分左右两栏：左边内容（head + meta + 余额行），右边图标列整体垂直居中。
+            const body = document.createElement('div');
+            body.className = 'ai-model-card-body';
+            body.appendChild(head);
+            body.appendChild(meta);
             const usageLine = buildUsageLine(profile);
-            if (usageLine) card.append(head, meta, usageLine, actions);
-            else card.append(head, meta, actions);
+            if (usageLine) body.appendChild(usageLine);
+            card.append(body, actions);
             setupCardDrag(card, profile);
             opt.modelList.appendChild(card);
         });
@@ -426,10 +492,14 @@ export function createAIModelSettings(ctx, extras) {
         refreshMainView();
     }
 
-    // 编辑器内的模型条目 strip（选中态 + 计数）；删除走 chip 内联 ×，账号只剩一个模型时不显示
+    // 编辑器内的模型条目 strip（选中态 + 计数）；删除走 chip 内联 ×，账号只剩一个模型时不显示。
+    // 空的未填写条目不渲染成 chip：新建账号默认带一条空条目，而多数用户直接「拉取模型列表」
+    // 勾选添加，若把空条目也画出来，用户还得专门删它。空条目仍留在数据层，保存时由
+    // collectEditorEntries 统一清掉。
     function renderModelEntries() {
         const profile = activeProfile();
-        const models = profile && Array.isArray(profile.models) ? profile.models : [];
+        const allModels = profile && Array.isArray(profile.models) ? profile.models : [];
+        const models = allModels.filter((entry) => entry && String(entry.model || '').trim());
         if (opt.modelCount) opt.modelCount.textContent = String(models.length);
         if (!opt.modelEntries) return;
         opt.modelEntries.innerHTML = '';
@@ -479,9 +549,17 @@ export function createAIModelSettings(ctx, extras) {
     function addEditorEntry() {
         const profile = activeProfile();
         if (!profile) return;
-        const entry = defaultModelEntry();
-        profile.models.push(entry);
+        // 复用已有的空条目：新建账号默认带一条空条目，反复点「新增模型」不该堆出多个
+        // （空条目不画 chip，用户点新增就是想填一条）。只有确实没有空条目时才新建。
+        let entry = (profile.models || []).find((item) => !String(item.model || '').trim());
+        if (!entry) {
+            entry = defaultModelEntry();
+            profile.models.push(entry);
+        }
         if (modelEditorState) modelEditorState.entryId = entry.id;
+        // 两个字段一起写：activeModelId 是窗口选择，lastModelId 是账号记忆，
+        // 只写前者下次开编辑器会被 stale 的 lastModelId 覆盖回旧条目。
+        profile.lastModelId = entry.id;
         if (profile.id === getConfig().activeProfileId) getConfig().activeModelId = entry.id;
         saveAIConfig();
         extras.refreshSettingsPane();

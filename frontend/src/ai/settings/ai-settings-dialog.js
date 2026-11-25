@@ -381,7 +381,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.sendKey) opt.sendKey.value = settings.aiSendKey === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
         if (opt.longPaste) opt.longPaste.value = ['off', 'attachment', 'collapse'].includes(settings.aiLongPaste) ? settings.aiLongPaste : 'collapse';
         if (opt.outputLang) opt.outputLang.value = ['zh', 'en', 'auto'].includes(getConfig().outputLanguage) ? getConfig().outputLanguage : 'zh';
-        const chatFont = aiClampInt(settings.aiChatFont, 10, 32, 13);
+        const chatFont = aiClampInt(settings.aiChatFont, 10, 32, 14);
         if (opt.chatFont) opt.chatFont.value = String(chatFont);
         if (opt.chatFontVal) opt.chatFontVal.value = String(chatFont);
         if (opt.chatFontEn) {
@@ -399,6 +399,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.showThinking) opt.showThinking.checked = settings.aiShowThinking !== false;
         if (opt.alwaysCollapse) opt.alwaysCollapse.checked = settings.aiAlwaysCollapse === true;
         if (opt.showUsage) opt.showUsage.checked = settings.aiShowUsage === true;
+        if (opt.showQuotaPill) opt.showQuotaPill.checked = settings.aiShowQuotaPill === true;
         if (opt.msgActions) opt.msgActions.value = settings.aiMsgActions || 'full';
         if (opt.turnMetaAll) opt.turnMetaAll.checked = settings.aiShowEveryTurnMeta === true;
         if (opt.contextSlim) opt.contextSlim.checked = settings.aiContextSlim !== false;
@@ -764,7 +765,7 @@ export function createAISettingsDialog(ctx) {
                 if (!e.ctrlKey || e.altKey || e.metaKey || !e.deltaY) return;
                 e.preventDefault();
                 const step = e.deltaY < 0 ? 1 : -1;
-                setAIChatFont(aiClampInt(settings.aiChatFont, 10, 32, 13) + step, {deferSave: true});
+                setAIChatFont(aiClampInt(settings.aiChatFont, 10, 32, 14) + step, {deferSave: true});
             }, {passive: false});
         }
         if (opt.showThinking) opt.showThinking.addEventListener('change', () => {
@@ -780,6 +781,11 @@ export function createAISettingsDialog(ctx) {
         });
         if (opt.showUsage) opt.showUsage.addEventListener('change', () => {
             settings.aiShowUsage = !!opt.showUsage.checked;
+            saveSettings();
+            applyPanelSettings();
+        });
+        if (opt.showQuotaPill) opt.showQuotaPill.addEventListener('change', () => {
+            settings.aiShowQuotaPill = !!opt.showQuotaPill.checked;
             saveSettings();
             applyPanelSettings();
         });
@@ -1383,6 +1389,13 @@ export function createAISettingsDialog(ctx) {
         openUsageConfigDialog: usageMod.openUsageConfigDialog,
         usageQuota: () => ctx.usageQuota(),
         onUsageQuotaUpdated: ctx.onUsageQuotaUpdated,
+        // 账号卡「更多」菜单里的「测试连接」：复用设置页同一条 AITestConnection 通道
+        testConnection: (profile) => {
+            setSettingsStatus('测试中…');
+            Promise.resolve(backend.AITestConnection(configForProfile(profile)))
+                .then((message) => setSettingsStatus(message || '连接成功', 'ok'))
+                .catch((e) => setSettingsStatus('失败：' + ((e && e.message) || e), 'error'));
+        },
     });
     // 生图与视频模型 pane：自管 DOM（列表 + 编辑器弹窗），refreshSettingsPane 驱动列表刷新
     const genMod = createAIGenSettings(ctx, {setSettingsStatus, refreshSettingsPane});

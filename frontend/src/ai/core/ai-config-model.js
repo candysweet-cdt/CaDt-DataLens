@@ -49,12 +49,26 @@ export function parseTokenAmount(raw) {
     return value > 0 ? value : null;
 }
 
-// 数字回显：能精确表示成整 K / M 时用单位显示（262144 → '256K'），否则原样。
+// 数字回显：统一显示成 K / M，不再回显裸大整数。
+// ① 二进制整数倍优先（档位与配置表口径）：262144 → 256K、1048576 → 1M、1572864 → 1536K；
+// ② 非 1024 整数倍（厂商常见十进制值，如 1000000、960000）按十进制显示：
+//    1000000 → 1M、960000 → 960K，避免出现 0.96M 或裸 1000000。
+// 这样「填 1M 还是填 1000000」回显都是 1M，小于 1M 的一律是 xxxK。
+function decimalCompact(n) {
+    if (n >= 1000000) {
+        const m = n / 1000000;
+        return (Number.isInteger(m) ? m : Number(m.toFixed(2))) + 'M';
+    }
+    const k = n / 1000;
+    return (Number.isInteger(k) ? k : Number(k.toFixed(1))) + 'K';
+}
+
 export function formatTokenAmount(value) {
     const n = Math.round(Number(value));
     if (!Number.isFinite(n) || n <= 0) return '';
     if (n >= 1048576 && n % 1048576 === 0) return (n / 1048576) + 'M';
     if (n >= 1024 && n % 1024 === 0) return (n / 1024) + 'K';
+    if (n >= 1000) return decimalCompact(n);
     return String(n);
 }
 
@@ -400,8 +414,6 @@ export function normalizeUsageConfig(raw) {
     }
     return {
         enabled: src.enabled === true,
-        // 输入区外显：开启后 composer 状态栏显示额度胶囊（默认关，向后兼容）。
-        showInComposer: src.showInComposer === true,
         template,
         planProvider,
         code: typeof src.code === 'string' ? src.code.slice(0, USAGE_CODE_MAX_LENGTH) : '',

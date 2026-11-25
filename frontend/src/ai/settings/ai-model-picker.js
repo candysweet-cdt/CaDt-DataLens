@@ -5,7 +5,7 @@
 import {iconSvg} from '../../core/icons.js';
 import {overlayStack} from '../../core/overlay-stack.js';
 import {createInput} from '../../core/form-controls.js';
-import {ctxLimitTiersFor, effectiveContextWindow, formatTokenAmount, reasoningLevelInfo} from '../core/ai-config-model.js';
+import {ctxLimitTiersFor, formatTokenAmount, normalizeCtxLimit, reasoningLevelInfo} from '../core/ai-config-model.js';
 import {providerIconTileHtml} from '../core/ai-provider-icons.js';
 import {formatUsageCompactText, usageTightSummary} from '../usage/ai-usage-quota.js';
 
@@ -68,23 +68,23 @@ export function createAIModelPicker(ctx) {
             placeholder: '搜索模型…',
             spellcheck: false,
         }).control;
-        searchWrap.append(searchIco, search);
-        const listBox = document.createElement('div');
-        listBox.className = 'ai-model-picker-list';
-        const limitRow = document.createElement('div');
-        limitRow.className = 'ai-model-picker-limits';
-        const foot = document.createElement('div');
-        foot.className = 'ai-model-picker-foot';
+        // 模型设置入口收成搜索框右侧的齿轮图标，不再占底部一整行
         const settingsBtn = document.createElement('button');
         settingsBtn.type = 'button';
         settingsBtn.className = 'ai-model-picker-settings';
-        settingsBtn.textContent = '模型设置…';
+        settingsBtn.dataset.tip = '模型设置';
+        settingsBtn.setAttribute('aria-label', '模型设置');
+        settingsBtn.innerHTML = iconSvg('gear', 14);
         settingsBtn.addEventListener('click', () => {
             closeModelPicker();
             openSettings('models');
         });
-        foot.appendChild(settingsBtn);
-        picker.append(searchWrap, listBox, limitRow, foot);
+        searchWrap.append(searchIco, search, settingsBtn);
+        const listBox = document.createElement('div');
+        listBox.className = 'ai-model-picker-list';
+        const limitRow = document.createElement('div');
+        limitRow.className = 'ai-model-picker-limits';
+        picker.append(searchWrap, listBox, limitRow);
 
         let flatItems = [];
         let navIndex = -1;
@@ -228,7 +228,8 @@ export function createAIModelPicker(ctx) {
 
         // 本次会话上下文上限（会话级，不动模型条目）：档位只列 < 模型窗口的固定档
         //（CTX_LIMIT_TIERS），模型窗口不大于最小档（如上限就 256K 的模型）时整行隐藏。
-        // 思考等级已收进模型行的行内徽标 + 档位条，这里不再有全局推理等级行。
+        // 用滑动条代替一排按钮：从左到右窗口递增，最右 = 默认（用满模型窗口）。
+        // 默认停在最右（不设限），用户按需往左收窄；拖动即时生效并回写会话。
         function renderLimits() {
             const session = currentSession();
             const entry = entryOf(session);
@@ -240,27 +241,44 @@ export function createAIModelPicker(ctx) {
                 return;
             }
             limitRow.style.display = '';
-            const lab = document.createElement('span');
-            lab.className = 'ai-model-picker-limits-label';
-            lab.textContent = '上下文上限';
-            limitRow.appendChild(lab);
-            const seg = document.createElement('div');
-            seg.className = 'ai-model-picker-seggroup';
-            const currentEffective = effectiveContextWindow(base, session.ctxLimit);
-            const options = [[0, '默认']].concat(tiers.map((tier) => [tier, formatTokenAmount(tier)]));
-            for (const [value, label] of options) {
-                const effective = effectiveContextWindow(base, value);
-                const chip = document.createElement('button');
-                chip.type = 'button';
-                chip.className = 'ai-model-picker-seg' + (effective === currentEffective ? ' active' : '');
-                chip.textContent = label;
-                chip.addEventListener('click', () => {
-                    closeModelPicker();
-                    applyCtxLimit(value);
-                });
-                seg.appendChild(chip);
-            }
-            limitRow.appendChild(seg);
+
+            // 档位从小到大排列，末尾追加「默认」（value=0，用满模型窗口）。
+            // 这样滑块最右 = 最大上下文，符合「默认划到最右」的直觉。
+            const steps = tiers.slice().sort((a, b) => a - b).map((tier) => ({
+                value: tier,
+                label: formatTokenAmount(tier) + ' 上下文',
+            }));
+            steps.push({value: 0, label: formatTokenAmount(base) + ' 上下文 · 默认'});
+
+            const wrap = document.createElement('div');
+            wrap.className = 'ai-ctx-slider';
+            const title = document.createElement('div');
+            title.className = 'ai-ctx-slider-title';
+            title.textContent = steps[steps.length - 1].label;
+            const range = createInput({
+                type: 'range',
+                className: 'ai-ctx-slider-range',
+                min: 0,
+                max: steps.length - 1,
+                step: 1,
+                value: steps.length - 1,
+                tabFillPlaceholder: false,
+            }).control;
+            // 当前会话已设上限时，滑块落在对应档位（找不到精确档就停最右的「默认」）。
+            const currentLimit = normalizeCtxLimit(session.ctxLimit);
+            const currentIdx = currentLimit > 0
+                ? steps.findIndex((step) => step.value === currentLimit)
+                : steps.length - 1;
+            range.value = String(currentIdx < 0 ? steps.length - 1 : currentIdx);
+
+            const apply = () => {
+                const step = steps[Number(range.value)] || steps[steps.length - 1];
+                title.textContent = step.label;
+                applyCtxLimit(step.value);
+            };
+            range.addEventListener('input', apply);
+            wrap.append(title, range);
+            limitRow.appendChild(wrap);
         }
 
         search.addEventListener('input', () => {

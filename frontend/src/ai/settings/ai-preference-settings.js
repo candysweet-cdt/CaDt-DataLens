@@ -175,14 +175,15 @@ export function createAIPreferenceSettings(ctx, extras) {
         profile.name = preset.name;
         profile.provider = preset.provider;
         profile.baseURL = preset.baseURL;
-        profile.models[0].model = preset.model;
+        // 不再预置模型 ID：让用户填好 Key 后用「拉取模型列表」自己选。
+        // 预置的 model 只是模板猜测值，常常与实际可用 ID 不符，反而要手动删。
         getConfig().profiles.push(profile);
         getConfig().activeProfileId = profile.id;
         saveAIConfig();
         renderProfileSelect();
         extras.renderModelList();
         extras.openModelEditor(profile.id);
-        extras.setSettingsStatus('预设已添加：' + preset.name + '，请填写 API Key', 'ok');
+        extras.setSettingsStatus('预设已添加：' + preset.name + '，请填写 API Key 并拉取模型列表', 'ok');
     }
 
 return {

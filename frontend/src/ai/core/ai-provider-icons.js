@@ -214,14 +214,26 @@ export function resolveProviderIcon(profile) {
     return providerIconKeyForName(profile.name);
 }
 
+// 每次渲染的渐变/clip id 后缀：品牌 SVG 里 defs 的 id（如 qwen 的渐变）是固定值，
+// 页面上多个账号卡片各渲染一份就会 id 重复，url(#id) 指向文档中首个实例；首个实例被
+// 列表重绘移除后引用悬空 → 图标渲染不出（千问图标曾因此消失）。逐个实例改写唯一 id。
+let iconRenderSeq = 0;
+
 // 图标的完整 <svg> 字符串；fill 默认 currentColor（随主题文字色），Kimi 等自带品牌色
 // path 保留其 fill 属性原样输出。未注册返回 ''。
 export function providerIconSvg(key, size) {
     const icon = PROVIDER_ICONS[key];
     if (!icon) return '';
     const px = Number(size) > 0 ? Math.round(Number(size)) : 18;
+    let body = icon.body;
+    if (/\bid="|url\(#/.test(body)) {
+        const suffix = '-r' + (++iconRenderSeq);
+        // 先给所有 defs id 加后缀，再同步所有 url(#id) 引用，保证同一 svg 内自洽。
+        body = body.replace(/\bid="([^"]+)"/g, (_m, id) => 'id="' + id + suffix + '"')
+            .replace(/url\(#([^)]+)\)/g, (_m, id) => 'url(#' + id + suffix + ')');
+    }
     return '<svg viewBox="' + icon.viewBox + '" width="' + px + '" height="' + px +
-        '" fill="currentColor" aria-hidden="true">' + icon.body + '</svg>';
+        '" fill="currentColor" aria-hidden="true">' + body + '</svg>';
 }
 
 // cc-switch 同款：按 Unicode 码位安全取首字母（≤2 字符，大写）——emoji / UTF-16

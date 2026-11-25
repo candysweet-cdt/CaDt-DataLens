@@ -46,13 +46,18 @@ test('parseTokenAmount：支持 K / M / 纯数字 / 小数 / 千分位，非法�
     assert.equal(parseTokenAmount('0'), null);
 });
 
-test('formatTokenAmount：整 K / M 用单位显示，否则原样', () => {
+test('formatTokenAmount：统一 K/M 显示，小数与裸大整数不再回显', () => {
+    // 二进制整数倍优先（档位口径）
     assert.equal(formatTokenAmount(262144), '256K');
     assert.equal(formatTokenAmount(131072), '128K');
     assert.equal(formatTokenAmount(1048576), '1M');
     assert.equal(formatTokenAmount(1572864), '1536K', '不整除 1M 时退回 K 显示');
     assert.equal(formatTokenAmount(4096), '4K');
-    assert.equal(formatTokenAmount(5000), '5000');
+    // 厂商十进制值：<1M 一律 xxxK，≥1M 用 M；不出现 0.96M / 裸 1000000
+    assert.equal(formatTokenAmount(1000000), '1M', '填 1000000 与填 1M 回显一致');
+    assert.equal(formatTokenAmount(960000), '960K', 'hy4 的 960000 显示成 960K 而非 0.96M');
+    assert.equal(formatTokenAmount(5000), '5K', '小于 1M 的都显示成 xxxK');
+    assert.equal(formatTokenAmount(1050000), '1.05M');
     assert.equal(formatTokenAmount(0), '');
     assert.equal(formatTokenAmount('bad'), '');
 });
