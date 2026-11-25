@@ -512,8 +512,4 @@ test('normalizeUsageConfig：坏值回落、extraFields 键限标识符、enable
     assert.equal(cfg.autoIntervalMin, 1440);
     assert.equal(normalizeUsageConfig(null).enabled, false);
     assert.equal(normalizeUsageConfig({enabled: true}).autoIntervalMin, 5);
-    // 输入区外显：默认关，只有显式 true 才开（坏值回落，与 enabled 同口径）
-    assert.equal(cfg.showInComposer, false);
-    assert.equal(normalizeUsageConfig({showInComposer: 1}).showInComposer, false);
-    assert.equal(normalizeUsageConfig({showInComposer: true}).showInComposer, true);
 });

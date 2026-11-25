@@ -312,22 +312,6 @@ export function createAIUsageConfigDialog(ctx, extras) {
         const enableRow = dialogNode('div', 'ai-usage-enable-row');
         enableRow.append(dialogNode('span', 'ai-usage-enable-label', '启用用量查询'), switchEl);
         enableSection.appendChild(enableRow);
-
-        // 输入区外显：开启后 composer 状态栏显示额度胶囊（取当前会话账号的「最紧」单值）。
-        // 与启用开关同处一块，未启用查询时外显也无数据可显示——提示文案随状态更新。
-        const {element: composerSwitchEl, control: composerControl} = createSwitch({
-            checked: draft.showInComposer,
-            onChange: (event) => {
-                state.draft.showInComposer = event.target.checked;
-            },
-        });
-        const composerRow = dialogNode('div', 'ai-usage-enable-row');
-        const composerLabel = dialogNode('span', 'ai-usage-enable-label', '在输入区显示额度胶囊');
-        composerRow.append(composerLabel, composerSwitchEl);
-        enableSection.appendChild(composerRow);
-        enableSection.appendChild(dialogNode('div', 'ai-usage-hint',
-            '开启后，AI 输入框底部状态栏显示简要额度；点击胶囊可查看详细用量。需先启用用量查询。'));
-        composerControl.checked = draft.showInComposer;
         enableControl.checked = draft.enabled;
         body.appendChild(enableSection);
 

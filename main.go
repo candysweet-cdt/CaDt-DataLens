@@ -1,7 +1,5 @@
 package main
 
-// helloworld
-
 import (
 	"embed"
 	"fmt"

@@ -242,8 +242,25 @@ func TestInstallPluginFromUrlReal(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("本机无 git，跳过")
 	}
+	// 用本地临时 git 仓库替代外部示例仓库：照样真实覆盖 clone → 安装链路，
+	// 但不依赖任何外部仓库是否还存在（原 bak-json 示例仓库已废弃）。
+	srcRepo := t.TempDir()
+	writeTestPlugin(t, srcRepo, "bak-json")
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "."},
+		{"-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-qm", "plugin"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = srcRepo
+		executil.HideCommandWindow(cmd)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("初始化本地测试仓库失败（git %v）: %v\n%s", args, err, strings.TrimSpace(string(out)))
+		}
+	}
+	repoURL := "file:///" + filepath.ToSlash(srcRepo)
 	root := t.TempDir()
-	info, err := installPluginFromUrl(root, "https://gitee.com/cadt-datalens-plugins/bak-json")
+	info, err := installPluginFromUrl(root, repoURL)
 	if err != nil {
 		t.Fatalf("从仓库地址安装失败: %v", err)
 	}
