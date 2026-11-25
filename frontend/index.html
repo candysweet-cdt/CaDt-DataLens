@@ -1520,7 +1520,7 @@
                             </div>
                         </div>
 
-                        <div class="set-group-title">AI 工具权限</div>
+                        <div class="set-group-title" id="setgrp-ai-tool-perms">AI 工具权限</div>
                         <div class="set-card">
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">工作日志<button type="button" class="info-tip" data-tip="追加写入工作区 .cadt/logs/（根索引每月一行 → 月索引每条一行 → 日期文件存正文）；只记标题与一句话摘要，不含正文与敏感信息。" aria-label="工作日志说明"></button></div><div class="set-desc">允许 AI 使用 write_worklog 记录工作日志</div></div>
@@ -1718,9 +1718,10 @@
                         <div class="set-group-title">命令模板（可选，按语言覆盖默认命令）</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">适用语言</div></div>
+                                <div class="set-main"><div class="set-title">适用语言</div><div class="set-desc">$TOOL 取自「编程语言」页检测到的环境</div></div>
                                 <div class="set-control">
                                     <select id="run-template-lang" class="opt-select"></select>
+                                    <button type="button" class="dlg-btn" data-open-pane-from="run-template-lang" data-open-pane-prefix="lang-">检测运行环境…</button>
                                 </div>
                             </div>
                             <div class="set-row-top">

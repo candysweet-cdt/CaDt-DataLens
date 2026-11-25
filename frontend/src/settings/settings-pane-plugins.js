@@ -435,7 +435,14 @@ async function renderPluginsPane() {
                 });
                 head.append(settingsBtn);
             }
-            head.append(name, ver, author, license, enabledLabel, del);
+            // 正交维度互跳：插件生命周期在这里管，「能否向 AI 提供工具 + 逐工具授权」在权限页
+            const permBtn = document.createElement('button');
+            permBtn.type = 'button';
+            permBtn.className = 'dlg-btn plugin-ai-perms';
+            permBtn.setAttribute('data-open-pane', 'permissions');
+            permBtn.setAttribute('data-open-anchor', 'setgrp-ai-tool-perms');
+            permBtn.textContent = 'AI 工具权限…';
+            head.append(name, ver, author, license, enabledLabel, permBtn, del);
             const desc = document.createElement('div');
             desc.className = 'plugin-desc';
             desc.textContent = p.description || '无描述';

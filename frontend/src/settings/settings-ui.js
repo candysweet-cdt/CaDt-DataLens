@@ -1108,12 +1108,37 @@ themeRegistry.subscribe(refreshThemes);
 // openAppPageTab 由组合根在后面定义（getter 延迟求值），typeof 判断必须放在回调里避开 TDZ。
 if (elsDialogs.settings) {
     elsDialogs.settings.addEventListener('click', (e) => {
-        const btn = e.target && e.target.closest ? e.target.closest('[data-open-app-page]') : null;
-        if (!btn) return;
-        const pageId = btn.getAttribute('data-open-app-page');
-        if (!pageId || typeof deps.openAppPageTab !== 'function') return;
-        deps.openAppPageTab(pageId);
-        dlgMod.closeDialogs();
+        const appBtn = e.target && e.target.closest ? e.target.closest('[data-open-app-page]') : null;
+        if (appBtn) {
+            const pageId = appBtn.getAttribute('data-open-app-page');
+            if (!pageId || typeof deps.openAppPageTab !== 'function') return;
+            deps.openAppPageTab(pageId);
+            dlgMod.closeDialogs();
+            return;
+        }
+        // 正交维度互跳（语言↔运行、插件↔权限）：只切 pane，不关设置弹层。
+        const paneBtn = e.target && e.target.closest ? e.target.closest('[data-open-pane],[data-open-pane-from]') : null;
+        if (paneBtn) {
+            let pane = paneBtn.getAttribute('data-open-pane');
+            const fromId = paneBtn.getAttribute('data-open-pane-from');
+            if (fromId) {
+                const src = document.getElementById(fromId);
+                const prefix = paneBtn.getAttribute('data-open-pane-prefix') || '';
+                if (src && src.value) pane = prefix + src.value;
+            }
+            if (!pane) return;
+            selectSettingsPane(pane);
+            const anchorId = paneBtn.getAttribute('data-open-anchor');
+            if (anchorId) {
+                requestAnimationFrame(() => {
+                    const group = document.getElementById(anchorId);
+                    if (!group || !group.isConnected) return;
+                    group.scrollIntoView({block: 'center'});
+                    group.classList.add('settings-hit');
+                    setTimeout(() => group.classList.remove('settings-hit'), 1600);
+                });
+            }
+        }
     });
 }
 

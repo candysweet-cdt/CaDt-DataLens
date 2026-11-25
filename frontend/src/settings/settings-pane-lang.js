@@ -123,6 +123,14 @@ function renderLangPane(id) {
     sub.className = 'fmt-pane-sub';
     sub.textContent = '环境信息（解释器 / 编译器与配套工具链的路径和版本），缓存到本地；按 F5 运行当前文件时用的就是这里选中的环境';
     pane.append(title, sub);
+    // 正交维度互跳：这里配「环境在哪」，运行方式（命令模板 / 运行配置）在「运行」页
+    const jump = document.createElement('button');
+    jump.type = 'button';
+    jump.className = 'dlg-btn';
+    jump.setAttribute('data-open-pane', 'run');
+    jump.textContent = '命令模板 / 运行配置…';
+    jump.style.margin = '6px 0';
+    pane.appendChild(jump);
 
     for (const tool of lang.tools) {
         const env = toolEnvFor(id, tool.id);
