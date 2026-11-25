@@ -76,6 +76,9 @@ import {createSessionRestore} from './shell/session-restore.js';
 import {createBrowserTabRestore} from './shell/browser-tab-restore.js';
 import {decideSessionOpen} from './ai/session/ai-session-scope.js';
 import {createAppActions} from './shell/app-actions.js';
+import {createFileDropRouter} from './shell/file-drop-router.js';
+import {installDropHighlightFallback} from './shell/file-drop-highlight.js';
+import {installInternalDrop} from './shell/internal-drop.js';
 import {createQuickSwitch} from './shell/quick-switch.js';
 import {createSchemaPanel} from './editor/schema-panel.js';
 import {createDiffDialog} from './editor/diff-dialog.js';
@@ -723,6 +726,7 @@ const APP_SETTING_RULES = {
     showCadDir: {type: 'bool'},
     sidebarFont: {type: 'number', min: 10, max: 20},
     editorFont: {type: 'number', min: 10, max: 24},
+    editorLineHeight: {type: 'number', min: 1.2, max: 2},
     treeExpandDefault: {type: 'enum', values: ['expand', 'collapse']},
     openMode: {type: 'enum', values: ['tab', 'window']},
     theme: {type: 'theme'},
@@ -2231,7 +2235,9 @@ const defaultSettings = {
     gitCommitAreaHeight: 0,
     codeGuides: false,
     alwaysOnTop: false,
-    editorFont: 13,
+    editorFont: 15,
+    // 代码编辑器行高倍数（默认 1.5，对齐 JetBrains 观感；比 Ace 默认 1.3 松）
+    editorLineHeight: 1.5,
     codeWrap: false,
     // 编辑器补全（docs/finished-plans/editor-completion.md §8/§15.2；偏好键，默认跨窗同步）。
     // live「输入时自动弹出」默认关：vendored bundle 的 live afterExec 路径实测不可靠
@@ -2279,7 +2285,7 @@ const defaultSettings = {
     aiSendKey: 'enter',
     // 长文本粘贴模式：collapse 折叠为可点击胶囊（默认）/ attachment 转附件 / off 原样键入
     aiLongPaste: 'collapse',
-    aiChatFont: 13,
+    aiChatFont: 14,
     aiChatFontEn: 'follow',
     aiChatFontCjk: 'follow',
     aiChatCodeFont: 'follow',
@@ -2290,6 +2296,8 @@ const defaultSettings = {
     // 用 get_settings 查当前状态，缺省不存在会被误读成「版本不支持」（2026-11-22 审查）
     aiCognition: false,
     aiShowUsage: true,
+    // composer 状态栏额度胶囊（全局外显开关，默认关；需账号启用用量查询才有数据）
+    aiShowQuotaPill: false,
     // 回复操作按钮颗粒度：full 全部完整出现（默认）/ mid-basic 中间步骤只留复制+回退 / last-only 只在最后一条显示
     aiMsgActions: 'full',
     aiAssistantCard: false,
@@ -2396,6 +2404,8 @@ if (!uiFonts.some((f) => f.id === settings.uiFont)) settings.uiFont = 'inter';
 if (!isValidKeyStyleId(settings.keyStyle)) settings.keyStyle = DEFAULT_KEY_STYLE;
 keymap.setStyle(settings.keyStyle);
 if (!editorFonts.some((f) => f.id === settings.editorFontFamily)) settings.editorFontFamily = 'jetbrains';
+// 编辑器行高倍数：非法值回落 1.5，夹在 1.2–2（与设置滑块范围一致）
+settings.editorLineHeight = Math.min(2, Math.max(1.2, Number(settings.editorLineHeight) || 1.5));
 if (!cjkFonts.some((f) => f.id === settings.uiCjkFont)) settings.uiCjkFont = 'auto';
 if (!cjkFonts.some((f) => f.id === settings.editorCjkFont)) settings.editorCjkFont = 'auto';
 settings.autoSave = !!settings.autoSave;
@@ -2485,12 +2495,20 @@ settings.aiPanelSide = settings.aiPanelSide === 'left' ? 'left' : 'right';
 settings.aiSendKey = settings.aiSendKey === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
 // 长文本粘贴模式（三档，非法值回落 collapse）
 settings.aiLongPaste = ['off', 'attachment', 'collapse'].includes(settings.aiLongPaste) ? settings.aiLongPaste : 'collapse';
-settings.aiChatFont = Math.min(32, Math.max(10, Number(settings.aiChatFont) || 13));
+// 2026-11-25 出厂字号调整（编辑器 13 → 15、聊天 13 → 14）：存量配置里仍停在旧出厂值的各跟一次，
+// 用户显式选过别的值不动；迁移只跑一次（flag 落进 localStorage，之后不再干预）。
+if (settings.fontDefaults15Migrated !== true) {
+    if (Number(settings.editorFont) === 13) settings.editorFont = 15;
+    if (Number(settings.aiChatFont) === 13) settings.aiChatFont = 14;
+    settings.fontDefaults15Migrated = true;
+}
+settings.aiChatFont = Math.min(32, Math.max(10, Number(settings.aiChatFont) || 14));
 for (const key of ['aiChatFontEn', 'aiChatFontCjk', 'aiChatCodeFont']) {
     if (typeof settings[key] !== 'string' || !settings[key]) settings[key] = 'follow';
 }
 settings.aiShowThinking = settings.aiShowThinking !== false;
 settings.aiShowUsage = settings.aiShowUsage !== false;
+settings.aiShowQuotaPill = settings.aiShowQuotaPill === true;
 // 回复操作按钮颗粒度（三档，非法值回落 full）
 settings.aiMsgActions = ['full', 'mid-basic', 'last-only'].includes(settings.aiMsgActions) ? settings.aiMsgActions : 'full';
 settings.aiAssistantCard = settings.aiAssistantCard === true;
@@ -3831,6 +3849,28 @@ function aiReferencePath(path, name) {
     aiPanel.referencePath(path, name || '');
 }
 
+// 外部拖放（整块 AI 面板是落点，见 shell/file-drop-router.js）：把一批文件附加进输入区。
+// 图片走降采样图片通道、视频走 base64 视频通道、其余按文本读（读不了正文自动降级为路径引用）。
+// 群聊视图没有附件能力——明确说一句，而不是静默把附件塞进看不见的会话输入区。
+function attachPathsToAI(paths) {
+    const list = Array.isArray(paths) ? paths.filter(Boolean) : [];
+    if (!list.length) return Promise.resolve();
+    if (!aiPanel) initAIPanel();
+    if (!aiPanel || typeof aiPanel.attachPaths !== 'function') {
+        flash('AI 面板不可用', true);
+        return Promise.resolve();
+    }
+    const panelEl = document.getElementById('ai-panel');
+    if (panelEl && panelEl.classList.contains('ai-group-mode')) {
+        flash('群聊视图暂不支持附件：切回普通会话后再把文件拖进来', true);
+        return Promise.resolve();
+    }
+    aiPanel.open(true);
+    return Promise.resolve(aiPanel.attachPaths(list)).catch((e) => {
+        flash('附加失败：' + ((e && e.message) || e), true);
+    });
+}
+
 // 运行面板「发给 AI 分析」：只预填输入框，发送与否由用户决定（不自动触发模型调用）
 function openAIPanelWithDraft(text) {
     if (!aiPanel) initAIPanel();
@@ -4559,7 +4599,6 @@ function initExplorer() {
         isSupported: isSupportedFile,
         onContextMenu: (info, x, y) => showExplorerMenu(info, x, y),
         onMove: (items, destDir) => moveEntriesByDrag(items, destDir),
-        onExternalDrop: (destDir) => setPendingExternalDrop(destDir),
         onToggleFilter: toggleSidebarFilter,
         canDrag: () => !settings.readOnlyMode,
         onModeChange: (mode) => {
@@ -5398,6 +5437,10 @@ elsSettings.font.addEventListener('input', () => {
     settings.editorFont = Number(elsSettings.font.value);
     applySettings();
 });
+elsSettings.editorLineHeight.addEventListener('input', () => {
+    settings.editorLineHeight = Number(elsSettings.editorLineHeight.value);
+    applySettings();
+});
 elsSettings.sidebarFont.addEventListener('input', () => {
     settings.sidebarFont = Number(elsSettings.sidebarFont.value);
     applySettings();
@@ -5782,7 +5825,7 @@ const appActions = createAppActions({
     get openPath() { return openPath; },
     get rt() { return rt; },
 });
-const {copyExternalIntoDir, exitApp, getPendingExternalDrop, parentDirOf, readRecentOpen, recentOpenMenuItems, rememberRecentOpen, setPendingExternalDrop, setPendingExternalDropValue} = appActions;
+const {copyExternalIntoDir, exitApp, parentDirOf, readRecentOpen, recentOpenMenuItems, rememberRecentOpen} = appActions;
 const sessionRestore = createSessionRestore({
     get setFocusedGroupId() { return setFocusedGroupId; },
     get setSplitRoot() { return setSplitRoot; },
@@ -6834,7 +6877,8 @@ window.addEventListener('keyup', (e) => {
 
 for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
     window.addEventListener(type, (e) => {
-        if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+        // dragover 高频：indexOf 避免 Array.from 每次分配临时数组
+        if (e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.indexOf('Files') >= 0) {
             e.preventDefault();
         }
     }, true);
@@ -6881,21 +6925,35 @@ if (rt) {
                 }
             });
     });
-    // Wails 文件拖放：注册窗口级 dragover/drop 监听（不注册就收不到任何外部拖放），
-    // useDropTarget=false 让整个窗口都接受；回调拿到的路径已由 Go 侧解析好
-    // 文件拖放：v3 的 drop 只回调 Go 侧监听，Go 转成本窗口事件（window_factory.go）
-    // 后经事件桥按 sender 过滤消费（旧 rt.OnFileDrop 通道在 v3 不存在）。
+    // 外部文件拖放：Go 侧把落点信息（data-file-drop-target / data-drop-dir）随事件带回
+    //（window_factory.go + window_drop.go），这里统一按落点分流——
+    // 编辑区打开文件 / 文件树复制进目录 / 数据库面板导入 / AI 面板附加，未标注区域无效果。
+    const dropRouter = createFileDropRouter({
+        get flash() { return flash; },
+        get openPaths() { return openPaths; },
+        get copyIntoDir() { return copyExternalIntoDir; },
+        get workspaceFolder() { return workspaceFolder; },
+        get dbDrop() { return (dbPaths) => (dbUi && typeof dbUi.handleDropPaths === 'function' ? dbUi.handleDropPaths(dbPaths) : Promise.resolve()); },
+        get aiAttach() { return attachPathsToAI; },
+    });
+    // 兜底清理高亮：Wails runtime 的 dragleave 在「离开窗口」时故意不处理、也没有 dragend，
+    // 拖出窗口/取消时 file-drop-target-active 会永久残留（遮罩一直挂着）。心跳 + 边界事件补一刀。
+    installDropHighlightFallback(window, document);
+    // 应用内拖拽（文件树行 → 编辑区 / AI 面板 / 数据库面板）：走与 OS 外部拖放相同的落点遮罩与路由。
+    // 落点 route 直接喂给 dropRouter（它按 editor/files/db/ai 分派），复用同一套处理器。
+    installInternalDrop(window, document, {
+        onDrop: (paths, route) => {
+            if (!route) return;
+            dropRouter.handle({filenames: paths, target: route});
+        },
+    });
     appEvents.onWindow('app-file-drop', (data) => {
-        const paths = (data && data.filenames) || [];
-        if (!Array.isArray(paths) || !paths.length) return;
-        // 文件树目录行的外部拖放：先复制进目录，而不是打开
-        const pending = getPendingExternalDrop();
-        if (pending && Date.now() - pending.at < 5000) {
-            setPendingExternalDropValue(null);
-            copyExternalIntoDir(paths, pending.destDir);
-            return;
-        }
-        openPaths(paths);
+        // 真正的 drop 已到，遮罩该立即消失（不等兜底心跳），与路由并行清一次。
+        const routerResult = dropRouter.handle(data);
+        try {
+            document.querySelectorAll('.file-drop-target-active').forEach((el) => el.classList.remove('file-drop-target-active'));
+        } catch (e) {}
+        return routerResult;
     });
     // 关窗/退出确认文案（Go 侧 beforeClose 与显式退出共用同一份理由）。
     // 来源分组：AI 回合 / 后台命令作业 / 终端；terms 只数 shell 里有活命令进程的终端。

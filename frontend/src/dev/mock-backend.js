@@ -1646,6 +1646,17 @@ const mockBackend = {
     async DBTestConnection(cfg) {
         return cfg && cfg.kind === 'redis' ? 'Redis 7.2（mock）' : 'MySQL 8.0（mock）';
     },
+    // 连接配置文件导入（dev 下演示「导入一条 + 跳过一条」，不读磁盘）
+    async DBImportConnections(path) {
+        return {
+            imported: [{
+                id: 'mock-dbc-imported', name: '导入的演示库（' + String(path || '').split(/[\\/]/).pop() + '）',
+                kind: 'mysql', host: '127.0.0.1', port: 3306, database: '', user: 'demo', allowEdit: false, updatedAt: Date.now(),
+            }],
+            updated: [],
+            skipped: [{name: 'demo-redis', reason: '演示模式：跳过条目'}],
+        };
+    },
     async DBPreviewChanges(id, changes) {
         return (changes && changes.updates || []).map((u) => ({
             kind: 'update',
@@ -2099,8 +2110,12 @@ const mockBackend = {
     // includeIgnored：mockFiles 都是样本文件、无目录忽略表，接收参数但无需过滤（对齐参数面）。
     async SearchWorkspaceAdvanced(root, query, opts = {}) {
         const text = String(query == null ? '' : query);
-        const limit = Math.max(1, Math.min(Number(opts.maxResults) || 200, 1000));
-        if (!text) return {hits: [], truncated: false, files: 0};
+        // 分页：offset/limit 与 Go 同口径；旧 maxResults 作为 limit 兼容别名。
+        const legacy = Number(opts.maxResults);
+        const limitRaw = Number(opts.limit) || (Number.isFinite(legacy) && legacy > 0 ? legacy : 50);
+        const limit = Math.max(1, Math.min(limitRaw, 1000));
+        const offset = Math.max(0, Number(opts.offset) || 0);
+        if (!text) return {hits: [], truncated: false, files: 0, total: 0, returned: 0, offset};
         const caseSensitive = !!opts.caseSensitive;
         const context = Math.max(0, Math.min(Number(opts.context) || 0, 3));
         const mode = ['content', 'files', 'count'].includes(opts.outputMode) ? opts.outputMode : 'content';
@@ -2127,7 +2142,7 @@ const mockBackend = {
             if (opts.excludePattern && mockGlobMatch(opts.excludePattern, name, name)) continue;
             files++;
             const lines = String(item.content || '').split('\n').map((line) => line.replace(/\r$/, ''));
-            for (let i = 0; i < lines.length && hits.length < limit; i++) {
+            for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
                 if (!line) continue;
                 const spans = [];
@@ -2167,18 +2182,26 @@ const mockBackend = {
                         before,
                         after,
                     });
-                    if (hits.length >= limit) break;
                 }
             }
         }
-        const result = {hits, truncated: hits.length >= limit, files};
+        const total = hits.length;
+        const page = hits.slice(offset, offset + limit);
+        const result = {hits: page, truncated: total > offset + limit, files, total, returned: page.length, offset};
         if (mode === 'files') {
-            result.fileList = [...new Set(hits.map((hit) => hit.path))];
+            // 与 Go applyPagination 同口径：先对全量命中去重成文件清单，再按 offset/limit 切文件。
+            const allFiles = [...new Set(hits.map((hit) => hit.path))];
+            result.fileList = allFiles.slice(offset, offset + limit);
+            result.total = allFiles.length;
+            result.returned = result.fileList.length;
             result.hits = [];
         } else if (mode === 'count') {
             const index = new Map();
             for (const hit of hits) index.set(hit.path, (index.get(hit.path) || 0) + 1);
-            result.counts = [...index].map(([path, count]) => ({path, count}));
+            const allCounts = [...index].map(([path, count]) => ({path, count}));
+            result.counts = allCounts.slice(offset, offset + limit);
+            result.total = allCounts.length;
+            result.returned = result.counts.length;
             result.hits = [];
         }
         return result;

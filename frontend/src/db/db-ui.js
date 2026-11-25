@@ -15,6 +15,7 @@ import {createInput, createSwitch} from '../core/form-controls.js';
 import {overlayStack} from '../core/overlay-stack.js';
 import {getPluginDbDrivers} from '../shell/plugin-db-drivers.js';
 import {openConnectionsManager, confirmDeleteConnection} from './db-connections.js';
+import {createDbDropHandler} from './db-drop.js';
 import {isPluginDbKind, openPluginSession, pluginDbDriverOf, savePluginSecrets} from './db-plugin.js';
 import {createDbSessionTree} from './db-session-tree.js';
 import {disconnectSession, getSessionState} from './db-sessions.js';
@@ -89,27 +90,66 @@ async function globalConnections() {
 
 // ---------- 添加入口 ----------
 
+// samePathKey 路径比较键：Windows 下大小写不敏感、反斜杠归一。
+function samePathKey(path) {
+    return String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+// findSqliteEntry 当前工作区清单里指向同一库文件的 sqlite 条目（拖放去重用）。
+function findSqliteEntry(path) {
+    const key = samePathKey(path);
+    if (!key) return null;
+    return listForWorkspace().find((e) => e.kind === 'sqlite' && e.path && samePathKey(e.path) === key) || null;
+}
+
+// addSqliteEntry sqlite 条目的唯一建法（对话框 / 拖放共用）：默认只读，写权限由行菜单显式开启。
+function addSqliteEntry(path, opts) {
+    const target = String(path || '').trim();
+    if (!target) return null;
+    const entry = {
+        id: newEntryId(),
+        workspace: currentWorkspace(),
+        kind: 'sqlite',
+        path: target,
+        name: basenameOf(target),
+        allowEdit: !!(opts && opts.allowEdit === true),
+        addedAt: Date.now(),
+    };
+    addEntry(entry);
+    renderSidebar();
+    return entry;
+}
+
+// ensureConnectionEntry 把一条全局连接挂进当前工作区清单（已有则直接返回），供导入后「并打开」用。
+function ensureConnectionEntry(cfg) {
+    if (!cfg || !cfg.id) return null;
+    const existing = listForWorkspace().find((e) => (e.kind === 'mysql' || e.kind === 'mariadb' || e.kind === 'redis')
+        && e.connectionId === cfg.id);
+    if (existing) return existing;
+    const entry = {
+        id: newEntryId(),
+        workspace: currentWorkspace(),
+        kind: cfg.kind === 'redis' ? 'redis' : 'mysql',
+        connectionId: cfg.id,
+        name: cfg.name || '',
+        addedAt: Date.now(),
+    };
+    addEntry(entry);
+    return entry;
+}
+
 async function addSqlite() {
     const pick = await deps.backend.ShowOpenFileDialog('选择 SQLite 数据库',
         'SQLite 数据库 (*.db;*.sqlite;*.sqlite3)|*.db;*.sqlite;*.sqlite3|所有文件 (*.*)|*.*');
     const path = String(pick || '');
     if (!path) return;
-    const dup = listForWorkspace().find((e) => e.kind === 'sqlite' && e.path === path);
+    const dup = findSqliteEntry(path);
     if (dup) {
         deps.flash('已在工作区清单里：' + dup.name);
         return;
     }
-    addEntry({
-        id: 'wsdb-' + Date.now() + '-' + Math.floor(Math.random() * 1e6),
-        workspace: currentWorkspace(),
-        kind: 'sqlite',
-        path,
-        name: basenameOf(path),
-        allowEdit: false,
-        addedAt: Date.now(),
-    });
-    deps.flash('已添加数据库：' + basenameOf(path));
-    renderSidebar();
+    const entry = addSqliteEntry(path, {allowEdit: false});
+    if (entry) deps.flash('已添加数据库：' + entry.name);
 }
 
 // 新建空库文件（方案 §11.9）：保存对话框选路径 → Go 建库（存在即报错，绝不覆盖）
@@ -631,6 +671,23 @@ const tree = createDbSessionTree({
     deleteByPrefixConfirm: (entry, db, prefix) => redisDeleteByPrefixConfirm(deps, entry, db, prefix),
 });
 
+// 外部拖放落点（shell/file-drop-router.js 分派进来）：SQLite 库文件 → 只读加入并展开；
+// 连接配置文件 → Go 侧导入后挂进工作区并展开。清单读写与 id 生成留在本文件，db-drop 只管顺序与提示。
+const dropHandler = createDbDropHandler({
+    isEnabled: () => !!getSettings().dbToolsEnabled,
+    baseNameOf: basenameOf,
+    findSqliteEntry,
+    addSqliteEntry: (path) => addSqliteEntry(path, {allowEdit: false}),
+    removeEntry: (id) => {
+        removeEntry(id);
+        renderSidebar();
+    },
+    ensureConnectionEntry,
+    expandEntry: (entry) => tree.expandEntry(entry),
+    importConnections: (path) => deps.backend.DBImportConnections(path),
+    flash: (message, isError) => deps.flash(message, isError),
+});
+
 function renderGate(host) {
     const wrap = document.createElement('div');
     wrap.className = 'db-gate db-gate-side';
@@ -684,6 +741,9 @@ function renderSidebar() {
 
 return {
     renderSidebar,
+    /** 外部拖放处理器（main.js 经 shell/file-drop-router.js 调用：handle(paths)） */
+    dropHandler,
+    handleDropPaths: (paths) => dropHandler.handle(paths),
     /** 暴露给右键测试 / 后续入口复用 */
     openDbTableTab: (entry, db, obj) => deps.openDbTableTab(entry, db, obj),
 };

@@ -9,6 +9,7 @@ import {prepareImagePayload, isReadableImagePath} from '../tools/ai-image-encode
 import {attachmentPathHint} from '../tools/ai-file-tools.js';
 import {checkRequestBudget, checkSourceBatch, DEFAULT_IMAGE_LIMITS} from '../tools/ai-image-policy.js';
 import {AI_QUOTE_KIND, quoteChipLabel, quoteCardExcerpt, quoteFullDoc} from './ai-quote.js';
+import {dedupeAttachPaths, attachSummary} from './ai-attach-batch.js';
 import {normalizePasteMode, shouldFoldPaste, makePasteMarker, makePasteEntry, scanPasteMarkers,
     markerAtCursor, buildPasteMirrorHtml, expandPasteMarkers, pasteSummary, formatPasteTime} from './ai-paste.js';
 import {iconSvg} from '../../core/icons.js';
@@ -401,7 +402,8 @@ export function createAIComposer(ctx) {
         const dataURL = await readVideoFile(path);
         const payload = aiVideoFromSrc(dataURL, String(path).split(/[\\/]/).pop());
         if (!payload) throw new Error('不是支持的 mp4 视频');
-        return {kind: 'video', label: payload.name, ...payload};
+        // path 只用于「同一次拖放里别重复附加同一个文件」的去重，不进模型载荷
+        return {kind: 'video', label: payload.name, path, ...payload};
     }
 
     async function attachVideoPath(path) {
@@ -547,6 +549,8 @@ export function createAIComposer(ctx) {
         const prepared = await prepareImageAttachment(file);
         prepared.kind = 'image';
         prepared.label = prepared.name;
+        // path 只用于批内去重（图片附件按 dataURL 走，模型侧与粘贴的图片同构）
+        prepared.path = path;
         return prepared;
     }
 
@@ -663,6 +667,46 @@ export function createAIComposer(ctx) {
         if (isReadableVideoPath(path)) return attachmentVideoFromPath(path);
         if (isReadableImagePath(path)) return attachmentImageFromPath(path, opts);
         return attachmentTextFromPath(path);
+    }
+
+    // 外部拖放批量附加（整块 AI 面板都是落点，见 shell/file-drop-router.js）：
+    // 按拖入顺序逐个构造附件 → addAttachment；某类触发上限后同批同类静默跳过，
+    // 结束只汇总一次提示（20 张图刷 20 条红字比不看提示更糟）。
+    async function attachPaths(paths, opts) {
+        const existing = attachments.filter((item) => item && item.path).map((item) => item.path);
+        const batch = dedupeAttachPaths(paths, existing);
+        const blocked = new Set(); // 'image' | 'video' | 'other'：已触上限，后续同类不再尝试
+        let attached = 0;
+        let skipped = batch.skipped;
+        for (const path of batch.paths) {
+            const kind = isReadableVideoPath(path) ? 'video' : (isReadableImagePath(path) ? 'image' : 'other');
+            if (blocked.has(kind)) {
+                skipped++;
+                continue;
+            }
+            try {
+                const item = await attachmentFromPath(path, opts);
+                if (!item || !addAttachment(item)) {
+                    // 图片/视频的上限是「每条消息的张数/体积」，一旦触顶后续同类必然也失败，
+                    // 记下来静默跳过；文本类是逐条判断（总量上限 / 重复），不封锁整类。
+                    if (kind === 'image' || kind === 'video') blocked.add(kind);
+                    skipped++;
+                    continue;
+                }
+                attached++;
+            } catch (e) {
+                skipped++;
+                if (kind === 'image' || kind === 'video') blocked.add(kind);
+                flash(e && e.sourceCheck ? e.message : '附加失败：' + ((e && e.message) || e), true);
+            }
+        }
+        const summary = attachSummary(attached, skipped);
+        if (summary) flash(summary, !attached);
+        if (attached) {
+            renderAttachments();
+            el.input && el.input.focus();
+        }
+        return {attached, skipped};
     }
 
     // 弹文件对话框并返回构造好的附件数组，不改输入区状态——消息原地编辑区用它。
@@ -1128,6 +1172,7 @@ export function createAIComposer(ctx) {
         referenceSelection,
         addMessageQuote,
         attachFilesDialog,
+        attachPaths,
         showSkillPicker,
         attachSkillByName,
         resizeInput,

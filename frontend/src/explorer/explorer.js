@@ -1,5 +1,6 @@
 import {el} from '../core/dom.js';
 import {iconSvg} from '../core/icons.js';
+import {INTERNAL_PATHS_MIME, encodeDropPaths} from '../core/drop-mime.js';
 
 // 局部键 → 注册表键（原散落 SVG 已收编 core/icons.js）；svg 尺寸由 .sb-chev/.sb-icon/.sb-tool 的 CSS 规则统一
 const ICONS = {
@@ -164,7 +165,7 @@ export function createExplorer(options) {
     const {
         body, titleEl, refreshBtn, revealBtn, listBtn, treeBtn, filterBtn, onToggleFilter,
         readDir, dirMtime, openPath, openFolder, openFileDialog, isSupported,
-        onModeChange, onContextMenu, onMove, onExternalDrop, canDrag,
+        onModeChange, onContextMenu, onMove, canDrag,
         scratchRoot,
         readLimit = 1000, listReadLimit = 5000,
     } = options;
@@ -201,6 +202,9 @@ export function createExplorer(options) {
     const listMod = createExplorerList({
         readDir, dirMtime, openPath, openFileDialog, onContextMenu, readLimit, listReadLimit, body,
         samePath, compareEntries, el, canList, skipDirs: LIST_SKIP_DIRS, listRootPath,
+        parentDirOf: parentPath,
+        getSelectionPaths: () => selection.filter((item) => item && item.path).map((item) => item.path),
+        canDrag: () => (typeof canDrag === 'function' ? canDrag() : true),
         emptyState, statusRow, updateTitle, updateSelectionBoundaries, scrollToActive,
         selectionHas, selectRangeTo, toggleSelection, selectOnly, selectForContext,
         getMode: () => mode,
@@ -372,6 +376,10 @@ export function createExplorer(options) {
             (cutPaths.some((path) => samePath(node.path, path)) ? ' cut' : ''));
         row.dataset.path = node.path;
         row.dataset.dir = node.isDir ? '1' : '0';
+        // 外部拖放落点（shell/file-drop-router.js）：整块文件面板是 files 落点，
+        // 行级再给「复制到哪」——目录行就是自己，文件行落到它的父目录（按用户裁定）。
+        row.dataset.fileDropTarget = 'files';
+        row.dataset.dropDir = node.isDir ? node.path : parentPath(node.path);
         row.tabIndex = -1;
         const emptyDir = isEmptyDirNode(node);
         const chev = emptyDir
@@ -438,23 +446,18 @@ export function createExplorer(options) {
             dragState = {items};
             row.classList.add('dragging');
             try {
-                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.effectAllowed = 'copyMove';
+                // text/plain 留给文件树内部移动；自定义 MIME 是「本应用文件树拖出的文件」的精确标记，
+                // 落点（编辑区 / AI 面板 / 数据库面板）据此显示遮罩并走 dropRouter，不会误伤编辑器选中文本拖拽。
                 e.dataTransfer.setData('text/plain', items.map((item) => item.path).join('\n'));
+                e.dataTransfer.setData(INTERNAL_PATHS_MIME, encodeDropPaths(items.map((item) => item.path)));
             } catch (err) {}
         });
         row.addEventListener('dragend', clearDragState);
         row.addEventListener('dragover', (e) => {
-            // 外部文件拖入：目录行（含根行）接受复制，文件行不拦截（交给全局打开）
-            const isFileDrag = !!(e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files'));
-            if (isFileDrag) {
-                if (node.isDir) {
-                    e.preventDefault();
-                    try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
-                    clearDropHighlight();
-                    row.classList.add('drop-target');
-                }
-                return;
-            }
+            // 外部文件拖入由 Wails runtime + data-file-drop-target 处理（高亮由 CSS 类
+            // file-drop-target-active 给出），这里只接内部拖拽的移动语义。
+            if (e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files')) return;
             if (!dropAllowed(node)) return;
             e.preventDefault();
             e.stopPropagation();
@@ -466,16 +469,9 @@ export function createExplorer(options) {
             if (!row.contains(e.relatedTarget)) row.classList.remove('drop-target');
         });
         row.addEventListener('drop', (e) => {
-            const isFileDrag = !!(e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files'));
-            if (isFileDrag) {
-                if (!node.isDir) return;
-                // 浏览器 File 对象拿不到完整路径：不做 stopPropagation，
-                // 放行 Wails 的原生解析链路，路径在 file-drop 事件里带回
-                e.preventDefault();
-                if (typeof onExternalDrop === 'function') onExternalDrop(node.path);
-                clearDropHighlight();
-                return;
-            }
+            // 外部文件拖入不走这里：Wails runtime 已 preventDefault 并交给 Go 解析路径，
+            // 落点路由在 shell/file-drop-router.js（行上的 data-drop-dir 由 treeRow 标注）。
+            if (e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files')) return;
             if (!dropAllowed(node)) return;
             e.preventDefault();
             e.stopPropagation();

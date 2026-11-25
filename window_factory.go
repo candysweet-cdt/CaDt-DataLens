@@ -30,12 +30,15 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 	installGeometryHooks(win, st)
 	// v3 的文件拖放只回调 Go 侧监听（不会发回 JS 事件），这里收下后转成本窗口事件；
 	// 前端经事件桥按 sender 过滤消费（修复迁移期 OnFileDrop 收不到事件的回归）。
+	// 连同落点信息一起送出（window_drop.go）：前端按 data-file-drop-target 分流到
+	// 文件树复制 / 数据库导入 / 编辑区打开 / AI 附件，不再一律当「打开文件」。
 	win.OnWindowEvent(events.Common.WindowFilesDropped, func(ev *application.WindowEvent) {
-		files := ev.Context().DroppedFiles()
+		ctx := ev.Context()
+		files := ctx.DroppedFiles()
 		if len(files) == 0 {
 			return
 		}
-		win.EmitEvent("app-file-drop", map[string]any{"filenames": files})
+		win.EmitEvent("app-file-drop", fileDropEventPayload(files, ctx.DropTargetDetails()))
 	})
 	if spec.Mode == windowModeMain {
 		if currentWindow() == nil {

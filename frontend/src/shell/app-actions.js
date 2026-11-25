@@ -6,10 +6,10 @@ import {fileIconSpec} from '../core/fileicons.js';
 import {kvGetJson, kvRemove, kvSetJson} from '../core/kv-store.js';
 
 /**
- * 应用级动作域：退出、最近打开记录、外部文件拖入目录。
+ * 应用级动作域：退出、最近打开记录、外部文件复制进目录。
  * 最近打开记在 localStorage（上限 12 条，按小写化路径去重，最近的在最前）。
  * @param {object} deps 依赖（rt / backend / explorer / flash / baseNameOf / openPath / openFolderSmart）
- * @returns {object} 动作面（含 pendingExternalDrop 的读写接缝）
+ * @returns {object} 动作面（copyExternalIntoDir / parentDirOf 等）
  */
 export function createAppActions(deps) {
 
@@ -73,14 +73,9 @@ function recentOpenMenuItems() {
     return items;
 }
 
-// ---- 外部文件拖到文件树目录行：复制进该目录 ----
-// Wails 的 file-drop 事件比 drop 事件晚（要等 Go 原生解析路径），用 pending 标记衔接。
-let pendingExternalDrop = null;
-
-function setPendingExternalDrop(destDir) {
-    pendingExternalDrop = {destDir, at: Date.now()};
-}
-
+// ---- 外部文件拖到文件树：复制进目标目录 ----
+// 落点（哪个目录）由 Wails 的 data-file-drop-target / data-drop-dir 经 app-file-drop 事件带回，
+// 路由在 shell/file-drop-router.js；这里只负责「复制并刷新目标目录」这一件事。
 async function copyExternalIntoDir(paths, destDir) {
     if (!deps.backend.CopyEntry) {
         deps.flash('当前版本不支持复制到目录', true);
@@ -112,9 +107,5 @@ async function copyExternalIntoDir(paths, destDir) {
     if (failed) deps.flash(failed + ' 项复制失败', true);
 }
 
-
-    function getPendingExternalDrop() { return pendingExternalDrop; }
-    function setPendingExternalDropValue(v) { pendingExternalDrop = v; }
-
-    return {copyExternalIntoDir, exitApp, getPendingExternalDrop, parentDirOf, readRecentOpen, recentOpenMenuItems, rememberRecentOpen, setPendingExternalDrop, setPendingExternalDropValue};
+    return {copyExternalIntoDir, exitApp, parentDirOf, readRecentOpen, recentOpenMenuItems, rememberRecentOpen};
 }

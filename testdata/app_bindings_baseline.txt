@@ -143,6 +143,7 @@ DBCredentialGet
 DBCredentialPut
 DBDeleteConnection
 DBDescribe
+DBImportConnections
 DBListConnections
 DBListDatabases
 DBListObjects

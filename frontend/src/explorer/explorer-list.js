@@ -3,6 +3,7 @@
 // 渲染辅助与 options 经 deps 注入，let 状态一律 getter/setter 活引用。函数体逐字搬移
 // （仅跨模块状态读写改走 deps 访问器，禁止反向 import 宿主）。
 import {createFileIcon} from '../core/fileicons.js';
+import {INTERNAL_PATHS_MIME, encodeDropPaths} from '../core/drop-mime.js';
 
 export function createExplorerList(deps) {
     // options 直通
@@ -31,6 +32,9 @@ export function createExplorerList(deps) {
     const selectOnly = deps.selectOnly;
     const selectForContext = deps.selectForContext;
     const listRootPath = deps.listRootPath;
+    const parentDirOf = deps.parentDirOf;
+    const getSelectionPaths = deps.getSelectionPaths;
+    const canDrag = deps.canDrag;
     // 共享 let 状态：getter/setter 活引用
     const getMode = deps.getMode;
     const getVisible = deps.getVisible;
@@ -139,7 +143,26 @@ export function createExplorerList(deps) {
             (samePath(entry.path, getAnchorPath()) ? ' anchor' : '') +
             (getCutPaths().some((path) => samePath(entry.path, path)) ? ' cut' : ''));
         row.dataset.path = entry.path;
+        // 外部拖放：列表行恒为文件，落点目录取父目录（与文件树文件行同一条规则）
+        row.dataset.fileDropTarget = 'files';
+        row.dataset.dropDir = parentDirOf(entry.path);
         row.tabIndex = -1;
+        // 应用内拖拽：列表行也可作为拖拽源（拖到编辑区/AI 面板），与树行同一条自定义 MIME 链路
+        row.draggable = !!(typeof canDrag === 'function' ? canDrag() : true);
+        row.addEventListener('dragstart', (e) => {
+            if (row.draggable === false || (typeof canDrag === 'function' && !canDrag())) {
+                e.preventDefault();
+                return;
+            }
+            // 当前行没被选中时不拖走别处选中的项（与树视图 dragstart 的 selectOnly 语义一致）
+            const selected = (typeof getSelectionPaths === 'function' ? getSelectionPaths() : []) || [];
+            const list = selected.includes(entry.path) ? selected : [entry.path];
+            try {
+                e.dataTransfer.effectAllowed = 'copyMove';
+                e.dataTransfer.setData('text/plain', list.join('\n'));
+                e.dataTransfer.setData(INTERNAL_PATHS_MIME, encodeDropPaths(list));
+            } catch (err) {}
+        });
         row.append(createFileIcon(entry.name, 'sb-icon'), el('span', 'sb-name', entry.name));
         row.addEventListener('click', (e) => {
             row.focus({preventScroll: true});

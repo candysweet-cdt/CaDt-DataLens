@@ -1,10 +1,10 @@
 // backend.d.ts：Wails 绑定面类型——**自动生成，不要手改**。
 //
-// 生成：node scripts/gen-backend-types.mjs（名单来自 testdata/app_bindings_baseline.txt，421 个方法）
+// 生成：node scripts/gen-backend-types.mjs（名单来自 testdata/app_bindings_baseline.txt，422 个方法）
 // 名单由 app_bindings_guard_test.go 校验，前端 FQN 是 main.App.<Method>；
 // 运行时经 Call.ByName 动态解析（frontend/src/core/wails-runtime.js 的 createBackendProxy）。
 //
-// 本次签名覆盖：精确 265 / 含 unknown 156 / 签名冲突 0 / 未找到 0
+// 本次签名覆盖：精确 265 / 含 unknown 157 / 签名冲突 0 / 未找到 0
 // 含 unknown 的行上方有 @go 注释，写明 Go 原始签名与待补的结构体名。
 //
 // 用法（阶梯 1 之后，jsconfig 仍保持 checkJs:false）：
@@ -239,6 +239,8 @@ export interface Backend {
     DBDeleteConnection(id: string): Promise<void>;
     /** @go DBDescribe(id string, database string, table string, noCache bool) → (*DBTableMeta, error) // 待补: DBTableMeta */
     DBDescribe(id: string, database: string, table: string, noCache: boolean): Promise<unknown>;
+    /** @go DBImportConnections(path string) → (ImportResult, error) // 待补: ImportResult */
+    DBImportConnections(path: string): Promise<unknown>;
     /** @go DBListConnections() → ([]ConnectionConfig, error) // 待补: ConnectionConfig */
     DBListConnections(): Promise<unknown[]>;
     DBListDatabases(id: string): Promise<string[]>;

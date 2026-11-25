@@ -113,6 +113,12 @@ func (s *Service) DBTestConnection(cfg ConnectionConfig, password string) (strin
 	return TestConnection(cfg, password)
 }
 
+// DBImportConnections 从连接配置文件（db-connections.json 同构）导入 MySQL/MariaDB/Redis 连接。
+// 不做 DNS 解析、不导凭据（dpapi 绑定本机）、新条目一律只读——细节见 importconfig.go。
+func (s *Service) DBImportConnections(path string) (ImportResult, error) {
+	return ImportConnectionsFile(path)
+}
+
 func (s *Service) DBPreviewChanges(id string, changes TableChanges) ([]ChangeStatement, error) {
 	return PreviewChanges(id, changes)
 }

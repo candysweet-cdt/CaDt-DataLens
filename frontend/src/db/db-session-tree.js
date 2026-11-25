@@ -932,6 +932,18 @@ export function createDbSessionTree(deps) {
             resetTree(id);
             render();
         },
+        /**
+         * expandEntry 展开某条目并建立会话（外部拖放「加入清单并打开」用）。
+         * 与行点击 toggle 同一条路径：失败已由会话状态机记账（树行显示「连接失败」），
+         * 这里把错误继续抛给调用方，让域处理器能回滚刚建的清单条目。
+         */
+        expandEntry(entry) {
+            if (!entry || !entry.id) return Promise.reject(new Error('数据库条目无效'));
+            const st = treeState(entry.id);
+            st.expanded = true;
+            render();
+            return ensureSession(entry);
+        },
         /** 断开连接（行菜单用）。 */
         disconnect(id) {
             resetTree(id);
