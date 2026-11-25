@@ -418,8 +418,9 @@ test('新会话模型继承接线：继承当前会话在用的模型，切会�
     const src = readFileSync(new URL('../../../src/ai/ai-panel.js', import.meta.url), 'utf8');
     const createBlock = /function createSessionData\(title, sessionOpts\)[\s\S]*?ctxLimit:/.exec(src);
     assert.ok(createBlock, 'createSessionData 应存在');
-    assert.match(createBlock[0], /profileId:\s*inherited\.profileId/, '新会话应继承继承出来的账号');
-    assert.match(createBlock[0], /modelId:\s*inherited\.modelId/, '新会话应继承继承出来的模型');
+    // 省略 model 覆盖（modelTarget 为空）时仍走 inherited；显式指定才用调用方给的账号/条目。
+    assert.match(createBlock[0], /profileId: modelTarget \? .* : inherited\.profileId/, '新会话默认继承继承出来的账号');
+    assert.match(createBlock[0], /modelId: modelTarget \? .* : inherited\.modelId/, '新会话默认继承继承出来的模型');
     assert.doesNotMatch(createBlock[0], /profileId:\s*aiTextOf\(config\.activeProfileId\)/,
         '不能只读窗口默认：config.active* 只是「上次显式切换」的结果，会与实际在用的模型脱节');
     // 继承来源：当前会话实际生效的账号+条目，缺失才回落窗口默认

@@ -415,7 +415,8 @@ export function createAIAgentNotices(ctx) {
             const state = sessionStateOf(session);
             const stateText = state === 'streaming' ? '运行中' : (state === 'compacting' ? '压缩中' : '空闲');
             lines.push('- ' + session.id + ' · ' + (session.title || '新会话') + ' · ' + stateText +
-                (session.unread ? ' · 未读' : ''));
+                (session.unread ? ' · 未读' : '') +
+                (session.group ? ' · 分组：' + session.group : ''));
         }
         lines.push('用 session_send(targetSessionIds=[…], message=…) 投递；能单播不要组播。');
         return lines.join('\n');

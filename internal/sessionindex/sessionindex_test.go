@@ -426,3 +426,151 @@ func TestSyncStitchesArchiveSidecar(t *testing.T) {
 		t.Fatalf("重复同步不应翻倍归档行：%d", archivedCount)
 	}
 }
+
+// TestMigrateAddsGroupNameColumn：旧库（sessions 表无 group_name 列）打开后幂等补列，
+// 已存在列时重复打开不报错（duplicate column 被吞）。
+func TestMigrateAddsGroupNameColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '',
+		workspace TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0,
+		archived_at INTEGER NOT NULL DEFAULT 0, message_count INTEGER NOT NULL DEFAULT 0,
+		archived_count INTEGER NOT NULL DEFAULT 0, dirty INTEGER NOT NULL DEFAULT 1,
+		indexed_at INTEGER NOT NULL DEFAULT 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`INSERT INTO sessions(id, title) VALUES('old','旧会话')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = legacy.Close()
+
+	// 打开即迁移；再开一次验证幂等（duplicate column 不报错）。
+	db, _, err := openSessionIndex(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	db, _, err = openSessionIndex(path)
+	if err != nil {
+		t.Fatalf("重复打开旧库应幂等：%v", err)
+	}
+	defer db.Close()
+	var groupName string
+	if err := db.QueryRow(`SELECT group_name FROM sessions WHERE id='old'`).Scan(&groupName); err != nil {
+		t.Fatal(err)
+	}
+	if groupName != "" {
+		t.Fatalf("迁移后旧行 group_name 应为空串：%q", groupName)
+	}
+}
+
+// TestSearchHitsCarryGroup：标题命中 / 详细 / 简要三条检索路径都回填 group；
+// 改分组后（ON CONFLICT 更新路径）下一次搜索拿到新值。
+func TestSearchHitsCarryGroup(t *testing.T) {
+	db, trigram := newTestSessionIndex(t)
+	raw := strings.Join([]string{
+		`{"v":1,"t":"header","id":"g1"}`,
+		`{"v":1,"t":"msg","mid":"m1","m":{"role":"user","content":"分组关键词查询","ts":1}}`,
+		`{"v":1,"t":"msg","mid":"m2","m":{"role":"assistant","content":"分组关键词结论","ts":2}}`,
+	}, "\n") + "\n"
+
+	if _, err := db.Exec(`INSERT INTO sessions(id, title, workspace, group_name, updated_at) VALUES('g1','分组关键词标题','D:/w','前端',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := indexSessionLog(db, "g1", raw); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	check := func(label string, brief bool, query string) {
+		t.Helper()
+		result, err := searchScopedSessionIndex(db, trigram, query, 50, brief, deadline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Hits) == 0 {
+			t.Fatalf("%s：应有命中", label)
+		}
+		for _, hit := range result.Hits {
+			if hit.Group != "前端" {
+				t.Fatalf("%s：hit.Group 应为「前端」，实际 %q：%+v", label, hit.Group, hit)
+			}
+		}
+	}
+	check("标题命中", true, "分组关键词标题")
+	check("详细", false, "分组关键词结论")
+	check("简要", true, "分组关键词查询")
+
+	// 改分组后（走真正的 upsert 更新路径）三条检索路径都拿到新值。
+	// 用 syncSessionIndex 而不是裸 SQL UPDATE——后者绕过了要验证的 ON CONFLICT 分支。
+	// Read 返回同一份日志，避免重建时把消息索引清空（详细/简要路径还要靠它命中）。
+	store := &groupMetaStore{
+		metas: []string{`{"id":"g1","title":"分组关键词标题","workspace":"D:/w","group":"后端","updatedAt":1}`},
+		logs:  map[string]string{"g1": raw},
+	}
+	if err := syncSessionIndex(db, store); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := db.QueryRow(`SELECT group_name FROM sessions WHERE id='g1'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "后端" {
+		t.Fatalf("upsert 后 group_name 应为「后端」：%q", stored)
+	}
+	recheck := func(label string, brief bool, query string) {
+		t.Helper()
+		result, err := searchScopedSessionIndex(db, trigram, query, 50, brief, deadline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Hits) == 0 || result.Hits[0].Group != "后端" {
+			t.Fatalf("改分组后 %s 应回填「后端」：%+v", label, result.Hits)
+		}
+	}
+	recheck("标题命中", true, "分组关键词标题")
+	recheck("详细", false, "分组关键词结论")
+	recheck("简要", true, "分组关键词查询")
+}
+
+// groupMetaStore 是 syncSessionIndex 的最小 Store（List 给 meta JSON，Read 给会话日志）。
+type groupMetaStore struct {
+	metas []string
+	logs  map[string]string
+}
+
+func (s *groupMetaStore) List() ([]string, error) { return s.metas, nil }
+func (s *groupMetaStore) Read(id string) (string, error) { return s.logs[id], nil }
+
+// TestUpdateMetaWritesGroup：meta 变更钩子写 group_name，改分组后覆盖旧值（ON CONFLICT 更新）。
+func TestUpdateMetaWritesGroup(t *testing.T) {
+	dir := t.TempDir()
+	oldDir := AppDataDir
+	AppDataDir = func() string { return dir }
+	ResetFiles()
+	t.Cleanup(func() { AppDataDir = oldDir; ResetFiles() })
+
+	// UpdateMeta 有 Exists() 守卫：先建库文件（database 首次调用会建 schema）。
+	if _, err := database(); err != nil {
+		t.Fatal(err)
+	}
+	meta := func(group string) string {
+		return `{"id":"m1","title":"标题","workspace":"","group":"` + group + `","updatedAt":1}`
+	}
+	UpdateMeta("m1", meta("前端"))
+	UpdateMeta("m1", meta("后端")) // 改分组：ON CONFLICT 更新路径
+
+	db, err := database()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group string
+	if err := db.QueryRow(`SELECT group_name FROM sessions WHERE id='m1'`).Scan(&group); err != nil {
+		t.Fatal(err)
+	}
+	if group != "后端" {
+		t.Fatalf("UpdateMeta 改分组后应为「后端」：%q", group)
+	}
+}

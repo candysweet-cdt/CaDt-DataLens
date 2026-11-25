@@ -39,7 +39,7 @@ test('isNoWorkspaceSession：只认严格 true', async () => {
 test('createSessionData：noWorkspace = 只读 + 空 workspace + 标记 + 默认标题「新会话」', () => {
     const fn = sliceFunction(panel, 'function createSessionData(title, sessionOpts)');
     assert.match(fn, /const noWorkspace = !!\(sessionOpts && sessionOpts\.noWorkspace === true\);/);
-    assert.match(fn, /scope: \(transient \|\| noWorkspace\) \? 'read' : normalizeDefaultScope\(config\.defaultScope\)/);
+    assert.match(fn, /scope: \(transient \|\| noWorkspace\) \? 'read' : \(AI_SCOPES\.includes\(scopeOverride\)/);
     assert.match(fn, /workspace: \(transient \|\| noWorkspace\) \? '' : currentWorkspacePath\(\)/);
     assert.match(fn, /noWorkspace,/);
     assert.match(fn, /desktopEnabled: !transient && !noWorkspace && /);

@@ -179,7 +179,7 @@ export const AI_TOOL_DEFS = {
     },
     session_search: {
         name: 'session_search',
-        description: '跨会话检索未归档的历史对话（可能是别的工作区）：按关键词找「哪个会话说过这件事」，返回会话标题、id 与命中片段。要读上下文再用 session_read。只读工具，所有范围档均可用。',
+        description: '跨会话检索未归档的历史对话（可能是别的工作区）：按关键词找「哪个会话说过这件事」，返回会话标题、id 与命中片段；有分组的会话会显示分组。要读上下文再用 session_read。只读工具，所有范围档均可用。',
         parameters: {
             type: 'object',
             properties: {
@@ -192,7 +192,7 @@ export const AI_TOOL_DEFS = {
     },
     session_read: {
         name: 'session_read',
-        description: '读某个会话的消息摘要（id 先用 session_search 或 session_list 拿）。默认读最近 20 条；给 query 则返回命中消息及其前后各一条。单次输出有字符预算，结果会标注该会话的工作区（可能是别的工作区，引用前先核对）。只读工具。',
+        description: '读某个会话的消息摘要（id 先用 session_search 或 session_list 拿）。默认读最近 20 条；给 query 则返回命中消息及其前后各一条。单次输出有字符预算，结果会标注该会话的工作区（可能是别的工作区，引用前先核对）与分组（若有）。只读工具。',
         parameters: {
             type: 'object',
             properties: {
@@ -396,7 +396,7 @@ export const AI_TOOL_DEFS = {
     },
     app_control: {
         name: 'app_control',
-        description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、创建 AI 群聊（create_group）与群消息、编辑器分栏与分组操作、设置树查询与按行修改（危险项走动作审批）、插件安装卸载、代配 MCP 服务器与安装内置示例（get_mcp_servers / list_mcp_samples / install_mcp_sample / set_mcp_server / delete_mcp_server：填命令与参数，env 值/工具授权仍归用户）、截取整窗或指定板块截图（screenshot {area}）、完全权限下合成一次界面点击（click）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）；读写用户「快捷便签」面板：get_memo / add_memo / update_memo / remove_memo（分组/条目/状态/贴图引用），open_memo_panel 打开面板标签页；管理跨文件行书签：list_bookmarks / add_bookmark / remove_bookmark / clear_bookmarks / goto_bookmark（goto_bookmark 可打开文件并跳行；当前文件内跳行用 goto_line）。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
+        description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话（ai_new_session 可指定权限档/模型/分组、ai_set_session_group 改分组）、创建 AI 群聊（create_group）与群消息、编辑器分栏与分组操作、设置树查询与按行修改（危险项走动作审批）、插件安装卸载、代配 MCP 服务器与安装内置示例（get_mcp_servers / list_mcp_samples / install_mcp_sample / set_mcp_server / delete_mcp_server：填命令与参数，env 值/工具授权仍归用户）、截取整窗或指定板块截图（screenshot {area}）、完全权限下合成一次界面点击（click）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）；读写用户「快捷便签」面板：get_memo / add_memo / update_memo / remove_memo（分组/条目/状态/贴图引用），open_memo_panel 打开面板标签页；管理跨文件行书签：list_bookmarks / add_bookmark / remove_bookmark / clear_bookmarks / goto_bookmark（goto_bookmark 可打开文件并跳行；当前文件内跳行用 goto_line）。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
         parameters: {
             type: 'object',
             properties: {
@@ -656,7 +656,7 @@ export const AI_TOOL_DEFS = {
     },
     session_list: {
         name: 'session_list',
-        description: '列出本窗口内可投递的 AI 会话（id / 标题 / 状态 / 未读标记），最近活动倒序、上限 50 条。默认只列同工作区、未归档、不含当前会话——你不知道其他会话的 id，必须先查后投。可按 state（运行状态）、unreadOnly（只看未读）、titleContains（标题关键词，不区分大小写）过滤，多个条件同时满足才返回。',
+        description: '列出本窗口内可投递的 AI 会话（id / 标题 / 状态 / 未读标记），最近活动倒序、上限 50 条。默认只列同工作区、未归档、不含当前会话——你不知道其他会话的 id，必须先查后投。可按 state（运行状态）、unreadOnly（只看未读）、titleContains（标题关键词，不区分大小写）过滤，多个条件同时满足才返回。有分组的会话会显示分组。',
         parameters: {
             type: 'object',
             properties: {
@@ -1170,14 +1170,14 @@ export const AI_TOOL_CATALOG = {
     agent_stop: {group: 'task', blurb: '停止子代理（可级联下级 / 省略 id 全停）并收集过程记录'},
     wait_agent: {group: 'task', blurb: '阻塞等下一步输入（新消息 / 完成通知）'},
     agent_compact: {group: 'task', blurb: '压缩子代理上下文，长任务续跑前腾空间'},
-    session_list: {group: 'session', blurb: '列本窗口可投递的会话（id/标题/状态），给 session_send / session_read 拿 id；支持按状态/未读/标题过滤'},
+    session_list: {group: 'session', blurb: '列本窗口可投递的会话（id/标题/状态/分组），给 session_send / session_read 拿 id；支持按状态/未读/标题过滤'},
     session_send: {group: 'session', blurb: '会话间投递'},
     schedule_list: {group: 'task', blurb: '定时任务管理'},
     schedule_create: {group: 'task', blurb: '定时任务管理'},
     schedule_delete: {group: 'task', blurb: '定时任务管理'},
     schedule_toggle: {group: 'task', blurb: '定时任务管理'},
     session_history: {group: 'session', blurb: '查本会话早期消息（含被压缩归档的）：按关键词搜或按序号翻页'},
-    session_search: {group: 'session', blurb: '跨会话检索未归档的历史对话，拿会话 id 与命中片段'},
+    session_search: {group: 'session', blurb: '跨会话检索未归档的历史对话，拿会话 id 与命中片段（有分组的会显示分组）'},
     session_read: {group: 'session', blurb: '读某个会话的消息摘要（id 来自 session_search / session_list）'},
     notify_send: {group: 'session', blurb: '往状态栏【消息】中心发阶段性汇报与完成通知'},
     reminder_add: {group: 'session', blurb: '本会话任务提醒（清单每轮自动注入）；完成后 reminder_update 标 done'},

@@ -747,7 +747,7 @@ const APP_ACTIONS = [
     'split_open', 'split_editor', 'move_tab_to_group', 'focus_editor_group', 'merge_editor_groups',
     'toggle_fullscreen', 'toggle_always_on_top', 'set_theme', 'open_settings', 'set_setting',
     'get_settings_tree', 'set_setting_row',
-    'ai_new_session', 'ai_switch_session', 'ai_rename_session', 'flash', 'refresh_explorer', 'reveal_in_explorer',
+    'ai_new_session', 'ai_switch_session', 'ai_rename_session', 'ai_set_session_group', 'flash', 'refresh_explorer', 'reveal_in_explorer',
     'type_text', 'press_key', 'click',
     'open_browser_tab', 'close_browser_tab', 'open_memo_panel', 'get_memo', 'add_memo', 'update_memo', 'remove_memo',
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal', 'get_storage',
@@ -1738,13 +1738,25 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
         case 'ai_new_session': {
             if (!aiPanel || !aiPanel.bridgeNewSession) throw new Error('AI 面板未初始化');
             const focus = p.focus === true;
-            const session = await aiPanel.bridgeNewSession({title: p.title, message: p.message, focus});
+            const session = await aiPanel.bridgeNewSession({
+                title: p.title, message: p.message, focus,
+                scope: p.scope, model: p.model, group: p.group,
+                callerSessionId,
+            });
             const where = focus ? '并已切到该会话' : '（后台运行，面板当前会话未变）';
             let sendPart;
             if (!p.message) sendPart = '已创建空会话';
             else if (session && session.sent === false) sendPart = '会话已建但消息发送失败（见面板错误提示）';
             else sendPart = '已在新会话发送消息（真实触发一次模型调用）';
-            return {created: session, note: sendPart + where};
+            const opts = [];
+            if (session && session.scope) opts.push('权限：' + session.scope);
+            if (session && session.model && session.model.label) opts.push('模型：' + session.model.label);
+            if (session && session.group) opts.push('分组：' + session.group);
+            return {created: session, note: sendPart + where + (opts.length ? '（' + opts.join('，') + '）' : '')};
+        }
+        case 'ai_set_session_group': {
+            if (!aiPanel || !aiPanel.bridgeSetSessionGroup) throw new Error('AI 面板未初始化');
+            return {updated: await aiPanel.bridgeSetSessionGroup(p.id, p.group, callerSessionId)};
         }
         case 'ai_switch_session': {
             if (!aiPanel || !aiPanel.bridgeSwitchSession) throw new Error('AI 面板未初始化');

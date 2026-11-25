@@ -363,6 +363,21 @@ export function normalizeSessionGroup(value) {
     return textOf(value).trim().slice(0, AI_SESSION_GROUP_MAX);
 }
 
+// 模型指定分组名 → 实际采用的分组名：先按 normalizeSessionGroup 归一（trim + 24 字上限），
+// 再与既有分组比对「去所有空白 + 小写」的键，命中就复用既有原样名字——防止模型拼出
+// 「前端 / 前端  / 前端 项目」这类近义分组把列表切碎。空值 / 纯空白归 ''（移出分组）。
+// existingNames 是同一工作区已有的非空分组名数组（顺序即优先级，取第一个命中项）。
+export function resolveSessionGroupName(requested, existingNames) {
+    const wanted = normalizeSessionGroup(requested);
+    if (!wanted) return '';
+    const key = wanted.replace(/\s+/g, '').toLowerCase();
+    for (const name of Array.isArray(existingNames) ? existingNames : []) {
+        const existing = normalizeSessionGroup(name);
+        if (existing && existing.replace(/\s+/g, '').toLowerCase() === key) return existing;
+    }
+    return wanted;
+}
+
 export function buildSessionMeta(session) {
     const summary = session && session.summary && typeof session.summary === 'object' ? session.summary : null;
     return {

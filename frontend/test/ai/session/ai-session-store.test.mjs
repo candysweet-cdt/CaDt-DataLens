@@ -20,6 +20,7 @@ import {
     metaSignature,
     messageFingerprint,
     normalizeSessionGroup,
+    resolveSessionGroupName,
     AI_SESSION_GROUP_MAX,
 } from '../../../src/ai/session/ai-session-store.js';
 import {createSessionDiskStore} from '../../../src/ai/session/ai-session-disk.js';
@@ -114,6 +115,32 @@ test('会话分组：normalizeSessionGroup trim/截断/脏值归一', () => {
     assert.equal(normalizeSessionGroup(null), '');
     assert.equal(normalizeSessionGroup(12345), '12345');
     assert.equal(normalizeSessionGroup('x'.repeat(AI_SESSION_GROUP_MAX + 10)).length, AI_SESSION_GROUP_MAX);
+});
+
+test('resolveSessionGroupName：自由填 + 大小写/空白近似归一到既有分组', () => {
+    const existing = ['前端', 'AI 研究', 'Review'];
+    // 精确命中：原样复用
+    assert.equal(resolveSessionGroupName('前端', existing), '前端');
+    // 前后空白：先 trim 再命中
+    assert.equal(resolveSessionGroupName('  前端  ', existing), '前端');
+    // 大小写近似：复用既有原样名字（Review 保持首字母大写）
+    assert.equal(resolveSessionGroupName('review', existing), 'Review');
+    assert.equal(resolveSessionGroupName('REVIEW', existing), 'Review');
+    // 中间空白差异：去所有空白后命中（"AI研究" → "AI 研究"）
+    assert.equal(resolveSessionGroupName('AI研究', existing), 'AI 研究');
+    assert.equal(resolveSessionGroupName('a i 研 究', existing), 'AI 研究');
+    // 全新分组：走归一值（trim + 24 字上限）
+    assert.equal(resolveSessionGroupName('新分组', existing), '新分组');
+    assert.equal(resolveSessionGroupName('  ' + 'x'.repeat(30) + '  ', existing).length, AI_SESSION_GROUP_MAX);
+    // 空值 / 纯空白：移出分组
+    assert.equal(resolveSessionGroupName('', existing), '');
+    assert.equal(resolveSessionGroupName('   ', existing), '');
+    assert.equal(resolveSessionGroupName(null, existing), '');
+    // 无既有分组时退化为纯归一
+    assert.equal(resolveSessionGroupName('  前端  ', []), '前端');
+    assert.equal(resolveSessionGroupName('前端', null), '前端');
+    // 多个近似命中时取第一个既有项（顺序即优先级）
+    assert.equal(resolveSessionGroupName('review', ['review-one', 'Review', 'REVIEW']), 'Review');
 });
 
 test('buildSessionMeta：group 随 meta 持久化，且变化改变签名', () => {

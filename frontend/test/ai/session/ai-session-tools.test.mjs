@@ -40,6 +40,18 @@ test('formatSessionSearchResult：按会话分组、标注角色、给 session_r
     assert.match(out, /session_read\(id/, '要给出后续动作提示');
 });
 
+test('formatSessionSearchResult：有分组的会话在头行显示分组', () => {
+    const withGroup = formatSessionSearchResult('关键词', {
+        hits: [
+            {sessionId: 's1', title: '会话一', group: '前端', role: 'user', snippet: '关键词片段', ts: 0},
+            {sessionId: 's2', title: '会话二', group: '', role: 'user', snippet: '关键词片段', ts: 0},
+        ],
+    });
+    assert.match(withGroup, /● 会话一 · id: s1 · 分组：前端/, '有分组要显示');
+    assert.match(withGroup, /● 会话二 · id: s2/, '无分组不显示分组字样');
+    assert.doesNotMatch(withGroup, /会话二 · id: s2 · 分组/);
+});
+
 test('formatSessionSearchResult：无命中与截断提示', () => {
     const empty = formatSessionSearchResult('不存在的词', {hits: []});
     assert.match(empty, /没有找到匹配的会话内容/);
@@ -71,6 +83,15 @@ test('sessionLogDigest：默认读最近 N 条并带头部信息', () => {
     assert.match(out, /第二条/);
     assert.ok(!out.includes('第一条'), 'limit=2 不该包含更早的消息');
     assert.ok(!out.includes('别的工作区'), '同工作区不该提示跨工作区');
+});
+
+test('sessionLogDigest：有分组时在头部元信息显示', () => {
+    const raw = logOf([HEADER, msgEvent('m1', 'user', '内容', 1700000001000)]);
+    const withGroup = sessionLogDigest(raw, {workspace: 'D:/ws-a', group: '前端'});
+    assert.match(withGroup, /分组：前端/);
+    assert.match(withGroup, /工作区：D:\/ws-a/, '分组与工作区并列');
+    const noGroup = sessionLogDigest(raw, {workspace: 'D:/ws-a', group: ''});
+    assert.doesNotMatch(noGroup, /分组：/);
 });
 
 test('sessionLogDigest：跨工作区要显式提醒', () => {

@@ -28,6 +28,8 @@ const (
 type SearchHit struct {
 	SessionID string `json:"sessionId"`
 	Title     string `json:"title"`
+	// Group 会话自定义分组（工作区内归类）；空 = 未分组。来自派生索引的 sessions.group_name。
+	Group     string `json:"group,omitempty"`
 	Role      string `json:"role"`
 	Name      string `json:"name"`
 	Mid       string `json:"mid"`
@@ -156,6 +158,7 @@ func ensureSessionIndexSchema(db *sql.DB) error {
 			id TEXT PRIMARY KEY,
 			title TEXT NOT NULL DEFAULT '',
 			workspace TEXT NOT NULL DEFAULT '',
+			group_name TEXT NOT NULL DEFAULT '',
 			updated_at INTEGER NOT NULL DEFAULT 0,
 			archived_at INTEGER NOT NULL DEFAULT 0,
 			message_count INTEGER NOT NULL DEFAULT 0,
@@ -178,6 +181,12 @@ func ensureSessionIndexSchema(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
+	}
+	// 旧库没有 group_name 列：幂等迁移（照 internal/usagestats 的先例，只吞 duplicate column）。
+	// 索引是可随时重建的派生库，这里就地补列避免整库重建。
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN group_name TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		return err
 	}
 	if _, err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS ai_messages_fts USING fts5(text, content='messages', content_rowid='rowid', tokenize='trigram')`); err != nil {
 		// 旧版 SQLite 没有 trigram tokenizer 时退回默认分词，搜索会自动走 LIKE 兜底。
@@ -368,6 +377,7 @@ type aiIndexMeta struct {
 	ID            string `json:"id"`
 	Title         string `json:"title"`
 	Workspace     string `json:"workspace"`
+	Group         string `json:"group"`
 	UpdatedAt     int64  `json:"updatedAt"`
 	ArchivedAt    int64  `json:"archivedAt"`
 	MessageCount  int    `json:"messageCount"`
@@ -390,12 +400,12 @@ func syncSessionIndex(db *sql.DB, store Store) error {
 			continue
 		}
 		seen[meta.ID] = true
-		if _, err := tx.Exec(`INSERT INTO sessions(id, title, workspace, updated_at, archived_at, message_count, archived_count, dirty, indexed_at)
-			VALUES(?,?,?,?,?,?,?,1,0)
+		if _, err := tx.Exec(`INSERT INTO sessions(id, title, workspace, group_name, updated_at, archived_at, message_count, archived_count, dirty, indexed_at)
+			VALUES(?,?,?,?,?,?,?,?,1,0)
 			ON CONFLICT(id) DO UPDATE SET
-				title=excluded.title, workspace=excluded.workspace, updated_at=excluded.updated_at,
+				title=excluded.title, workspace=excluded.workspace, group_name=excluded.group_name, updated_at=excluded.updated_at,
 				archived_at=excluded.archived_at`,
-			meta.ID, meta.Title, meta.Workspace, meta.UpdatedAt, meta.ArchivedAt, meta.MessageCount, meta.ArchivedCount); err != nil {
+			meta.ID, meta.Title, meta.Workspace, meta.Group, meta.UpdatedAt, meta.ArchivedAt, meta.MessageCount, meta.ArchivedCount); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -533,17 +543,17 @@ func makeSearchSnippet(text, query string, radius int) string {
 
 func searchSessionIndex(db *sql.DB, trigram bool, query string, limit int) ([]SearchHit, error) {
 	hits := make([]SearchHit, 0, limit)
-	rows, err := db.Query(`SELECT id, title FROM sessions WHERE instr(lower(title), lower(?)) > 0 ORDER BY updated_at DESC LIMIT ?`, query, limit)
+	rows, err := db.Query(`SELECT id, title, group_name FROM sessions WHERE instr(lower(title), lower(?)) > 0 ORDER BY updated_at DESC LIMIT ?`, query, limit)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
-		var id, title string
-		if err := rows.Scan(&id, &title); err != nil {
+		var id, title, groupName string
+		if err := rows.Scan(&id, &title, &groupName); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		hits = append(hits, SearchHit{SessionID: id, Title: title, LiveIndex: -1, Kind: "title"})
+		hits = append(hits, SearchHit{SessionID: id, Title: title, Group: groupName, LiveIndex: -1, Kind: "title"})
 	}
 	rows.Close()
 	if len(hits) >= limit {
@@ -553,7 +563,7 @@ func searchSessionIndex(db *sql.DB, trigram bool, query string, limit int) ([]Se
 	useFTS := trigram && utf8.RuneCountInString(query) >= 3
 	if useFTS {
 		match := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
-		rows, err = db.Query(`SELECT m.session_id, s.title, m.role, m.name, m.mid, m.live_index,
+		rows, err = db.Query(`SELECT m.session_id, s.title, s.group_name, m.role, m.name, m.mid, m.live_index,
 			snippet(ai_messages_fts, 0, char(1), char(2), '…', 32)
 			FROM ai_messages_fts
 			JOIN messages m ON m.rowid = ai_messages_fts.rowid
@@ -561,7 +571,7 @@ func searchSessionIndex(db *sql.DB, trigram bool, query string, limit int) ([]Se
 			WHERE ai_messages_fts MATCH ? AND m.live_index >= 0
 			ORDER BY bm25(ai_messages_fts) LIMIT ?`, match, remaining)
 	} else {
-		rows, err = db.Query(`SELECT m.session_id, s.title, m.role, m.name, m.mid, m.live_index, m.text
+		rows, err = db.Query(`SELECT m.session_id, s.title, s.group_name, m.role, m.name, m.mid, m.live_index, m.text
 			FROM messages m JOIN sessions s ON s.id = m.session_id
 			WHERE m.live_index >= 0 AND instr(lower(m.text), lower(?)) > 0
 			ORDER BY s.updated_at DESC, m.live_index DESC LIMIT ?`, query, remaining)
@@ -573,7 +583,7 @@ func searchSessionIndex(db *sql.DB, trigram bool, query string, limit int) ([]Se
 	for rows.Next() {
 		var hit SearchHit
 		var snippet string
-		if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Role, &hit.Name, &hit.Mid, &hit.LiveIndex, &snippet); err != nil {
+		if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Group, &hit.Role, &hit.Name, &hit.Mid, &hit.LiveIndex, &snippet); err != nil {
 			return nil, err
 		}
 		if !useFTS {
@@ -612,13 +622,13 @@ func UpdateMeta(id, metaJSON string) {
 	if json.Unmarshal([]byte(metaJSON), &meta) != nil || meta.ID == "" {
 		return
 	}
-	_, _ = db.Exec(`INSERT INTO sessions(id, title, workspace, updated_at, archived_at, message_count, archived_count, dirty, indexed_at)
-		VALUES(?,?,?,?,?,?,?,1,0)
+	_, _ = db.Exec(`INSERT INTO sessions(id, title, workspace, group_name, updated_at, archived_at, message_count, archived_count, dirty, indexed_at)
+		VALUES(?,?,?,?,?,?,?,?,1,0)
 		ON CONFLICT(id) DO UPDATE SET
-			title=excluded.title, workspace=excluded.workspace, updated_at=excluded.updated_at,
+			title=excluded.title, workspace=excluded.workspace, group_name=excluded.group_name, updated_at=excluded.updated_at,
 			archived_at=excluded.archived_at, message_count=excluded.message_count,
 			archived_count=excluded.archived_count`,
-		id, meta.Title, meta.Workspace, meta.UpdatedAt, meta.ArchivedAt, meta.MessageCount, meta.ArchivedCount)
+		id, meta.Title, meta.Workspace, meta.Group, meta.UpdatedAt, meta.ArchivedAt, meta.MessageCount, meta.ArchivedCount)
 }
 
 func Delete(id string) {
@@ -691,12 +701,12 @@ func syncSessionIndexBudgeted(db *sql.DB, store Store, maxWait time.Duration) er
 			continue
 		}
 		seen[meta.ID] = true
-		if _, err := tx.Exec(`INSERT INTO sessions(id, title, workspace, updated_at, archived_at, message_count, archived_count, dirty, indexed_at)
-			VALUES(?,?,?,?,?,?,?,1,0)
+		if _, err := tx.Exec(`INSERT INTO sessions(id, title, workspace, group_name, updated_at, archived_at, message_count, archived_count, dirty, indexed_at)
+			VALUES(?,?,?,?,?,?,?,?,1,0)
 			ON CONFLICT(id) DO UPDATE SET
-				title=excluded.title, workspace=excluded.workspace, updated_at=excluded.updated_at,
+				title=excluded.title, workspace=excluded.workspace, group_name=excluded.group_name, updated_at=excluded.updated_at,
 				archived_at=excluded.archived_at`,
-			meta.ID, meta.Title, meta.Workspace, meta.UpdatedAt, meta.ArchivedAt, meta.MessageCount, meta.ArchivedCount); err != nil {
+			meta.ID, meta.Title, meta.Workspace, meta.Group, meta.UpdatedAt, meta.ArchivedAt, meta.MessageCount, meta.ArchivedCount); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -767,6 +777,7 @@ func syncSessionIndexBudgeted(db *sql.DB, store Store, maxWait time.Duration) er
 type briefSessionWalk struct {
 	sessionID string
 	title     string
+	group     string
 	// 当前轮最后一条 assistant（最后出现者胜出）
 	hasAssistant bool
 	mid          string
@@ -782,7 +793,7 @@ func (w *briefSessionWalk) flush(query string, out *[]SearchHit, limit int) {
 	}
 	if strings.Contains(strings.ToLower(w.text), query) {
 		*out = append(*out, SearchHit{
-			SessionID: w.sessionID, Title: w.title, Role: "assistant",
+			SessionID: w.sessionID, Title: w.title, Group: w.group, Role: "assistant",
 			Mid: w.mid, LiveIndex: w.liveIndex, Ts: w.ts,
 			Snippet: makeSearchSnippet(w.text, query, 60), Kind: "message",
 		})
@@ -801,17 +812,17 @@ func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int,
 	lowerQuery := strings.ToLower(query)
 
 	// 标题命中
-	rows, err := db.Query(`SELECT id, title FROM sessions WHERE archived_at=0 AND instr(lower(title), lower(?)) > 0 ORDER BY updated_at DESC LIMIT ?`, query, limit)
+	rows, err := db.Query(`SELECT id, title, group_name FROM sessions WHERE archived_at=0 AND instr(lower(title), lower(?)) > 0 ORDER BY updated_at DESC LIMIT ?`, query, limit)
 	if err != nil {
 		return result, err
 	}
 	for rows.Next() {
-		var id, title string
-		if err := rows.Scan(&id, &title); err != nil {
+		var id, title, groupName string
+		if err := rows.Scan(&id, &title, &groupName); err != nil {
 			rows.Close()
 			return result, err
 		}
-		result.Hits = append(result.Hits, SearchHit{SessionID: id, Title: title, LiveIndex: -1, Kind: "title"})
+		result.Hits = append(result.Hits, SearchHit{SessionID: id, Title: title, Group: groupName, LiveIndex: -1, Kind: "title"})
 	}
 	rows.Close()
 	if len(result.Hits) >= limit || time.Now().After(deadline) {
@@ -825,7 +836,7 @@ func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int,
 		var rows *sql.Rows
 		if useFTS {
 			match := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
-			rows, err = db.Query(`SELECT m.session_id, s.title, m.role, m.name, m.mid, m.live_index, m.ts,
+			rows, err = db.Query(`SELECT m.session_id, s.title, s.group_name, m.role, m.name, m.mid, m.live_index, m.ts,
 				snippet(ai_messages_fts, 0, char(1), char(2), '…', 32)
 				FROM ai_messages_fts
 				JOIN messages m ON m.rowid = ai_messages_fts.rowid
@@ -833,7 +844,7 @@ func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int,
 				WHERE ai_messages_fts MATCH ? AND m.live_index >= 0 AND s.archived_at = 0
 				ORDER BY bm25(ai_messages_fts) LIMIT ?`, match, limit-len(result.Hits))
 		} else {
-			rows, err = db.Query(`SELECT m.session_id, s.title, m.role, m.name, m.mid, m.live_index, m.ts, m.text
+			rows, err = db.Query(`SELECT m.session_id, s.title, s.group_name, m.role, m.name, m.mid, m.live_index, m.ts, m.text
 				FROM messages m JOIN sessions s ON s.id = m.session_id
 				WHERE m.live_index >= 0 AND s.archived_at = 0 AND instr(lower(m.text), lower(?)) > 0
 				ORDER BY s.updated_at DESC, m.live_index DESC LIMIT ?`, query, limit-len(result.Hits))
@@ -846,7 +857,7 @@ func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int,
 			var hit SearchHit
 			var ts int64
 			var text string
-			if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Role, &hit.Name, &hit.Mid, &hit.LiveIndex, &ts, &text); err != nil {
+			if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Group, &hit.Role, &hit.Name, &hit.Mid, &hit.LiveIndex, &ts, &text); err != nil {
 				return result, err
 			}
 			hit.Ts = ts
@@ -866,7 +877,7 @@ func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int,
 
 	// 简要：流式扫描未归档会话的 live 消息（按会话 + live_index 顺序），
 	// 只保留 user 消息与每轮最后一条 assistant。
-	rows, err = db.Query(`SELECT m.session_id, s.title, m.role, m.mid, m.live_index, m.ts, m.text
+	rows, err = db.Query(`SELECT m.session_id, s.title, s.group_name, m.role, m.mid, m.live_index, m.ts, m.text
 		FROM messages m JOIN sessions s ON s.id = m.session_id
 		WHERE m.live_index >= 0 AND s.archived_at = 0
 		ORDER BY m.session_id, m.live_index`)
@@ -881,22 +892,22 @@ func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int,
 			result.Truncated = true
 			break
 		}
-		var sessionID, title, role, mid, text string
+		var sessionID, title, groupName, role, mid, text string
 		var liveIndex, ts int64
-		if err := rows.Scan(&sessionID, &title, &role, &mid, &liveIndex, &ts, &text); err != nil {
+		if err := rows.Scan(&sessionID, &title, &groupName, &role, &mid, &liveIndex, &ts, &text); err != nil {
 			return result, err
 		}
 		scanned += int64(len(text))
 		if walk.sessionID != sessionID {
 			walk.flush(lowerQuery, &result.Hits, limit)
-			walk = briefSessionWalk{sessionID: sessionID, title: title}
+			walk = briefSessionWalk{sessionID: sessionID, title: title, group: groupName}
 		}
 		switch role {
 		case "user":
 			walk.flush(lowerQuery, &result.Hits, limit)
 			if len(result.Hits) < limit && strings.Contains(strings.ToLower(text), lowerQuery) {
 				result.Hits = append(result.Hits, SearchHit{
-					SessionID: sessionID, Title: title, Role: role,
+					SessionID: sessionID, Title: title, Group: groupName, Role: role,
 					Mid: mid, LiveIndex: int(liveIndex), Ts: ts,
 					Snippet: makeSearchSnippet(text, query, 60), Kind: "message",
 				})

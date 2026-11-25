@@ -70,7 +70,10 @@ export function formatSessionSearchResult(query, result) {
         const id = textOf(hit.sessionId);
         if (!id) continue;
         if (!groups.has(id)) {
-            groups.set(id, {id, title: textOf(hit.title) || '(无标题)', ts: Number(hit.ts) || 0, items: []});
+            groups.set(id, {
+                id, title: textOf(hit.title) || '(无标题)',
+                group: textOf(hit.group).trim(), ts: Number(hit.ts) || 0, items: [],
+            });
         }
         const group = groups.get(id);
         group.items.push(hit);
@@ -80,7 +83,8 @@ export function formatSessionSearchResult(query, result) {
     for (const group of groups.values()) {
         const when = formatTs(group.ts);
         lines.push('');
-        lines.push('● ' + group.title + (when ? '（' + when + '）' : '') + ' · id: ' + group.id);
+        lines.push('● ' + group.title + (when ? '（' + when + '）' : '') + ' · id: ' + group.id
+            + (group.group ? ' · 分组：' + group.group : ''));
         for (const hit of group.items) {
             index++;
             // 用户消息片段去掉开头的 <system-reminder> 环境块（宿主注入的每轮状态，不是用户说的内容）
@@ -108,6 +112,8 @@ export function sessionLogDigest(raw, options = {}) {
     const workspace = textOf(header.workspace);
     const head = ['会话：' + title + ' · id: ' + (textOf(header.id) || textOf(options.id) || '?')];
     const metaParts = [];
+    const group = textOf(options.group).trim();
+    if (group) metaParts.push('分组：' + group);
     if (workspace) metaParts.push('工作区：' + workspace);
     const created = formatTs(header.createdAt);
     if (created) metaParts.push('创建于 ' + created);

@@ -24,7 +24,7 @@ import {
     AI_MASCOT_PHRASES, mascotPhraseIndex, phrasesForPhase, randomMascotSalt,
 } from './core/ai-mascot-phrases.js';
 import {createModelCatalogStore} from './core/model-catalog.js';
-import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs, normalizeSessionGroup, buildSessionMeta} from './session/ai-session-store.js';
+import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs, normalizeSessionGroup, resolveSessionGroupName, buildSessionMeta} from './session/ai-session-store.js';
 import {mergeLoadedSessions} from './session/ai-session-merge.js';
 import {buildGuardNotice} from './security/ai-wipeguard.js';
 import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, isNoWorkspaceSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey} from './session/ai-session-scope.js';
@@ -2137,6 +2137,11 @@ export function createAIPanel(options) {
         const transient = !!(sessionOpts && sessionOpts.transient === true);
         // 无工作区会话：同样不绑工作区、默认只读，但持久保留（不设 temp），标题正常生成。
         const noWorkspace = !!(sessionOpts && sessionOpts.noWorkspace === true);
+        // app_control ai_new_session 的可选覆盖：scope/model/group 都由调用方（bridge）校验过，
+        // 这里只落值。model 是 {account, entry}（与 subAgentModelPick 同款），没传走继承值。
+        const modelTarget = sessionOpts && sessionOpts.model;
+        const scopeOverride = sessionOpts && sessionOpts.scope;
+        const groupOverride = sessionOpts && sessionOpts.group;
         return {
             id: aiNowId('session-'),
             title: title || '新会话',
@@ -2148,14 +2153,15 @@ export function createAIPanel(options) {
             unread: '',
             // 新会话取「设置 → AI → 权限 → 新会话默认读写权限」；缺省回退只读访问（历史默认）
             // 临时 / 无工作区会话固定只读（无工作区、不注入工作区知识）
-            scope: (transient || noWorkspace) ? 'read' : normalizeDefaultScope(config.defaultScope),
+            // scopeOverride 由 ai_new_session 传入（已校验「不比调用方宽」），只在这里落值。
+            scope: (transient || noWorkspace) ? 'read' : (AI_SCOPES.includes(scopeOverride) ? scopeOverride : normalizeDefaultScope(config.defaultScope)),
             workspace: (transient || noWorkspace) ? '' : currentWorkspacePath(),
             // 临时会话标记（见 ai-session-scope.js 的 isTransientSession）
             temp: transient,
             // 无工作区会话标记（持久、不绑工作区；见 isNoWorkspaceSession）
             noWorkspace,
-            profileId: inherited.profileId,
-            modelId: inherited.modelId,
+            profileId: modelTarget ? (modelTarget.account ? modelTarget.account.id : '') : inherited.profileId,
+            modelId: modelTarget ? (modelTarget.entry ? modelTarget.entry.id : '') : inherited.modelId,
             ctxLimit: 0,
             systemPrompt: '',
             promptTemplateId: '',
@@ -2164,7 +2170,7 @@ export function createAIPanel(options) {
             archived: [],
             archivedAt: 0,
             // 会话自定义分组（工作区内归类）：空 = 未分组
-            group: '',
+            group: normalizeSessionGroup(groupOverride),
             planMode: false,
             // 新会话的桌面控制默认值（设置 → AI → 权限 → 新会话）：默认关；只有
             // 用户在设置里开启且桌面服务器已安装时才置真。AI 仍要 windows_control_mode 才动手。
@@ -10967,10 +10973,12 @@ async function requestApproval(session, toolMessage, info) {
                 if (!raw) {
                     return '会话没有可读的日志：' + id + '（可能已被删除，或还没落盘）。先用 session_search 重新找 id。';
                 }
+                const digestSession = sessionById(id);
                 return sessionLogDigest(raw, {
                     limit: aiClampInt(input.limit, 1, 50, 20),
                     query: aiTextOf(input.query).trim(),
                     workspace: getScopeRoot(),
+                    group: digestSession ? (digestSession.group || '') : '',
                     id,
                 });
             }
@@ -16812,17 +16820,18 @@ async function requestApproval(session, toolMessage, info) {
 
     // 会话自定义分组（工作区内归类）：随会话 meta 持久化，与 pinned 同策略（不进 JSONL meta 事件）。
     // 空值 = 移出分组（归「未分组」）；占位会话也能直接改——group 只写 meta.json，不需要正文。
-    function setSessionGroup(target, presetValue) {
+    function setSessionGroup(target, presetValue, actor) {
         const session = target && target.id ? target : currentSession();
         if (!session) return;
+        const who = actor === 'ai' ? 'ai' : 'user';
         const apply = (value) => {
             const next = normalizeSessionGroup(value);
             if (next === normalizeSessionGroup(session.group)) return;
             session.group = next;
-            logActivity('ai.session', session.id, {op: 'set-group', group: next, title: session.title || ''}, {actor: 'user', source: 'user'});
+            logActivity('ai.session', session.id, {op: 'set-group', group: next, title: session.title || ''}, {actor: who, source: who});
             persistSessions();
             renderSessionList();
-            flash(next ? '已把会话移入分组：' + next : '已把会话移出分组');
+            if (who === 'user') flash(next ? '已把会话移入分组：' + next : '已把会话移出分组');
         };
         const current = normalizeSessionGroup(session.group);
         if (presetValue != null) {
@@ -19882,27 +19891,91 @@ async function requestApproval(session, toolMessage, info) {
             // 缺省后台新建：不打开面板、不切 currentSession、不碰输入区，带 message 时经
             // startSessionTurn 会话级内核起轮（定时任务/通知唤醒同款路径，见 11662 注释）。
             const focus = !!(opts2 && opts2.focus);
+
+            // —— 可选参数解析（scope / model / group），基准是「调用方自己的会话」——
+            // callerSessionId 命中优先，回退面板当前会话（后台会话被用户切走时两者不同）。
+            const callerId = String((opts2 && opts2.callerSessionId) || '').trim();
+            const baseSession = (callerId ? sessionById(callerId) : null) || currentSession();
+            const baseScope = currentScopeOf(baseSession) || 'read';
+            const hasScope = opts2 && opts2.scope != null;
+            const hasModel = opts2 && opts2.model != null;
+            const hasGroup = opts2 && opts2.group != null;
+            // 权限档：省略 = 继承调用方档位；显式 = 必须合法且「不比调用方宽」（只许更严）。
+            // 严格度数值越大越严（与 ai-subagents.js 的 SCOPE_STRICTNESS 同口径）。
+            const SCOPE_RANK = {full: 0, auto: 1, edit: 2, read: 3};
+            let resolvedScope = baseScope;
+            if (hasScope) {
+                const wanted = String(opts2.scope).trim();
+                if (!AI_SCOPES.includes(wanted)) {
+                    throw new Error('scope="' + wanted + '" 不是合法权限档。可选：' + AI_SCOPES.join(' / '));
+                }
+                if ((SCOPE_RANK[wanted] || 0) < (SCOPE_RANK[baseScope] || 0)) {
+                    throw new Error('当前会话是「' + baseScope + '」档，新会话不能更宽（只能继承或更严）。'
+                        + '合法档位（由宽到严）：full / auto / edit / read');
+                }
+                resolvedScope = wanted;
+            }
+            // 模型：显式 = 走子代理自选模型白名单（校验与报错同 spawn_agent）；省略 = 继承调用方会话
+            // 的模型（调用方在后台时不能用 inheritModelRef——它读 currentSession 会是别人的会话）。
+            let resolvedModel = null;
+            if (hasModel) {
+                resolvedModel = subAgentModelPick(opts2.model);
+            } else if (baseSession && baseSession !== currentSession()) {
+                const p = profileOf(baseSession);
+                const e = entryOf(baseSession);
+                if (p && e) resolvedModel = {account: p, entry: e};
+            }
+            // 分组：自由填，但大小写/空白近似时归一到调用方工作区已有的分组名。
+            const baseKey = aiWorkspaceKey(sessionWorkspacePath(baseSession));
+            const existingGroups = [];
+            for (const s of sessions) {
+                if (s.group && aiWorkspaceKey(sessionWorkspacePath(s)) === baseKey && !existingGroups.includes(s.group)) {
+                    existingGroups.push(s.group);
+                }
+            }
+            const resolvedGroup = hasGroup ? resolveSessionGroupName(opts2.group, existingGroups) : '';
+
             if (typeof newSession !== 'function' || typeof submitText !== 'function') throw new Error('会话桥不可用');
             if (focus) {
                 open(true);
                 newSession();
                 const session = currentSession();
-                if (title && session) {
-                    session.title = title.slice(0, 60);
-                    persistSessions();
-                    renderSessionList();
+                if (session) {
+                    // scope 无条件应用 resolvedScope：省略时它已是调用方档位，显式时是更严档——
+                    // 不能让复用的空会话保留更宽的档位（否则 read 调用方会在 full 会话里干活）。
+                    if (title) session.title = title.slice(0, 60);
+                    const appliedScope = resolvedScope || 'read';
+                    const scopeChanged = currentScopeOf(session) !== appliedScope;
+                    if (scopeChanged) session.scope = appliedScope;
+                    // model：省略且调用方在后台时 resolvedModel 已带出调用方模型，无条件 pin；
+                    // 省略且调用方在前台时 resolvedModel=null，newSession() 已按当前模型 pin，无需动。
+                    if (resolvedModel) pinSessionModel(session, resolvedModel.account, resolvedModel.entry);
+                    // group 省略表示不改分组（复用空会话可能用户已归类），只显式时覆盖。
+                    if (hasGroup) session.group = resolvedGroup;
+                    if (title || scopeChanged || resolvedModel || hasGroup) {
+                        persistSessions();
+                        renderSessionList();
+                    }
                 }
                 // submitText 发送失败会返回 false（busy / sessions_pending / no_profile 等，
                 // 内部已 flash 错误）：如实带出 sent，避免 note 误报「已发送」。
                 const sent = message ? !!(await submitText(message)) : null;
-                return session ? {id: session.id, title: session.title, sent} : null;
+                return session ? {
+                    id: session.id, title: session.title, sent,
+                    scope: currentScopeOf(session),
+                    group: session.group || '',
+                    model: (() => { const p = profileOf(session); const e = entryOf(session); return p && e ? {model: e.model || '', label: modelRefLabel(p, e)} : null; })(),
+                } : null;
             }
-            // 后台路径：createSessionData 继承面板当前会话的模型/权限（inheritModelRef 读
-            // currentSession，不切它）——正好满足「继承当前会话」的口径。
+            // 后台路径：createSessionData 接受 scope/model/group 覆盖；没传的字段走既有默认。
             if (typeof createSessionData !== 'function' || typeof startSessionTurn !== 'function') {
                 throw new Error('会话桥不可用');
             }
-            const session = createSessionData(title || undefined);
+            const session = createSessionData(title || undefined, {
+                scope: resolvedScope,
+                ...(resolvedModel ? {model: resolvedModel} : {}),
+                group: resolvedGroup,
+            });
             sessions.push(session);
             persistSessions();
             renderSessionList();
@@ -19911,6 +19984,9 @@ async function requestApproval(session, toolMessage, info) {
             return {
                 id: session.id,
                 title: session.title,
+                scope: currentScopeOf(session),
+                group: session.group || '',
+                model: (() => { const p = profileOf(session); const e = entryOf(session); return p && e ? {model: e.model || '', label: modelRefLabel(p, e)} : null; })(),
                 ...(turn ? {turn: {ok: !!turn.ok, reason: turn.reason || ''}} : {}),
             };
         },
@@ -19948,6 +20024,30 @@ async function requestApproval(session, toolMessage, info) {
             renderSessionList();
             queueLogSave(target);
             return {id: target.id, title: target.title};
+        },
+        // app_control ai_set_session_group：改会话的自定义分组。不传 id 改调用者自己的会话
+        //（与 ai_rename_session 同口径，后台会话不会误改前台）。空 group = 移出分组。
+        bridgeSetSessionGroup: (id, group, callerSessionId) => {
+            if (typeof setSessionGroup !== 'function') throw new Error('会话桥不可用');
+            const wanted = String(id || '').trim();
+            const caller = String(callerSessionId || '').trim();
+            const target = wanted
+                ? sessions.find((s) => s.id === wanted)
+                : (caller ? sessions.find((s) => s.id === caller) : null) || currentSession();
+            if (!target) throw new Error(wanted ? '找不到会话：' + wanted : '当前没有可改分组的会话');
+            // 归一口径与新建共用：大小写/空白近似时复用工作区已有分组名。
+            const baseKey = aiWorkspaceKey(sessionWorkspacePath(target));
+            const existingGroups = [];
+            for (const s of sessions) {
+                if (s !== target && s.group && aiWorkspaceKey(sessionWorkspacePath(s)) === baseKey && !existingGroups.includes(s.group)) {
+                    existingGroups.push(s.group);
+                }
+            }
+            const next = resolveSessionGroupName(group, existingGroups);
+            // setSessionGroup(target, presetValue, actor) 内部做「值相同不改」+ 落盘 + 刷列表 + 记留痕。
+            // 传 '' 表示移出分组（normalizeSessionGroup('') === ''，apply 会写空串）。actor='ai' 不闪 user 提示。
+            setSessionGroup(target, next, 'ai');
+            return {id: target.id, title: target.title, group: target.group || ''};
         },
         // ---------- 生成条目桥（app_control：get_gen_models / set_gen_model / delete_gen_model） ----------
         // AI 可代填除 API Key 外的全部字段（mergeGenModelEntry 保证密钥只来自 existing）；
@@ -20106,6 +20206,7 @@ async function requestApproval(session, toolMessage, info) {
                 id: s.id,
                 title: s.title,
                 scope: s.scope || 'read',
+                group: s.group || '',
                 workspace: s.workspace || '',
                 planMode: !!s.planMode,
                 messages: sessionMessageCount(s),
@@ -20127,6 +20228,18 @@ async function requestApproval(session, toolMessage, info) {
             // 区分「调用者自己的会话」与「面板当前查看的会话」：用户切到别的会话时两者会不一致，
             // 此时 callerIsBackground=true，提示模型「你不在前台」——别把 session 块当成自己的会话。
             const callerIsBackground = !!(caller && session && caller !== session.id);
+            // 「我自己所在的会话」：后台会话被用户切走时 session 块是别人，callerSession 才是自己。
+            const callerSession = caller ? (sessions.find((s) => s.id === caller) || null) : session;
+            // 调用方工作区的既有分组名（供模型复用，避免拼出近义分组）。
+            const baseForGroups = callerSession || session;
+            const baseKey = aiWorkspaceKey(sessionWorkspacePath(baseForGroups));
+            const sessionGroups = [];
+            for (const s of sessions) {
+                if (s.group && aiWorkspaceKey(sessionWorkspacePath(s)) === baseKey && !sessionGroups.includes(s.group)) {
+                    sessionGroups.push(s.group);
+                }
+            }
+            sessionGroups.sort((a, b) => a.localeCompare(b, 'zh'));
             return {
                 open: isOpen(),
                 mode,
@@ -20135,6 +20248,14 @@ async function requestApproval(session, toolMessage, info) {
                 callerSessionId: caller || (session ? session.id : ''),
                 viewingSessionId: session ? session.id : '',
                 callerIsBackground,
+                sessionGroups,
+                callerSession: callerSession ? {
+                    id: callerSession.id,
+                    title: callerSession.title,
+                    group: callerSession.group || '',
+                    scope: currentScopeOf(callerSession),
+                    planMode: !!callerSession.planMode,
+                } : null,
                 profile: profile ? {
                     id: profile.id,
                     name: profile.name,
@@ -20161,6 +20282,7 @@ async function requestApproval(session, toolMessage, info) {
                     id: session.id,
                     title: session.title,
                     workspace: session.workspace || '',
+                    group: session.group || '',
                     messages: sessionMessageCount(session),
                     round: Number(session.round) || 0,
                     archived: !!session.archivedAt,

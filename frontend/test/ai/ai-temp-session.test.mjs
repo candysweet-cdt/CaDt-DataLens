@@ -93,7 +93,7 @@ test('临时会话的派生（分支 / 支线）继承 temp 且不绑工作区',
 test('createSessionData：临时会话 = 只读 + 不绑工作区 + temp 标记 + 桌面控制默认关', () => {
     const fn = sliceFunction(panel, 'function createSessionData(title, sessionOpts)');
     assert.match(fn, /const transient = !!\(sessionOpts && sessionOpts\.transient === true\);/);
-    assert.match(fn, /scope: \(transient \|\| noWorkspace\) \? 'read' : normalizeDefaultScope\(config\.defaultScope\)/);
+    assert.match(fn, /scope: \(transient \|\| noWorkspace\) \? 'read' : \(AI_SCOPES\.includes\(scopeOverride\)/);
     assert.match(fn, /workspace: \(transient \|\| noWorkspace\) \? '' : currentWorkspacePath\(\)/);
     assert.match(fn, /temp: transient,/);
     assert.match(fn, /desktopEnabled: !transient && !noWorkspace && /);

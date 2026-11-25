@@ -4,6 +4,14 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 新增（AI 新建会话可指定权限档 / 模型 / 分组，会话检索显示分组）
+
+- `app_control` 的 `ai_new_session` 新增三个可选参数：`scope`（权限档，省略继承调用方当前档位，显式只能更严、更宽会报错）、`model`（模型，省略继承调用方会话模型，显式只能从用户允许的子代理模型候选里选）、`group`（会话分组，≤24 字自由填，与已有分组仅差大小写/空白时自动归一）。focus 复用空会话时只覆盖显式传入的字段，不悄悄改用户既有设置。
+- 新增 `ai_set_session_group {group,id?}`：改会话自定义分组（空串移出），不传 id 改调用者自己所在会话，与 `ai_rename_session` 同口径。
+- `get_ai` 返回 `session.group`、调用方自己的 `callerSession` 块与工作区已有分组 `sessionGroups`；`session_list` / `session_search` / `session_read` 输出有分组时显示「分组：X」。
+- 会话搜索派生索引 `ai-index.db` 的 `sessions` 表新增 `group_name` 列（幂等迁移，旧库打开自动补列），三种检索路径（标题 / 全文 / 简要）均回填分组；meta 变更钩子即时同步分组改动。
+- 验证：`npm test`（含 typecheck 前置门）与 `go test ./... -timeout 300s` 全绿，`npm run build` 成功。
+
 ### 版本
 
 - 版本号升至 `v1.3.0`（`app_core.go` 的 `appVersion` 为唯一真源，`scripts/sync-version.mjs` 已同步 `wails.json`、`build/windows/info.json`、`wails_tools.nsh`、`build/config.yml` 四处，`TestVersionFilesInSync` 校验通过）。

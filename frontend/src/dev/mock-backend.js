@@ -1763,12 +1763,16 @@ const mockBackend = {
             const at = log.toLowerCase().indexOf(q);
             if (at < 0) continue;
             let title = '';
+            let group = '';
             try {
-                title = (JSON.parse(item.meta || '{}') || {}).title || '';
+                const meta = JSON.parse(item.meta || '{}') || {};
+                title = meta.title || '';
+                group = meta.group || '';
             } catch (e) {}
             hits.push({
                 sessionId: id,
                 title: title || '(mock 会话)',
+                group,
                 role: 'user',
                 name: '',
                 mid: '',
