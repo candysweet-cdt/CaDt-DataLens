@@ -8,6 +8,8 @@ import {
     scanPasteMarkers, markerAtCursor, buildPasteMirrorHtml, expandPasteMarkers,
     countPasteLines, makePasteEntry, pasteFullDocName, pasteTooltip,
     pasteSummary, formatPasteTime, PASTE_MARKER_ICON,
+    PASTE_INLINE_MAX_CHARS, PASTE_ATTACH_MAX_CHARS, decidePasteAction,
+    pasteFileAttachmentText, pasteOverflowPlaceholder,
 } from '../../../src/ai/chat/ai-paste.js';
 
 // 便捷构造器：固定摘要与时间，便于断言标记格式。
@@ -148,4 +150,54 @@ test('makePasteEntry / pasteFullDocName / pasteTooltip', () => {
     assert.match(tip, /粘贴 #4/);
     assert.match(tip, /5 字符 \/ 3 行/);
     assert.match(tip, /点击查看并编辑全文/);
+});
+
+test('粘贴分派阈值：正文上限与附件单件上限同源', () => {
+    assert.equal(PASTE_INLINE_MAX_CHARS, 100000, '单条消息正文上限');
+    assert.equal(PASTE_ATTACH_MAX_CHARS, 65536, '文本附件单件上限（64KB）');
+});
+
+test('decidePasteAction：短文本原样、三档各自的折叠/附件行为', () => {
+    const short = 'x'.repeat(1000);
+    assert.equal(decidePasteAction(short, {mode: 'collapse'}), 'inline');
+    assert.equal(decidePasteAction('', {mode: 'collapse'}), 'inline');
+    assert.equal(decidePasteAction(null, {mode: 'collapse'}), 'inline');
+    const mid = 'x'.repeat(2000);
+    assert.equal(decidePasteAction(mid, {mode: 'collapse'}), 'marker');
+    assert.equal(decidePasteAction(mid, {mode: 'attachment'}), 'attach');
+    assert.equal(decidePasteAction(mid, {mode: 'off'}), 'inline');
+    // 非法档位回落默认（collapse）
+    assert.equal(decidePasteAction(mid, {mode: 'bogus'}), 'marker');
+});
+
+test('decidePasteAction：超过正文上限一律 file（off 档也不例外）', () => {
+    const overflow = 'x'.repeat(PASTE_INLINE_MAX_CHARS + 1);
+    for (const mode of AI_PASTE_MODES) {
+        assert.equal(decidePasteAction(overflow, {mode}), 'file', mode + ' 超上限必须走落盘附件');
+    }
+    // 恰好等于上限仍可内联折叠（能发出去）
+    assert.equal(decidePasteAction('x'.repeat(PASTE_INLINE_MAX_CHARS), {mode: 'collapse'}), 'marker');
+});
+
+test('decidePasteAction：attachment 档超过附件单件上限改走 file，不静默截断', () => {
+    assert.equal(decidePasteAction('x'.repeat(PASTE_ATTACH_MAX_CHARS), {mode: 'attachment'}), 'attach');
+    assert.equal(decidePasteAction('x'.repeat(PASTE_ATTACH_MAX_CHARS + 1), {mode: 'attachment'}), 'file');
+});
+
+test('decidePasteAction：阈值可注入（便于单测与将来调参）', () => {
+    // 折叠阈值固定 1000，故用 3000 字符样本；inlineMax / attachMax 可注入。
+    assert.equal(decidePasteAction('x'.repeat(3000), {mode: 'attachment', inlineMax: 3000, attachMax: 2500}), 'file');
+    assert.equal(decidePasteAction('x'.repeat(2000), {mode: 'attachment', inlineMax: 3000, attachMax: 2500}), 'attach');
+    // 非法阈值回落默认值
+    assert.equal(decidePasteAction('x'.repeat(2000), {mode: 'attachment', inlineMax: 0, attachMax: -1}), 'attach');
+});
+
+test('落盘附件说明与超长占位：都写明字符数与路径', () => {
+    const hint = pasteFileAttachmentText('D:/w/.cadt/tmp/paste/paste-1.txt', 120000, 3200);
+    assert.match(hint, /120000 字符 \/ 3200 行/);
+    assert.match(hint, /D:\/w\/\.cadt\/tmp\/paste\/paste-1\.txt/);
+    assert.match(hint, /read_file/);
+    const placeholder = pasteOverflowPlaceholder(120000);
+    assert.match(placeholder, /120000/);
+    assert.match(placeholder, /附件/);
 });

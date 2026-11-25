@@ -18777,6 +18777,8 @@ async function requestApproval(session, toolMessage, info) {
         entryOf,
         sessionImageBytes,
         imageLimits,
+        // 超长粘贴落盘：写到工作区 .cadt/tmp/paste/（无工作区时退化为截断附件）
+        getScopeRoot,
         // 排队消息的读写一律经队列模块（所有权在 ai-message-queue.js，阶段 A 迁移）
         queue: {
             enqueue: (...args) => queueMod.enqueueItem(...args),

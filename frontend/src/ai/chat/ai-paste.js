@@ -2,7 +2,11 @@
 // 三档模式（off / attachment / collapse）与折叠胶囊的标记、扫描、镜像 HTML、展开。
 // 胶囊机制沿用群聊 @ 提及的「文本是唯一真源、镜像层画胶囊」方案（ai-group-ui-model.js）：
 // 正文里胶囊 = 一段占位文本【📎 摘要 · 时间 #N】，镜像层按 range 渲染成彩色 span，占据字符与原文严格等宽。
-// 配套测试：test/ai/ai-paste.test.mjs。
+// 另有粘贴分派（decidePasteAction）：粘贴文本超过单条消息上限时无论哪一档都转附件——
+// 折叠只改输入区显示，发送时按原文展开，超过 10 万字符必被内核以 too_long 拒发。
+// 配套测试：test/ai/chat/ai-paste.test.mjs。
+
+import {AI_CHAT_INPUT_LIMIT} from '../core/ai-constants.js';
 
 // 超过该字符数才折叠（严格大于）。与调研 codex 口径一致。
 export const LARGE_PASTE_CHAR_THRESHOLD = 1000;
@@ -62,6 +66,40 @@ export function makePasteMarker(id, summary, time) {
 // 是否达到折叠阈值。
 export function shouldFoldPaste(text) {
     return String(text == null ? '' : text).length > LARGE_PASTE_CHAR_THRESHOLD;
+}
+
+// 单条消息正文上限：超过它 startSessionTurn 会以 too_long 直接拒发（AI_CHAT_INPUT_LIMIT 同值）。
+export const PASTE_INLINE_MAX_CHARS = AI_CHAT_INPUT_LIMIT;
+
+// 文本附件单件上限（与 ai-composer 的 addAttachment 同一口径：超出会被截断丢内容）。
+// 粘贴文本超过它就改为落盘 + 路径引用，让模型用 read_file 自己读，不静默截断。
+export const PASTE_ATTACH_MAX_CHARS = 64 << 10;
+
+// 粘贴分派（纯函数）：'inline' 原样插入 / 'marker' 折叠胶囊 / 'attach' 文本附件 / 'file' 落盘附件。
+// 关键规则：粘贴文本一旦超过正文上限，折叠也没用（发送时按原文展开，必被 too_long 拒），
+// 所以不管用户设了哪一档都转附件——这正是「粘贴过大导致消息发不出去」的根因。
+export function decidePasteAction(text, opts) {
+    const value = String(text == null ? '' : text);
+    if (!shouldFoldPaste(value)) return 'inline';
+    const mode = normalizePasteMode(opts && opts.mode);
+    const inlineMax = Number(opts && opts.inlineMax) > 0 ? Number(opts.inlineMax) : PASTE_INLINE_MAX_CHARS;
+    const attachMax = Number(opts && opts.attachMax) > 0 ? Number(opts.attachMax) : PASTE_ATTACH_MAX_CHARS;
+    if (value.length > inlineMax) return 'file';
+    if (mode === 'off') return 'inline';
+    if (mode === 'attachment') return value.length > attachMax ? 'file' : 'attach';
+    return 'marker';
+}
+
+// 落盘附件的说明文本（附件 content 只放这一段，正文在文件里，模型按提示 read_file 读）。
+export function pasteFileAttachmentText(path, chars, lines) {
+    return '（粘贴的文本已存盘，未直接注入正文：' + (Number(chars) || 0) + ' 字符 / ' + (Number(lines) || 0) + ' 行。\n' +
+        '路径：' + String(path || '') + '\n' +
+        '处理建议：用 read_file 读取该文件，内容很大时分段读（startLine/endLine）。）';
+}
+
+// 发送兜底时的正文占位：正文整段转附件后，留在输入区/消息里的那一句。
+export function pasteOverflowPlaceholder(chars) {
+    return '（正文 ' + (Number(chars) || 0) + ' 字符超过单条消息上限，已整段转为附件发送）';
 }
 
 // 扫描正文里的所有胶囊标记（按出现顺序，不重叠）。文本是唯一真源。

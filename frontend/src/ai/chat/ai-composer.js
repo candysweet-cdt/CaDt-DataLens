@@ -10,8 +10,10 @@ import {attachmentPathHint} from '../tools/ai-file-tools.js';
 import {checkRequestBudget, checkSourceBatch, DEFAULT_IMAGE_LIMITS} from '../tools/ai-image-policy.js';
 import {AI_QUOTE_KIND, quoteChipLabel, quoteCardExcerpt, quoteFullDoc} from './ai-quote.js';
 import {dedupeAttachPaths, attachSummary} from './ai-attach-batch.js';
-import {normalizePasteMode, shouldFoldPaste, makePasteMarker, makePasteEntry, scanPasteMarkers,
-    markerAtCursor, buildPasteMirrorHtml, expandPasteMarkers, pasteSummary, formatPasteTime} from './ai-paste.js';
+import {normalizePasteMode, makePasteMarker, makePasteEntry, scanPasteMarkers,
+    markerAtCursor, buildPasteMirrorHtml, expandPasteMarkers, pasteSummary, formatPasteTime,
+    decidePasteAction, pasteFileAttachmentText, pasteOverflowPlaceholder, countPasteLines,
+    PASTE_ATTACH_MAX_CHARS, PASTE_INLINE_MAX_CHARS} from './ai-paste.js';
 import {iconSvg} from '../../core/icons.js';
 import {dataUrlToFile} from '../../core/image-clipboard.js';
 import {createShiftDoubleTap} from '../../core/shift-double-tap.js';
@@ -122,6 +124,8 @@ export function createAIComposer(ctx) {
     const pickFiles = ctx.pickFiles;
     const readTextFile = ctx.readTextFile;
     const settings = ctx.settings;
+    // 工作区根：超长粘贴落盘时用（未注入时落盘路径不可用，退化为截断附件）。
+    const getScopeRoot = typeof ctx.getScopeRoot === 'function' ? ctx.getScopeRoot : () => '';
     const showContextMenu = ctx.showContextMenu;
     const showImagePreview = ctx.showImagePreview;
     const showNote = ctx.showNote;
@@ -218,6 +222,77 @@ export function createAIComposer(ctx) {
         mirror.innerHTML = buildPasteMirrorHtml(value, pasteStore);
         mirror.scrollTop = el.input.scrollTop;
         mirror.scrollLeft = el.input.scrollLeft;
+    }
+
+    // ---------- 超长粘贴：转附件（超过正文上限 / 超过附件单件上限） ----------
+
+    // 落盘目录（工作区内，随 .cadt 临时目录整体回收）。
+    const PASTE_TMP_REL = '.cadt/tmp/paste';
+    let pasteFileSeq = 0;
+
+    // 工作区根 + 相对路径拼接（Windows 根用 \ 时沿用，mock:// 前缀保持 /）。
+    function scopePath(root, rel) {
+        const base = String(root || '').replace(/[\\/]+$/, '');
+        if (!base) return '';
+        const sep = base.includes('\\') && !base.startsWith('mock://') ? '\\' : '/';
+        const tail = String(rel || '').replace(/^[\\/]+/, '').split('/').join(sep);
+        return base + sep + tail;
+    }
+
+    // 把超长文本写成工作区临时文件，返回路径（无工作区或写盘失败返回空串）。
+    async function writePasteTempFile(text) {
+        const root = aiTextOf(getScopeRoot());
+        if (!root || !backend.AIEnsureDir || !backend.SaveFile) return '';
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const stamp = '' + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '-' +
+            pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
+        const dir = scopePath(root, PASTE_TMP_REL);
+        const path = scopePath(dir, 'paste-' + stamp + '-' + (++pasteFileSeq) + '.txt');
+        try {
+            await backend.AIEnsureDir(dir);
+            await backend.SaveFile(path, text, 'lf', false, 'utf-8');
+            return path;
+        } catch (e) {
+            // 落盘失败不致命：调用方退化为截断附件（内容仍能发出去，只是会明说截断）
+            return '';
+        }
+    }
+
+    // 超长文本转附件：≤ 单件上限走 content（随消息走），超过则落盘 + 路径引用。
+    async function attachPastedText(text, opts) {
+        const value = String(text == null ? '' : text);
+        if (!value) return false;
+        const label = (opts && opts.label) || '粘贴文本.txt';
+        if (value.length <= PASTE_ATTACH_MAX_CHARS) {
+            return addAttachment({kind: 'file', label, content: value});
+        }
+        const path = await writePasteTempFile(value);
+        if (path) {
+            const name = path.split(/[\\/]/).pop() || label;
+            return addAttachment({
+                kind: 'file',
+                label: name,
+                path,
+                content: pasteFileAttachmentText(path, value.length, countPasteLines(value)),
+            });
+        }
+        // 没有工作区 / 写盘失败：只能截断（addAttachment 内部按 64KB 截），但要明说，不静默丢。
+        const ok = addAttachment({kind: 'file', label, content: value});
+        if (ok) flash('粘贴内容过长，已截断到 64KB 附加（未找到可落盘的工作区）', true);
+        return ok;
+    }
+
+    // 发送前兜底：展开胶囊后正文仍超过单条消息上限（多段长文本叠加 / 手打过长），
+    // 整段转附件并把正文换成一句占位——比内核直接「消息过长」拒发更能保住内容。
+    // 返回替换后的正文；无需处理时返回 null（调用方零成本）。
+    async function absorbOverflowText(rawText) {
+        const expanded = expandPasteMarkers(rawText, pasteStore);
+        if (expanded.text.length <= PASTE_INLINE_MAX_CHARS) return null;
+        const ok = await attachPastedText(expanded.text, {label: '长文本.txt'});
+        if (!ok) return null;
+        for (const id of expanded.usedIds) pasteStore.delete(id);
+        return pasteOverflowPlaceholder(expanded.text.length);
     }
 
     // 在光标处插入一个胶囊标记（保留光标前后文 → 位置语义），触发 input 让面板重算状态。
@@ -481,19 +556,21 @@ export function createAIComposer(ctx) {
             for (const item of added) addAttachment(item);
             return;
         }
-        // 纯文本：按三档设置分派。
-        const mode = pasteMode();
-        if (mode === 'off') return; // dsh 款：不拦截，浏览器默认原样全文插入。
+        // 纯文本：按三档设置 + 正文上限分派（超过上限的即使 off 档也转附件，否则必然发不出去）。
         const text = data.getData('text/plain');
-        if (!text || !shouldFoldPaste(text)) return; // 短文本原样插入。
+        if (!text) return;
+        const action = decidePasteAction(text, {mode: pasteMode()});
+        if (action === 'inline') return; // off 档且未超上限：浏览器默认原样全文插入。
         e.preventDefault();
-        if (mode === 'attachment') {
-            // ZCode 款：整段转文本附件，正文不留标记（位置丢失）。
-            addAttachment({kind: 'file', label: '粘贴文本.txt', content: text});
-        } else {
+        if (action === 'marker') {
             // collapse（默认）：光标处插彩色胶囊标记，全文存 pasteStore。
             insertPasteMarker(text);
+            return;
         }
+        // attachment：整段转文本附件，正文不留标记（位置丢失）；
+        // file：超过附件单件上限，落盘到工作区临时文件、附件只带路径。
+        const ok = await attachPastedText(text);
+        if (ok && action === 'file') flash('内容超过单条消息上限，已作为附件附加', true);
     }
 
     async function attachmentTextFromPath(path) {
@@ -829,6 +906,16 @@ export function createAIComposer(ctx) {
     // 但已是待发消息，不能再转回 handleSlashText（会死循环）。
     async function sendComposerMessage(text, ev) {
         if (!el.input) return false;
+        // 超长兜底：胶囊展开后正文仍超过单条消息上限（多段长文本叠加 / 手打过长）时整段转附件，
+        // 正文换成一句占位。放在排队分派之前，排队路径也不会带着超长正文入队。
+        const absorbed = await absorbOverflowText(text);
+        if (absorbed != null) {
+            text = absorbed;
+            el.input.value = text;
+            resizeInput();
+            refreshPasteMirror();
+            updateSendState();
+        }
         // 只有本会话在生成 / 压缩时才并入排队；别的会话在跑不影响本会话直接发送。
         if (syncStreamView() || compactOf((currentSession() || {}).id)) {
             // 排队/插话/抢占由 captureComposerMessage 从输入区读原文并展开胶囊。
@@ -1055,14 +1142,15 @@ export function createAIComposer(ctx) {
             await pasteImageFromClipboard();
             return;
         }
-        // 与 Ctrl+V 同一分派：长按折叠的纯文本走胶囊/附件，短文本与 off 档原样插入。
-        const mode = pasteMode();
-        if (mode !== 'off' && shouldFoldPaste(text)) {
+        // 与 Ctrl+V 同一分派：胶囊 / 文本附件 / 超长落盘；短文本与 off 档原样插入。
+        // 右键粘贴只作用于输入区 textarea（菜单粘贴在编辑器里时不走这里）。
+        const action = decidePasteAction(text, {mode: pasteMode()});
+        if (action === 'marker' || action === 'attach' || action === 'file') {
             target.focus();
-            if (mode === 'attachment') {
-                addAttachment({kind: 'file', label: '粘贴文本.txt', content: text});
-            } else {
+            if (action === 'marker') {
                 insertPasteMarker(text);
+            } else if (await attachPastedText(text)) {
+                if (action === 'file') flash('内容超过单条消息上限，已作为附件附加', true);
             }
             return;
         }
