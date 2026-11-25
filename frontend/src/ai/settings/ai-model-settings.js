@@ -152,6 +152,7 @@ export function createAIModelSettings(ctx, extras) {
     // 账号卡右侧图标按钮（编辑 / 用量查询 / 更多）：替代原来一整行文字按钮。
     // 更多菜单含复制 / 测试连接 / 删除，走全局弹层栈（popover），Esc 与外点由栈处理。
     let cardMenuHandle = null;
+    let cardMenuEl = null;
     function iconAction(iconName, tip, onClick) {
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -170,6 +171,12 @@ export function createAIModelSettings(ctx, extras) {
         if (cardMenuHandle) {
             cardMenuHandle.dispose();
             cardMenuHandle = null;
+        }
+        // 菜单是挂在 body 上的浮层：handle.dispose() 只还原 z-index、出栈，不移除 DOM。
+        // 不 remove 就会在关闭/切视图后残留（截图里叠了两份菜单），同 closeModelListPicker 口径。
+        if (cardMenuEl) {
+            cardMenuEl.remove();
+            cardMenuEl = null;
         }
     }
 
@@ -200,6 +207,7 @@ export function createAIModelSettings(ctx, extras) {
             menu.appendChild(row);
         }
         document.body.appendChild(menu);
+        cardMenuEl = menu;
         const width = menu.offsetWidth || 132;
         let left = rect.right - width;
         let top = rect.bottom + 4;

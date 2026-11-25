@@ -16,6 +16,25 @@ function oneLine(text) {
     return s.slice(0, MAX_TEXT) + '…';
 }
 
+// 会话消息导航滑轨的气泡描述：取某轮用户消息之后最近一条助手回复的正文预览。
+// 从 userIndex + 1 向后扫：跳过 tool 结果与注入类消息（systemNote/silent/app/model-switch），
+// 遇到下一条真正的用户轮次（含插话 steer）即停——避免把下一轮的回复错配到本轮；
+// 找到第一条有效 assistant 就取 content 正文，压成一行并截断（与用户预览同款口径）。
+// 末尾待回复（无后续助手）返回空串。纯函数，配 session-outline.test.mjs 表驱动测试。
+export function assistantPreviewAfter(messages, userIndex) {
+    const list = Array.isArray(messages) ? messages : [];
+    const from = Number(userIndex);
+    if (!Number.isFinite(from) || from < 0) return '';
+    const isInjected = (m) => !!(m && (m.systemNote || m.silent || m.app || m.kind === 'model-switch'));
+    for (let i = Math.floor(from) + 1; i < list.length; i += 1) {
+        const m = list[i];
+        if (!m || isInjected(m)) continue;
+        if (m.role === 'user') break; // 下一轮（含插话）开始，本轮没有可归属的助手回复
+        if (m.role === 'assistant') return oneLine(m.content == null ? '' : String(m.content));
+    }
+    return '';
+}
+
 function shortTime(ts) {
     const ms = Number(ts) || 0;
     if (!ms) return '';
@@ -59,6 +78,9 @@ export function buildSessionOutlineItems(messages, options) {
             round: round || 1,
             ts: Number(message.ts) || Number(message.turnStartedAt) || 0,
             text: text || media,
+            // 导航滑轨气泡的描述行：该轮助手回复正文预览（无回复则空串）。
+            // 与 text 不同，summary 依赖全量 messages，截断后仍按原始 index 取值。
+            summary: assistantPreviewAfter(list, i),
             steer,
         });
     }
@@ -132,6 +154,7 @@ export function createSessionOutlineController(ctx) {
     const renderWindowState = ctx.renderWindowState;
     const renderWindows = ctx.renderWindows;
     const renderMessages = ctx.renderMessages;
+    const onActiveChange = typeof ctx.onActiveChange === 'function' ? ctx.onActiveChange : null;
 
     const OUTLINE_MAX_ITEMS = 400;
     let activeIndex = -1;
@@ -174,6 +197,7 @@ export function createSessionOutlineController(ctx) {
             const next = activeFromView();
             if (next === activeIndex) return;
             activeIndex = next;
+            if (onActiveChange) onActiveChange(activeIndex);
             notify();
         });
     }
@@ -209,6 +233,7 @@ export function createSessionOutlineController(ctx) {
         node.classList.add('ai-msg-flash');
         setTimeout(() => node.classList.remove('ai-msg-flash'), 1600);
         activeIndex = idx;
+        if (onActiveChange) onActiveChange(activeIndex);
         notify();
         return true;
     }

@@ -2282,6 +2282,8 @@ const defaultSettings = {
     aiPanelOpen: false,
     aiPanelWidth: 380,
     aiFloatMode: 'dock',
+    // 会话消息导航滑轨：面板够宽时显示用户消息刻度（默认开启，用户可在设置 → AI → 界面关闭）
+    aiSessionRail: true,
     aiSendKey: 'enter',
     // 长文本粘贴模式：collapse 折叠为可点击胶囊（默认）/ attachment 转附件 / off 原样键入
     aiLongPaste: 'collapse',

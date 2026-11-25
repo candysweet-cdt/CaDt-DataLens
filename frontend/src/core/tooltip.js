@@ -172,12 +172,31 @@ function positionBubble() {
     bubble.style.top = Math.round(Math.max(VIEWPORT_MARGIN, y)) + 'px';
 }
 
+// 两段式气泡内容：data-tip-title 存在时渲染「标题 + 描述」两行，否则维持原来的单段纯文本。
+// 一律 createElement + textContent，绝不 innerHTML（原始 HTML 不执行是硬要求）。
+function renderTipContent(el, target, tip) {
+    el.textContent = '';
+    const title = target.getAttribute('data-tip-title');
+    if (title) {
+        const head = document.createElement('div');
+        head.className = 'app-tip-title';
+        head.textContent = title;
+        el.appendChild(head);
+        const body = document.createElement('div');
+        body.className = 'app-tip-body';
+        body.textContent = tip;
+        el.appendChild(body);
+    } else {
+        el.textContent = tip;
+    }
+}
+
 function showFor(target) {
     const tip = target && target.getAttribute ? target.getAttribute('data-tip') : null;
     // 锚点已离文档（流式重渲染换掉）就不弹：getBoundingClientRect 全 0，气泡会飞到左上角
     if (!tip || !target.isConnected) return;
     const el = ensureBubble();
-    el.textContent = tip;
+    renderTipContent(el, target, tip);
     const actions = parseTipActions(target.getAttribute('data-tip-actions'));
     renderTipActions(el, actions);
     // 只有交互气泡（sticky / 带动作链接）才收指针事件；默认 pointer-events:none，

@@ -84,6 +84,16 @@ test('气泡渲染绝不走 innerHTML——data-tip/data-tip-actions 是文本�
     assert.ok(!/\.innerHTML\s*=|insertAdjacentHTML|document\.write/.test(src), 'tooltip.js 里出现 HTML 写入会把 data-tip / actions 当 HTML 执行（注释里提「innerHTML」不算，只卡赋值/写入）');
 });
 
+test('两段式气泡（data-tip-title）标题与描述都经 textContent 写入', () => {
+    const src = readFileSync(new URL('../../src/core/tooltip.js', import.meta.url), 'utf8');
+    assert.match(src, /data-tip-title/, '缺少两段式气泡的标题读取');
+    // renderTipContent 里标题/描述节点都必须走 textContent
+    const block = src.match(/function renderTipContent\([\s\S]*?\n\}/);
+    assert.ok(block, '缺少 renderTipContent');
+    assert.match(block[0], /head\.textContent\s*=\s*title/, '标题必须 textContent 写入');
+    assert.match(block[0], /body\.textContent\s*=\s*tip/, '描述必须 textContent 写入');
+});
+
 // ---- 滚动处置（2026-11-18：AI 流式贴底滚动把 tooltip 反复掐灭的回归护栏） ----
 
 test('用户手势后的滚动照旧立即隐藏——气泡不跟手滚动，别被动态内容改掉这条', () => {

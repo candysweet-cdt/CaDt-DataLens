@@ -399,6 +399,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.showThinking) opt.showThinking.checked = settings.aiShowThinking !== false;
         if (opt.alwaysCollapse) opt.alwaysCollapse.checked = settings.aiAlwaysCollapse === true;
         if (opt.showUsage) opt.showUsage.checked = settings.aiShowUsage === true;
+        if (opt.sessionRail) opt.sessionRail.checked = settings.aiSessionRail !== false; // 默认开启
         if (opt.showQuotaPill) opt.showQuotaPill.checked = settings.aiShowQuotaPill === true;
         if (opt.msgActions) opt.msgActions.value = settings.aiMsgActions || 'full';
         if (opt.turnMetaAll) opt.turnMetaAll.checked = settings.aiShowEveryTurnMeta === true;
@@ -783,6 +784,11 @@ export function createAISettingsDialog(ctx) {
             settings.aiShowUsage = !!opt.showUsage.checked;
             saveSettings();
             applyPanelSettings();
+        });
+        if (opt.sessionRail) opt.sessionRail.addEventListener('change', () => {
+            settings.aiSessionRail = !!opt.sessionRail.checked;
+            saveSettings();
+            applyPanelSettings(); // 统一出口：落盘 + 广播 + 重绘（含滑轨显隐刷新）
         });
         if (opt.showQuotaPill) opt.showQuotaPill.addEventListener('change', () => {
             settings.aiShowQuotaPill = !!opt.showQuotaPill.checked;
