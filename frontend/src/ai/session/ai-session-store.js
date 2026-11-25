@@ -386,6 +386,8 @@ export function buildSessionMeta(session) {
         // 临时会话：磁盘只作留档，启动加载据它把这些会话滤掉（见 ai-session-disk 的 keepMeta）。
         // 只认严格 true——与 isTransientSession 同一口径，脏值不能把普通会话变成一次性的。
         temp: (session && session.temp) === true,
+        // 无工作区会话：持久保留、不绑工作区。读盘不过滤（与 temp 的区别）。
+        noWorkspace: (session && session.noWorkspace) === true,
         profileId: textOf(session && session.profileId),
         modelId: textOf(session && session.modelId),
         // 本次会话上下文上限（模型选择器档位，0 = 不设限；随会话持久化，子代理派生时继承）

@@ -89,6 +89,14 @@ export function isTransientSession(session) {
     return !!(session && session.temp === true);
 }
 
+// 无工作区会话（侧栏「新建会话」右侧「⋯」→ 新建无工作区会话）：持久会话，但不绑定工作区、
+// 不注入 AGENTS.md / 记忆 / 认知索引等工作区知识。与临时会话的区别：标题正常生成、不显示
+// 「临时」徽标、重启后仍留在会话列表里（磁盘不按它过滤）。判定只认严格 true。
+// 独立的 noWorkspace 标记而非复用 temp——temp 与「读盘过滤后消失」强绑定，语义不同。
+export function isNoWorkspaceSession(session) {
+    return !!(session && session.noWorkspace === true);
+}
+
 // 本工作区里最近更新的会话；没有返回 null。keyOf 把会话映射成归一化工作区 key。
 export function pickWorkspaceSession(list, ownKey, keyOf, excludeId) {
     if (!ownKey) return null;

@@ -17,6 +17,7 @@ import {createImageLightbox} from '../shell/image-lightbox.js';
 import {svgToDataUrl} from '../core/widget.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {createSessionOutlineController} from './session/session-outline.js';
+import {createSessionRail} from './session/session-rail.js';
 import {createSessionDiskStore, createAIConversationLog} from './session/ai-session-disk.js';
 import {mergeAIConfig} from './core/ai-config-merge.js';
 import {
@@ -26,7 +27,7 @@ import {createModelCatalogStore} from './core/model-catalog.js';
 import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs, normalizeSessionGroup, buildSessionMeta} from './session/ai-session-store.js';
 import {mergeLoadedSessions} from './session/ai-session-merge.js';
 import {buildGuardNotice} from './security/ai-wipeguard.js';
-import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey} from './session/ai-session-scope.js';
+import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, isNoWorkspaceSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey} from './session/ai-session-scope.js';
 import {formatSessionSearchResult, sessionLogDigest} from './session/ai-session-tools.js';
 import {
     spillWanted,
@@ -678,6 +679,7 @@ export function createAIPanel(options) {
         longPaste: document.getElementById('ai-opt-long-paste'),
         outputLang: document.getElementById('ai-opt-output-lang'),
         displayMode: document.getElementById('ai-opt-display-mode'),
+        sessionRail: document.getElementById('ai-opt-session-rail'),
         chatFont: document.getElementById('ai-opt-chatfont'),
         chatFontVal: document.getElementById('ai-opt-chatfont-val'),
         chatFontEn: document.getElementById('ai-opt-chatfont-en'),
@@ -2028,6 +2030,8 @@ export function createAIPanel(options) {
             workspace: aiTextOf(raw.workspace),
             // 临时会话标记：只在本次运行内可见，启动加载按它过滤（磁盘里仍留着正文作留档）
             temp: raw.temp === true,
+            // 无工作区会话标记：持久保留，不绑工作区、不注入工作区知识
+            noWorkspace: raw.noWorkspace === true,
             profileId: aiTextOf(raw.profileId),
             // 会话级模型：账号 + 条目 id（未选择时回落到窗口默认）
             modelId: aiTextOf(raw.modelId),
@@ -2131,6 +2135,8 @@ export function createAIPanel(options) {
         // 临时会话（侧栏新建会话右侧「⋯」）：不绑定工作区、默认只读，落盘只作留档
         //（meta.temp），启动加载时滤掉。opts 只在这里用，其余入口不传即普通会话。
         const transient = !!(sessionOpts && sessionOpts.transient === true);
+        // 无工作区会话：同样不绑工作区、默认只读，但持久保留（不设 temp），标题正常生成。
+        const noWorkspace = !!(sessionOpts && sessionOpts.noWorkspace === true);
         return {
             id: aiNowId('session-'),
             title: title || '新会话',
@@ -2141,10 +2147,13 @@ export function createAIPanel(options) {
             pinned: false,
             unread: '',
             // 新会话取「设置 → AI → 权限 → 新会话默认读写权限」；缺省回退只读访问（历史默认）
-            scope: transient ? 'read' : normalizeDefaultScope(config.defaultScope),
-            workspace: transient ? '' : currentWorkspacePath(),
+            // 临时 / 无工作区会话固定只读（无工作区、不注入工作区知识）
+            scope: (transient || noWorkspace) ? 'read' : normalizeDefaultScope(config.defaultScope),
+            workspace: (transient || noWorkspace) ? '' : currentWorkspacePath(),
             // 临时会话标记（见 ai-session-scope.js 的 isTransientSession）
             temp: transient,
+            // 无工作区会话标记（持久、不绑工作区；见 isNoWorkspaceSession）
+            noWorkspace,
             profileId: inherited.profileId,
             modelId: inherited.modelId,
             ctxLimit: 0,
@@ -2159,8 +2168,8 @@ export function createAIPanel(options) {
             planMode: false,
             // 新会话的桌面控制默认值（设置 → AI → 权限 → 新会话）：默认关；只有
             // 用户在设置里开启且桌面服务器已安装时才置真。AI 仍要 windows_control_mode 才动手。
-            // 临时会话是只读一次性会话：桌面控制一律从关开始（用户仍可自己点亮「桌面」）。
-            desktopEnabled: !transient && config.defaultDesktopControl === true && desktopMod.installedCount() > 0,
+            // 临时 / 无工作区会话是只读会话：桌面控制一律从关开始（用户仍可自己点亮「桌面」）。
+            desktopEnabled: !transient && !noWorkspace && config.defaultDesktopControl === true && desktopMod.installedCount() > 0,
             round: 0,
             todos: [],
             reminders: [],
@@ -2223,7 +2232,10 @@ export function createAIPanel(options) {
             if (session.workspace && !knownWorkspaces.includes(session.workspace)) knownWorkspaces.push(session.workspace);
         }
         for (const session of out) {
-            if (!session.workspace) session.workspace = inferSessionWorkspace(session, knownWorkspaces);
+            // 无工作区会话要持久保留，但不能在 legacy 回填里被收养进工作区（临时会话已在上面滤掉）
+            if (!session.workspace && !isNoWorkspaceSession(session)) {
+                session.workspace = inferSessionWorkspace(session, knownWorkspaces);
+            }
         }
         return out;
     }
@@ -2346,8 +2358,8 @@ export function createAIPanel(options) {
         const ownKey = aiWorkspaceKey(currentWorkspacePath());
         if (!ownKey) return false;
         const current = currentSession();
-        // 临时会话不绑工作区（decision 会判成 bind 并写入 workspace，把一次性会话收养进工作区）
-        if (isTransientSession(current)) return false;
+        // 临时 / 无工作区会话不绑工作区（decision 会判成 bind 并写入 workspace，把会话收养进工作区）
+        if (isTransientSession(current) || isNoWorkspaceSession(current)) return false;
         const busy = !!(current && (streams.has(current.id) || compactOf(current.id)));
         const decision = decideSessionForWorkspace(
             current, ownKey, sessions,
@@ -2435,7 +2447,12 @@ export function createAIPanel(options) {
         const current = currentSession();
         const groups = new Map();
         for (const session of spare) {
-            const key = aiWorkspaceKey(sessionWorkspacePath(session));
+            // 无工作区会话用独立哨兵 key：否则所有窗口新建的空无工作区会话都落进 '' 组，
+            // 去重会把别的窗口刚建的会话从内存表里剔掉。哨兵含 \u0000（工作区 key 不可能含它），
+            // 避免与名为 __no_workspace__ 的真实工作区撞名。
+            const key = isNoWorkspaceSession(session)
+                ? '\u0000no-workspace'
+                : aiWorkspaceKey(sessionWorkspacePath(session));
             const list = groups.get(key) || [];
             list.push(session);
             groups.set(key, list);
@@ -3534,6 +3551,7 @@ export function createAIPanel(options) {
         showContextMenu([
             {label: '新建会话', icon: 'plus', action: () => { ensureOpen(); newSession(); }},
             {label: '新建临时会话', icon: 'clock', action: () => { ensureOpen(); newTempSession(); }},
+            {label: '新建无工作区会话', icon: 'circle', action: () => { ensureOpen(); newNoWorkspaceSession(); }},
             {sep: true},
             {label: '自动化（定时任务）', icon: 'lifecycle', action: () => { ensureOpen(); openSchedulesPage(); }},
             {label: '投递：发给其他会话', icon: 'forward', action: () => { ensureOpen(); openDeliverComposer(); }},
@@ -4491,6 +4509,7 @@ export function createAIPanel(options) {
         // 消息流变了：结构面板的会话大纲要跟着更新（新增轮次 / 切换会话 / 压缩 / 编辑重发）
         notifyStructure();
         scheduleOutlineSync();
+        refreshSessionRail(); // 导航滑轨刻度随消息变化重绘（含显隐，面板可能刚切到够宽）
     }
 
     // 内容区「支线对话」标签页的渲染入口：宿主给容器，面板用自己的渲染函数画进去。
@@ -6287,6 +6306,9 @@ export function createAIPanel(options) {
     // ---------- 结构面板的「会话结构」（用户消息定位条） ----------
     // 控制器搬进 session-outline.js（方案 M5）：数据快照 / 视口吸附 / 跳转与高位通知；
     // 渲染仍在 session-outline.js 的 renderSessionOutline。下方函数声明保持既有调用点不变。
+    // 会话消息导航滑轨：复用同一 controller 的 snapshot / jumpTo；active 变化经回调同步高亮。
+    // railMod 先声明再赋值——controller 的 onActiveChange 在初始化期就可能触发，惰性引用避免 TDZ。
+    let railMod = null;
     const outlineMod = createSessionOutlineController({
         el,
         currentSession,
@@ -6294,7 +6316,17 @@ export function createAIPanel(options) {
         renderWindowState,
         renderWindows,
         renderMessages,
+        onActiveChange: (index) => {
+            if (railMod) railMod.syncActive(index);
+        },
     });
+    if (panel) {
+        railMod = createSessionRail({
+            panel,
+            snapshot: () => outlineMod.snapshot(),
+            onJump: (index) => outlineMod.jumpTo(index),
+        });
+    }
 
     function sessionOutlineSnapshot() {
         return outlineMod.snapshot();
@@ -6310,6 +6342,14 @@ export function createAIPanel(options) {
 
     function jumpToSessionMessage(index) {
         return outlineMod.jumpTo(index);
+    }
+
+    // 滑轨刷新：重绘刻度 + 按「设置开关 && 面板宽度」显隐。
+    // 宿主在设置变更（applyPanelSettings）、形态切换、拖宽、窗口缩放、会话切换时调用。
+    function refreshSessionRail() {
+        if (!railMod) return;
+        railMod.render(outlineMod.snapshot());
+        railMod.syncVisibility(settings.aiSessionRail === true, panel ? panel.offsetWidth : 0);
     }
 
     function turnStartAt(session, assistantIndex) {
@@ -6916,8 +6956,8 @@ export function createAIPanel(options) {
     // 老会话没有工作区则绑定到当前工作区（只绑定一次）。
     async function syncWorkspaceToSession(session) {
         if (!session) return '';
-        // 临时会话没有工作区归属，也不该被「绑到当前工作区」：切过去就只是换个对话
-        if (isTransientSession(session)) return '';
+        // 临时 / 无工作区会话没有工作区归属，也不该被「绑到当前工作区」：切过去就只是换个对话
+        if (isTransientSession(session) || isNoWorkspaceSession(session)) return '';
         const target = sessionWorkspacePath(session);
         if (!target) {
             const current = currentWorkspacePath();
@@ -12269,11 +12309,23 @@ async function requestApproval(session, toolMessage, info) {
         else delete el.ctxPopCompact.dataset.tip;
     }
 
+    // 会话运行中禁用「计划」「隔离」两个用户入口（纯 UI 防误触）：
+    // 底层 setPlanMode 的 force / worktree.blockFor 的 allowRunning 守卫仍留给 AI 工具路径，
+    // 这里只在用户点击层拦一道——AI 自己调用工具进入两种模式不受影响。
+    // 判断口径与底层守卫一致：当前查看会话的流或压缩在跑就算运行中。
+    function syncModeTogglesRunning() {
+        const session = currentSession();
+        const running = !!(session && (streamOf(session.id) || compactOf(session.id)));
+        if (el.plan) el.plan.disabled = running;
+        if (el.worktreeToggle) el.worktreeToggle.disabled = running;
+    }
+
     // composer 的「发送 / 停止」始终只看当前查看会话自己的流：
     // 别的会话在生成不影响这里（每个会话一条独立流），因此无需外部传入 active。
     function setStreamingUI() {
         syncStreamView();
         syncCtxCompactButton();
+        syncModeTogglesRunning();
         const viewing = currentSession();
         const compact = compactOf(viewing && viewing.id);
         const busy = !!stream || !!compact;
@@ -12585,9 +12637,9 @@ async function requestApproval(session, toolMessage, info) {
         // 只有「本会话」在生成 / 压缩时才拒绝；别的会话在跑不影响这里（各自独立）。
         if (streamOf(session.id) || compactOf(session.id) || compactStarting) return {ok: false, reason: 'busy'}
         if (session.archivedAt) return {ok: false, reason: 'archived'};
-        // 临时会话不绑工作区：这里曾把空 workspace 的会话回填成当前工作区——临时会话发第一条
-        // 消息就会走到这，等于把一次性会话收进工作区分组，重启后还会被当成该工作区的会话恢复。
-        if (!session.workspace && !isTransientSession(session)) {
+        // 临时 / 无工作区会话不绑工作区：这里曾把空 workspace 的会话回填成当前工作区——发第一条
+        // 消息就会走到这，等于把会话收进工作区分组；临时会话还会在重启后被当成该工作区的会话恢复。
+        if (!session.workspace && !isTransientSession(session) && !isNoWorkspaceSession(session)) {
             const current = currentWorkspacePath();
             if (current) session.workspace = current;
         }
@@ -12745,8 +12797,8 @@ async function requestApproval(session, toolMessage, info) {
         try {
             // 认知索引 overview 预取（本地文件读，≈1–2ms）：bundle 只同步消费缓存、不自己调
             // 后端（§5.3 注入落点约束）。未启用时零开销；失败按无索引处理（内部吞错）。
-            // 临时会话不注入认知索引，也就不必预取。
-            if (!isTransientSession(session)) await cognitionMod.prefetchTurnCache(session);
+            // 临时 / 无工作区会话不注入认知索引，也就不必预取。
+            if (!isTransientSession(session) && !isNoWorkspaceSession(session)) await cognitionMod.prefetchTurnCache(session);
             turnBlock = systemCtxMod.turnContextBundle(session, textAttachments).text;
         } catch (e) {
             // 尽力而为路径：环境块生成失败时按无块发送，下一轮会重建
@@ -14775,25 +14827,33 @@ async function requestApproval(session, toolMessage, info) {
         const scope = currentScope();
         const session = currentSession();
         const worktree = normalizeWorktreeState(session && session.worktree);
+        // 会话运行中：与两个 pill 同源的纯 UI 防误触（底层 AI 工具路径仍可 force/allowRunning 进入）。
+        const running = !!(session && (streamOf(session.id) || compactOf(session.id)));
         // 会话模式两行（对齐 ZCode 的权限弹窗）：窄宽度时「计划」「隔离」两个 pill 会被容器
         // 查询收掉，这里是它们的唯一入口——所以**任何宽度都保留**，宽档 pill 与菜单并存。
         const modeItems = [
             {
                 label: '计划模式',
-                description: session && session.planMode
-                    ? '编辑前先出只读计划；批准后我再动手（点此关闭）'
-                    : '编辑前先出只读计划，批准后再动手',
+                description: running
+                    ? '生成中不能切换，请先停止当前轮次'
+                    : (session && session.planMode
+                        ? '编辑前先出只读计划；批准后我再动手（点此关闭）'
+                        : '编辑前先出只读计划，批准后再动手'),
                 icon: 'compass',
                 selected: !!(session && session.planMode),
+                disabled: running,
                 action: () => togglePlanMode(),
             },
             {
                 label: '隔离工作区',
-                description: worktree
-                    ? '改动落在 ' + worktreeRelPath(worktree.name) + '/；点此查看路径与改动统计（可丢弃）'
-                    : '在独立 git worktree 里试改，主根零改动；导出补丁审阅后回灌',
+                description: running
+                    ? '生成中不能切换，请先停止当前轮次'
+                    : (worktree
+                        ? '改动落在 ' + worktreeRelPath(worktree.name) + '/；点此查看路径与改动统计（可丢弃）'
+                        : '在独立 git worktree 里试改，主根零改动；导出补丁审阅后回灌'),
                 icon: 'folder',
                 selected: !!worktree,
+                disabled: running,
                 // 已开启时进入信息卡（丢弃要再点一次弹窗按钮），不做"点一下即退出"的危险开关
                 action: () => (worktree
                     ? worktreeMod.openChipDialog()
@@ -15756,9 +15816,9 @@ async function requestApproval(session, toolMessage, info) {
             ? source.title : '';
         const branch = createSessionData(sourceTitle ? '分支 · ' + sourceTitle : '分支');
         Object.assign(branch, forkSettings(source));
-        // 临时会话的分支仍是临时会话：别让它悄悄变成会注入 AGENTS.md / 记忆、重启后
-        // 还留着的普通工作区会话（forkSettings 已带 temp，这里只清掉兜底绑上的工作区）。
-        if (isTransientSession(branch)) branch.workspace = '';
+        // 临时 / 无工作区会话的分支仍是同类：别让它悄悄变成会注入 AGENTS.md / 记忆、
+        // 绑定工作区的普通会话（forkSettings 已带 temp/noWorkspace，这里清掉兜底绑上的工作区）。
+        if (isTransientSession(branch) || isNoWorkspaceSession(branch)) branch.workspace = '';
         else branch.workspace = branch.workspace || currentWorkspacePath();
         branch.messages = forked.messages;
         branch.updatedAt = Date.now();
@@ -16532,12 +16592,12 @@ async function requestApproval(session, toolMessage, info) {
         if (groupBridge.getPanelView() !== 'session') setPanelView('session');
         const current = currentSession();
         // 当前会话还没发过消息时复用它，避免连点新建刷出一堆空会话。
-        // 临时会话不参与复用（它不绑工作区，复用等于把一次性会话拉进工作区）。
+        // 临时 / 无工作区会话不参与复用（它们不绑工作区，复用等于把会话拉进工作区）。
         // 懒加载占位（_stub）也不算「没发过消息」——它的 messages 空只是正文还没读上来，
         // 复用等于什么都不做（实测：停在「正在载入对话…」时点新建，只弹一句「当前会话为空，
         // 已复用」，看上去像按钮失灵）。
         if (current && !current._stub && !current.archivedAt && !isTransientSession(current) &&
-            !(current.messages || []).length) {
+            !isNoWorkspaceSession(current) && !(current.messages || []).length) {
             const target = sessionWorkspacePath(current);
             const now = currentWorkspacePath();
             if (!target || !now || aiWorkspaceKey(target) === aiWorkspaceKey(now)) {
@@ -16562,8 +16622,8 @@ async function requestApproval(session, toolMessage, info) {
         const nowKey = aiWorkspaceKey(currentWorkspacePath());
         const spare = sessions
             .filter((item) => item !== current && isVirginSession(item))
-            // 临时会话不参与复用：它没有工作区归属，复用会把一次性会话变成工作区会话
-            .filter((item) => !isTransientSession(item))
+            // 临时 / 无工作区会话不参与复用：它们没有工作区归属，复用会把会话变成工作区会话
+            .filter((item) => !isTransientSession(item) && !isNoWorkspaceSession(item))
             .filter((item) => {
                 const key = aiWorkspaceKey(sessionWorkspacePath(item));
                 return !key || !nowKey || key === nowKey;
@@ -16646,7 +16706,44 @@ async function requestApproval(session, toolMessage, info) {
         if (el.input) el.input.focus();
     }
 
-    // 侧栏「新建会话」右侧的「⋯」：新建方式的菜单（目前只有临时会话；后续新入口加在这里）
+    // 无工作区会话（侧栏「新建会话」右侧「⋯」→ 新建无工作区会话）：持久会话。
+    // 语义：默认只读、不绑定工作区、不注入 AGENTS.md / 记忆 / 认知索引等工作区知识；
+    // 与临时会话的区别：标题正常生成、不显示「临时」徽标、重启后仍留在会话列表里。
+    function newNoWorkspaceSession() {
+        if (groupBridge.getPanelView() !== 'session') setPanelView('session');
+        const current = currentSession();
+        // 当前就是一张没写过的无工作区会话：直接复用（连点不刷一堆空会话）。
+        // 排除 _stub：无工作区会话持久保留，重启后会被懒加载成占位（messages 空但正文未读），
+        // 复用它会提示「已复用」却不新建——临时会话读盘被滤、永不成为 _stub，没有这个问题。
+        if (isNoWorkspaceSession(current) && !current._stub && !current.archivedAt && !(current.messages || []).length) {
+            pendingEdit = null;
+            flash('当前无工作区会话为空，已复用');
+            if (el.input) el.input.focus();
+            return;
+        }
+        saveComposerDraft(current && current.id);
+        // 离开的会话若也是「没写过」的空会话就顺手删掉，别在列表里留占位
+        discardVirginOnLeave(current);
+        // 标题留空 → createSessionData 回落「新会话」，首条消息与 AI 标题都能正常生成
+        const session = createSessionData('', {noWorkspace: true});
+        pendingEdit = null;
+        invalidatePendingSwitch();
+        sessions.push(session);
+        setActiveSessionId(session.id);
+        saveAIConfig();
+        // 不接工作区草稿（无工作区会话不该吃工作区草稿）
+        loadComposerDraft(session.id, null);
+        persistSessions();
+        logActivity('ai.session', session.id, {op: 'create', title: session.title || '', noWorkspace: true}, {actor: 'user', source: 'user'});
+        // 归「未关联工作区」分组，默认收起：先展开，否则点完看不到它
+        sessionListMod.expandWorkspaceGroup('');
+        renderSessionList();
+        if (sessionListEl) sessionListEl.scrollTop = 0;
+        syncActiveSessionUI();
+        if (el.input) el.input.focus();
+    }
+
+    // 侧栏「新建会话」右侧的「⋯」：新建方式的菜单（常规 / 临时 / 无工作区）
     function showNewSessionMenu() {
         if (!showContextMenu) {
             newSession();
@@ -16658,6 +16755,7 @@ async function requestApproval(session, toolMessage, info) {
         showContextMenu([
             {label: '新建会话', icon: 'plus', description: '绑定当前工作区，权限取「新会话默认读写权限」', action: () => { ensureOpen(); newSession(); }},
             {label: '新建临时会话', icon: 'clock', description: '只读 · 不绑工作区 · 不注入 AGENTS.md 与记忆，关闭应用后不再显示', action: () => { ensureOpen(); newTempSession(); }},
+            {label: '新建无工作区会话', icon: 'circle', description: '只读 · 不绑工作区 · 不注入 AGENTS.md 与记忆，重启后仍保留在会话列表', action: () => { ensureOpen(); newNoWorkspaceSession(); }},
         ], rect.left - 120, rect.bottom + 4);
     }
 
@@ -17796,6 +17894,8 @@ async function requestApproval(session, toolMessage, info) {
             panel.style.width = width + 'px';
         }
         positionOverlays();
+        // 无文件占满 ↔ 分屏宽度切换：按新宽度刷新导航滑轨显隐
+        refreshSessionRail();
     }
 
     // 面板形态唯一的落地点，只由用户手势触发（面板 […] 菜单 / 设置页 / 视图菜单）。
@@ -17827,6 +17927,8 @@ async function requestApproval(session, toolMessage, info) {
             onLayout();
             if (stickBottom) scrollToBottom(false);
             else updateScrollButton();
+            // 形态切换后宽度已定型：按新宽度刷新导航滑轨显隐
+            refreshSessionRail();
         }, 0);
     }
 
@@ -18174,6 +18276,7 @@ async function requestApproval(session, toolMessage, info) {
             settings.aiPanelWidth = aiClamp(panel.offsetWidth, 280, Math.max(640, Math.round(window.innerWidth * 0.6)));
             saveSettings();
             onLayout();
+            refreshSessionRail(); // 拖宽后按新宽度刷新滑轨显隐
         }
         drag = null;
         setDragCursor(null);
@@ -18183,6 +18286,7 @@ async function requestApproval(session, toolMessage, info) {
     function onWindowResize() {
         if (!isOpen()) return;
         if (mode === 'dock' && !floatWindow) applyMode('dock', false);
+        else refreshSessionRail(); // fullscreen 宽度随窗口变，dock 分支由 applyMode 内部刷新
     }
 
     // ---------- 设置页 ----------
@@ -18564,6 +18668,8 @@ async function requestApproval(session, toolMessage, info) {
         positionOverlays();
         // 额度胶囊是全局外显开关：设置变化后立即按新开关显示 / 隐藏
         renderQuotaPill();
+        // 导航滑轨开关 / 面板宽度变化后重绘显隐与刻度（设置变更统一入口）
+        refreshSessionRail();
         // 注入开关 / 输出语言等设置变化会影响系统提示词：面板可见时按节流重建估算。
         refreshSystemPromptEstimate(false);
     }

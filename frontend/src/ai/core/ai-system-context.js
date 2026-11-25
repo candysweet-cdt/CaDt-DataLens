@@ -11,7 +11,7 @@ import {isReadableImagePath} from '../tools/ai-image-encode.js';
 import {isReadableVideoPath} from './ai-constants.js';
 import {wrapTurnReminder} from '../chat/ai-turn-reminder.js';
 import {cognitionRulesText} from '../settings/ai-cognition.js';
-import {isTransientSession} from '../session/ai-session-scope.js';
+import {isTransientSession, isNoWorkspaceSession} from '../session/ai-session-scope.js';
 
 // 空记忆占位引导：MEMORY.md 不存在或为空时注入，替代「整块消失」——模型由此得知记忆区的存在与写入时机
 // （块内带引导语的先例：<user_preferences> / <task_todos> / <task_reminders>）。
@@ -168,9 +168,9 @@ export function createAISystemContext(ctx) {
     // 同步实现（数据全在内存里），起轮路径可在落盘前调用；无任何子块时返回空串（不生成空包装）。
     function turnContextBundle(session, attachmentList) {
         const blocks = [];
-        // 临时会话不注入工作区知识（活动文件 / 已打开文件 / 认知索引卷 / 维护提醒）：
-        // 它是一张「没绑工作区」的白纸，只带会话自身的清单、提醒、计划状态与附件。
-        const transient = isTransientSession(session);
+        // 临时 / 无工作区会话不注入工作区知识（活动文件 / 已打开文件 / 认知索引卷 / 维护提醒）：
+        // 它们都是「没绑工作区」的会话，只带会话自身的清单、提醒、计划状态与附件。
+        const transient = isTransientSession(session) || isNoWorkspaceSession(session);
         const meta = {
             workspace: {loaded: false, files: 0},
             attachments: {count: 0, chars: 0},
@@ -343,9 +343,11 @@ export function createAISystemContext(ctx) {
     async function assembleSystemContext(session, attachmentList) {
         const base = ctx.effectiveSystemPrompt(session);
         const parts = [base];
-        // 临时会话（session.temp）：不注入工作区知识——AGENTS.md、记忆、认知索引守则一律跳过。
+        // 临时 / 无工作区会话：不注入工作区知识——AGENTS.md、记忆、认知索引守则一律跳过。
         // 身份 / 人设 / 偏好 / 技能 / 环境变量是应用级能力，照旧保留。
-        const transient = isTransientSession(session);
+        const transient = isTransientSession(session) || isNoWorkspaceSession(session);
+        const transientOnly = isTransientSession(session);
+        const noWorkspaceOnly = isNoWorkspaceSession(session);
         const meta = {
             agents: {loaded: false, chars: 0, path: ''},
             memory: {loaded: false, chars: 0, path: '', mode: ''},
@@ -358,9 +360,10 @@ export function createAISystemContext(ctx) {
             errors: [],
         };
 
-        // 临时会话定性块：紧跟 base——它是「这次对话是什么」的前提，先说清才不会让模型
-        // 拿默认的工作区假设去解释后面的一切（没注入 AGENTS.md / 记忆 / 认知索引，也没有工作区归属）。
-        if (transient) {
+        // 定性块：紧跟 base——它是「这次对话是什么」的前提，先说清才不会让模型拿默认的
+        // 工作区假设去解释后面的一切（没注入 AGENTS.md / 记忆 / 认知索引，也没有工作区归属）。
+        // 临时会话与无工作区会话文案分开：后者是持久会话，绝不能说「关闭应用后消失」。
+        if (transientOnly) {
             parts.push([
                 '<transient_session>',
                 '这是一条临时会话：默认只读、不绑定工作区；没有注入 AGENTS.md、记忆、认知索引等工作区知识。',
@@ -369,6 +372,15 @@ export function createAISystemContext(ctx) {
                 '</transient_session>',
             ].join('\n'));
             meta.transient = {workspace: '', scope: aiTextOf(session && session.scope)};
+        } else if (noWorkspaceOnly) {
+            parts.push([
+                '<no_workspace_session>',
+                '这是一条不绑定工作区的持久会话：没有注入 AGENTS.md、记忆、认知索引等工作区知识。',
+                '不要假定工作区上下文（用户说的「这个文件 / 这里」需要先问清路径）；当前权限档见 workspace_rules。',
+                '这条会话默认只读（用户可自行提权），会保留在会话列表里，重启应用后仍可继续。',
+                '</no_workspace_session>',
+            ].join('\n'));
+            meta.noWorkspace = {workspace: '', scope: aiTextOf(session && session.scope)};
         }
 
         // 支线定性块：紧跟 base——它改变模型对整段历史的解释，晚于人设/AGENTS 就容易被冲淡

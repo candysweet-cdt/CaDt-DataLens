@@ -126,6 +126,50 @@ test('临时会话：不注入 AGENTS.md / 记忆 / 认知索引 / 工作区状�
     assert.equal(meta.memory.loaded, false);
 });
 
+// 无工作区会话（session.noWorkspace）：与临时会话同样不注入工作区知识，但定性块必须是
+// <no_workspace_session>（持久、无「关闭后消失」文案），不能串成临时会话的 <transient_session>。
+test('无工作区会话：不注入工作区知识，拿 no_workspace_session 块而非 transient_session', async () => {
+    const mod = createAISystemContext(makeCtx({
+        settings: {
+            aiInjectPersona: true, aiInjectAgentsMd: true, aiInjectMemory: true,
+            aiInjectPreferences: true, aiInjectSkills: true, aiInjectEnvVars: true,
+            aiInjectActiveFile: true, aiInjectOpenFiles: true, aiInjectRoot: true,
+        },
+        config: {preferences: [{text: '始终用中文回答'}]},
+        ctx: {
+            aiProjectRoot: () => '/w',
+            resolveMemoryDir: async () => ({dir: '/w/.cadt/memory', mode: 'workspace'}),
+            getScopeRoot: () => '/w',
+            getWorkspaceContext: () => ({activeFile: {path: '/w/demo.txt', mode: 'code'}, openFiles: ['/w/demo.txt']}),
+            cognitionEnabled: () => true,
+            cognitionTurnBlocks: () => ({index: '<cognition_index>VOLUME</cognition_index>', nudge: 'NUDGE'}),
+        },
+    }));
+    const {text, turnBlock, meta} = await mod.assembleSystemContext({noWorkspace: true, todos: []}, []);
+
+    // 与临时会话一致：工作区知识一律不注入
+    assert.equal(sectionOf(text, 'agents_md'), null);
+    assert.equal(sectionOf(text, 'memory'), null);
+    assert.equal(sectionOf(text, 'cognition_rules'), null);
+    assert.equal(sectionOf(turnBlock, 'workspace_context'), null);
+    assert.equal(sectionOf(turnBlock, 'cognition_index'), null);
+    assert.ok(!turnBlock.includes('NUDGE'));
+
+    // 定性块必须是无工作区专属，且不能带临时会话的「关闭后消失」文案
+    assert.equal(sectionOf(text, 'transient_session'), null, '无工作区会话不该拿到临时会话定性块');
+    const block = sectionOf(text, 'no_workspace_session');
+    assert.ok(block, '应有一条无工作区定性块：' + text);
+    assert.ok(block.includes('持久会话'));
+    assert.ok(block.includes('重启应用后仍可继续'));
+    assert.ok(!block.includes('关闭应用后'), '持久会话不能说关闭后消失');
+    assert.equal(meta.noWorkspace.workspace, '');
+
+    // 应用级能力照旧
+    assert.ok(sectionOf(text, 'user_preferences'));
+    assert.ok(sectionOf(text, 'skills'));
+    assert.ok(sectionOf(text, 'env_vars'));
+});
+
 test('workspace_context：应用内标签页（浏览器 / 便签 / 计划视图）与文件分开列出，不标「范围外」', async () => {    const mod = createAISystemContext(makeCtx({
         settings: {aiInjectOpenFiles: true},
         ctx: {

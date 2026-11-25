@@ -46,6 +46,8 @@ export function forkSettings(source) {
         // 调用方要在 assign 之后把它的 workspace 清空（见 ai-panel 的 branchSessionAt /
         // ai-sidechat 的 openSideChat）。
         temp: src.temp === true,
+        // 无工作区会话派生出来的会话同样不绑工作区；语义不能因分支/支线漂移成工作区会话。
+        noWorkspace: src.noWorkspace === true,
         profileId: src.profileId || '',
         modelId: src.modelId || '',
         // 本次会话上下文上限随 fork 继承（会话级模型设置的一部分，之后各自演化不联动）

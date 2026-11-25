@@ -61,7 +61,7 @@ test('newTempSession 用 transient 造会话，且不接工作区草稿', () => 
 test('起轮路径不回绑工作区（临时会话发第一条消息也不能被收养）', () => {
     // 起轮内核现在是 startSessionTurnInner（外层 startSessionTurn 只做起轮中的登记/注销）
     const fn = sliceFunction(panel, 'async function startSessionTurnInner(', '\n    async function ');
-    assert.match(fn, /if \(!session\.workspace && !isTransientSession\(session\)\)/,
+    assert.match(fn, /if \(!session\.workspace && !isTransientSession\(session\) && !isNoWorkspaceSession\(session\)\)/,
         'startSessionTurn 会把空 workspace 回填成当前工作区——这条最常走的路径必须挡住');
 });
 
@@ -81,22 +81,22 @@ test('「没动过的临时会话」判定：默认标题就能算 virgin，切�
 test('临时会话的派生（分支 / 支线）继承 temp 且不绑工作区', () => {
     const branchFn = sliceFunction(panel, 'function branchSessionAt(', '\n    function ');
     assert.match(branchFn, /Object\.assign\(branch, forkSettings\(source\)\)/);
-    assert.match(branchFn, /if \(isTransientSession\(branch\)\) branch\.workspace = '';/,
-        '分支兜底绑定会把临时会话变成工作区会话');
+    assert.match(branchFn, /isTransientSession\(branch\) \|\| isNoWorkspaceSession\(branch\)/,
+        '分支兜底绑定会把临时/无工作区会话变成工作区会话');
 
     const sidechat = read('../../src/ai/chat/ai-sidechat.js');
     assert.match(sidechat, /Object\.assign\(child, inherited\)/);
-    assert.match(sidechat, /if \(child\.temp === true\) child\.workspace = '';/);
+    assert.match(sidechat, /child\.temp === true \|\| child\.noWorkspace === true/);
     assert.match(sidechat, /forkSettings\(owner\)/);
 });
 
 test('createSessionData：临时会话 = 只读 + 不绑工作区 + temp 标记 + 桌面控制默认关', () => {
     const fn = sliceFunction(panel, 'function createSessionData(title, sessionOpts)');
     assert.match(fn, /const transient = !!\(sessionOpts && sessionOpts\.transient === true\);/);
-    assert.match(fn, /scope: transient \? 'read' : normalizeDefaultScope\(config\.defaultScope\)/);
-    assert.match(fn, /workspace: transient \? '' : currentWorkspacePath\(\)/);
+    assert.match(fn, /scope: \(transient \|\| noWorkspace\) \? 'read' : normalizeDefaultScope\(config\.defaultScope\)/);
+    assert.match(fn, /workspace: \(transient \|\| noWorkspace\) \? '' : currentWorkspacePath\(\)/);
     assert.match(fn, /temp: transient,/);
-    assert.match(fn, /desktopEnabled: !transient && /);
+    assert.match(fn, /desktopEnabled: !transient && !noWorkspace && /);
 });
 
 test('normalizeSession 读回 temp 标记（只认 === true）', () => {
@@ -106,14 +106,14 @@ test('normalizeSession 读回 temp 标记（只认 === true）', () => {
 
 test('临时会话不被吸附到工作区：adopt / sync / 空会话复用三处守卫', () => {
     const adopt = sliceFunction(panel, 'function adoptWorkspaceSession()');
-    assert.match(adopt, /if \(isTransientSession\(current\)\) return false;/, '否则会被 bind 成工作区会话');
+    assert.match(adopt, /isTransientSession\(current\) \|\| isNoWorkspaceSession\(current\)/, '否则会被 bind 成工作区会话');
 
     const sync = sliceFunction(panel, 'async function syncWorkspaceToSession(session)');
-    assert.match(sync, /if \(isTransientSession\(session\)\) return '';/, '否则切过去会把会话绑到当前工作区');
+    assert.match(sync, /isTransientSession\(session\) \|\| isNoWorkspaceSession\(session\)/, '否则切过去会把会话绑到当前工作区');
 
     const create = sliceFunction(panel, 'function newSession()');
-    assert.match(create, /!isTransientSession\(current\)/, '当前空临时会话不能被「新建会话」复用');
-    assert.match(create, /\.filter\(\(item\) => !isTransientSession\(item\)\)/, '列表里的空临时会话不参与复用');
+    assert.match(create, /!isTransientSession\(current\) &&\s*\n\s*!isNoWorkspaceSession\(current\)/, '当前空临时/无工作区会话不能被「新建会话」复用');
+    assert.match(create, /\.filter\(\(item\) => !isTransientSession\(item\) && !isNoWorkspaceSession\(item\)\)/, '列表里的空临时/无工作区会话不参与复用');
 });
 
 test('磁盘重读不把临时会话弄丢、也不把它当「别处删了」', () => {
@@ -126,7 +126,7 @@ test('磁盘重读不把临时会话弄丢、也不把它当「别处删了」',
 });
 
 test('临时会话不预取认知索引；会话列表给「临时」徽标', () => {
-    assert.match(panel, /if \(!isTransientSession\(session\)\) await cognitionMod\.prefetchTurnCache\(session\);/);
+    assert.match(panel, /if \(!isTransientSession\(session\) && !isNoWorkspaceSession\(session\)\) await cognitionMod\.prefetchTurnCache\(session\);/);
     assert.match(list, /if \(isTransientSession\(session\)\) \{/);
     assert.match(list, /badge\.className = 'ai-session-badge temp';/);
     assert.match(list, /badge\.textContent = '临时';/);

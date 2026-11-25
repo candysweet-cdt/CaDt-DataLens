@@ -60,9 +60,9 @@ export function createAISidechat(ctx) {
         // createSessionData 已按当前工作区填好 workspace，源为空时不要覆盖成空串
         if (!inherited.workspace) delete inherited.workspace;
         Object.assign(child, inherited);
-        // 临时会话的支线同样是临时会话（forkSettings 已带 temp）：清掉 createSessionData
-        // 按当前工作区兜底绑上的 workspace，否则一次性语义在这里就断了。
-        if (child.temp === true) child.workspace = '';
+        // 临时 / 无工作区会话的支线同样是同类（forkSettings 已带 temp/noWorkspace）：清掉
+        // createSessionData 按当前工作区兜底绑上的 workspace，否则「不绑工作区」语义在这里就断了。
+        if (child.temp === true || child.noWorkspace === true) child.workspace = '';
         // 历史快照：与「从这里分支」同一套深拷贝（opts.index 缺省 = 全量）。支线因此有
         // 完整上下文，不再是「只带一句引用」的弱化版——旧行为让支线与分支难以区分。
         const forked = forkMessages(owner, opts.index);
