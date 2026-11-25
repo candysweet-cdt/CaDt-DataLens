@@ -369,12 +369,6 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">显示顶部提示条<button type="button" class="info-tip" data-tip="关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧的关闭按钮只关闭当前提示。" aria-label="显示顶部提示条说明"></button></div><div class="set-desc">大文件、二进制、解析失败等提示</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="opt-show-banners" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">窗口置顶</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-always-on-top"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
@@ -399,6 +393,12 @@
 
                         <div class="set-group-title">外观</div>
                         <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">显示顶部提示条<button type="button" class="info-tip" data-tip="关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧的关闭按钮只关闭当前提示。" aria-label="显示顶部提示条说明"></button></div><div class="set-desc">大文件、二进制、解析失败等提示</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-show-banners" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">文件图标主题<button type="button" class="info-tip" data-tip="开源图标集缺失的类型自动回退到文字缩写图标；插件可通过 cadt.registerIconTheme 注册自定义主题。" aria-label="文件图标主题说明"></button></div></div>
                                 <div class="set-control">
@@ -565,6 +565,16 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">代码视图滚动手感</div><div class="set-desc">滚轮滚动的过渡方式；关闭则恢复逐行硬切</div></div>
+                                <div class="set-control">
+                                    <select id="opt-scroll-style" class="opt-select"></select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">代码补全</div>
+                        <div class="set-card">
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">编辑器代码补全</div><div class="set-desc">JSON/YAML/XML/TOML 结构候选 + 全文档词法候选；Ctrl+Space / Alt+/ 触发</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-completion-files" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
@@ -580,12 +590,6 @@
                                 <div class="set-main"><div class="set-title">输入时自动弹出补全</div><div class="set-desc">默认仅手动触发（Ctrl+Space / Alt+/）；开启后每键弹候选</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-completion-live"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">代码视图滚动手感</div><div class="set-desc">滚轮滚动的过渡方式；关闭则恢复逐行硬切</div></div>
-                                <div class="set-control">
-                                    <select id="opt-scroll-style" class="opt-select"></select>
                                 </div>
                             </div>
                         </div>
@@ -835,6 +839,71 @@
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-show-usage"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">聊天字号</div><div class="set-desc">Ctrl + 滚轮可快速调整</div></div>
+                                <div class="set-control">
+                                    <input type="range" id="ai-opt-chatfont" min="10" max="32" step="1" value="14">
+                                    <input type="number" id="ai-opt-chatfont-val" class="ai-settings-input ai-font-size-num" min="10" max="32" step="1" value="14">
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">英文字体</div></div>
+                                <div class="set-control"><select id="ai-opt-chatfont-en" class="opt-select"></select></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">中文字体</div></div>
+                                <div class="set-control"><select id="ai-opt-chatfont-cjk" class="opt-select"></select></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">代码字体</div><div class="set-desc">字体仅作用于 AI 对话与代码块</div></div>
+                                <div class="set-control"><select id="ai-opt-chatfont-code" class="opt-select"></select></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">显示思考过程</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-show-thinking"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">过程区始终折叠</div><div class="set-desc">开启后思考链与工具卡从流式开始就收起，只显示最终结果；点折叠头可展开查看</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-always-collapse"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">回复操作按钮</div><div class="set-desc">悬停在回复上出现的复制 / 回退 / 分支等按钮，轮次中间步骤按此口径收敛</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-msg-actions" class="opt-select">
+                                        <option value="full">都完整出现</option>
+                                        <option value="mid-basic">最后一条完整，中间只留复制 / 回退</option>
+                                        <option value="last-only">只在最后一条显示，中间不出现</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">每条回复都显示 AI 信息行</div><div class="set-desc">默认只在轮次开头与模型切换时显示</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-turn-meta-all"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">回复卡片边框</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-assistant-card"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">任务清单默认展开</div><div class="set-desc">关闭时默认收起为一行进度摘要，点一下展开</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-todos-expanded"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">渲染回答中的 SVG / HTML 图<button type="button" class="info-tip" data-tip="标注 svg / html 的代码块会显示为可视化卡片（可切换源码、复制、点链接）；样式隔离、经 DOMPurify 清洗，只有 AI 面板开启此功能时渲染。" aria-label="可视化卡片说明"></button></div><div class="set-desc">关闭后按普通代码块显示</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-inline-widgets"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="set-group-title">上下文与记忆</div>
@@ -920,65 +989,6 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">聊天字号</div><div class="set-desc">Ctrl + 滚轮可快速调整</div></div>
-                                <div class="set-control">
-                                    <input type="range" id="ai-opt-chatfont" min="10" max="32" step="1" value="14">
-                                    <input type="number" id="ai-opt-chatfont-val" class="ai-settings-input ai-font-size-num" min="10" max="32" step="1" value="14">
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">英文字体</div></div>
-                                <div class="set-control"><select id="ai-opt-chatfont-en" class="opt-select"></select></div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">中文字体</div></div>
-                                <div class="set-control"><select id="ai-opt-chatfont-cjk" class="opt-select"></select></div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">代码字体</div><div class="set-desc">字体仅作用于 AI 对话与代码块</div></div>
-                                <div class="set-control"><select id="ai-opt-chatfont-code" class="opt-select"></select></div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">显示思考过程</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-show-thinking"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">过程区始终折叠</div><div class="set-desc">开启后思考链与工具卡从流式开始就收起，只显示最终结果；点折叠头可展开查看</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-always-collapse"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">回复操作按钮</div><div class="set-desc">悬停在回复上出现的复制 / 回退 / 分支等按钮，轮次中间步骤按此口径收敛</div></div>
-                                <div class="set-control">
-                                    <select id="ai-opt-msg-actions" class="opt-select">
-                                        <option value="full">都完整出现</option>
-                                        <option value="mid-basic">最后一条完整，中间只留复制 / 回退</option>
-                                        <option value="last-only">只在最后一条显示，中间不出现</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">每条回复都显示 AI 信息行</div><div class="set-desc">默认只在轮次开头与模型切换时显示</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-turn-meta-all"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">回复卡片边框</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-assistant-card"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">任务清单默认展开</div><div class="set-desc">关闭时默认收起为一行进度摘要，点一下展开</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-todos-expanded"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">AI 工作时收起编辑区</div><div class="set-desc">回合开始时把内容区位置让给对话、结束后还原；有未保存修改时不收起</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-auto-collapse-editor"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
@@ -988,12 +998,6 @@
                                 <div class="set-main"><div class="set-title">打开新标签页时展开编辑区</div><div class="set-desc">停靠分屏下编辑区被收起时，任何新标签页（文件 / 浏览器 / 子代理 / 后台终端）打开都会自动展开，内容不会开在看不见的地方</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-expand-editor-on-tab"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">渲染回答中的 SVG / HTML 图<button type="button" class="info-tip" data-tip="标注 svg / html 的代码块会显示为可视化卡片（可切换源码、复制、点链接）；样式隔离、经 DOMPurify 清洗，只有 AI 面板开启此功能时渲染。" aria-label="可视化卡片说明"></button></div><div class="set-desc">关闭后按普通代码块显示</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-inline-widgets"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                         </div>
