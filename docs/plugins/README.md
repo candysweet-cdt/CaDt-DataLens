@@ -425,6 +425,11 @@ cadt.registerDbDriver({
         {key: 'password', label: '密码', type: 'password'},   // password = DPAPI 加密存储，不进工作区清单
         {key: 'database', label: '默认库', type: 'text', default: 'default'},
     ],
+    console: {                           // 可选：表标签页顶部的自由查询输入框（落在「视图」栏之上）
+        label: 'SQL',                    // 输入框左侧的标签（≤20 字，默认「查询」）
+        placeholder: 'SELECT * FROM system.tables LIMIT 20',
+        limit: 200,                      // 单次结果行上限（1–2000，默认 200）
+    },
     views: [                             // 可选：数据表标签页的「自定义渲染视图」（≤3 个）
         {
             id: 'graph',                 // ^[a-z0-9][a-z0-9-]{0,63}$，驱动内唯一
@@ -483,6 +488,7 @@ cadt.registerDbDriver({
 - **工作区清单**：用户添加的连接配置（非密文字段）存 `settings.dbWorkspaceDatabases`，条目形如 `{kind: 'plugin:<插件id>:<驱动id>', name, config, …}`，按工作区生效、跨窗同步。
 - **传输选择**：HTTP SQL 接口（ClickHouse/Trino/Presto 等）直接 `fetch`；数据库自带代理协议不可直连时，用 `registerService` 起本地 sidecar 再调它的 HTTP 接口；裸 TCP 协议（如 PostgreSQL wire）当前无桥接通道，做协议客户端不如把驱动下沉到核心（见 `internal/dbclient` 的 Driver 接口，MySQL/SQLite 先例）。
 - **views（自定义渲染视图）**：声明后数据表标签页顶部多一排「表格 / 图 / …」切换，网格原样留在「表格」档，插件只负责画自己那档。与 `cadt.registerViewer` 的关键差别是数据来源——**ctx 给的是库 + 表 + 只读查询出口**（`ctx.query(cypher, limit)` 走会话门面，受连接只读与行数上限约束），不是文件文本。宿主负责转达容器 `resize` 与主题 `setTheme`，`destroy` 必须自己断干净（定时器、`window` 监听、`ResizeObserver`）；上限单驱动 ≤ 3 个视图。参考实现：`plugins/db-neo4j/` 的 graph 视图（纯 SVG 力导向，零依赖）。
+- **console（自由查询框）**：声明后数据表标签页**最顶部**（「视图」栏之上）出现一条输入框，表格与自定义视图两档共用——Enter / Ctrl+Enter 执行、Shift+Enter 换行，结果就地展开成表格（表头吸顶、可收起）。执行走会话门面的 `query`，与 `ctx.query` 同一条路，插件**不需要**为它实现执行逻辑；写语句按既有两阶段语义返回 `status:'confirm'`，宿主显示「确认执行」按钮，用户点过之后才带 `confirmed: true` 重发。`limit` 是单次结果行上限（1–2000，默认 200）。
 - 完整可运行示例见 [`plugins/db-clickhouse-http/`](../../plugins/db-clickhouse-http/)（真实 ClickHouse HTTP 接口，零依赖）。
 
 ### `cadt.registerSettingsPanel(spec)`
