@@ -27,6 +27,12 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 	st.SetInitialGeometry(initialRect, hasInitialRect)
 	win := wailsApp.Window.NewWithOptions(windowOptionsFor(spec, initialRect, hasInitialRect))
 	st.SetWindow(win)
+	// 窗口激活后把焦点重新送回网页：修 WebView2 在激活过程中被同步 MoveFocus 打坏的
+	// TSF 输入状态（输入法候选框飘到屏幕左上角）。只给有网页输入区的主窗口 / AI 浮窗挂，
+	// 终端、调试台、预览、对比等窗口没有这个场景，挂上只是多余动作。
+	if spec.Mode == windowModeMain || spec.Mode == windowModeFloat {
+		attachIMEFocusRepair(win)
+	}
 	installGeometryHooks(win, st)
 	// v3 的文件拖放只回调 Go 侧监听（不会发回 JS 事件），这里收下后转成本窗口事件；
 	// 前端经事件桥按 sender 过滤消费（修复迁移期 OnFileDrop 收不到事件的回归）。
