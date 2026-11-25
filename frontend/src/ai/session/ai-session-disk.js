@@ -886,7 +886,10 @@ export function createSessionDiskStore(options) {
         // 读前读后不一致 = 读的过程中有人写过：基线退回读前，让下一次交接检查
         // （startSessionTurn 的 sameLogStat）必然发现差异并先重读，而不是把对方那几条
         // 吸收进我方基线（后续 truncate 会把它们裁掉）。
-        if (statBefore && session._logStat && !sameLogStat(statBefore, session._logStat)) {
+        // 例外：本次若发生了自动整理（tidy），文件变小是本进程 vacuum 造成的，不是别的
+        // 窗口写的——refreshStat 后的小 stat 才是正确基线。退回会把整理结果误判成并发写，
+        // 徽标继续显示「超限」，交接协议反复 reload，最终把内存旧历史整份写回磁盘。
+        if (!tidy && statBefore && session._logStat && !sameLogStat(statBefore, session._logStat)) {
             session._logStat = statBefore;
         }
         await syncArchiveSidecarMeta(session, tidy);
@@ -981,7 +984,8 @@ export function createSessionDiskStore(options) {
         session._liveDominant = false;
         await hydrateImages(session);
         await refreshStat(session);
-        if (statBefore && session._logStat && !sameLogStat(statBefore, session._logStat)) {
+        // 与 hydrateStubSession 同口径：vacuum 自身改小文件不是并发写，保留整理后的新基线。
+        if (!tidy && statBefore && session._logStat && !sameLogStat(statBefore, session._logStat)) {
             session._logStat = statBefore;
         }
         await syncArchiveSidecarMeta(session, tidy);

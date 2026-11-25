@@ -132,10 +132,16 @@ function makeBackend(state) {
         AISessionWriteMeta: async () => {},
         AISessionAppend: async () => {},
         AISessionRewrite: async (id, content) => { calls.rewrite.push({id, content}); },
-        AISessionStat: async (id) => ({
-            exists: true, mtimeMs: 1, size: 2048,
-            archiveExists: !!state.sidecar, archiveSize: (state.sidecar || '').length,
-        }),
+        AISessionStat: async (id) => {
+            // statSeq：按调用次序返回不同 stat（模拟 vacuum 前大 / 后小）。队空回落到默认值。
+            const seq = Array.isArray(state.statSeq) ? state.statSeq : null;
+            const picked = seq && seq.length ? seq.shift() : null;
+            return {
+                exists: true, mtimeMs: picked && picked.mtimeMs ? picked.mtimeMs : 1,
+                size: picked && typeof picked.size === 'number' ? picked.size : 2048,
+                archiveExists: !!state.sidecar, archiveSize: (state.sidecar || '').length,
+            };
+        },
         AISessionDelete: async () => {},
         AISessionArchiveClear: async () => {},
     };
@@ -167,6 +173,60 @@ test('S2 撞上限自动整理：vacuum(force=false) → 重读 → onTidy 带�
     assert.equal(tidySeen.result.movedArchived, 2);
     assert.equal(session.messages.length, 3);
     assert.equal(session.archived.length, 0, '重读的新主文件归档为空');
+});
+
+test('S2 整理后基线不退回：vacuum 改小文件不是并发写，_logStat 保留整理后的小值', async () => {
+    // 回归：statBefore（整理前 300MB）≠ refreshStat（整理后小文件）曾被误判成「别的窗口写过」，
+    // 基线退回大值 → 超限胶囊不消失 + 交接协议反复 reload + 内存旧历史整份写回磁盘。
+    const BIG = 300 * 1024 * 1024;
+    const SMALL = 2048;
+    const state = {
+        meta: buildSessionMeta({id: 'st', title: 'T', workspace: 'D:/w', createdAt: 1000, updatedAt: 3000}),
+        tooLarge: true,
+        logs: {st: logOf('st', 5, {archiveMid: 2, summary: 'S-t'})},
+        // hydrateStubSession 读前 statOf → 大；refreshStat → 小。
+        statSeq: [{size: BIG, mtimeMs: 1}, {size: SMALL, mtimeMs: 2}],
+    };
+    const {backend} = makeBackend(state);
+    const store = createSessionDiskStore({backend});
+    const session = normalizeSession(Object.assign({_stub: true}, state.meta));
+    const ok = await store.hydrateSession(session);
+    assert.ok(ok, '自动整理后应载入成功');
+    assert.equal(session._logStat.size, SMALL, '基线必须是整理后的小 stat，不能退回整理前大值');
+    assert.ok(!session._liveDominant && !session._tidyFailed, '整理成功不应带失败标记');
+});
+
+test('S2 reload 后基线不退回：vacuum 场景与 hydrate 同口径', async () => {
+    const BIG = 300 * 1024 * 1024;
+    const SMALL = 2048;
+    const state = {
+        meta: buildSessionMeta({id: 'sr', title: 'T', workspace: 'D:/w', createdAt: 1000, updatedAt: 3000}),
+        tooLarge: true,
+        logs: {sr: logOf('sr', 5, {archiveMid: 2, summary: 'S-r'})},
+        statSeq: [{size: BIG, mtimeMs: 1}, {size: SMALL, mtimeMs: 2}],
+    };
+    const {backend} = makeBackend(state);
+    const store = createSessionDiskStore({backend});
+    const session = normalizeSession(Object.assign({}, state.meta, {_logCreated: true}));
+    const ok = await store.reloadSession(session);
+    assert.ok(ok, 'reload 触发自动整理后应成功');
+    assert.equal(session._logStat.size, SMALL, 'reload 场景基线同样不能被退回');
+});
+
+test('S2 对照：无 vacuum 时读前读后 stat 不一致仍退回（多窗口并发保护未被破坏）', async () => {
+    const BEFORE = 2048;
+    const AFTER = 4096;
+    const state = {
+        meta: buildSessionMeta({id: 'sc', title: 'T', workspace: 'D:/w', createdAt: 1000, updatedAt: 3000}),
+        tooLarge: false, // 不触发 vacuum
+        logs: {sc: logOf('sc', 3)},
+        statSeq: [{size: BEFORE, mtimeMs: 1}, {size: AFTER, mtimeMs: 2}],
+    };
+    const {backend} = makeBackend(state);
+    const store = createSessionDiskStore({backend});
+    const session = normalizeSession(Object.assign({_stub: true}, state.meta));
+    await store.hydrateSession(session);
+    assert.equal(session._logStat.size, BEFORE, '无 vacuum 时 stat 变化仍应退回读前基线（并发写保护）');
 });
 
 test('S2 自动整理执行失败：_tidyFailed 交给拒载卡片（重试整理）', async () => {
