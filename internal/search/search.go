@@ -24,7 +24,8 @@ type Searcher struct{}
 const (
 	searchMaxFileSize    = 4 << 20
 	searchMaxLineBytes   = 1 << 20
-	searchMaxResults     = 400
+	searchMaxResults     = 400 // 旧入口（SearchWorkspace 等）的默认，保留兼容
+	searchDefaultLimit   = 50  // AI search_text 默认每页条数（与前端 SEARCH_DEFAULT_LIMIT 对齐）
 	searchHardMaxResults = 1000
 	searchMaxPerFile     = 30
 	searchBudget         = 3500 * time.Millisecond
@@ -195,7 +196,9 @@ type SearchOptions struct {
 	ExcludePattern string `json:"excludePattern"` // 排除通配（globMatchPath 语义）
 	OutputMode     string `json:"outputMode"`     // 空 / content / files / count
 	Context        int    `json:"context"`        // 0..3
-	MaxResults     int    `json:"maxResults"`     // 1..1000，0 = 默认 400
+	MaxResults     int    `json:"maxResults"`     // 旧参数：作为 Limit 的兼容别名，0 = 默认 50
+	Offset         int    `json:"offset"`         // 分页起点（按命中计），0 = 从头；负数按 0
+	Limit          int    `json:"limit"`          // 本页条数（按命中计），0 = 默认 50，硬顶 1000
 	// FileOnly：root 为单个文件时只扫这一个文件（不向父目录扩散）。
 	// 兼容旧行为：FileOnly=false 时文件根仍按父目录扫描（历史语义）。
 	FileOnly bool `json:"fileOnly"`
@@ -241,6 +244,11 @@ type SearchResult struct {
 	Hits      []SearchHit `json:"hits"`
 	Truncated bool        `json:"truncated"`
 	Files     int         `json:"files"`
+	// Total/Returned/Offset 是分页回报：total 为本次扫描到的命中总数（切片前），
+	// returned 为本页实际返回条数，offset 为本页起点。前端据此提示「用 offset 继续取」。
+	Total    int `json:"total"`
+	Returned int `json:"returned"`
+	Offset   int `json:"offset"`
 	// ArtifactSkipped 表示源码档已吃满结果上限、产物档根本没去扫（仅当被上限截住时为 true）。
 	ArtifactSkipped bool `json:"artifactSkipped,omitempty"`
 	// FileList 仅 outputMode=files 填充：有命中的文件（按排序后的命中顺序去重）。
@@ -392,6 +400,8 @@ type searchSpec struct {
 	pattern        string
 	exclude        string
 	maxResults     int
+	offset         int // 分页起点（按命中计）
+	limit          int // 本页条数（按命中计）；maxResults = offset + limit 的扫描上限
 	context        int
 	outputMode     string
 	fileOnly       bool
@@ -409,7 +419,9 @@ func newSearchSpec(query string, opts SearchOptions) (*searchSpec, error) {
 		exclude:        strings.TrimSpace(opts.ExcludePattern),
 		outputMode:     strings.ToLower(strings.TrimSpace(opts.OutputMode)),
 		context:        opts.Context,
-		maxResults:     opts.MaxResults,
+		maxResults:     opts.MaxResults, // 旧参数兼容（作为 limit 别名）
+		offset:         opts.Offset,
+		limit:          opts.Limit,
 		fileOnly:       opts.FileOnly,
 		includeIgnored: opts.IncludeIgnored,
 	}
@@ -425,12 +437,25 @@ func newSearchSpec(query string, opts SearchOptions) (*searchSpec, error) {
 	if spec.context > searchMaxContext {
 		spec.context = searchMaxContext
 	}
-	if spec.maxResults <= 0 {
-		spec.maxResults = searchMaxResults
+	// 分页：limit 默认 50（旧 maxResults 作为兼容别名），offset 负数归零。
+	if spec.limit <= 0 {
+		if spec.maxResults > 0 {
+			spec.limit = spec.maxResults // 旧参数兼容
+		} else {
+			spec.limit = searchDefaultLimit
+		}
 	}
-	if spec.maxResults > searchHardMaxResults {
-		spec.maxResults = searchHardMaxResults
+	if spec.limit > searchHardMaxResults {
+		spec.limit = searchHardMaxResults
 	}
+	if spec.offset < 0 {
+		spec.offset = 0
+	}
+	// 扫描上限固定为硬顶：排序在扫描截断之后进行，若上限随 offset 变化，
+	// 各页拿到的命中集不同 → 排序后顺序漂移 → offset 切片对不上（翻页错乱）。
+	// 固定上限让所有页看到同一条排序后序列，切片才稳定。命中总量另受 searchBudget /
+	// searchMaxPerFile 约束，扫满硬顶不会失控。files/count 按文件数分页同理需要足够命中去重。
+	spec.maxResults = searchHardMaxResults
 	if spec.regex {
 		pat := spec.query
 		if !spec.caseSensitive {
@@ -471,6 +496,7 @@ func legacySearchSpec(query string, caseSensitive bool, maxResults int, pattern 
 		pattern:       strings.TrimSpace(pattern),
 		outputMode:    "content",
 		maxResults:    maxResults,
+		limit:         maxResults, // 旧入口不分页：limit = 全部，offset=0
 	}
 }
 
@@ -931,6 +957,7 @@ func (s *Searcher) searchWorkspace(root, query string, spec *searchSpec) (*Searc
 		if res, ok := searchWithRipgrep(root, spec); ok {
 			appendWorkspaceNameHits(root, spec, res)
 			applyOutputMode(res, spec)
+			applyPagination(res, spec)
 			return res, nil
 		}
 	}
@@ -940,7 +967,47 @@ func (s *Searcher) searchWorkspace(root, query string, spec *searchSpec) (*Searc
 	}
 	appendWorkspaceNameHits(root, spec, result)
 	applyOutputMode(result, spec)
+	applyPagination(result, spec)
 	return result, nil
+}
+
+// applyPagination 在 applyOutputMode 之后按 offset/limit 对「最终可见结果」切片。
+// content 模式切 Hits；files 切 FileList；count 切 Counts。切片前记录 Total（本次扫描
+// 到的命中/项总数，扫描上限固定为硬顶，故各页 Total 一致、顺序稳定），切片后记
+// Returned/Offset。若切片后仍有后续项，置 Truncated=true 表示「还有下一页」。
+func applyPagination(result *SearchResult, spec *searchSpec) {
+	if result == nil {
+		return
+	}
+	switch spec.outputMode {
+	case "files":
+		result.Total = len(result.FileList)
+		result.FileList = pageSlice(result.FileList, spec.offset, spec.limit)
+		result.Returned = len(result.FileList)
+	case "count":
+		result.Total = len(result.Counts)
+		result.Counts = pageSlice(result.Counts, spec.offset, spec.limit)
+		result.Returned = len(result.Counts)
+	default:
+		result.Total = len(result.Hits)
+		result.Hits = pageSlice(result.Hits, spec.offset, spec.limit)
+		result.Returned = len(result.Hits)
+	}
+	result.Offset = spec.offset
+	// 不改写 Truncated：它表示「扫描被预算/上限截断」，与「还有下一页」是两回事。
+	// 后者由前端用 offset+returned<total 推导，避免模型把翻页误判成数据丢失而反复重搜。
+}
+
+// pageSlice 泛型切片：起点超界返回空，长度不足返回剩余。
+func pageSlice[T any](items []T, offset, limit int) []T {
+	if offset >= len(items) || limit <= 0 {
+		return items[:0]
+	}
+	end := offset + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[offset:end]
 }
 
 // scanWorkspaceBuiltin 纯 Go 扫描兜底路径（无 rg 或 rg 失败时）。

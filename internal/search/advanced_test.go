@@ -149,8 +149,10 @@ func TestAdvancedMaxResults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Hits) != 2 || !res.Truncated {
-		t.Fatalf("maxResults=2 应得 2 条且截断，got %d truncated=%v", len(res.Hits), res.Truncated)
+	// maxResults 现作为 limit 别名：返回 2 条，total 是扫描到的全部命中（>2 表示还有下一页）。
+	// Truncated 只表示「扫描被预算截断」，不再被分页改写，故这里不要求它为 true。
+	if len(res.Hits) != 2 || res.Returned != 2 || res.Total <= 2 {
+		t.Fatalf("maxResults=2 应得 2 条且 total>2，got %d returned=%d total=%d", len(res.Hits), res.Returned, res.Total)
 	}
 	// 上界钳到 1000，不报错
 	res, err = (&Searcher{}).SearchWorkspaceAdvanced(dir, "foo", SearchOptions{MaxResults: 5000})
@@ -252,5 +254,100 @@ func TestAdvancedOptionsClampAndErrors(t *testing.T) {
 	legacy, err := app.SearchWorkspaceAdvanced(dir, "needle", SearchOptions{})
 	if err != nil || len(legacy.Hits) != 1 || strings.ToLower(legacy.Hits[0].Name) != "b.go" {
 		t.Fatalf("零选项应与老入口一致：%+v err=%v", legacy, err)
+	}
+}
+
+// ---------- 三期：offset/limit 分页 + 计数回报 ----------
+
+func TestAdvancedPagination(t *testing.T) {
+	dir := advancedFixture(t)
+	t.Setenv("DATALENS_NO_RG", "1")
+	app := &Searcher{}
+
+	// 先拿全部命中（旧 maxResults 兼容别名放大上限）
+	all, err := app.SearchWorkspaceAdvanced(dir, "foo", SearchOptions{MaxResults: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := len(all.Hits)
+	if total < 6 {
+		t.Fatalf("夹具 foo 命中太少无法翻页测试，got %d", total)
+	}
+
+	// 默认 limit=50：一次拿全，回报 total/returned/offset
+	def, err := app.SearchWorkspaceAdvanced(dir, "foo", SearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(def.Hits) != total || def.Total != total || def.Returned != total || def.Offset != 0 {
+		t.Fatalf("默认分页回报不对：hits=%d total=%d returned=%d offset=%d",
+			len(def.Hits), def.Total, def.Returned, def.Offset)
+	}
+
+	// 第一页 limit=2
+	p1, err := app.SearchWorkspaceAdvanced(dir, "foo", SearchOptions{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p1.Hits) != 2 || p1.Returned != 2 || p1.Offset != 0 || p1.Total != total {
+		t.Fatalf("第一页不对：hits=%d returned=%d offset=%d total=%d（期望 %d）",
+			len(p1.Hits), p1.Returned, p1.Offset, p1.Total, total)
+	}
+	if p1.Hits[0].Path != all.Hits[0].Path || p1.Hits[0].Line != all.Hits[0].Line {
+		t.Fatal("第一页第一条应与全量第一条一致（按服务返回顺序）")
+	}
+
+	// 第二页 offset=2 limit=2：应接上第一页之后
+	p2, err := app.SearchWorkspaceAdvanced(dir, "foo", SearchOptions{Offset: 2, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p2.Hits) != 2 || p2.Returned != 2 || p2.Offset != 2 || p2.Total != total {
+		t.Fatalf("第二页不对：hits=%d returned=%d offset=%d total=%d（期望 %d）",
+			len(p2.Hits), p2.Returned, p2.Offset, p2.Total, total)
+	}
+	if p2.Hits[0].Path != all.Hits[2].Path || p2.Hits[0].Line != all.Hits[2].Line {
+		t.Fatal("第二页第一条应与全量第三条一致（offset 生效，按服务返回顺序）")
+	}
+
+	// offset 超出命中范围：返回空页，回报 offset 原样
+	beyond, err := app.SearchWorkspaceAdvanced(dir, "foo", SearchOptions{Offset: 100, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beyond.Hits) != 0 || beyond.Returned != 0 || beyond.Offset != 100 {
+		t.Fatalf("超界页应为空：hits=%d returned=%d offset=%d", len(beyond.Hits), beyond.Returned, beyond.Offset)
+	}
+}
+
+func TestAdvancedPaginationFilesAndCount(t *testing.T) {
+	dir := advancedFixture(t)
+	t.Setenv("DATALENS_NO_RG", "1")
+	app := &Searcher{}
+	// 先拿全部文件数作为基准
+	allFiles, err := app.SearchWorkspaceAdvanced(dir, "foo", SearchOptions{OutputMode: "files", MaxResults: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allFileCount := len(allFiles.FileList)
+	if allFileCount < 3 {
+		t.Fatalf("夹具文件数太少无法翻页测试，got %d", allFileCount)
+	}
+	files, err := app.SearchWorkspaceAdvanced(dir, "foo", SearchOptions{OutputMode: "files", Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// files/count 模式扫描上限放大到硬顶，total 应等于全部文件数
+	if len(files.FileList) != 2 || files.Returned != 2 || files.Offset != 0 || files.Total != allFileCount {
+		t.Fatalf("files 分页回报不对：files=%d returned=%d offset=%d total=%d（期望 %d）",
+			len(files.FileList), files.Returned, files.Offset, files.Total, allFileCount)
+	}
+	counts, err := app.SearchWorkspaceAdvanced(dir, "foo", SearchOptions{OutputMode: "count", Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(counts.Counts) != 2 || counts.Returned != 2 || counts.Offset != 0 || counts.Total != allFileCount {
+		t.Fatalf("count 分页回报不对：counts=%d returned=%d offset=%d total=%d（期望 %d）",
+			len(counts.Counts), counts.Returned, counts.Offset, counts.Total, allFileCount)
 	}
 }
