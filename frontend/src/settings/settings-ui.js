@@ -858,7 +858,9 @@ function selectSettingsPane(pane) {
     if (pane === 'new-file-menu' && deps.newFileMenuPane && typeof deps.newFileMenuPane.renderNewFileMenuPane === 'function') {
         deps.newFileMenuPane.renderNewFileMenuPane();
     }
-    document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane));
+    // 同 pane 可能有多个入口（主入口 + data-anchor 锚点入口），只亮主入口；
+    // 锚点入口的高亮由点击它的 writing-mode.js 单点纠正，避免点主入口时几颗一起亮。
+    document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane && !b.dataset.anchor));
     document.querySelectorAll('.settings-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== pane));
     const group = document.getElementById('snav-formats');
     if (group) {

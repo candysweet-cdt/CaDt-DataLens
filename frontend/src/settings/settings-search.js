@@ -88,8 +88,8 @@ function renderSettingsSearch(query) {
             row.className = 'settings-search-item';
             const nav = document.createElement('span');
             nav.className = 'settings-search-nav';
-            // 带 section 路径消歧：两个「环境变量」分别显示「环境变量 · 集成与自动化」与
-            // 「上下文注入 · AI」，用户一眼能分辨命中哪一个。
+            // 带 section 路径消歧：导航标签显示「<pane 名> · <所属 section>」（如「上下文注入 · AI」），
+            // 同名组（如两处「环境变量」）则靠条目 text 里的组名区分。
             nav.textContent = hit.nav || ((navLabels[hit.pane] || hit.pane) + (navSections[hit.pane] ? ' · ' + navSections[hit.pane] : ''));
             const text = document.createElement('span');
             text.className = 'settings-search-text';
