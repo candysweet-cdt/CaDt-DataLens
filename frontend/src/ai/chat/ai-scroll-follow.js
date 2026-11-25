@@ -89,6 +89,23 @@ export function shouldRefollowGrowth(stickBottom, gap, byUser) {
     return value > STRICT_BOTTOM_PX;
 }
 
+/**
+ * 折叠开合后的滚动补偿：让被点击的折叠头停在原来的视口位置。
+ * before / after 是同一元素在 DOM 变更前后相对视口的 top（getBoundingClientRect().top）。
+ * 元素被上方内容推下（after > before）→ 增大 scrollTop 把它拉回；反之减小。
+ * 量不到（NaN / undefined）就返回 0，宁可不补偿也不乱跳。
+ *
+ * 为什么要补偿：同一轮被提问卡隔开的多个段共享一个折叠状态，点头时上方续段会跟着
+ * 一起开合，改变消息区高度、把视口内容顶走；CSS 的 overflow-anchor:none 只挡浏览器
+ * 原生锚定，挡不住这种显式的 display 切换。以用户点的那条折叠头为锚最稳——点哪看哪。
+ */
+export function anchorScrollDelta(before, after) {
+    const b = Number(before);
+    const a = Number(after);
+    if (!Number.isFinite(b) || !Number.isFinite(a)) return 0;
+    return a - b;
+}
+
 // 一次 scroll 事件之后该不该继续贴底。
 // prev: {stickBottom, lastTop, byUser}；scroll: {top, distance}
 // 返回 {stickBottom, refollow}：refollow=true 表示「贴底态被非用户原因挤离了底部」，调用方补一次贴底。

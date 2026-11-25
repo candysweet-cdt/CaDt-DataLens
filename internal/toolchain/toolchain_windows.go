@@ -149,27 +149,42 @@ func toolchainGlobs(kind string) []string {
 	local := os.Getenv("LOCALAPPDATA")
 	switch kind {
 	case "python":
-		return []string{
+		globs := []string{
 			filepath.Join(local, "Programs", "Python", "Python*", "python.exe"),
 			filepath.Join(`C:\Python*`, "python.exe"),
 		}
+		// Anaconda / Miniconda 默认不进 PATH、也不注册到 py 启动器，补常见安装目录兜底。
+		globs = append(globs, condaPythonGlobs(home, local, os.Getenv("ProgramData"))...)
+		return globs
 	case "node":
-		return []string{
+		globs := []string{
 			filepath.Join(`C:\Program Files\nodejs`, "node.exe"),
+			filepath.Join(`C:\nvm4w\nodejs`, "node.exe"), // 新版 nvm4w 默认 NVM_SYMLINK
+			// 老版 nvm-windows 默认把版本树放在 %APPDATA%\nvm 或 %LOCALAPPDATA%\nvm。
 			filepath.Join(os.Getenv("APPDATA"), "nvm", "v*", "node.exe"),
+			filepath.Join(local, "nvm", "v*", "node.exe"),
+			// 新版 nvm4w 把版本树放在 NVM_HOME\installs\v*（默认 %LOCALAPPDATA%\Author Software\nvm）。
+			filepath.Join(local, "Author Software", "nvm", "installs", "v*", "node.exe"),
 		}
+		// 自定义 NVM_HOME：版本树可能直接在根下、也可能在 installs 子目录下。
+		return appendEnvGlobs(globs,
+			homeEnvGlob("NVM_HOME", "v*", "node.exe"),
+			homeEnvGlob("NVM_HOME", "installs", "v*", "node.exe"),
+		)
 	case "go":
-		return []string{
+		globs := []string{
 			filepath.Join(`C:\Program Files\Go`, "bin", "go.exe"),
 			filepath.Join(`C:\Go`, "bin", "go.exe"),
 			filepath.Join(local, "Programs", "Go", "bin", "go.exe"),
 		}
+		return appendEnvGlobs(globs, homeEnvGlob("GOROOT", "bin", "go.exe"))
 	case "java":
-		return []string{
+		// JAVA_HOME 已在 scanToolchain 里单独 check；这里补其它常见的 JDK 安装根环境变量。
+		return appendEnvGlobs([]string{
 			filepath.Join(`C:\Program Files\Java`, "*", "bin", "java.exe"),
 			filepath.Join(`C:\Program Files\Eclipse Adoptium`, "*", "bin", "java.exe"),
 			filepath.Join(`C:\Program Files (x86)\Java`, "*", "bin", "java.exe"),
-		}
+		}, homeEnvGlob("JAVA_HOME", "bin", "java.exe"))
 	case "gradle":
 		return []string{
 			filepath.Join(`C:\Gradle`, "*", "bin", "gradle.bat"),
@@ -179,12 +194,17 @@ func toolchainGlobs(kind string) []string {
 			filepath.Join(`C:\ProgramData\chocolatey\lib\gradle`, "tools", "gradle*", "bin", "gradle.bat"),
 		}
 	case "maven":
-		return []string{
+		globs := []string{
 			filepath.Join(`C:\Program Files\apache-maven*`, "bin", "mvn.cmd"),
 			filepath.Join(`C:\apache-maven*`, "bin", "mvn.cmd"),
 			filepath.Join(`C:\Program Files (x86)\apache-maven*`, "bin", "mvn.cmd"),
 			filepath.Join(`C:\ProgramData\chocolatey\lib\maven`, "apache-maven*", "bin", "mvn.cmd"),
 		}
+		// MAVEN_HOME / M2_HOME 指向自定义安装根（PATH 里未必有）。
+		return appendEnvGlobs(globs,
+			homeEnvGlob("MAVEN_HOME", "bin", "mvn.cmd"),
+			homeEnvGlob("M2_HOME", "bin", "mvn.cmd"),
+		)
 	case "c":
 		return []string{
 			filepath.Join(`C:\msys64`, "mingw64", "bin", "gcc.exe"),
@@ -203,14 +223,19 @@ func toolchainGlobs(kind string) []string {
 			filepath.Join(`C:\Program Files\CMake`, "bin", "cmake.exe"),
 		}
 	case "rust":
-		return []string{
+		globs := []string{
 			filepath.Join(home, ".rustup", "toolchains", "*", "bin", "rustc.exe"),
 			filepath.Join(home, ".cargo", "bin", "rustc.exe"),
 		}
+		// 自定义 RUSTUP_HOME / CARGO_HOME（默认在 ~/.rustup、~/.cargo）。
+		return appendEnvGlobs(globs,
+			homeEnvGlob("RUSTUP_HOME", "toolchains", "*", "bin", "rustc.exe"),
+			homeEnvGlob("CARGO_HOME", "bin", "rustc.exe"),
+		)
 	case "cargo":
-		return []string{
+		return appendEnvGlobs([]string{
 			filepath.Join(home, ".cargo", "bin", "cargo.exe"),
-		}
+		}, homeEnvGlob("CARGO_HOME", "bin", "cargo.exe"))
 	}
 	return nil
 }

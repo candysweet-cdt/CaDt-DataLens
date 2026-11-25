@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {BOTTOM_SLACK, SHRINK_BURST, STRICT_BOTTOM_PX, USER_SCROLL_GRACE_MS, createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth} from '../../../src/ai/chat/ai-scroll-follow.js';
+import {BOTTOM_SLACK, SHRINK_BURST, STRICT_BOTTOM_PX, USER_SCROLL_GRACE_MS, anchorScrollDelta, createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth} from '../../../src/ai/chat/ai-scroll-follow.js';
 
 const css = readFileSync(new URL('../../../src/style.css', import.meta.url), 'utf8');
 
@@ -126,4 +126,17 @@ test('连续减小兜底：短窗口内攒到 SHRINK_BURST 次即认定用户在
     // 判定为用户后计数归零，下一次重新起步
     burst.reset();
     assert.equal(burst.push(), false);
+});
+
+test('折叠开合锚定：锚点被推下→正向补偿，被上提→负向补偿，没动→0', () => {
+    assert.equal(anchorScrollDelta(100, 140), 40); // 上方内容展开，锚点下移 40px → scrollTop +40
+    assert.equal(anchorScrollDelta(100, 60), -40); // 上方内容收起，锚点上移 40px → scrollTop -40
+    assert.equal(anchorScrollDelta(100, 100), 0); // 锚点没动，不补偿
+});
+
+test('折叠开合锚定：量不到布局（后台宿主 / NaN）一律返回 0，不乱跳', () => {
+    assert.equal(anchorScrollDelta(undefined, 100), 0);
+    assert.equal(anchorScrollDelta(100, undefined), 0);
+    assert.equal(anchorScrollDelta(NaN, 100), 0);
+    assert.equal(anchorScrollDelta('auto', 100), 0);
 });

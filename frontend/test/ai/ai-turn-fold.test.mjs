@@ -89,6 +89,23 @@ test('分支会话：标题派生自母会话，不留成「新会话」', () =>
     assert.match(block, /source\.title !== '新会话' && source\.title !== '会话'/);
 });
 
+test('轮次折叠：点头开合后以折叠头为锚补偿 scrollTop，视图不跳', () => {
+    const panel = read('ai/ai-panel.js');
+    const start = panel.indexOf("head.addEventListener('click'");
+    const end = panel.indexOf('fold.appendChild(head)', start);
+    const click = panel.slice(start, end);
+    assert.ok(click.length > 100, '折叠头 click 源码切片失效');
+    // 开合前量锚点、开合后按锚点位移补偿 scrollTop（同一轮续段同步开合会顶走视口）
+    assert.match(click, /head\.getBoundingClientRect\(\)\.top/, '点击前要量折叠头的视口位置');
+    assert.match(click, /anchorScrollDelta\(/, '要用锚定纯函数算补偿量');
+    assert.match(click, /host\.scrollTop = scrollBefore \+ delta/, '要把补偿量写回 scrollTop');
+    // 补偿后同步滚动基准，避免程序位移被滚动监听当成用户上滚、误解除贴底
+    assert.match(click, /scrollLastTop = host\.scrollTop/);
+    assert.match(click, /scrollGesture\.reset\(\)/);
+    // 只从单一来源导入锚定函数，不许就地重写
+    assert.match(panel, /anchorScrollDelta[^\n]*from '\.\/chat\/ai-scroll-follow\.js'/);
+});
+
 test('消息操作栏：纯图标按钮必须挂 data-tip，否则悬停无气泡', () => {
     const panel = read('ai/ai-panel.js');
     const append = panel.slice(panel.indexOf('function appendActions'));
