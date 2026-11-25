@@ -5,6 +5,7 @@ package browser
 import (
 	"sync/atomic"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -67,5 +68,14 @@ func TestCDPHandlerInvokeTwiceNoBlock(t *testing.T) {
 	browserCDPInvoke(ptr, 0, 0)
 	if n := len(h.resultCh); n != 1 {
 		t.Fatalf("resultCh 长度 = %d，期望 1（重复结果丢弃）", n)
+	}
+}
+
+// TestCaptureScreenshotNilWebview：句柄为空必须返回错误而不是空指针解引用。
+// wvProc 里是 (*wvRaw)(unsafe.Pointer(wv)).vtbl[slot]，wv=nil 就是直接 panic，
+// 而这条路径跑在宿主线程任务里、外面没有 guardCallback，panic 会带走整个进程。
+func TestCaptureScreenshotNilWebview(t *testing.T) {
+	if _, err := wvCaptureScreenshot(nil, time.Second); err == nil {
+		t.Fatal("webview 为 nil 时应返回错误")
 	}
 }

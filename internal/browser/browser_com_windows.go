@@ -447,6 +447,12 @@ func streamRelease(stream uintptr) {
 // wvCaptureScreenshot 用 CapturePreview 抓取当前页面为 PNG，返回 base64。
 // 必须在宿主线程调用（内部泵等完成回调）。
 func wvCaptureScreenshot(wv *edge.ICoreWebView2, timeout time.Duration) (string, error) {
+	// wvProc 是 (*wvRaw)(unsafe.Pointer(wv)).vtbl[slot]——wv 为 nil 就是空指针解引用，
+	// 而这层没有 guardCallback（跑在宿主线程任务里，不是 COM 回调帧），panic 直接带走
+	// 整个进程。调用方目前都先查了 inst.webview，但那只是约定；这里做构造性防御。
+	if wv == nil {
+		return "", fmt.Errorf("截图失败：webview 句柄为空（标签页未就绪或已销毁）")
+	}
 	stream, _, _ := procBrowserSHCreateMem.Call(0, 0)
 	if stream == 0 {
 		return "", fmt.Errorf("创建内存流失败")

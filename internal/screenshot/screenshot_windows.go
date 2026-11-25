@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"runtime/debug"
 	"syscall"
 	"unsafe"
 )
@@ -22,6 +23,11 @@ const (
 	shotSrcCopy           = 0x00CC0020
 	shotHalftone          = 4
 	shotMaxBase64         = 2800 * 1024 // 前端 AI_IMAGE_MAX_BASE64 = 3MB，留余量
+	// shotMaxPixels 单张截图的像素面积上限（8192×8192）。w/h 来自 GetWindowRect 或
+	// 缩放计算，显示器拔插、DPI 切换瞬间、窗口被挪到 -32000 之外都可能算出上亿像素；
+	// readBGRA 里 make([]byte, w*h*4) 照单全收就是 runtime fatal error（OOM 救不回来，
+	// 症状同样是「进程瞬间消失」）。多屏 8K 拼起来也远小于这个值。
+	shotMaxPixels = 8192 * 8192
 )
 
 var (
@@ -77,6 +83,14 @@ type shotSurface struct {
 }
 
 func shotNewSurface(screen uintptr, w int, h int) (*shotSurface, error) {
+	// 尺寸与面积校验放这里：所有 surface（全窗、裁切、逐级缩小）都经这个入口，
+	// 校验一次就把 readBGRA 的 w*h*4 分配收在可控范围内，不靠调用方各自记得检查。
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("位图尺寸无效（%dx%d）", w, h)
+	}
+	if int64(w)*int64(h) > shotMaxPixels {
+		return nil, fmt.Errorf("截图面积过大（%dx%d，上限 %d 像素）", w, h, shotMaxPixels)
+	}
 	dc, _, _ := procShotCreateCompatibleDC.Call(screen)
 	if dc == 0 {
 		return nil, fmt.Errorf("创建内存 DC 失败")
@@ -86,7 +100,13 @@ func shotNewSurface(screen uintptr, w int, h int) (*shotSurface, error) {
 		procShotDeleteDC.Call(dc)
 		return nil, fmt.Errorf("创建位图失败")
 	}
-	procShotSelectObject.Call(dc, bmp)
+	if old, _, _ := procShotSelectObject.Call(dc, bmp); old == 0 {
+		// 选入失败时位图没进 DC，后面的 GetDIBits 读的是 DC 默认位图（内容与尺寸都对不上）；
+		// 而且这张位图再没人释放。收干净再报错，别把坏 surface 交给调用方。
+		procShotDeleteObject.Call(bmp)
+		procShotDeleteDC.Call(dc)
+		return nil, fmt.Errorf("位图选入内存 DC 失败")
+	}
 	return &shotSurface{dc: dc, bmp: bmp, w: w, h: h}, nil
 }
 
@@ -97,6 +117,14 @@ func (s *shotSurface) close() {
 
 // readBGRA 读成 top-down 的 BGRA 原始像素。
 func (s *shotSurface) readBGRA() ([]byte, error) {
+	// 不变量本地化：w/h 为 0 会让下面的 &buf[0] 直接 panic（空切片取首元素）。
+	// shotNewSurface 已经拦过一次，这里再兜一层——surface 也可能是测试或将来新路径手搓的。
+	if s.w <= 0 || s.h <= 0 {
+		return nil, fmt.Errorf("位图尺寸无效（%dx%d）", s.w, s.h)
+	}
+	if int64(s.w)*int64(s.h) > shotMaxPixels {
+		return nil, fmt.Errorf("截图面积过大（%dx%d）", s.w, s.h)
+	}
 	buf := make([]byte, s.w*s.h*4)
 	var bi shotBitmapInfo
 	bi.header.biSize = uint32(unsafe.Sizeof(bi.header))
@@ -114,6 +142,10 @@ func (s *shotSurface) readBGRA() ([]byte, error) {
 }
 
 func shotEncodePNG(bgra []byte, w int, h int) (string, error) {
+	// 缓冲区与尺寸必须严格对应：少一个像素 src[i+2] 就越界 panic，多则说明上游传错尺寸。
+	if w <= 0 || h <= 0 || len(bgra) != w*h*4 {
+		return "", fmt.Errorf("像素缓冲区与尺寸不匹配（%dx%d，%d 字节）", w, h, len(bgra))
+	}
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	for y := 0; y < h; y++ {
 		src := bgra[y*w*4:]
@@ -247,19 +279,38 @@ func shotCaptureWindowRegionPNG(hwnd uintptr, rx, ry, rw, rh int) (string, error
 // CaptureAppScreenshot 截取调用方窗口（含内嵌浏览器与 AI 面板）为 PNG base64，
 // 供 app_control 的 screenshot 动作把界面视觉信息交给模型。
 func (c *Capturer) CaptureAppScreenshot(ctx context.Context) (string, error) {
-	hwnd := parentForCall(ctx)
-	if hwnd == 0 {
-		return "", fmt.Errorf("找不到主窗口")
-	}
-	return shotCaptureWindowPNG(hwnd)
+	return shotGuard(func() (string, error) {
+		hwnd := parentForCall(ctx)
+		if hwnd == 0 {
+			return "", fmt.Errorf("找不到主窗口")
+		}
+		return shotCaptureWindowPNG(hwnd)
+	})
 }
 
 // CaptureAppScreenshotRegion 截取调用方窗口内的指定区域（物理像素，相对窗口左上角）。
 // 供 app_control screenshot {area} 做板块截图；越界会自动裁剪。
 func (c *Capturer) CaptureAppScreenshotRegion(ctx context.Context, x, y, width, height int) (string, error) {
-	hwnd := parentForCall(ctx)
-	if hwnd == 0 {
-		return "", fmt.Errorf("找不到主窗口")
-	}
-	return shotCaptureWindowRegionPNG(hwnd, x, y, width, height)
+	return shotGuard(func() (string, error) {
+		hwnd := parentForCall(ctx)
+		if hwnd == 0 {
+			return "", fmt.Errorf("找不到主窗口")
+		}
+		return shotCaptureWindowRegionPNG(hwnd, x, y, width, height)
+	})
+}
+
+// shotGuard 把截图链路里的 panic 收成错误返回。
+//
+// 这条链同时碰 unsafe.Pointer、GDI 句柄和窗口句柄，而且是**绑定方法**——跑在 Wails
+// 派发的 goroutine 上，外面没有 browserHostRun / guardCallback 那种 recover，一次 panic
+// 就是整进程消失（无 WER、无对话框）。与那两处同一策略：进程存活、错误可见，并把
+// 堆栈一起带回前端（工具卡片里能看到），下次排查不必再靠外部镜像抓日志。
+func shotGuard(fn func() (string, error)) (out string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = "", fmt.Errorf("截图异常：%v\n%s", r, debug.Stack())
+		}
+	}()
+	return fn()
 }
