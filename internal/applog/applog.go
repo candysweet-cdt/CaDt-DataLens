@@ -190,6 +190,80 @@ func OnOff(enabled bool) string {
 	return "关闭"
 }
 
+// ==================== 崩溃现场归档 ====================
+
+// crashDirName 崩溃现场归档目录名（appdata 下）。
+const crashDirName = "crash"
+
+// CrashDir 返回崩溃现场日志的归档目录（appdata/crash；根目录不可用时返回空串）。
+// 刻意不放进 logs/：logs 本身是可清理缓存（storage 的 app-logs 条目按 *.txt 清直接
+// 子项，日志轮转 prune 也按同名规则删旧文件），归档必须活过任何一轮清理。
+func CrashDir() string {
+	root := appdata.Root()
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, crashDirName)
+}
+
+// PreserveCrashedLog 把上次崩溃会话的运行日志复制进归档目录，返回归档路径。
+//
+// 复制而不是移动：源文件此刻可能还被残留进程占着，移动失败会把现场一起丢掉；
+// 归档成功与否都不影响调用方继续清理。源文件不存在时返回的错误可
+// errors.Is(err, os.ErrNotExist) 判定（属正常情形：上次会话没留日志）。
+func PreserveCrashedLog(src string) (string, error) {
+	return PreserveCrashedLogAt(CrashDir(), src)
+}
+
+// PreserveCrashedLogAt 是 PreserveCrashedLog 的目录注入版（测试用，对齐 OpenAt）。
+// 目标同名文件已存在时不覆盖，改用 -2/-3 后缀另存——更早的现场比新的更值钱。
+func PreserveCrashedLogAt(dir, src string) (string, error) {
+	if dir == "" {
+		return "", errors.New("无法定位崩溃归档目录")
+	}
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return "", errors.New("崩溃日志路径为空")
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	name := filepath.Base(src)
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 1; i <= 100; i++ {
+		target := name
+		if i > 1 {
+			target = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		out := filepath.Join(dir, target)
+		f, err := os.OpenFile(out, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, copyErr := io.Copy(f, in)
+		closeErr := f.Close()
+		if copyErr != nil || closeErr != nil {
+			// 半截归档比没有更误导：写完之前失败就撤掉，别让下次排查读到一个截断的堆栈。
+			_ = os.Remove(out)
+			if copyErr != nil {
+				return "", copyErr
+			}
+			return "", closeErr
+		}
+		return out, nil
+	}
+	return "", errors.New("崩溃日志归档重名过多（同名文件已超 100 份）")
+}
+
 // WailsLogger 把 Wails 内部日志写入本次运行日志。
 type WailsLogger struct{}
 
