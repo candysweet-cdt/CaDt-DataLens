@@ -37,7 +37,7 @@ test('APP_PAGES 注册 agents，图标已在注册表', () => {
     const page = appPageOf('agents');
     assert.ok(page, 'core/app-pages.js 必须注册 agents 应用页面');
     assert.equal(page.label, '智能体');
-    assert.equal(page.group, 'AI', '智能体归 AI 组（与外部工具同组）');
+    assert.equal(page.group, 'AI 工具', '智能体归 AI 工具组（与外部工具同组）');
     assert.ok(ICONS[page.icon], '页面图标 ' + page.icon + ' 必须先登记 core/icons.js');
 });
 
