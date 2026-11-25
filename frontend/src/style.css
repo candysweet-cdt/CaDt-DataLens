@@ -15330,6 +15330,28 @@ body.preview-only #enc-popover { display: none !important; }
 /* 兜底：.hidden 与上面的 display:flex 同特异性且位置更靠前，单靠 .hidden 藏不住表格 */
 .db-tab-views-body > .db-tab-view-pane.hidden { display: none; }
 .db-plugin-view { flex: 1; min-height: 0; overflow: hidden; position: relative; }
+/* 表标签页顶部的自由查询输入框（驱动声明 console 时出现，表格/图两档共用） */
+.db-tab-query { display: flex; flex-direction: column; border-bottom: 1px solid var(--border); background: var(--panel2, var(--bg)); }
+.db-tab-query-head { display: flex; align-items: flex-start; gap: 6px; padding: 5px 10px; }
+.db-tab-query-tag { color: var(--muted); font-size: 11px; line-height: 20px; flex: 0 0 auto; font-weight: 600; }
+.db-tab-query-input { flex: 1; min-width: 0; resize: none; font: inherit; font-size: 12px; line-height: 18px;
+    padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
+    color: var(--text); outline: none; overflow-y: auto; font-family: var(--editor-font-family); }
+.db-tab-query-input:focus { border-color: var(--accent); }
+.db-tab-query-run, .db-tab-query-clear { flex: 0 0 auto; }
+.db-tab-query-out { max-height: 40vh; overflow: auto; border-top: 1px solid var(--border); }
+.db-tab-query-status { color: var(--muted); font-size: 11px; padding: 4px 10px; }
+.db-tab-query-status.error { color: var(--red); white-space: pre-wrap; }
+.db-tab-query-tablewrap { overflow: auto; max-height: calc(40vh - 24px); }
+.db-tab-query-table { border-collapse: collapse; font-size: 12px; width: 100%; }
+.db-tab-query-table th { position: sticky; top: 0; z-index: 1; text-align: left; font-weight: 600;
+    font-size: 11px; color: var(--muted); padding: 3px 8px; white-space: nowrap;
+    background: color-mix(in srgb, var(--text) 7%, var(--bg));
+    border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); }
+.db-tab-query-table td { padding: 2px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+    border-right: 1px solid color-mix(in srgb, var(--border) 55%, transparent); max-width: 320px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-tab-query-table tbody tr:hover td { background: var(--hover, rgba(128,128,128,.10)); }
 .db-table-toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .db-table-title { display: flex; align-items: center; gap: 6px; margin-right: auto; min-width: 0; }
 .db-table-ic { display: inline-flex; color: var(--muted); }

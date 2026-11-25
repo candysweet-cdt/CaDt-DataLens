@@ -19,6 +19,10 @@ export const MAX_DRIVER_LABEL = 40;
 // 插件负责画（mount/destroy/setTheme 契约同 cadt.registerViewer），宿主只给数据通道。
 export const MAX_DRIVER_VIEWS = 3;
 export const MAX_VIEW_LABEL = 20;
+// 驱动可选声明「自由查询控制台」（如 Cypher）：表标签页顶部给一个输入框，
+// 让用户直接敲该驱动的查询语言，既看图也跑临时查询。
+export const MAX_CONSOLE_LABEL = 20;
+export const MAX_CONSOLE_PLACEHOLDER = 120;
 export const DRIVER_FIELD_TYPES = ['text', 'number', 'password'];
 
 const ID_RULE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -106,6 +110,22 @@ function normalizeViews(driverId, raw) {
     return out;
 }
 
+// console 声明：表标签页顶部的自由查询输入框。
+// 只描述「什么语言、怎么写提示」，执行一律走会话门面的 query（只读、受行数上限约束），
+// 与图视图的 ctx.query 同一条路——插件不需要为它再写执行逻辑。
+function normalizeConsole(driverId, raw) {
+    if (raw == null) return null;
+    if (!isPlainObject(raw)) bad(`驱动 ${driverId} 的 console 必须是对象`);
+    // 非法 / 非正数的 limit 回落默认值（不是夹到 1，那等于把结果截成一行）
+    const n = Math.floor(Number(raw.limit));
+    const limit = Number.isFinite(n) && n > 0 ? Math.min(2000, n) : 200;
+    return {
+        label: String(raw.label == null ? '查询' : raw.label).trim().slice(0, MAX_CONSOLE_LABEL) || '查询',
+        placeholder: String(raw.placeholder == null ? '' : raw.placeholder).trim().slice(0, MAX_CONSOLE_PLACEHOLDER),
+        limit,
+    };
+}
+
 export function normalizePluginDbDriver(pluginId, pluginName, spec) {
     const owner = String(pluginId || '').trim();
     if (!ID_RULE.test(owner)) bad(`插件 id 无效：${JSON.stringify(pluginId)}`);
@@ -115,6 +135,7 @@ export function normalizePluginDbDriver(pluginId, pluginName, spec) {
     if (typeof spec.connect !== 'function') bad(`驱动 ${id} 缺少 connect(config) 函数`);
     const fields = normalizeFields(id, spec.fields);
     const views = normalizeViews(id, spec.views);
+    const consoleSpec = normalizeConsole(id, spec.console);
     const label = String(spec.label == null ? id : spec.label).trim().slice(0, MAX_DRIVER_LABEL) || id;
     return {
         key: owner + ':' + id,
@@ -125,6 +146,7 @@ export function normalizePluginDbDriver(pluginId, pluginName, spec) {
         label,
         fields,
         views,
+        console: consoleSpec,
         connect: spec.connect,
     };
 }
