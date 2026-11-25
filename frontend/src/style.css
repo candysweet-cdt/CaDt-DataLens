@@ -9869,12 +9869,23 @@ body.console-only #app > :not(#dialog-mask) { display: none !important; }
     max-height: calc(100vh - 16px);
     animation: ai-pop-in 140ms ease-out;
 }
+/* 搜索行：搜索框与设置齿轮并排，齿轮在搜索框外部（独立动作入口，不占框内空间） */
+.ai-model-picker-toprow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 10px 10px 6px;
+}
+.ai-model-picker-toprow .ai-model-picker-searchwrap {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+}
 /* 搜索框：内嵌放大镜图标，focus-within 统一描边 */
 .ai-model-picker-searchwrap {
     display: flex;
     align-items: center;
     gap: 6px;
-    margin: 10px 10px 6px;
     padding: 0 9px;
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -10016,22 +10027,22 @@ body.console-only #app > :not(#dialog-mask) { display: none !important; }
     cursor: pointer;
 }
 .ai-ctx-slider-range:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
-/* 模型设置入口：搜索框右侧齿轮图标，替代原底部文字按钮行 */
+/* 模型设置入口：搜索框外的独立齿轮按钮，与搜索框同高、带描边区分层级 */
 .ai-model-picker-settings {
     flex: none;
     display: grid;
     place-items: center;
-    width: 22px;
-    height: 22px;
+    width: 32px;
+    height: 32px;
     padding: 0;
-    border: none;
-    border-radius: 5px;
-    background: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
     color: var(--muted);
     cursor: pointer;
 }
 .ai-model-picker-settings svg { width: 14px; height: 14px; display: block; }
-.ai-model-picker-settings:hover { color: var(--accent); background: var(--hover); }
+.ai-model-picker-settings:hover { color: var(--accent); border-color: var(--accent); background: var(--hover); }
 
 /* 获取列表多选弹层 */
 .ai-model-list-pop {

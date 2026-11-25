@@ -58,6 +58,10 @@ export function createAIModelPicker(ctx) {
         picker.className = 'ai-model-picker';
         modelPickerEl = picker;
 
+        // 搜索框与模型设置齿轮并排在同一行，但齿轮在搜索框「外面」——
+        // 它是独立动作入口，不是搜索框的一部分（放框内会被误读成搜索选项）。
+        const topRow = document.createElement('div');
+        topRow.className = 'ai-model-picker-toprow';
         const searchWrap = document.createElement('div');
         searchWrap.className = 'ai-model-picker-searchwrap';
         const searchIco = document.createElement('span');
@@ -68,7 +72,6 @@ export function createAIModelPicker(ctx) {
             placeholder: '搜索模型…',
             spellcheck: false,
         }).control;
-        // 模型设置入口收成搜索框右侧的齿轮图标，不再占底部一整行
         const settingsBtn = document.createElement('button');
         settingsBtn.type = 'button';
         settingsBtn.className = 'ai-model-picker-settings';
@@ -79,12 +82,13 @@ export function createAIModelPicker(ctx) {
             closeModelPicker();
             openSettings('models');
         });
-        searchWrap.append(searchIco, search, settingsBtn);
+        searchWrap.append(searchIco, search);
+        topRow.append(searchWrap, settingsBtn);
         const listBox = document.createElement('div');
         listBox.className = 'ai-model-picker-list';
         const limitRow = document.createElement('div');
         limitRow.className = 'ai-model-picker-limits';
-        picker.append(searchWrap, listBox, limitRow);
+        picker.append(topRow, listBox, limitRow);
 
         let flatItems = [];
         let navIndex = -1;
