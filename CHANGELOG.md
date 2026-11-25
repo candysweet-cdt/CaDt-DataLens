@@ -4,6 +4,120 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 改进（侧栏「AI 会话」头部「⋯」改为会话列表级菜单，并补齐图标）
+
+- **问题**：侧栏会话面板头部的「⋯」原本弹的是「会话操作」（置顶 / 重命名 / 分组 / 导出 / 诊断 / 归档 / 删除当前会话），作用对象固定为当前会话，既与标题栏「⋯」通常是面板级菜单的预期不符，菜单项也都没图标。
+- **改动**：该「⋯」改为会话列表级操作——新建会话 / 新建临时会话 / 自动化（定时任务）/ 投递 / 搜索会话 / 打开对话日志目录，全部走统一的 `item.icon` 通道（`plus` / `clock` / `lifecycle` / `forward` / `search` / `open-folder`），按钮提示改为「会话列表操作」。单条会话的置顶 / 重命名 / 分组 / 导出 / 归档 / 删除仍完整保留在会话条目右键菜单（本就带图标），功能不丢。
+- **清理**：删除 `ai-session-list.js` 里旧的 `showSessionListMenu` 及其不再使用的 `sessionMoreBtn` / `openAILogDir` 注入与导出；新菜单在 `ai-panel.js` 就地组装。
+- **验证**：`npm test`（含 typecheck 前置门，全量前端用例）、`npm run build` 全绿。
+
+### 改进（search_text 分页 + 字符预算，防单次搜索撑爆上下文）
+
+- **问题**：两次全仓 `search_text`（`MinWidth` / `minWidth`，`context:2`）各返回约 7 MB 全文，把会话上下文顶到 364%（3.64M / 1M tokens），请求被模型 HTTP 400 拒收。根因是结果拼装无总字节上限、`context` 把每条命中放大成 5 行、默认值偏大（前端 200 / 后端 400 不一致）。
+- **改动**：① `search_text` 新增 `offset` / `limit` 分页参数（默认每页 50，旧 `maxResults` 作为 limit 兼容别名），Go 侧扫描上限固定为硬顶后统一排序再切片，保证翻页顺序稳定；② 结果主动回报「本次返回 N 条 / 共 M 条 / offset」，未取完时提示下一页 offset；③ 前端格式化加 32K 字符预算，超限时在**最近一条完整命中处**截断（不切半条）并提示续取；④ 工具描述、目录 blurb、mock 后端同步对齐。
+- **验证**：`internal/search` 全量（分页/计数回报/旧参数兼容/双路径对拍）、`npm test`（含 typecheck 与工具接线守卫）、`go test -run TestAppBindingBaseline .`、`node scripts/gen-backend-types.mjs --check` 全绿；绑定面未变。
+- **子代理审查后修正**：① 群成员执行分支 `execMemberTool` 是第二处 search_text 执行体，补上 offset/limit 下传（否则群成员搜索续取死循环），并加接线测试钉死；② 预算截断与分页回报原本给出两个矛盾的 offset（按后端 returned=50 续取会跳过未显示的 48 条），改为单一续取提示、一律按实际显示数算 offset；③ 单条命中超预算时保留首条并截断超长 context 行（200 字符），杜绝「搜索成功但输出空、offset=0 原地打转」；④ `Truncated` 不再被分页改写（保留给扫描真截断语义），「还有下一页」由 total/returned 推导；⑤ total 达 1000 硬顶时提示收窄条件；⑥ mock 的 files/count 计数口径与 Go 对齐；⑦ 修复既有缺陷：工具定义下发 `filePattern`，执行分支却只读 `pattern`，导致模型传的 filePattern 被忽略——归一化改为两者都认（filePattern 优先、pattern 兼容）。
+- **改进（治「模型忘传 regex:true」）**：模型常把 `foo|bar`、`\d`、`^` 等正则语法直接写进 query 却忘开 regex，导致按字面量搜、零命中。子代理审查推翻了「按 query 自动开启正则」的初版方案——实测会把 `C:\data\x`（命中 `\d`）、`\d[`、`(?`、`foo|bar(` 变成非法正则报错，把 `foo|`、`^`、`.*` 变成全表命中，`string | number` 变成零命中，净效果更糟。最终改为**零命中时强提示**：仅当零命中且 query 含正则语法（`\d \w \b \s`、`|`、`(?`、`^`）时提示「你可能忘传了 regex:true，请传 regex:true 重试；若本就是字面量可缩小 path/filePattern」；只提示、不自动重搜、不改搜索语义，零误伤。工具描述与 regex 参数说明同步对齐（明确 file.ts/C++/$HOME/括号等字面量不用开 regex）。
+
+### 加固（截图链路：句柄空值、面积上限与 panic 收口）
+
+- **背景**：2026-11-25 两次闪退都出现在长回合里，第二次前 6 分钟密集用了截图/桌面控制（`mcp__windows__Snapshot` ×10、`app_control` ×4、`read_image` ×6），于是把「截图」这条链路按 nil 句柄 / 越界 / 超大分配逐点审了一遍。
+- **审计结论**：句柄侧是干净的——`parentForCall`（含 `NativeWindow()` 空值）、DC、位图、`inst.webview`（8 处调用点与 `BrowserSnapshot`/`BrowserCaptureScreenshot` 入口）都有 0 值检查，没找到必然的空句柄路径。真正会「进程瞬间消失」的是两个非句柄问题：`readBGRA` 里 `make([]byte, w*h*4)` 没有面积上限（显示器拔插、DPI 切换瞬间的异常窗口矩形会算出上亿像素，OOM 是 runtime fatal error，recover 不回来）；`SelectObject` 失败后仍继续 `GetDIBits`（读到 DC 默认位图，尺寸内容全错且位图泄漏）。
+- **改动**：① `shotNewSurface` 统一校验宽高与面积（`shotMaxPixels = 8192×8192`，`int64` 乘法防溢出），`SelectObject` 返回 0 时释放 DC/位图再报错；② `readBGRA` 本地再校验一次（`&buf[0]` 在空切片上直接 panic，不能只靠上游）；③ `shotEncodePNG` 校验收到的缓冲区正好是 `w*h*4`（少一个像素就越界）；④ `wvCaptureScreenshot` 入口加 `wv == nil` 防御（`wvProc` 是 `(*wvRaw)(unsafe.Pointer(wv)).vtbl[slot]`，空指针即崩，而这条路径跑在宿主任务里没有 `guardCallback`）；⑤ 两个绑定方法套 `shotGuard`：panic 转错误并把 `debug.Stack()` 带回前端——`app_control` 的截图跑在 Wails 绑定 goroutine 上，没有 `browserHostRun` / `guardCallback` 那层 recover，一次 panic 就是整进程死亡。
+- **验证**：`go test -p 1 ./internal/screenshot/ ./internal/browser/`（含新建测试窗口的真实 GDI 截图、尺寸/面积防线四例、`readBGRA` 零尺寸三例、缓冲区不匹配三例、`shotGuard` panic 三断言、`wvCaptureScreenshot(nil)` 一例）、`go vet ./internal/screenshot/ .`、`go test -run TestAppBindingBaseline .`（绑定面未变）、`go build ./...`。两点实测注意：① `go test` 默认并行跑包，会和 browser 包的 GUI 测试争窗口站，这两个包要加 `-p 1` 串行跑（本次并行时 `ShowWindow` 卡过 3 分钟直到测试超时）；② `go vet ./internal/browser/` 报的 12 处 `possible misuse of unsafe.Pointer` 是 COM 桥接（`uintptr` ↔ `unsafe.Pointer`）的既有告警、与本次改动无关，该包 vet 不收干净。
+
+### 调整（浅色主题对齐 WorkBuddy / Qoder 的 harness 观感）
+
+- 浅色主题改为「浅灰框架 + 纯白内容」：工具栏 / 标签栏 / 状态栏 / 侧栏统一为 `#f7f7f8`，聊天区从与侧栏同灰改为纯白；描边由 `#d1d1d1` 收敛到 `#e6e7eb`，正文由纯黑改为 `#1f2328`，选中态从大面积蓝色改为中性灰。
+- AI 面板：会话 / 群聊分段、会话选中、权限与模型胶囊去饱和；用户气泡改中性浅灰（12px 圆角）；composer 改白色悬浮卡片（14px 圆角 + 浅投影），发送键改深墨色；消息行距与留白同步放宽。设置页导航、卡片与标签页选中态一并中性化。
+- 权限胶囊常显档位图标（只读 eye / 每次询问 shield / 自动审批 zap / 完全权限 warn），与权限菜单共用同一套 `scopeIcon` 映射；侧边栏活动栏图标选中态保留原来的浅蓝配色，只有文件树 / 会话行使用中性灰。「新建会话 / 自动化 / 投递」保留白底描边按钮，不做扁平化覆盖。浅色下权限胶囊 hover 不再被 danger 的透明背景覆盖：普通档用 `--hover`、激活档加强 accent 底、完全权限用红色淡底。
+- 会话列表（含群聊列表）滚动条改为只在悬停列表时显示：默认 thumb 与 Firefox `scrollbar-color` 均为透明，槽位始终保留所以显隐不引起列表跳动；所有主题同一套规则。
+- 浅色 tooltip 改为纯白卡片 + 浅描边 + 柔和投影（原先把白色与文字色混合成灰底，压在白色面板上像一块脏灰）；动作链接分隔线同步收淡。
+- 代码编辑器不受影响：浅色 UI 默认代码主题仍是 IDEA Light（JetBrains Light），语法 token / 编辑器底色继续由 `codeStyle` 独立接管。
+- 验证：`npm test`（含 typecheck 前置门，533+ 前端用例）、`go test ./... -timeout 300s`、`npm run build` 均通过；`tools/rebuild-exe.ps1 -SkipTest -KeepRunning` 已实测产出并替换 `datalens.exe`（v1.2.1 / 35.1 MB）。浏览器预览中计算样式确认为灰框架 / 白内容 / 中性选中。
+
+### 调整（AI 模型账号编辑体验：连接区、图标操作、上下文显示与滑动条）
+
+- **连接区**：Base URL / API Key 的 placeholder 改为通用示例（`https://api.example.com/v1` / `请输入 API Key`），不再指向 DeepSeek；「测试连接」移到 API Key 输入框右侧；「拉取模型列表」移到「连通性」行，模型 ID 行不再重复放按钮。拉取列表弹层里已添加的模型默认勾选（只回显，不重复建条目），计数只统计真正新增。
+- **模型区**：新建账号自带的空模型条目不再渲染成空 chip，只显示「新增模型」按钮；反复点新增复用已有空条目，保存时空条目统一清除——用户直接拉列表勾选即可，不必再手动删空模型。添加预设不再预置模型 ID，改为提示用户自己拉取列表。
+- **账号卡片**：删掉「设为当前」整行文字按钮，右侧改为 3 个图标（编辑 / 用量查询 / 更多），图标置于卡片右侧独立列、整体垂直居中；更多菜单含复制 / 测试连接 / 删除，走 overlayStack 弹层栈。当前账号仍由卡片高亮 + 徽标标识，切换在模型选择器里完成。
+- **显示**：上下文/输出窗口数字统一按 K/M 回显——整 K/M 走二进制档位（256K/1M），厂商十进制值 1000000→1M、960000→960K，不再出现裸大整数或 0.96M。模型选择器的「上下文上限」从一排按钮改为滑动条，从左到右窗口递增、默认停最右（用满模型窗口），拖动即时生效；「模型设置…」从底部文字行收成搜索框右侧的齿轮图标，去掉占空间的底部行。
+- **修复**：千问（Qwen）供应商图标偶发渲染不出——品牌 SVG 里渐变 defs 的 id 是固定值，多个账号卡片各渲染一份会 id 冲突、首个实例被重绘移除后 `url(#id)` 悬空；改为每次渲染给 id 与引用加唯一后缀。去掉对话内模型切换记录末尾无实际 tooltip 的 info 图标。
+- **验证**：`formatTokenAmount` / 图标 id 唯一性各补单测，`npm test`（含 typecheck 前置门）全绿、`npm run build` 通过，图标/外点/Esc 守卫与 `go test -run TestAppBindingBaseline .` 通过。
+
+### 修复（崩溃自愈会删掉崩溃现场日志）
+
+- **现象**：2026-11-25 01:00 前后应用在对话中闪退，下次启动虽然判定出「上次异常退出」并执行了自愈，但死因无从查起——`logs/` 里上次会话那份日志已经不在了。
+- **根因**：自愈复用 `storage.CacheIDs()` 做全量清理，其中 `app-logs` 条目按 `*.txt` 删 `logs/` 的直接子项（只跳过「本次正在写入」的那份）。而 panic 堆栈正是 `applog.Start()` 里 `debug.SetCrashOutput` 写进当次运行日志的，于是**恰好装着死因的那份旧日志被无声删掉**；同一轮还把 `debug-console.jsonl` 一并清了，两处现场同时丢。
+- **修复**：① 自愈清理改走 `crashCleanIDs()`，把 `app-logs` 排除在外（设置 → 存储与清理里手动清「运行日志」不受影响）；② 清理前先把上次崩溃会话的日志归档到 `appdata/crash/<原文件名>`，复制而非移动、同名不覆盖（另存 `-2`/`-3`）、写一半失败即撤掉残留；归档结果（成功路径 / 源已不存在 / 失败原因）都记进启动日志。
+- **验证**：`go test ./internal/applog/`（归档内容、源保留、同名另存、缺源返回 `os.ErrNotExist`）+ `go test -run TestCrashClean .`（过滤保序、条目表仍有 `app-logs` 的回归）。
+
+### 新增（代码编辑器行高可调，默认放宽到 1.5）
+
+- **背景**：vendored Ace 从字体度量算行高（`getLineHeight()` 读 `measureNode.clientHeight`，measureNode 用 `font: inherit` 继承容器样式），默认仅约 1.3 倍，比 JetBrains 偏密；此前代码模式没有行高设置项，想调都无处调。
+- **改动**：设置 → 字体新增「编辑器行高」滑块（1.2–2，步长 0.05，默认 1.5）。行高经 CSS 变量 `--editor-line-height` 作用到主编辑器与 SQL 控制台的 Ace；因 `setFontSize` 在字号未变时会跳过度量重算，`applySettings` 里显式调用 `checkForSizeChanges()` 让行高即时生效。设置键 `editorLineHeight` 已登记 schema / 默认值 / 归一化（非法值回落 1.5）。
+- **验证**：浏览器实测确认 CSS 变量能把 Ace 度量行高从 16px(1.2)/20px(1.5)/26px(2.0) 精确控制；新增 `frontend/test/settings/editor-line-height.test.mjs` 接线护栏（已登记 npm test），`npm run typecheck`、相关单测 70 例、`npm run build` 均通过。
+
+### 调整（通用弹层标题栏去掉四方向箭头光标）
+
+- 通用对话框头部 `.dialog-head` 与 AI 弹窗头部 `.ai-dialog-head` 原先带 `cursor: move`（Windows 下显示成四方向箭头），现去掉该定制，恢复普通箭头；拖动能力由 `createDialogDrag` 提供，不受影响。浮窗 AI 面板 / 独立控制台的窗口标题栏（拖的是原生窗口）保留原光标。
+- 改动：`frontend/src/style.css` 两行；验证：`npm run build` 通过。
+
+### 修复（编辑器在左时面板分界拖拽竖条下半段被输入区盖住）
+
+- **现象**：编辑器在左、AI 面板在右的停靠布局下，鼠标悬停在两者分界线上浮现的蓝色拖拽竖条只有上半截——composer 那段高度看不到。反过来（AI 面板在左）正常。
+- **根因**：拖拽手柄 `.ai-resize-l`（面板左缘 `left:0`，`frontend/src/style.css:5813`）是贯穿面板全高的竖条，但 `z-index:12`（`5806` 改前）低于底部堆叠区 `.ai-bottom-stack` 的 `z-index:25`（`5633`）。堆叠区的同色铺底 `::before` 从 `left:0` 铺起（`5656`），正好盖住左缘手柄下半段；右缘手柄 `.ai-resize-r` 因铺底 `right` 让出了滚动条槽宽而够不到，所以只有一个方向复现。
+- **修复**：`.ai-resize` 的 `z-index` 由 12 提到 26（高于堆叠区 25），手柄始终压在铺底之上。仅影响面板边缘 6px 命中区，不碰 composer 内容。
+- 验证：`npm run build` 通过。
+
+### 修复（点开 AI 用量弹层即抛 `ReferenceError: formatUsageAge is not defined`）
+
+- **现象**：账号用量明细弹层（账号卡余额行 / composer 额度胶囊打开的浮层）一打开就抛未处理的 Promise 拒绝，弹层头部的「N 分钟前查询」文案位置报错。
+- **根因**：`frontend/src/ai/ai-panel.js` 的弹层渲染裸用了 `ai/usage/ai-usage-quota.js` 导出的 `formatUsageAge`，但 import 列表里只引了 `createAIUsageQuota / formatUsageCountdown / usageItemText / usageTone / usageTightSummary`。ESM 里未声明的标识符不是语法错误，构建、单测、`import` 链接全都通过，只有真正打开弹层才炸。
+- **修复**：`ai-panel.js:281` 的 import 补上 `formatUsageAge`（单行改动，渲染逻辑不变）。
+- **护栏**：新增 `frontend/test/core/import-symbol-guard.test.mjs`——全量扫描 `frontend/src`（当前 319 个 .js），凡是「裸用某个已 import 模块的导出名、本地名集合里却没有它（含别名导入 `x as y` 的判定）」即判红；对象字面量键与 getter / 方法简写键不算引用。已有的 `module-scope.test.mjs` 只覆盖手工登记在 `HOSTS` 里的宿主↔兄弟模块配对，看不见 `ai-panel.js` 这类未登记的大宿主。已登记 `npm test` 的 `test:ui-core`；并做过红测（临时移掉该 import → 测试立即报出 `ai/ai-panel.js:… 裸用 formatUsageAge`）。
+- 验证：`node --test test/core/import-symbol-guard.test.mjs test/core/module-scope.test.mjs test/core/test-manifest.test.mjs`（8 例通过）、`npm run build` 通过，并在构建产物里核对了调用点已指向同 chunk 内的 `formatUsageAge` 实现。
+
+### 新增（外部拖放按落点分流：编辑区打开 / 文件树复制 / 数据库导入 / AI 附件）
+
+- **拖进窗口的文件不再一律「打开」**，改为按落点分流（多文件逐个处理，可一次拖一批）：
+  - **编辑区**（含标签条与欢迎页）：正常打开，多文件即多标签页。
+  - **侧栏文件面板**：复制到指定位置——目录行=该目录、文件行=该文件的父目录、面板空白区=工作区根；没有打开工作区时只提示不复制。
+  - **侧栏数据库面板**：`.db/.db3/.sqlite/.sqlite3` 以**只读**加入当前工作区清单并展开连接（不自动开表标签页，需要写入时在条目菜单开启「允许编辑」）；连不上说明不是有效库，**回滚刚建的清单条目**，不留连不上的脏行。`.json` 连接配置文件（`db-connections.json` 同构：`{v, connections:[...]}` 或裸数组）交给新增的 `DBImportConnections` 导入其中的 MySQL/MariaDB/Redis 连接，挂进当前工作区后逐个展开。
+  - **AI 面板**（消息区与输入区都算）：作为附件进当前会话输入区——图片走降采样图片通道、mp4 走视频通道、其余按文本读（读不了正文自动降级为路径引用），批内与已有附件按路径去重，触到张数/预算上限后同批同类静默跳过并在结束汇总一次提示。群聊视图没有附件能力，会明确提示而不是静默塞进看不见的输入区。
+  - **其他面板与窗口其余区域：无效果**（Wails 侧 `dropEffect=none`，光标即显示禁止，不产生事件）。拖到四个落点时，面板上会浮出一块带文案的半透明提示遮罩（「松开以打开文件 / 复制文件到当前位置 / 导入数据库 / 添加为附件」），松手或离开即消失；遮罩是纯 CSS 伪元素 + `pointer-events:none`，不干扰拖放命中。
+- **落点怎么知道的**：Wails v3 的 `data-file-drop-target` 机制本就带回了坐标与元素属性，此前 Go 侧只转发了文件名。现在 `window_drop.go` 把 `{x, y, target, attrs(data-drop-*)}` 一起发给前端，由 `frontend/src/shell/file-drop-router.js` 分派；文件树行由渲染时写 `data-drop-dir` 标注「复制到哪」。
+- **删除旧 hack**：原「5 秒内谁被 dragover 过就把外部文件复制进那个目录」的 `pendingExternalDrop` 时间窗（`shell/app-actions.js` + `main.js` + `explorer.js`）整体移除——多窗口、慢磁盘、连拖两次都会错投。
+- **Go 新增绑定** `DBImportConnections(path)`（`internal/dbclient/importconfig.go`）：≤1 MB / ≤200 条；只做结构与范围校验、**不解析主机**（离线也能导入，连接时才走完整校验）；一次锁内批量落盘；合并键 `(kind,host,port,user,name)` 命中则保留原 id 与本地「允许编辑」开关；新条目一律只读；**不导入凭据**（dpapi 绑定本机，跨机解不开，提示里说清「去条目菜单重填密码」）。
+- 验证：`window_drop_test.go`、`internal/dbclient/importconfig_test.go`、`file-drop-router.test.mjs`（含 index.html 落点属性与「旧 hack 已删除」的契约断言）、`db-drop.test.mjs`、`ai-attach-batch.test.mjs`，均登记 `npm test`；`npm test`、`npm run build`、`go test ./... -timeout 300s` 通过。
+
+### 修复（拖出窗口/取消时落点遮罩永久悬浮）
+
+- **现象**：把文件拖进 AI 面板（或编辑区）→ 高亮遮罩出现，随后把文件挪回文件夹 / 拖到别的窗口，遮罩一直挂着不消失。
+- **根因**：`file-drop-target-active` 类由 Wails v3 runtime 内部管理，但它的 `dragleave` 处理器在 `relatedTarget === null`（离开窗口）时明确 `return`，且没有 `dragend` 处理；OS 文件拖放的 `dragend` 只在拖拽源（资源管理器）触发，本窗口收不到——类没人摘。
+- **修复**：`frontend/src/shell/file-drop-highlight.js` 加前端兜底清理——`dragover`（含 Files）更新心跳，超过 300ms 没 dragover（拖出窗口后唯一还能观察到的信号）即清全部高亮；`dragleave(relatedTarget=null)` / `drop` / `dragend` / `window.blur` 立即清；子元素间移动（relatedTarget 非 null）不误清，仍交给 runtime。文件树内部拖拽是 `text/plain`、用另一套 `.drop-target` 类，不受影响。`main.js` 在 `app-file-drop` 到达时也同步清一次（双保险）。
+- 测试：`file-drop-highlight.test.mjs` 7 例（心跳/边界事件/非 Files 不干预/卸载），已登记 `npm test`。
+
+### 新增（应用内拖拽：文件树文件拖到编辑区/AI 面板）
+
+- 从文件树（树视图与列表视图都支持）把文件拖到**编辑区**现在会打开文件、拖到 **AI 面板**会作为附件进输入区、拖到**数据库面板**走导入——与 OS 外部拖放完全相同的落点逻辑与提示遮罩，且支持多选一起拖。
+- 实现：内部拖拽是 HTML5 `text/plain`，不走 Wails 的 `Files` 链路，此前这些落点既无遮罩也无动作。现在 `dragstart` 额外写入自定义 MIME `application/x-cadt-paths`（`core/drop-mime.js`），`shell/internal-drop.js` 在 window 捕获阶段识别它 → 让落点可接收 + 挂同一套 `.file-drop-target-active` 遮罩 → `drop` 时读回路径喂给 `dropRouter`。文件树面板（`files` 落点）放行给 explorer 原有的「内部移动」语义，不接管；编辑器选中文本拖拽不带该 MIME，完全不误伤。
+- 测试：`internal-drop.test.mjs` 7 例（含 files 放行、text/plain 不干预、心跳清理、接线），已登记 `npm test`。
+
+### 修复（会话自动整理后仍显示「超限」、重启又被写回几百 MB）
+
+- **现象**：超限会话（>256 MB）打开时自动 vacuum 把磁盘从几百 MB 瘦到几 MB，但重启后仍挂「超限」胶囊，磁盘文件又被写回几百 MB（行数从几千涨回几十万）。
+- **根因**：`ai-session-disk.js` 的 `hydrateStubSession` / `reloadSessionInner` 有一处「读前读后 stat 不一致 = 别的窗口写过 → 基线退回读前」的并发保护。自动整理恰好打破这个假设：vacuum 自己把文件改小，`refreshStat` 拿到的小 stat 与读前的大 stat 必然不同，被误判成并发写 → 基线退回成整理前的大值。后果：① 徽标读 `_logStat.size` 仍超限；② 交接协议 `sameLogStat` 永远发现「差异」反复 reload，配合 `applyLoadedSessions`「内存正文更全则保留并 `_needsRewrite`」逻辑，任何一次全局 `persistSessions()`（新建会话 / 发消息）都把内存里的整理前旧历史整份写回磁盘。
+- **修复**：两处 stat 退回判断加 `!tidy` 守卫——本次若发生了自动整理（`tidy` 非空），文件变小是本进程 vacuum 造成的，`refreshStat` 后的小 stat 才是正确基线，不退回。多窗口并发写（无 vacuum）的原有保护保持不变。
+- **测试**：`ai-session-disk-tidy.test.mjs` 新增 3 例（hydrate / reload 整理后基线不退回 + 无 vacuum 时仍退回的对照），已登记 `npm test`；全量 `npm test`、`go test ./... -timeout 300s` 通过。
+
+### 修复（AI 轮次折叠后视图跳动 + 语言环境扫描漏 Anaconda / nvm）
+
+- **轮次折叠滚动锚定**：点开/收起过程折叠条时，以被点击的折叠头为锚补偿 `scrollTop`——同一轮被提问卡隔开的续段会同步开合、改变消息区高度，此前没有补偿会把正在看的这行顶走。补偿量收敛成 `ai-scroll-follow.js` 的纯函数 `anchorScrollDelta`（量不到布局返回 0），点击处同步滚动基准避免程序位移被当成用户上滚。新增 `ai-scroll-follow.test.mjs` 2 例 + `ai-turn-fold.test.mjs` 接线守卫，均已登记 `npm test`。
+- **Anaconda / Miniconda 识别**：Python 环境扫描此前只查 PATH 候选、`py -0p` 启动器与两处固定目录；Anaconda 图形安装器默认进用户目录 / ProgramData 且不注册 py 启动器，因此扫不到。新增 `condaPythonGlobs` 覆盖用户目录、`LOCALAPPDATA\Continuum`、`ProgramData` 与 `C:\` 根下的 Anaconda3 / Miniconda3（大小写通配）。
+- **举一反三：各语言 `*_HOME` 环境变量**：此前扫描只认 PATH 与固定安装目录，自定义安装根一律漏。新增通用 `homeEnvGlob` / `appendEnvGlobs`，让 node（修正 nvm：补 `%LOCALAPPDATA%\nvm\v*`、`Author Software\nvm\installs\v*`、nvm4w 默认 symlink 与自定义 `NVM_HOME`）、go（`GOROOT`）、java（`JAVA_HOME`）、maven（`MAVEN_HOME` / `M2_HOME`）、rust/cargo（`RUSTUP_HOME` / `CARGO_HOME`）都扫描环境变量指向的安装根。真机验证：本机 nvm 从「扫不到」变为扫出 6 个 Node 环境。
+- 验证：`npm run typecheck`、`npm test` 全绿；Go `internal/toolchain` 表驱动测试（含交叉编译 linux/darwin）通过。
+
 ### 新增（数据库「新建连接」菜单直达插件市场）
 
 - 侧栏数据库面板的「新建连接」弹出菜单最底部新增 **插件市场：数据库驱动…**（分隔线后一项）。点它打开 设置 → 插件 的插件市场，并把搜索框预填为 `dataset`——数据库驱动类插件都在该关键词下（与端侧分类器「下载语义模型」跳转预填 `onnx` 同一条通道：`openSettings('plugins', preset)`）。
