@@ -300,6 +300,8 @@
                 <div class="snav-section">界面与编辑</div>
                 <button type="button" class="snav-item active" data-pane="general"><span class="snav-ic" data-icon="gear"></span><span>通用设置</span></button>
                 <button type="button" class="snav-item" data-pane="editor-tabs"><span class="snav-ic" data-icon="doc"></span><span>编辑器与写作</span></button>
+                <button type="button" class="snav-item" data-pane="editor-tabs" data-anchor="setgrp-writing"><span class="snav-ic" data-icon="edit"></span><span>写作模式</span></button>
+                <button type="button" class="snav-item" data-pane="editor-tabs" data-anchor="setgrp-code-shot"><span class="snav-ic" data-icon="image"></span><span>代码截图</span></button>
                 <button type="button" class="snav-item" data-pane="shortcuts"><span class="snav-ic" data-icon="keyboard"></span><span>快捷键</span></button>
                 <div id="snav-formats" class="snav-group expanded">
                     <button type="button" class="snav-item snav-parent" aria-expanded="true">
@@ -329,6 +331,7 @@
                         <button type="button" class="snav-item snav-child" data-pane="models"><span class="snav-ic" data-icon="zap"></span><span>模型</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="gen-models"><span class="snav-ic" data-icon="image"></span><span>生图与视频</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="ai"><span class="snav-ic" data-icon="sparkles"></span><span>AI 助手</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="ai" data-anchor="setgrp-subagents"><span class="snav-ic" data-icon="agents"></span><span>子代理</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="persona"><span class="snav-ic" data-icon="star"></span><span>个性化</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="context"><span class="snav-ic" data-icon="paste"></span><span>上下文注入</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="preferences"><span class="snav-ic" data-icon="list"></span><span>用户偏好</span></button>
@@ -336,6 +339,7 @@
                 </div>
                 <div class="snav-section">安全与权限</div>
                 <button type="button" class="snav-item" data-pane="permissions"><span class="snav-ic" data-icon="shield"></span><span>权限</span></button>
+                <button type="button" class="snav-item" data-pane="permissions" data-anchor="setgrp-local-classifier"><span class="snav-ic" data-icon="shield"></span><span>端侧分类器</span></button>
                 <div class="snav-section">集成与自动化</div>
                 <button type="button" class="snav-item" data-pane="new-file-menu"><span class="snav-ic" data-icon="list"></span><span>菜单管理</span></button>
                 <button type="button" class="snav-item" data-pane="run"><span class="snav-ic" data-icon="play"></span><span>运行</span></button>
@@ -623,7 +627,7 @@
                             </div>
                         </div>
 
-                        <div class="set-group-title">写作模式</div>
+                        <div class="set-group-title" id="setgrp-writing">写作模式</div>
                         <div class="set-card">
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">写作模式<button type="button" class="info-tip" data-tip="仅对纯文本与 Markdown 的源码视图生效：楷体排版、隐藏行号、打字机滚动、段落聚焦；打开其他类型文件自动退避。" aria-label="写作模式说明"></button></div><div class="set-desc">中文排版 · 专注 · 码字统计</div></div>
@@ -685,7 +689,7 @@
                             </div>
                         </div>
 
-                        <div class="set-group-title">代码截图</div>
+                        <div class="set-group-title" id="setgrp-code-shot">代码截图</div>
                         <div class="set-card">
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">带标题</div><div class="set-desc">图片顶部显示文件名与行号范围</div></div>
@@ -1019,7 +1023,7 @@
                             </div>
                         </div>
 
-                        <div class="set-group-title">子代理</div>
+                        <div class="set-group-title" id="setgrp-subagents">子代理</div>
                         <div class="set-card">
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">子代理并发上限</div><div class="set-desc">同时运行中的子代理数（含各层级递归派出的），不含主代理</div></div>
@@ -1567,7 +1571,7 @@
                             </div>
                         </div>
 
-                        <div class="set-group-title">端侧分类器</div>
+                        <div class="set-group-title" id="setgrp-local-classifier">端侧分类器</div>
                         <div class="set-card">
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">端侧模型<button type="button" class="info-tip" data-tip="在自动审批档对规则、只读与命令族都没接住的命令先行离线判定：危险概率低于严格度阈值直接放行（来源标「端侧分类器」），达到阈值转人工——若同时开启了远程「AI 分类器」，会把端侧结果（score / 阈值）注入提示词交大模型二次复核，复核放行则直接执行。线性与语义两个模型位可分别关闭，两个都关即整体停用；语义模型来自已安装的分类器插件，「刷新」重新扫描插件与注册状态。线性对良性命令偏保守的误拦由大模型复核放行，批准过的命令族经个性化学习后下次直接放行。" aria-label="端侧模型说明"></button></div><div class="set-desc">离线先行判定；线性与语义模型可分别启用或关闭</div></div>

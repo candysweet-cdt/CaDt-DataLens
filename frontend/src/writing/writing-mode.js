@@ -606,8 +606,23 @@ document.querySelector('.settings-nav').addEventListener('click', (e) => {
     }
     const item = e.target.closest('.snav-item[data-pane]');
     if (!item) return;
-    deps.selectSettingsPane(item.dataset.pane);
-    if (item.dataset.pane === 'integration') deps.syncIntegrationStatus();
+    const pane = item.dataset.pane;
+    deps.selectSettingsPane(pane);
+    if (pane === 'integration') deps.syncIntegrationStatus();
+    // 锚点入口：同一个 pane 内的不同分组各给一个侧栏入口（写作模式 / 代码截图 / 子代理 / 端侧分类器）。
+    // selectSettingsPane 按 dataset.pane 高亮会让同 pane 的多个按钮一起亮，这里纠正为只亮被点的那个；
+    // 再把目标分组滚到视口中央短暂高亮。不改 pane id，AI 工具的 open_settings pane 清单因此保持有效。
+    const anchor = item.dataset.anchor;
+    if (anchor) {
+        document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b === item));
+        requestAnimationFrame(() => {
+            const group = document.getElementById(anchor);
+            if (!group || !group.isConnected) return;
+            group.scrollIntoView({block: 'center'});
+            group.classList.add('settings-hit');
+            setTimeout(() => group.classList.remove('settings-hit'), 1600);
+        });
+    }
 });
 // 常用编程语言：独立于数据格式，每个语言单独配置环境信息（为后续辅助运行代码预留）
 

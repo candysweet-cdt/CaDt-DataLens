@@ -8,6 +8,8 @@ function buildSettingsSearchIndex() {
     const entries = [];
     const navLabels = {};
     document.querySelectorAll('.snav-item[data-pane]').forEach((b) => {
+        // 锚点入口（data-anchor）与主入口指向同一 pane，标签不能覆盖主入口名
+        if (b.dataset.anchor) return;
         navLabels[b.dataset.pane] = (b.textContent || '').trim();
     });
     for (const paneEl of document.querySelectorAll('.settings-pane')) {
