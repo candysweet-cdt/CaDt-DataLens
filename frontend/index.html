@@ -736,6 +736,15 @@
                             </div>
                         </div>
                         <div id="ai-model-list" class="ai-model-list"></div>
+                        <div class="set-group-title">额度显示</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">显示额度胶囊</div><div class="set-desc">在输入框底部状态栏显示当前账号的额度；需先在上方的账号卡里启用用量查询（每个账号各自配置）</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-show-quota-pill"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                        </div>
                         <div class="set-group-title">模型配置表</div>
                         <div class="set-card">
                             <div class="set-row">
@@ -818,6 +827,12 @@
                                         <option value="fullscreen">全屏（仅覆盖文件内容区）</option>
                                         <option value="float">在独立悬浮窗打开</option>
                                     </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">显示 Token 用量</div><div class="set-desc">对话级指标：本轮消耗的 token</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-show-usage"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                         </div>
@@ -933,18 +948,6 @@
                                 <div class="set-main"><div class="set-title">过程区始终折叠</div><div class="set-desc">开启后思考链与工具卡从流式开始就收起，只显示最终结果；点折叠头可展开查看</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-always-collapse"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">显示 Token 用量</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-show-usage"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">显示额度胶囊</div><div class="set-desc">在输入框底部状态栏显示当前账号的额度；需先在模型账号里启用用量查询</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-show-quota-pill"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -1422,8 +1425,9 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">默认桌面控制</div><div class="set-desc">仅对新建会话生效；需先在 应用页面 → 外部工具 → 桌面控制 安装，否则不可选。开启时需二次确认</div></div>
+                                <div class="set-main"><div class="set-title">默认桌面控制</div><div class="set-desc">仅对新建会话生效；需先在外部工具页安装桌面控制，否则不可选。开启时需二次确认</div></div>
                                 <div class="set-control">
+                                    <button type="button" class="dlg-btn" data-open-app-page="external-tools">去安装…</button>
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-default-desktop"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>

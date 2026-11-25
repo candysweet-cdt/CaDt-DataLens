@@ -2593,6 +2593,9 @@ const settingsUI = createSettingsUI({
     get flash() { return flash; },
     get iconSvg() { return iconSvg; },
     get initAIPanel() { return initAIPanel; },
+    // 设置页里「需先到应用页面配置」的跳转按钮（data-open-app-page）用；
+    // openAppPageTab 由 bridgeUI 在后面定义，getter 延迟求值避开 TDZ。
+    get openAppPageTab() { return openAppPageTab; },
     get LANG_DEFS() { return LANG_DEFS; },
     get LOCK_ICON() { return LOCK_ICON; },
     get readingMode() { return readingMode; },

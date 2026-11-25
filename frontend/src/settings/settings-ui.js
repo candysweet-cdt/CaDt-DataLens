@@ -1100,6 +1100,21 @@ searchDeps.elsSettings = elsSettings;
 const searchMod = createSettingsSearch(searchDeps);
 themeRegistry.subscribe(refreshThemes);
 
+// 通用「跳到应用页面」按钮委托：某些设置项的前置配置在应用页面标签页（如默认桌面控制
+// 要先在外部工具页安装），用 data-open-app-page="<pageId>" 给一条按钮通路，避免只靠
+// desc 文字指路。委托到设置对话框根容器，动态渲染的按钮也生效。
+// openAppPageTab 由组合根在后面定义（getter 延迟求值），typeof 判断必须放在回调里避开 TDZ。
+if (elsDialogs.settings) {
+    elsDialogs.settings.addEventListener('click', (e) => {
+        const btn = e.target && e.target.closest ? e.target.closest('[data-open-app-page]') : null;
+        if (!btn) return;
+        const pageId = btn.getAttribute('data-open-app-page');
+        if (!pageId || typeof deps.openAppPageTab !== 'function') return;
+        deps.openAppPageTab(pageId);
+        dlgMod.closeDialogs();
+    });
+}
+
     return {
         ...dlgMod, ...selMod, ...searchMod,
         actRel, activityLog, applyCodeStyle, applyIntegration, applyReadOnlyToDoc, applyRemoteSettings, applySettings, countWords, currentCodeStyle, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openSettings, openSettingsAtRow, persistSettingsLight, reconcileThemes, refreshThemes, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setIconTheme, setSyncedOpenMode, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount,
