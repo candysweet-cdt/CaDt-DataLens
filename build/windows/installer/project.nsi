@@ -198,17 +198,17 @@ Section "$(SEC_MENU_NAME)" SEC_MENU
   !insertmacro run_integration menu
 SectionEnd
 
-Section /o "$(SEC_SKILL_NAME)" SEC_SKILL
+Section "$(SEC_SKILL_NAME)" SEC_SKILL
   SetOutPath $INSTDIR
   !insertmacro run_integration skill
 SectionEnd
 
-Section /o "$(SEC_PATH_NAME)" SEC_PATH
+Section "$(SEC_PATH_NAME)" SEC_PATH
   SetOutPath $INSTDIR
   !insertmacro run_integration path
 SectionEnd
 
-Section /o "$(SEC_DESKTOP_NAME)" SEC_DESKTOP
+Section "$(SEC_DESKTOP_NAME)" SEC_DESKTOP
   CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 SectionEnd
 
