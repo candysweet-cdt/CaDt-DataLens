@@ -1097,6 +1097,8 @@ const selMod = createSettingsSelect(deps);
 const searchDeps = Object.create(deps);
 searchDeps.selectSettingsPane = selectSettingsPane;
 searchDeps.elsSettings = elsSettings;
+// 应用页面命中后收掉设置弹层，避免标签页被模态挡住（同 settings-pane-app-pages 的行为）
+searchDeps.closeSettings = () => dlgMod.closeDialogs();
 const searchMod = createSettingsSearch(searchDeps);
 themeRegistry.subscribe(refreshThemes);
 

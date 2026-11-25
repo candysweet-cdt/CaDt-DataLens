@@ -2573,6 +2573,8 @@ const applyCompletionSettingsToAllDocs = () => refreshCompletionSettings(
 const settingsUI = createSettingsUI({
     get aiPanel() { return aiPanel; },
     get allFormatDefs() { return allFormatDefs; },
+    // 设置搜索要能搜到应用页面（它们不在任何 .settings-pane 里）
+    get APP_PAGES() { return APP_PAGES; },
     get applyEditorKeybindingsToAll() { return () => editorKeybindings.applyToAll(); },
     get applyCompletionSettingsToAll() { return () => applyCompletionSettingsToAllDocs(); },
     get applySidebarUI() { return applySidebarUI; },

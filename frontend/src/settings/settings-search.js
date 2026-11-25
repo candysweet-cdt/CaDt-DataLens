@@ -1,5 +1,5 @@
 // 设置搜索：左栏顶部搜索框，跨面板检索设置项并跳转。
-// 从 settings-ui.js 拆出；跳转经宿主注入的 selectSettingsPane 复用分发器。
+// 从 settings-ui.js 拆出；设置项跳转经 selectSettingsPane，应用页面跳转经 openAppPageTab。
 export function createSettingsSearch(deps) {
 
 // ---- 设置搜索：左栏顶部搜索框，跨面板检索设置项并跳转 ----
@@ -7,11 +7,22 @@ export function createSettingsSearch(deps) {
 function buildSettingsSearchIndex() {
     const entries = [];
     const navLabels = {};
-    document.querySelectorAll('.snav-item[data-pane]').forEach((b) => {
-        // 锚点入口（data-anchor）与主入口指向同一 pane，标签不能覆盖主入口名
-        if (b.dataset.anchor) return;
-        navLabels[b.dataset.pane] = (b.textContent || '').trim();
-    });
+    const navSections = {};
+    let currentSection = '';
+    // 侧栏是 section 标题 + 按钮交替的平铺结构，顺序走过即可给每个 pane 记所属 section，
+    // 让搜索结果显示「环境变量 · 集成与自动化」而不是两个都叫「环境变量」的裸 pane 名。
+    const navRoot = document.querySelector('.settings-nav');
+    if (navRoot) {
+        navRoot.querySelectorAll('.snav-section, .snav-item[data-pane]').forEach((el) => {
+            if (el.classList.contains('snav-section')) {
+                currentSection = (el.textContent || '').trim();
+                return;
+            }
+            if (el.dataset.anchor) return;
+            navLabels[el.dataset.pane] = (el.textContent || '').trim();
+            navSections[el.dataset.pane] = currentSection;
+        });
+    }
     for (const paneEl of document.querySelectorAll('.settings-pane')) {
         const pane = paneEl.dataset.pane;
         // 动态面板（数据格式 / 编程语言子页）打开前没有内容，跳过，用下面的静态条目兜底
@@ -33,7 +44,19 @@ function buildSettingsSearchIndex() {
             entries.push({pane: 'lang-' + l.id, text: l.name + ' · ' + t.name, el: null});
         }
     }
-    return {entries, navLabels};
+    // 应用页面不在任何 .settings-pane 里，单独纳入索引；点击走 openAppPageTab 而非切 pane。
+    // visibleWhen 的条件页（认知索引）按当前设置过滤，与四个入口口径一致。
+    for (const page of deps.APP_PAGES || []) {
+        if (page.visibleWhen && !(deps.settings && deps.settings[page.visibleWhen] === true)) continue;
+        entries.push({
+            pane: 'app-pages',
+            text: page.label + '：' + page.desc,
+            el: null,
+            appPage: page.id,
+            nav: '应用页面 · ' + (page.group || ''),
+        });
+    }
+    return {entries, navLabels, navSections};
 }
 
 function renderSettingsSearch(query) {
@@ -45,7 +68,7 @@ function renderSettingsSearch(query) {
         box.textContent = '';
         return;
     }
-    const {entries, navLabels} = buildSettingsSearchIndex();
+    const {entries, navLabels, navSections} = buildSettingsSearchIndex();
     const hits = [];
     for (const e of entries) {
         const hay = (navLabels[e.pane] || '') + ' ' + e.text;
@@ -65,13 +88,21 @@ function renderSettingsSearch(query) {
             row.className = 'settings-search-item';
             const nav = document.createElement('span');
             nav.className = 'settings-search-nav';
-            nav.textContent = navLabels[hit.pane] || hit.pane;
+            // 带 section 路径消歧：两个「环境变量」分别显示「环境变量 · 集成与自动化」与
+            // 「上下文注入 · AI」，用户一眼能分辨命中哪一个。
+            nav.textContent = hit.nav || ((navLabels[hit.pane] || hit.pane) + (navSections[hit.pane] ? ' · ' + navSections[hit.pane] : ''));
             const text = document.createElement('span');
             text.className = 'settings-search-text';
             text.textContent = hit.text.length > 64 ? hit.text.slice(0, 64) + '…' : hit.text;
             row.append(nav, text);
             row.addEventListener('click', () => {
                 box.classList.add('hidden');
+                if (hit.appPage) {
+                    // 应用页面：开内容区标签页并收掉设置弹层（与目录页一致）
+                    if (typeof deps.openAppPageTab === 'function') deps.openAppPageTab(hit.appPage);
+                    if (typeof deps.closeSettings === 'function') deps.closeSettings();
+                    return;
+                }
                 deps.selectSettingsPane(hit.pane);
                 if (hit.el && hit.el.isConnected) {
                     hit.el.scrollIntoView({block: 'center'});
