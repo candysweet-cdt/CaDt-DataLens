@@ -29,6 +29,19 @@ test('所有内置界面主题可完整展开，元数据与变量一致', () =>
     }
 });
 
+test('浅色主题保持 harness 视觉基线：灰框架、白内容、轻描边与 JetBrains Light', () => {
+    const light = BUILTIN_UI_THEMES.find((theme) => theme.id === 'light');
+    assert.ok(light);
+    assert.equal(light.defaultCodeStyle, 'jetbrains-light');
+    assert.equal(light.vars['--bg'], '#ffffff');
+    assert.equal(light.vars['--chat-bg'], '#ffffff');
+    assert.notEqual(light.vars['--chat-bg'], light.vars['--panel'], '聊天区不能与侧栏同灰');
+    assert.equal(light.vars['--panel'], '#f7f7f8');
+    assert.equal(light.vars['--border'], '#e6e7eb');
+    assert.equal(light.vars['--text'], '#1f2328');
+    assert.equal(light.vars['--ai-composer-radius'], '14px');
+});
+
 test('所有内置代码主题具备 25 项代码变量', () => {
     for (const theme of BUILTIN_CODE_THEMES) {
         for (const key of [...CODE_TOKEN_VARS, ...EDITOR_CHROME_VARS]) {

@@ -96,7 +96,9 @@
     <script src="/vendor/xterm/xterm.js"></script>
     <script src="/vendor/xterm/addon-fit.js"></script>
 </head>
-<body data-file-drop-target>
+<body>
+<!-- 外部文件拖放：落点由 data-file-drop-target 标注（Wails runtime 用 closest() 找最近祖先），
+     未标注的区域不接受拖放（光标显示禁止、不产生事件）。四个落点见 frontend/src/shell/file-drop-router.js。 -->
 <div id="app-splash" aria-hidden="true"><img src="/brand/splash-lockup.png" alt=""></div>
 <div id="app">
     <header id="toolbar">
@@ -469,8 +471,15 @@
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">编辑器字号</div></div>
                                 <div class="set-control">
-                                    <input type="range" id="opt-font-size" min="9" max="24" step="1" value="13">
-                                    <span id="opt-font-size-val" class="popover-value">13</span>
+                                    <input type="range" id="opt-font-size" min="9" max="24" step="1" value="15">
+                                    <span id="opt-font-size-val" class="popover-value">15</span>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">编辑器行高</div></div>
+                                <div class="set-control">
+                                    <input type="range" id="opt-editor-line-height" class="opt-range" min="1.2" max="2" step="0.05" value="1.5">
+                                    <span id="opt-editor-line-height-val" class="popover-value">1.5</span>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -899,8 +908,8 @@
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">聊天字号</div><div class="set-desc">Ctrl + 滚轮可快速调整</div></div>
                                 <div class="set-control">
-                                    <input type="range" id="ai-opt-chatfont" min="10" max="32" step="1" value="13">
-                                    <input type="number" id="ai-opt-chatfont-val" class="ai-settings-input ai-font-size-num" min="10" max="32" step="1" value="13">
+                                    <input type="range" id="ai-opt-chatfont" min="10" max="32" step="1" value="14">
+                                    <input type="number" id="ai-opt-chatfont-val" class="ai-settings-input ai-font-size-num" min="10" max="32" step="1" value="14">
                                 </div>
                             </div>
                             <div class="set-row">
@@ -931,6 +940,12 @@
                                 <div class="set-main"><div class="set-title">显示 Token 用量</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-show-usage"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">显示额度胶囊</div><div class="set-desc">在输入框底部状态栏显示当前账号的额度；需先在模型账号里启用用量查询</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-show-quota-pill"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -2045,18 +2060,21 @@
                     <div class="mcfg-row">
                         <label class="mcfg-label" for="ai-opt-baseurl">Base URL</label>
                         <div class="mcfg-control">
-                            <input id="ai-opt-baseurl" class="mcfg-input" type="text" spellcheck="false" autocomplete="off" placeholder="https://api.deepseek.com/v1">
+                            <input id="ai-opt-baseurl" class="mcfg-input" type="text" spellcheck="false" autocomplete="off" placeholder="https://api.example.com/v1">
                         </div>
                     </div>
                     <div class="mcfg-row">
                         <label class="mcfg-label" for="ai-opt-apikey">API Key</label>
                         <div class="mcfg-control">
-                            <div class="mcfg-field">
-                                <input id="ai-opt-apikey" class="mcfg-input" type="password" spellcheck="false" autocomplete="off" placeholder="sk-…">
-                                <button type="button" id="ai-opt-key-toggle" class="mcfg-inline-btn" data-tip="显示密钥" aria-label="显示密钥" aria-pressed="false">
-                                    <svg class="mcfg-eye-on" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 8S4.2 3.9 8 3.9 14.4 8 14.4 8 11.8 12.1 8 12.1 1.6 8 1.6 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="1.9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
-                                    <svg class="mcfg-eye-off" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 8S4.2 3.9 8 3.9 14.4 8 14.4 8 11.8 12.1 8 12.1 1.6 8 1.6 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="1.9" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M2.9 2.9 13.1 13.1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-                                </button>
+                            <div class="mcfg-line">
+                                <div class="mcfg-field">
+                                    <input id="ai-opt-apikey" class="mcfg-input" type="password" spellcheck="false" autocomplete="off" placeholder="请输入 API Key">
+                                    <button type="button" id="ai-opt-key-toggle" class="mcfg-inline-btn" data-tip="显示密钥" aria-label="显示密钥" aria-pressed="false">
+                                        <svg class="mcfg-eye-on" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 8S4.2 3.9 8 3.9 14.4 8 14.4 8 11.8 12.1 8 12.1 1.6 8 1.6 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="1.9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+                                        <svg class="mcfg-eye-off" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 8S4.2 3.9 8 3.9 14.4 8 14.4 8 11.8 12.1 8 12.1 1.6 8 1.6 8Z" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="1.9" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M2.9 2.9 13.1 13.1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                                    </button>
+                                </div>
+                                <button type="button" id="ai-opt-test" class="dlg-btn">测试连接</button>
                             </div>
                             <p class="mcfg-hint">只保存在本机配置文件中，不写入日志。</p>
                         </div>
@@ -2065,7 +2083,7 @@
                         <span class="mcfg-label">连通性</span>
                         <div class="mcfg-control">
                             <div class="mcfg-line">
-                                <button type="button" id="ai-opt-test" class="dlg-btn">测试连接</button>
+                                <button type="button" id="ai-opt-models" class="dlg-btn" data-tip="从服务商的 /models 接口拉取可选模型" aria-label="从服务商的 /models 接口拉取可选模型">拉取模型列表</button>
                                 <span id="ai-opt-status" class="ai-settings-status">未测试</span>
                             </div>
                         </div>
@@ -2118,11 +2136,8 @@
                     <div class="mcfg-row">
                         <label class="mcfg-label" for="ai-opt-model">模型 ID</label>
                         <div class="mcfg-control">
-                            <div class="mcfg-line">
-                                <input id="ai-opt-model" class="mcfg-input" type="text" spellcheck="false" autocomplete="off" placeholder="deepseek-chat">
-                                <button type="button" id="ai-opt-models" class="dlg-btn" data-tip="从服务商的 /models 接口拉取可选模型" aria-label="从服务商的 /models 接口拉取可选模型">拉取列表</button>
-                            </div>
-                            <p class="mcfg-hint">填服务商文档里对外的模型名，请求时原样作为 model 参数发送。</p>
+                            <input id="ai-opt-model" class="mcfg-input" type="text" spellcheck="false" autocomplete="off" placeholder="例如 qwen3.8-max">
+                            <p class="mcfg-hint">填服务商文档里对外的模型名，请求时原样作为 model 参数发送；也可在上方「拉取模型列表」里勾选。</p>
                         </div>
                     </div>
                     <div class="mcfg-row">
@@ -2492,7 +2507,7 @@
             <div id="sb-filter-row" class="sb-filter-row hidden">
                 <input id="sb-filter" type="text" class="sb-filter-input" placeholder="输入名称过滤…" spellcheck="false" autocomplete="off">
             </div>
-            <div id="sb-body" class="sb-body"></div>
+            <div id="sb-body" class="sb-body" data-file-drop-target="files" data-drop-hint="松开以复制文件到当前位置"></div>
             <div id="structure-panel">
                 <div class="sb-head">
                     <span class="sb-title">结构</span>
@@ -2543,7 +2558,7 @@
                 </div>
                 <div id="app-pages-nav" class="app-pages-nav"></div>
             </div>
-            <div id="database-panel" class="database-panel">
+            <div id="database-panel" class="database-panel" data-file-drop-target="db" data-drop-hint="松开以导入数据库 / 连接">
                 <div class="sb-head">
                     <span class="sb-title">数据库</span>
                     <div class="sb-tools">
@@ -2569,7 +2584,7 @@
                     <span class="sb-title">AI 会话</span>
                     <div class="sb-tools">
                         <button type="button" id="ai-session-filter-btn" class="sb-tool" data-tip="按 ID 或标题过滤会话" aria-label="按 ID 或标题过滤会话" aria-pressed="false"></button>
-                        <button type="button" id="ai-session-more" class="sb-tool" data-tip="会话操作" aria-label="会话操作">
+                        <button type="button" id="ai-session-more" class="sb-tool" data-tip="会话列表操作" aria-label="会话列表操作">
                             <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1" fill="currentColor"/><circle cx="8" cy="8" r="1" fill="currentColor"/><circle cx="12.5" cy="8" r="1" fill="currentColor"/></svg>
                         </button>
                         <button type="button" class="sb-tool sb-collapse" data-tip="收起面板" aria-label="收起面板"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.5h11"/></svg></button>
@@ -2619,7 +2634,7 @@
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
                 </button>
             </div>
-            <div id="editor-area">
+            <div id="editor-area" data-file-drop-target="editor" data-drop-hint="松开以打开文件">
                 <div id="editor" class="hidden"></div>
                 <div id="welcome">
                     <img class="welcome-banner" src="/brand/welcome-banner.jpg" alt="CaDt-DataLens" draggable="false">
@@ -2682,7 +2697,7 @@
                 <div id="reading-view" class="hidden"></div>
             </div>
         </div>
-        <aside id="ai-panel" class="hidden" aria-label="AI 助手">
+        <aside id="ai-panel" class="hidden" aria-label="AI 助手" data-file-drop-target="ai" data-drop-hint="松开以添加为附件">
             <div class="ai-resize ai-resize-l" data-ai-resize="l" aria-label="拖动调整宽度"></div>
             <div class="ai-resize ai-resize-r" data-ai-resize="r"></div>
             <div class="ai-resize ai-resize-t" data-ai-resize="t" aria-label="拖动调整高度"></div>

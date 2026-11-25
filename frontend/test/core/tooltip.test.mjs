@@ -14,6 +14,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolveTipDelay, parseTipActions, resolveScrollAction, SHOW_DELAY_MS, RESHOW_DELAY_MS } from '../../src/core/tooltip.js';
 
+const css = readFileSync(new URL('../../src/style.css', import.meta.url), 'utf8');
+
 test('普通 tooltip 走「停留」窗口，且窗口不能被悄悄调回悬停即弹', () => {
     assert.equal(resolveTipDelay(), SHOW_DELAY_MS);
     assert.ok(SHOW_DELAY_MS >= 500, '停留窗口 ' + SHOW_DELAY_MS + 'ms 太短，等于悬停即弹');
@@ -111,4 +113,13 @@ test('滚动处置优先级：用户手势 > 气泡在屏 > 锚点连通/指针�
     assert.equal(resolveScrollAction({userGesture: true, bubbleVisible: true, anchorConnected: true, pointerOverAnchor: true}), 'hide-user');
     // 气泡不在屏上时不谈跟随/换锚
     assert.notEqual(resolveScrollAction({userGesture: false, bubbleVisible: false, anchorConnected: true, pointerOverAnchor: true}), 'follow');
+});
+
+test('浅色 tooltip 用白底 + 轻描边，不再与文字色混成灰块', () => {
+    const block = css.match(/html\[data-theme="light"\] \.app-tip \{([^}]*)\}/s);
+    assert.ok(block, '缺少浅色 .app-tip 覆盖');
+    assert.match(block[1], /background:\s*#ffffff;/, '浅色 tooltip 必须是白底');
+    assert.match(block[1], /border-color:\s*var\(--light-panel-line\);/, '描边要走浅色面板线');
+    assert.match(block[1], /box-shadow:/, '需要柔和投影与背景拉开层次');
+    assert.doesNotMatch(block[1], /color-mix\([^)]*var\(--text\)/, '不得再与文字色混色');
 });
