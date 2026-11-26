@@ -54,9 +54,15 @@ test('裸 workspaceFolder 注入只允许白名单模块', () => {
 });
 
 test('currentRoot 的单一来源存在且语义正确', () => {
-    assert.match(src, /function currentRoot\(\) \{[\s\S]{0,400}?lastFocusedRoot/,
+    // currentRoot 已拆到 shell/view-root.js（main.js 超线治理）。
+    // 这里检查实现处；下面另有「注入层指向 currentRoot()」的检查仍看 main.js。
+    const vsrc = readFileSync(join(here, '../../src/shell/view-root.js'), 'utf8');
+    assert.match(vsrc, /function currentRoot\(\) \{[\s\S]{0,400}?lastFocusedRoot/,
         'currentRoot() 必须同时考虑 lastFocusedRoot（多工作区的聚焦会话仓库）');
-    assert.match(src, /isMultiWorkspace\(\)/, 'currentRoot() 必须走 isMultiWorkspace()');
+    assert.match(vsrc, /isMultiWorkspace\(\)/, 'currentRoot() 必须走 isMultiWorkspace()');
+    // main.js 里应只剩「解构出来供全文件使用」的那一处，不能再有第二份实现
+    assert.ok(!/^function currentRoot\(\)/m.test(src),
+        'main.js 不该再有 currentRoot 的实现（已迁到 shell/view-root.js）');
 });
 
 test('switchRootLight 在多工作区下不写 workspaceFolder', () => {
@@ -93,14 +99,16 @@ test('openFolderWorkspace 在多工作区下不写 workspaceFolder', () => {
 });
 
 test('currentRoot 在多工作区下优先于 workspaceFolder（防脏值凌驾）', () => {
-    const start = src.indexOf('function currentRoot() {');
+    const vsrc = readFileSync(join(here, '../../src/shell/view-root.js'), 'utf8');
+    const start = vsrc.indexOf('function currentRoot() {');
     assert.ok(start > 0, '找不到 currentRoot');
-    const head = src.slice(start, start + 600);
+    const head = vsrc.slice(start, start + 600);
     const harnessIdx = head.indexOf('isMultiWorkspace');
-    const folderIdx = head.indexOf('if (workspaceFolder)');
-    assert.ok(harnessIdx > 0 && folderIdx > 0, 'currentRoot 必须同时判多工作区与 workspaceFolder');
+    // 拆分后窗口根经 deps.windowWorkspace() 取，不再直接读 main.js 里的 workspaceFolder
+    const folderIdx = head.indexOf('deps.windowWorkspace()');
+    assert.ok(harnessIdx > 0 && folderIdx > 0, 'currentRoot 必须同时判多工作区与窗口绑定根');
     assert.ok(harnessIdx < folderIdx,
-        'currentRoot 必须先判多工作区：workspaceFolder 万一被写脏，'
+        'currentRoot 必须先判多工作区：窗口绑定根万一被写脏，'
         + '不能让它凌驾于视图根之上（否则徽标与文件树取到两个不同目录）');
 });
 
@@ -162,10 +170,11 @@ test('分组内新建会话用 viewRoot 判跨区，不用 windowWorkspacePath',
 // 实测 bug：从无工作区会话切回**同根**的普通会话时，applyViewRoot 的同根短路提前 return，
 // orphan 停在 true 没被重置 → 标题栏一直挂着提示（树 / git / 分组都正确，只有它错）。
 test('applyViewRoot 同根短路必须重置 orphan', () => {
-    const start = src.indexOf('function applyViewRoot(root, opts) {');
+    const vsrc = readFileSync(join(here, '../../src/shell/view-root.js'), 'utf8');
+    const start = vsrc.indexOf('function applyViewRoot(root, opts) {');
     assert.ok(start > 0, '找不到 applyViewRoot');
-    const head = src.slice(start, start + 900);
-    const shortCircuit = head.indexOf('sessionPathKey(next) === sessionPathKey(lastFocusedRoot)');
+    const head = vsrc.slice(start, start + 1000);
+    const shortCircuit = head.indexOf('deps.sessionPathKey(next) === deps.sessionPathKey(lastFocusedRoot)');
     assert.ok(shortCircuit > 0, '找不到同根短路判定');
     const resetIdx = head.indexOf('viewRootOrphan = false', shortCircuit);
     assert.ok(resetIdx > shortCircuit,
@@ -177,11 +186,12 @@ test('「借来的根」判定以面板当前会话为准，不只依赖状态�
     assert.ok(/function focusedSessionWorkspace\(\)/.test(src),
         '必须有 focusedSessionWorkspace()：直接问面板「当前会话有没有 workspace」');
     const start = src.indexOf('function renderWorkspaceCrumbs() {');
-    const body = src.slice(start, start + 2200);
+    const body = src.slice(start, start + 2400);
     assert.match(body, /focusedSessionWorkspace\(\)/,
         'renderWorkspaceCrumbs 要按当前会话的真实 workspace 判定，而不是只看 viewRootOrphan——'
         + '那个位要在每条 applyViewRoot 路径上维护，漏一处就长期挂错提示');
-    assert.match(body, /focused === null \? viewRootOrphan : !focused/,
+    // viewRootOrphan 现在从 view-root 模块的访问器读（状态位已私有化，只能经 getter 拿）
+    assert.match(body, /focused === null \? viewRootMod\.viewRootOrphan : !focused/,
         '面板问不到时才回落到状态位（面板未初始化 / 旧宿主）');
 });
 

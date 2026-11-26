@@ -29,8 +29,10 @@ test('① 面板必须导出 currentSessionScopeRoot（main.js 靠 typeof 守卫
         + 'currentWatchRoot() 回落树根，harness 下树根为空 ⇒ wipe-guard 监听与周期校准全部不注册');
     assert.ok(mainSrc.includes("typeof aiPanel.currentSessionScopeRoot !== 'function'"),
         'main.js 的 currentSessionScopeRoot 必须保留 typeof 守卫（面板未初始化 / 旧宿主）');
-    assert.ok(mainSrc.includes('currentSessionScopeRoot() || (explorer && explorer.getRoot'),
-        'main.js 的 currentWatchRoot 必须会话根优先');
+    // currentWatchRoot 已拆到 shell/wipeguard-roots.js（main.js 超线治理）
+    const rootsSrc = src('shell/wipeguard-roots.js');
+    assert.match(rootsSrc, /deps\.currentSessionScopeRoot\(\)[\s\S]{0,120}?deps\.currentRoot\(\)/,
+        'currentWatchRoot 必须会话根优先、视图根兜底（用裸窗口绑定根会让多工作区下退化成无根，监听失明）');
 });
 
 test('② wipeguardIsAIActive 按根扫描在跑的会话，不拿当前会话当标尺', () => {

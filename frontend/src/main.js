@@ -126,6 +126,8 @@ import {createDialogDrag} from './core/dialog-drag.js';
 import {loadWailsRuntime, createRuntimeAdapter, createBackendProxy} from './core/wails-runtime.js';
 import {createAppEventBridge, setAppEventBridge} from './core/app-events.js';
 import {isMultiWorkspace, configureMultiProbe} from './core/root-scope.js';
+import {createViewRoot} from './shell/view-root.js';
+import {createWipeguardRoots} from './shell/wipeguard-roots.js';
 
 // 「当前是否多工作区窗口」的唯一判定注入点（core/root-scope.js 消费）。
 // 全应用只有这里读 window.__harnessWindow 的**值**（其余地方一律 isMultiWorkspace()）。
@@ -706,44 +708,58 @@ const structureWorkerPending = new Map();
 const structureCache = new Map();
 const STRUCTURE_CACHE_LIMIT = 12;
 let workspaceFolder = null;
-// 多工作区模式的「视图跟随根」：聚焦会话的工作区（只用于显示与树/监听，**不写 workspaceFolder**）。
-// 声明在这里是因为 renderWorkspaceCrumbs（约 3405 行）在启动早期就会读它，放后面会踩 TDZ。
-let lastFocusedRoot = '';
-let followingSessionWorkspace = false; // 重入闸门：跟随过程内部触发的会话切换回调必须忽略，否则无限递归
-// 当前视图根是「借来的」：多工作区下聚焦会话本身无工作区（沙盒 / 临时会话），
-// 文件树保留上一次的目录。面包屑据此标一句提示，避免误以为会话绑在那个仓库上。
-let viewRootOrphan = false;
 
-// ── 当前根：全应用「我在哪个目录」的唯一来源 ────────────────────────────────
-// 单工作区 = 窗口绑定的工作区；多工作区 = 聚焦会话的工作区。
+// ── 当前根 / 视图跟随（shell/view-root.js）──────────────────────────────────
+// 这域原先整个堆在 main.js（超线治理第 1 批拆分）。核心是两个根的区别：
+// 「窗口绑定的工作区」（workspaceFolder，多工作区恒空）vs「当前在哪个目录」（currentRoot()）。
+// 详见该模块文件头的纪律说明。
 //
-// 为什么需要它：多工作区窗口的 workspaceFolder **必须恒为空**（它是
-// activeSessionByWorkspace 的 key / 会话快照槽 / scopeRootOf 兜底的判据，写进去会连环出错），
-// 但绝大多数功能模块（文件树 / 搜索 / git / 便签 / 终端 / Maven / 面包屑 / 标题栏…）
-// 只想知道「当前在哪个目录」。两者的差额就是这个函数。
-//
-// 纪律：
-//   · 需要「我在哪」→ 读 currentRoot()（或注入给模块的 deps.workspaceFolder，那一层已改成本函数）
-//   · 需要「窗口绑定了哪个目录」→ 读裸 workspaceFolder（只有 openFolder/closeFolder、
-//     session-restore 快照槽、explorer-ops 的写回这几处属于此列）
-//   新增消费点别再自己写 `workspaceFolder || (harness ? ...)`，直接用这里。
-function currentRoot() {
-    // 多工作区优先：窗口不绑定工作区，workspaceFolder 按约定恒为空。万一某条旧路径把它
-    // 写脏了（例如 openFolderWorkspace 被误调），也不能让它凌驾于视图根之上——否则
-    // currentRoot 与文件树取到两个不同目录，顶部徽标和树各显示一个仓库（实测过）。
-    if (isMultiWorkspace()) return lastFocusedRoot || '';
-    if (workspaceFolder) return workspaceFolder;
-    return '';
-}
-let watchedWorkspaceRoot = '';
+// deps **一律传箭头函数**（不是 getter 属性）：模块内部统一写 `deps.explorer()`，
+// 契约是「调我，我给你当前值」。传 getter 属性会让 deps.explorer 直接是对象，
+// 模块里 deps.explorer() 就变成 `对象()` → TypeError。
+// （2026-11-27 实测踩过：npm test 全绿、typecheck 通过，但重建后 currentRoot() 首次调用即崩——
+// 因为没有任何测试真正执行过这些模块。守卫已补运行时断言。）
+// 传函数的另一个好处：这些依赖（explorer / aiPanel / mavenUi / refreshGitStatus…）在本文件
+// 之后才创建，延迟求值才不会踩 TDZ，也不会被拍成 null 快照。
+const viewRootMod = createViewRoot({
+    windowWorkspace: () => workspaceFolder,
+    explorer: () => explorer,
+    aiPanel: () => aiPanel,
+    mavenUi: () => mavenUi,
+    syncWorkspaceWatcher: () => syncWorkspaceWatcher(),
+    renderWorkspaceCrumbs: () => renderWorkspaceCrumbs(),
+    updateWindowTitle: () => updateWindowTitle(),
+    // 这两个是「可能尚未接线」的函数变量：返回当前值（可能是 undefined），
+    // 由模块侧用 typeof 判断。**不要**写成 `() => () => xxx`（多包一层会让模块拿到
+    // 一个恒真的函数工厂，导致真正的刷新从未执行——静默失效）。
+    refreshGitStatus: () => refreshGitStatus,
+    memoWorkspaceChanged: () => memoWorkspaceChanged,
+    logFrontend: (...args) => logFrontend(...args),
+    sessionPathKey: (path) => sessionPathKey(path),
+});
+const {
+    currentRoot, applyViewRoot, followSessionWorkspace, followActiveSession, installSessionFollow,
+} = viewRootMod;
+
 // 工作区破坏防护控制器（在 4k 行处构造）。这里先声明成 let：syncWorkspaceWatcher 会在
 // init 早期被调用（恢复会话 / 打开文件夹），const 的 TDZ 会让它炸 ReferenceError。
 let wipeguardCtrl = null;
-// 本窗口正在防护的根（多根 watcher，方案 §4.9.7 F6）：切走后旧根**不立即退订**——防护要
-// 覆盖「切走期间还在跑的命令」。退订只发生在 LRU 淘汰或窗口关闭时。
-const wipeguardRoots = new Map();      // wsKey -> root
-// 告警投递冷却按根（原先是全局一份：A 根刚报过警，2 分钟内 B 根的真破坏被一起抑制）
-const wipeguardNotifyAt = new Map();   // wsKey -> 上次向会话投递告警的时间
+// 多根监听 / 告警冷却域已拆到 shell/wipeguard-roots.js（超线治理第 2 批）：
+// 那域要管「切走后旧根继续盯」「冷却按根计」「退订只走两个出口」三件事，
+// 全是「坏了不报错、只是该报警时没报警」的类型，单独成模块才好写清纪律。
+const wipeguardRootsMod = createWipeguardRoots({
+    backend: () => backend,
+    wipeguardCtrl: () => wipeguardCtrl,
+    currentSessionScopeRoot: () => currentSessionScopeRoot(),
+    explorer: () => explorer,
+    currentRoot: () => currentRoot(),
+    normalizeWsKey: (ws) => normalizeWsKey(ws),
+});
+const {
+    syncWorkspaceWatcher, currentWatchRoot, watchWipeguardRoot, releaseWipeguardWatch,
+    unwatchWipeguardRoot, tryMarkNotify,
+} = wipeguardRootsMod;
+wipeguardRootsMod.installPagehideCleanup();
 let fileClipboard = null;
 let ctxMenu = null;
 // 主窗口全局菜单的惰性入口：ctxMenu 由 editor-menus 稍后创建（set ctxMenu 回填），
@@ -3182,7 +3198,7 @@ const explorerOps = createExplorerOps({
     get setCurrentRoot() {
         return (next) => {
             if (!isMultiWorkspace()) return;
-            lastFocusedRoot = next || '';
+            viewRootMod.lastFocusedRoot = next || '';
             renderWorkspaceCrumbs();
             updateWindowTitle();
         };
@@ -3562,7 +3578,7 @@ function renderWorkspaceCrumbs() {
     // 状态位保留作「面板未就绪时」的兜底。
     const focused = focusedSessionWorkspace();
     const orphan = !!isMultiWorkspace()
-        && (focused === null ? viewRootOrphan : !focused);
+        && (focused === null ? viewRootMod.viewRootOrphan : !focused);
     els.wsProject.classList.toggle('is-orphan', orphan);
     // 提示必须写进 **data-tip**：core/tooltip.js 只读这个属性（它没有 tip2 消费者）。
     // 我一度写成 dataset.tip2 —— 提示从来没显示过，等于这个功能没做（且当时还顺手删掉了
@@ -3737,7 +3753,7 @@ async function openFolderSmart(dir) {
     //   · 它 workspaceFolder = dir      → currentRoot() 第一行命中，顶部徽标显示新目录；
     //   · 它末尾 refreshSessionList() 触发 adoptWorkspaceSession，把树改回会话所属仓库；
     // 于是「徽标 = 新目录、树 = 旧仓库」两个值打架（实测 cadt-wipeguard-drill vs CaDt-DataLens）。
-    if (isMultiWorkspaceMode()) {
+    if (isMultiWorkspace()) {
         applyViewRoot(dir);
         flash('已切换到：' + (baseNameOf(dir) || dir));
         return;
@@ -3899,92 +3915,6 @@ function currentSessionScopeRoot() {
     }
 }
 
-// 本窗口「当前根」：会话根优先（harness / 会话换手后），否则树根，否则当前根。
-// 树、监听、防护三处必须同源，否则会出现「树在 B、watcher 在 A」的静默失明。
-// 兜底用 currentRoot() 而不是裸 workspaceFolder——多工作区下后者恒空，会让
-// 前两级都没命中时（例如面板未初始化）退化成「无根」，监听静默失效。
-function currentWatchRoot() {
-    return currentSessionScopeRoot() || (explorer && explorer.getRoot ? explorer.getRoot() : '') || currentRoot();
-}
-
-function watchWipeguardRoot(root) {
-    const key = normalizeWsKey(root);
-    if (!key || wipeguardRoots.has(key)) return;
-    wipeguardRoots.set(key, root);
-    if (wipeguardCtrl) wipeguardCtrl.trackRoot(root); // 条目 = 防护范围（LRU 与事件分流的依据）
-    if (!backend) return;
-    try {
-        // 兼容：后端多根绑定由并发改造提供（WatchWipeguardRoot）；未就绪时退回既有的
-        // WatchWorkspaceFor（同一内核 watcher，owner 独立，事件同样是 workspace-changed
-        // 且带 removed / present 分组——破坏判定依赖这两个分组，不能换成只有 paths 的通道）。
-        if (typeof backend.WatchWipeguardRoot === 'function') {
-            Promise.resolve(backend.WatchWipeguardRoot(root)).catch(() => {});
-        } else if (typeof backend.WatchWorkspaceFor === 'function') {
-            Promise.resolve(backend.WatchWorkspaceFor('wipeguard|' + key, root)).catch(() => {});
-        }
-    } catch (e) {
-        console.warn('[wipeguard] 多根监听注册失败（该根切走后将失去删除事件）', e);
-    }
-}
-
-// releaseWipeguardWatch：摘登记表 + 后端退订，**不回调控制器**（控制器淘汰条目时也走这里）。
-function releaseWipeguardWatch(root) {
-    const key = normalizeWsKey(root);
-    if (!key || !wipeguardRoots.has(key)) return;
-    wipeguardRoots.delete(key);
-    // 投递冷却表同源清理：它按根 set、此前只增不减，根被 LRU 淘汰 / 显式退订后键仍留着，
-    // 随历史工作区单调增长（独立审查 🟡）。这里与监听槽一起回收。
-    try { wipeguardNotifyAt.delete(key); } catch (e) { /* 尽力而为 */ }
-    if (!backend) return;
-    try {
-        if (typeof backend.UnwatchWipeguardRoot === 'function') {
-            Promise.resolve(backend.UnwatchWipeguardRoot(root)).catch(() => {});
-        } else if (typeof backend.UnwatchWorkspaceFor === 'function') {
-            Promise.resolve(backend.UnwatchWorkspaceFor('wipeguard|' + key)).catch(() => {});
-        }
-    } catch (e) {
-        console.warn('[wipeguard] 多根监听退订失败（残留到窗口关闭）', e);
-    }
-}
-
-// unwatchWipeguardRoot：显式退订（控制器条目一起摘，摘条目会回调 onRootEvicted → releaseWipeguardWatch）。
-function unwatchWipeguardRoot(root) {
-    if (wipeguardCtrl && typeof wipeguardCtrl.untrackRoot === 'function') wipeguardCtrl.untrackRoot(root);
-    else releaseWipeguardWatch(root);
-}
-
-// 文件监听跟随当前根；失败时静默降级到轮询。
-// 根优先取会话根（方案 §4.9.7 F2）：防护不能因为「这个窗口没登记工作区」就关掉，
-// harness 下会话根与本窗口树根可以不同，主信号必须跟着会话走。
-function syncWorkspaceWatcher() {
-    if (!backend) return;
-    const root = currentWatchRoot();
-    const prev = watchedWorkspaceRoot;
-    if (root !== prev) {
-        watchedWorkspaceRoot = root;
-        try {
-            if (root && typeof backend.WatchWorkspace === 'function') backend.WatchWorkspace(root).catch(() => {});
-            else if (!root && typeof backend.UnwatchWorkspace === 'function') backend.UnwatchWorkspace().catch(() => {});
-        } catch (e) {}
-        // 旧根**不立刻退订**：切走期间那里可能还在跑命令（长任务 / 后台子代理），
-        // 失明就正好丢掉最该报的事件。交给多根 watcher 继续盯，退订只发生在 LRU
-        // 淘汰或窗口关闭时（方案 §4.9.7 F6）。
-        if (prev) watchWipeguardRoot(prev);
-    }
-    // 当前根交给窗口自己的 WatchWorkspace（同一棵树不开第二路监听，否则每个事件来两遍），
-    // 但仍要登记进控制器：有条目才不会被 LRU 淘汰，事件分流也认它。
-    if (root) {
-        if (wipeguardCtrl) wipeguardCtrl.trackRoot(root);
-        releaseWipeguardWatch(root);
-    }
-}
-
-// 窗口关闭：本窗口挂的多根监听一并退订。后端按窗口名收口只摘窗口自己的槽位，
-// wipeguard 用的是独立 owner 名（wipeguard|key），需要前端显式收。
-window.addEventListener('pagehide', () => {
-    for (const root of Array.from(wipeguardRoots.values())) releaseWipeguardWatch(root);
-}, {once: true});
-
 // ===== 轻量换根（方案 §4.6 / §4.9.7 F6）=====
 // 会话切换引起的根变更只做「切根 + 轻刷」：树、面包屑、标题、监听换根、AI 面板当前根。
 // **不做**重活——不跑 lifecycle 钩子、不强制刷 git / 指纹、不做全量 applySettings 重绘
@@ -4032,116 +3962,6 @@ function switchRootLight(dir) {
     return true;
 }
 
-// 多工作区模式：面板聚焦会话变化时，把文件树 / 监听 / 面包屑跟到该会话的工作区。
-// 视图跟随：把「树 / 面包屑 / 标题 / 监听 / git / 便签」切到 root，**不写 workspaceFolder**。
-// 多工作区下所有「根变了」的路径最终都汇到这里，是「当前根」的唯一写入点：
-//   · 切 AI 会话          → followSessionWorkspace(id) 取会话 workspace 后调用
-//   · switchRootLight(dir) → 多工作区分支直接调用（不再写窗口绑定）
-//   · 重命名/移动仓库目录  → explorerOps 经 setCurrentRoot 调用
-// 单工作区不经过这里（那边 workspaceFolder 就是真相，走 openFolderWorkspace / switchRootLight）。
-function applyViewRoot(root, opts) {
-    const next = String(root || '');
-    if (sessionPathKey(next) === sessionPathKey(lastFocusedRoot)) {
-        // 同根短路：树不用换。但 orphan 必须按这次调用重置——从「无工作区会话」切回
-        // **同根**的普通会话时，next 与 lastFocusedRoot 相同会在这里提前返回，orphan
-        // 停在 true，标题栏就一直挂着「当前会话没有工作区」的提示（实测：树 / git 都对，
-        // 只有这个标记错）。
-        if (next && viewRootOrphan) {
-            viewRootOrphan = false;
-            renderWorkspaceCrumbs();
-        }
-        return false;
-    }
-    if (followingSessionWorkspace) return false;
-    // 空根：**保持现在的树不动**（会话沙盒 / 临时会话 / 未关联工作区）。
-    // 之前会 setRoot(null) 把树清空、标题栏退成「未打开文件」，用户点几个会话后整个界面
-    // 像「什么都没了」（实测反馈）。树的用途是浏览文件，无根会话本来就没有对应目录。
-    // AI 的工具根不受影响：它按 sessionScopeRoot(session) 解析，沙盒会话用会话沙盒目录。
-    if (!next) {
-        if (opts && opts.logEmpty) logFrontend('info', '[视图跟随] 会话无工作区，保留当前视图');
-        // 树保持不动，但面包屑要标出「这是借来的根」，否则用户会以为会话绑在旧仓库上。
-        viewRootOrphan = !!lastFocusedRoot;
-        renderWorkspaceCrumbs();
-        return false;
-    }
-    lastFocusedRoot = next;
-    viewRootOrphan = false;
-    followingSessionWorkspace = true;
-    try {
-        logFrontend('info', '[视图跟随] 切到 ' + next);
-        if (explorer) {
-            explorer.setMode('tree', false);
-            explorer.setRoot(next);
-        }
-        syncWorkspaceWatcher();
-        renderWorkspaceCrumbs();
-        updateWindowTitle();
-        // git 分支跟着换：gitRootDir 读 currentRoot()，这里主动刷一次，别等 3 秒轮询。
-        // try 包一层：refreshGitStatus 由 bridgeUI 解构（文件靠后），极端早期调用会踩 TDZ。
-        try {
-            if (typeof refreshGitStatus === 'function') {
-                Promise.resolve(refreshGitStatus()).catch(() => {});
-            }
-        } catch (e) { /* 接线尚未完成：定时器会在下一轮补上 */ }
-        // 快捷便签：作用域根跟着换，丢弃旧仓库的缓存并重载打开中的「工作区」页签。
-        try {
-            if (typeof memoWorkspaceChanged === 'function') memoWorkspaceChanged();
-        } catch (e) { /* 接线尚未完成 */ }
-        // Maven 触发判定 / 依赖树缓存都是「与具体项目绑定」的（maven-panel 的 key = 当前根）。
-        // 单工作区的 switchRootLight/openFolderWorkspace 都调了 syncTrigger，这条视图跟随路径
-        // 漏了：切到另一个仓库后 Maven 图标仍是上一个仓库的判定结果，点开还按旧 cache 命中。
-        // 与 memoWorkspaceChanged 并列——都是「根变了要跟着走的轻活」（同步、无 IO 扫描）。
-        try {
-            if (mavenUi) mavenUi.syncTrigger();
-        } catch (e) { /* 接线尚未完成 */ }
-        // 不调 refreshSessionBadge：它会重绘会话列表、可能再触发会话切换回调 → 递归。
-    } finally {
-        followingSessionWorkspace = false;
-    }
-    return true;
-}
-
-// 与 switchRootLight 的区别：**不写 workspaceFolder**——多工作区窗口的窗口级工作区必须
-// 恒为空（否则模式 chip / session-restore 快照槽 / scopeRootOf 第 4 步都会跟着错）。
-// 只更新「视图跟随根」，AI 的工具根另由 sessionScopeRoot(session) 决定，两者本来就解耦。
-function followSessionWorkspace(id) {
-    if (!isMultiWorkspace() || !aiPanel) return;
-    if (followingSessionWorkspace) return;
-    const sess = aiPanel.bridgeListSessions ? aiPanel.bridgeListSessions().find((s) => s.id === id) : null;
-    const root = sess && sess.workspace ? String(sess.workspace) : '';
-    applyViewRoot(root, {logEmpty: true});
-}
-
-// 面板会话切换订阅：只在多工作区模式下让视图跟随；单工作区保持既有语义（树不随会话动，
-// 对齐 JetBrains）。**用模块级标记而不是挂在 aiPanel 上**——面板返回对象若被 seal/freeze，
-// 往它身上写标记会静默失败，守卫失效后又因为「重复注册无害」不影响功能，但会让排查更迷惑。
-// 把视图跟到**当前**会话（启动恢复、模式切换、面板就绪后用）。
-// followSessionWorkspace 只挂在「会话切换」回调上，而启动恢复是直接设 current、不经过通知，
-// 所以必须有一个主动入口，否则多工作区窗口重启后树是空的。
-function followActiveSession() {
-    if (!isMultiWorkspace() || !aiPanel || typeof aiPanel.bridgeListSessions !== 'function') return false;
-    try {
-        const active = aiPanel.bridgeListSessions().find((s) => s.active);
-        if (!active) return false;
-        followSessionWorkspace(active.id);
-        return !!lastFocusedRoot;
-    } catch (e) {
-        console.debug('[视图跟随] 读取当前会话失败：' + ((e && e.message) || e));
-        return false;
-    }
-}
-
-let sessionFollowInstalled = false;
-function installSessionFollow() {
-    if (sessionFollowInstalled) return true;
-    if (!aiPanel || typeof aiPanel.bridgeOnSessionSwitch !== 'function') {
-        logFrontend('warn', '[视图跟随] 面板未就绪或缺少 bridgeOnSessionSwitch，会话跟随未安装');
-        return false;
-    }
-    sessionFollowInstalled = true;
-    aiPanel.bridgeOnSessionSwitch((id) => followSessionWorkspace(id));
-    return true;
-}
 
 // 重活去重（§4.6 硬设计 2）：同一工作区在一次**进程**运行内，open 钩子只跑一次。
 // 权威表在 Go 侧（WorkspaceMarkOpened，多窗口共享）；绑定尚未就绪时退回本窗口集合——
@@ -4527,8 +4347,7 @@ wipeguardCtrl = createAIWipeguard({
         const root = info.root || currentWatchRoot();
         const key = normalizeWsKey(root);
         const now = Date.now();
-        if (now - (wipeguardNotifyAt.get(key) || 0) < WIPEGUARD_NOTIFY_COOLDOWN_MS) return;
-        wipeguardNotifyAt.set(key, now);
+        if (tryMarkNotify(key, now, WIPEGUARD_NOTIFY_COOLDOWN_MS)) return;
         if (info.aiActive && aiPanel && typeof aiPanel.wipeguardNotifyForWorkspace === 'function') {
             try {
                 const pending = aiPanel.wipeguardNotifyForWorkspace(root || '', info);
@@ -4595,6 +4414,9 @@ function initAIPanel() {
         // 失败 / 后台事件统一通知（消息中心 + toast + 节流）：A/B 级清单专用，
         // 与 notifyDesktop（AI 任务失败 / 提问 / 审批，带会话可见性策略）平行，互不重复。
         notifyFailure: (...args) => failureNotifier.notifyFailure(...args),
+        // 前端诊断日志（调试台 / 运行日志）：面板内「预期内的等待」只留痕不打扰用户，
+        // 例如后台通知因目标忙而退回队列。缺了它会退化成 console.debug（面板仍可用）。
+        logFrontend: (...args) => logFrontend(...args),
         // 头部放大镜：开全局搜索并只勾选「AI 会话」分类（会话搜索框已并入这里）
         onHeadSearch: () => openGlobalSearch({aiOnly: true}),
         // 汇总卡「撤销」：回滚本轮编辑的文件到 HEAD（Git checkout / 删除新建文件）。
@@ -4785,7 +4607,7 @@ function initAIPanel() {
         },
         // 视图跟随根（多工作区）：面板新建会话 / 复用空会话时用它决定「这条新会话属于谁」。
         // 单工作区下是窗口工作区，面板内部会自己用 currentWorkspacePath，不会读这个。
-        getViewRoot: () => lastFocusedRoot || '',
+        getViewRoot: () => viewRootMod.lastFocusedRoot || '',
         // getScopeRoot 是「没有会话上下文时」的兜底根（composer 超长粘贴落盘 / 可视化卡片
         // 另存为 / 子代理沙箱授权 / 隔离 worktree）。多工作区下 workspaceFolder 恒空，必须走
         // currentRoot()：否则这些功能报「没有打开的工作区」；有活动文件时还会退化成那个文件
@@ -5316,14 +5138,10 @@ const WINDOW_MODE_NODE = () => els.wsMode;
 const WINDOW_MODE_NAME = () => els.wsModeName;
 const WINDOW_MODE_ICON = () => els.wsModeIcon;
 
-function isMultiWorkspaceMode() {
-    return !!isMultiWorkspace();
-}
-
 function renderWindowMode() {
     const chip = WINDOW_MODE_NODE();
     if (!chip) return;
-    const multi = isMultiWorkspaceMode();
+    const multi = isMultiWorkspace();
     // 自愈：多工作区下 workspaceFolder 必须为空（见 currentRoot 的注释——它是
     // activeSessionByWorkspace 的 key / 会话快照槽 / scopeRootOf 兜底的判据）。
     // 万一被某条旧路径写脏（例如「打开…」误走 openFolderWorkspace），这里清掉，
@@ -5344,7 +5162,7 @@ function renderWindowMode() {
 
 function showWindowModeMenu(anchor) {
     if (!ctxMenu) return;
-    const multi = isMultiWorkspaceMode();
+    const multi = isMultiWorkspace();
     ctxMenu.open([
         {
             label: '单工作区',
@@ -5367,7 +5185,7 @@ function showWindowModeMenu(anchor) {
 // 顺序必须是「存旧槽 → 切标记」，反过来会把普通布局写进 harness 槽）。
 // 切回工作区：先切标记再打开目录，openFolderWorkspace 的防抖保存自然写进普通槽。
 async function switchWindowMode(multi) {
-    if (multi === isMultiWorkspaceMode()) return;
+    if (multi === isMultiWorkspace()) return;
     // 切换会换 activeSession 的 key，先把当前会话记下来，切完再搬过去
     const keepId = activeSessionIdNow();
     if (multi) {
@@ -5375,7 +5193,7 @@ async function switchWindowMode(multi) {
         // 先切标记的话这份布局会被写进 harness 槽。
         if (workspaceFolder) closeFolder();
         window.__harnessWindow = true;
-        viewRootOrphan = false;
+        viewRootMod.viewRootOrphan = false;
         // 记住形态：下次启动恢复成多工作区（命令行 --harness 仍优先）
         settings.windowMode = 'multi';
         persistSettingsLight();
@@ -5384,7 +5202,7 @@ async function switchWindowMode(multi) {
             const list = aiPanel && aiPanel.bridgeListSessions ? aiPanel.bridgeListSessions() : [];
             const active = list.find((s) => s.active);
             if (active) followSessionWorkspace(active.id);
-            else { lastFocusedRoot = ''; renderWorkspaceCrumbs(); updateWindowTitle(); }
+            else { viewRootMod.lastFocusedRoot = ''; renderWorkspaceCrumbs(); updateWindowTitle(); }
         } catch (e) { /* 跟随失败不影响切换本身 */ }
         syncWorkspaceWatcher();
         if (aiPanel && aiPanel.refreshSessionList) aiPanel.refreshSessionList();
@@ -5399,15 +5217,15 @@ async function switchWindowMode(multi) {
     // 切回单工作区：优先**复用当前聚焦会话的工作区**（lastFocusedRoot），别再弹框让用户
     // 重选一遍——用户刚在多工作区里看的就是这个仓库，让他再点一次是多余动作。
     // 只有「当前会话没有工作区」（会话沙盒 / 未绑定 / 面板还没聚焦任何会话）时才弹框。
-    const reuse = lastFocusedRoot || '';
+    const reuse = viewRootMod.lastFocusedRoot || '';
     if (reuse) {
         // 先把多工作区布局存进 harness 槽：openFolderWorkspace 内部只在
         // `workspaceFolder` 非空时 saveSessionNow()，而这里恒空 → 不存就丢。
         // 槽的选择取决于 __harnessWindow，所以必须在切标记**之前**存。
         try { saveSessionNow(); } catch (e) { /* 快照失败不拦切换 */ }
         window.__harnessWindow = false;
-        lastFocusedRoot = '';
-        viewRootOrphan = false;
+        viewRootMod.lastFocusedRoot = '';
+        viewRootMod.viewRootOrphan = false;
         // 记住形态：下次启动恢复成单工作区
         settings.windowMode = 'single';
         persistSettingsLight();
@@ -5439,8 +5257,8 @@ async function switchWindowMode(multi) {
     // 同上：弹框期间仍是多工作区，布局先存进 harness 槽再切。
     try { saveSessionNow(); } catch (e) { /* 快照失败不拦切换 */ }
     window.__harnessWindow = false;
-    lastFocusedRoot = '';
-    viewRootOrphan = false;
+    viewRootMod.lastFocusedRoot = '';
+    viewRootMod.viewRootOrphan = false;
     // 记住形态：下次启动恢复成单工作区
     settings.windowMode = 'single';
     persistSettingsLight();
@@ -7708,7 +7526,7 @@ if (rt) {
         if (!wipeguardCtrl || !payload || !payload.root) return;
         const key = normalizeWsKey(payload.root);
         if (!key) return;
-        if (key !== normalizeWsKey(currentWatchRoot()) && !wipeguardRoots.has(key)) return;
+        if (key !== normalizeWsKey(currentWatchRoot()) && !wipeguardRootsMod.hasRoot(key)) return;
         // watcher 是检测主信号——内核级：AI 工具 / run_command 子进程 / 工具返回后存活的
         // 进程 / 用户的删除全部可见
         wipeguardCtrl.handleWorkspaceEvent(payload);

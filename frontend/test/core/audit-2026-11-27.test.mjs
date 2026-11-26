@@ -88,7 +88,8 @@ test('用户显式操作的失败不许静默', () => {
 });
 
 test('视图跟随必须刷新 Maven 触发判定', () => {
-    const src = read('src/main.js');
+    // applyViewRoot 已拆到 shell/view-root.js（main.js 超线治理）
+    const src = read('src/shell/view-root.js');
     const start = src.indexOf('function applyViewRoot(root, opts) {');
     assert.ok(start > 0, '找不到 applyViewRoot');
     const body = src.slice(start, start + 4000);
@@ -106,4 +107,21 @@ test('Git 图谱加载必须校验目录未变（切工作区竞态）', () => {
         assert.match(body, /if \(dir !== gitDir\(\)\) return;/,
             fn + ' 在 await 之后必须校验目录未变：切工作区时旧仓响应会覆盖新仓数据');
     }
+});
+
+test('AI 面板传给通知模块的 ctx 必须自备符号（裸简写会构造期崩）', () => {
+    // 2026-11-27 实测：createAIAgentNotices 的 ctx 里写了 `logFrontend,` 简写，但 ai-panel.js
+    // 作用域内从来没有这个名字 → 面板构造时抛 ReferenceError，玩家看到的是「AI 面板打不开」，
+    // 运行日志里只有一行「未捕获异常：ReferenceError: logFrontend is not defined」。
+    // 单测/类型检查都看不见：它们不构造面板，也不会为自由变量报错。
+    const panel = read('src/ai/ai-panel.js');
+    assert.match(panel, /const logFrontend = typeof opts\.logFrontend === 'function'/,
+        'ai-panel 必须自己持有 logFrontend（宿主注入 or console 兜底），不能裸引用');
+    // 宿主侧接线：缺了它，通知模块的 busy 退队诊断就退化成 console.debug
+    const main = read('src/main.js');
+    const callStart = main.indexOf('createAIPanel({');
+    assert.ok(callStart > 0, '找不到 createAIPanel 调用');
+    const callBody = main.slice(callStart, callStart + 12000);
+    assert.match(callBody, /logFrontend: \(\.\.\.args\) => logFrontend\(\.\.\.args\)/,
+        'main.js 必须给 createAIPanel 注入 logFrontend');
 });
