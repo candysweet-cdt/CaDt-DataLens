@@ -25,8 +25,17 @@ test('syncModeTogglesRunning：按当前会话的流/压缩判运行，同时禁
     const fn = sliceFunction(panel, 'function syncModeTogglesRunning() {');
     assert.match(fn, /const session = currentSession\(\)/);
     assert.match(fn, /isSessionBusy\(session\.id\)/, '口径与底层守卫一致：流或压缩在跑（isSessionBusy）');
+    // 用 disabled 完整禁用（鼠标 / 键盘 / 读屏都拦），灰显外观由 CSS 覆盖
     assert.match(fn, /el\.plan\.disabled = running/);
     assert.match(fn, /el\.worktreeToggle\.disabled = running/);
+});
+
+test('worktree 底层 isRunning 守卫与 UI 锁同口径（含压缩态）', () => {
+    // 压缩期间 streamOf 为空、isSessionBusy 为真；若底层只用 streamOf，键盘可绕过 mode 锁建/弃隔离区。
+    assert.match(panel, /isRunning:\s*\(sessionId\)\s*=>\s*isSessionBusy\(sessionId\)/,
+        'worktree 守卫必须含压缩态，与 syncModeTogglesRunning 同口径');
+    assert.doesNotMatch(panel, /isRunning:\s*\(sessionId\)\s*=>\s*!!streamOf\(sessionId\)/,
+        '不许退回只判 stream 的旧口径');
 });
 
 test('setStreamingUI 在流开始/结束都调用 syncModeTogglesRunning', () => {
@@ -51,7 +60,14 @@ test('底层 AI 路径不受影响：force / allowRunning 两个绕过开关仍�
     assert.match(createForSession, /opts && opts\.allowRunning/, 'AI 工具仍可用 allowRunning 建隔离区');
 });
 
-test('CSS 有 pill 禁用态视觉（含亮色主题覆盖）', () => {
-    assert.match(css, /\.ai-pill:disabled/);
-    assert.match(css, /html\[data-theme="light"\] \.ai-composer \.ai-pill:disabled/);
+test('CSS 的 disabled 态不灰显：保留语义但外观正常', () => {
+    // 用 disabled 完整禁用（鼠标 / 键盘 / 读屏），但 CSS 覆盖掉灰显——用户嫌灰显难看。
+    const rule = css.match(/\.ai-pill:disabled\s*\{[^}]*\}/);
+    assert.ok(rule, '找不到 .ai-pill:disabled 规则');
+    assert.match(rule[0], /cursor:\s*not-allowed/);
+    assert.doesNotMatch(rule[0], /opacity:/, '不许灰显');
+    assert.doesNotMatch(rule[0], /color:\s*var\(--muted\)/, '不许改灰文字色');
+    // 亮色主题同样不灰显（只保留 cursor）
+    const lightRule = css.match(/html\[data-theme="light"\] \.ai-composer \.ai-pill:disabled[^{]*\{[^}]*\}/);
+    assert.ok(lightRule, '亮色主题也要有 disabled 覆盖');
 });

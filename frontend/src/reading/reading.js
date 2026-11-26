@@ -7,6 +7,7 @@ import {
     normalizeBookKey, flattenTreePreorder,
 } from './reading-model.js';
 import {createContextMenu} from '../shell/contextmenu.js';
+import {fsPathContains} from '../core/path-key.js';
 import {createReadingState} from './reading-state.js';
 import {createReadingRender} from './reading-render.js';
 import {createReadingSearch} from './reading-search.js';
@@ -132,10 +133,13 @@ export function createReadingMode(deps) {
         // 相对路径按当前文件目录解析到书根内
         let p = src.replace(/\\/g, '/').split('?')[0].split('#')[0];
         if (/^[A-Za-z]:/.test(p) || p.startsWith('/')) {
-            // 绝对路径：仅当位于书根内时可用（后端校验）
+            // 绝对路径：仅当位于书根内时可用（后端校验）。
+            // 用 fsPathContains 而不是 startsWith(root)：后者漏了分隔符边界，
+            // 书根是 D:/a/b 时，D:/a/bc/x.png 会被误判为「在根内」（core/path-key.js 注释里的原始 bug 类型）。
             const rootSlash = book && book.root ? String(book.root).replace(/\\/g, '/') : '';
-            if (rootSlash && p.toLowerCase().startsWith(rootSlash.toLowerCase())) {
-                p = p.slice(rootSlash.length);
+            if (rootSlash && fsPathContains(rootSlash, p)) {
+                // 切片要用归一化 key 的长度，保持与 legacyPathKey 同口径（大小写、尾斜杠）
+                p = p.slice(rootSlash.replace(/\/+$/, '').length) || '/';
             } else {
                 return '';
             }

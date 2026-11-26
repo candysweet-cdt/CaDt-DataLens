@@ -246,7 +246,7 @@ function applyToGrid(keepScroll) {
     const displayRows = serverRows.map((r) => {
         const key = rowKeyOf(meta, r, columns);
         const u = updates.get(key);
-        if (!u || !u.cells.size) return r;
+        if (!u || !u.cells || !u.cells.size) return r;
         const row = r.slice();
         for (const [col, c] of u.cells) {
             const ci = columns.indexOf(col);
@@ -832,7 +832,7 @@ function startCellEdit(rowIdx, colIdx, cellEl) {
             const newValue = value;
             if ((old == null && newValue === '') || old === newValue) {
                 const u = updates.get(key);
-                if (u) {
+                if (u && u.cells) {
                     u.cells.delete(col);
                     if (!u.cells.size) updates.delete(key);
                 }

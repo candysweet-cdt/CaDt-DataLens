@@ -376,7 +376,12 @@ function openBrowserTab(url, profileKey, opts) {
         }
         // 快捷便签定位点：CLI --memo 启动直达（工作区已恢复，memoApi 自己处理作用域切换）
         if (startupMemoLocator && memoMod.memoApi && memoMod.memoApi.jumpToLocator) {
-            try { await memoMod.memoApi.jumpToLocator(startupMemoLocator); } catch (e) {}
+            try {
+                await memoMod.memoApi.jumpToLocator(startupMemoLocator);
+            } catch (e) {
+                // 用户显式传了 --memo，失败必须留痕（静默失败会让人以为参数没生效）
+                console.warn('[startup] --memo 定位失败', e);
+            }
         }
     }
     try {
@@ -384,7 +389,10 @@ function openBrowserTab(url, profileKey, opts) {
             const pane = await deps.backend.ConsumeStartupSettings();
             if (pane) deps.openSettings(String(pane));
         }
-    } catch (e) {}
+    } catch (e) {
+        // 同上：--open-settings=<pane> 是用户显式指定的启动参数
+        console.warn('[startup] --open-settings 处理失败', e);
+    }
 })();
 
 

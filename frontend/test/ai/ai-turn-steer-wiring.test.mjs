@@ -221,8 +221,11 @@ test('steer 不进轮次口径：lastUserIndex / 回合边界 / 统计', () => {
     assert.match(lastUser, /if \(isTurnBoundaryMessage\(session\.messages\[i\]\)\) return i;/);
     const boundary = sliceBetween(store, 'export function isTurnBoundaryMessage(message) {', '// 轮次起点：最后一条边界消息的时间');
     assert.match(boundary, /if \(message\.steer\) return false;/);
-    // 统计口径也走同一判据（steer 在 isTurnBoundaryMessage 里排除，这里不能再各写一份）
-    assert.match(usage, /if \(isTurnBoundaryMessage\(message\)\) rounds\+\+;/);
+    // 统计口径也走同一判据（steer 在 isTurnBoundaryMessage 里排除，这里不能再各写一份）。
+    // 逐条累加已抽到 store.accumulateUsage，sessionUsageTotals 与归档累加器共用它。
+    assert.match(store, /export function accumulateUsage\(acc, message\)/);
+    assert.match(store, /if \(isTurnBoundaryMessage\(message\)\) acc\.rounds \+= 1;/);
+    assert.match(usage, /accumulateUsage\(acc, message\)/, '统计行走共享累加核');
 });
 
 test('插话可见性：结构面板列出插话（同轮号 + 标记），回合折叠不藏用户插话', () => {

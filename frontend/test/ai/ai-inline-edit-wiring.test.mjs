@@ -161,6 +161,25 @@ test('编辑区：占满整行并随内容自动增高', () => {
     assert.match(grow, /Math\.min\(520/, '上限与 CSS 的 max-height 同口径');
 });
 
+test('用户气泡：文本类附件渲染成卡片，且隐藏纯附件占位文本', () => {
+    const cards = sliceFunction(panel, 'function appendUserAttachmentCards(bubble, message) {');
+    assert.match(cards, /normalizeMessageAttachments\(message && message\.attachments\)/, '读快照结构');
+    assert.match(cards, /ai-user-attach-card/, '渲染卡片节点');
+    assert.match(cards, /createFileIcon\(name/, '用文件图标');
+    assert.match(cards, /文本 ' \+ chars \+ ' 字符/, '按字符数显示，不冒充文件大小');
+    assert.match(cards, /item\.kind === 'reference'/, '引用类只显示类型，不显示 0 B');
+    // 用户渲染分支必须调用卡片 helper
+    const render = sliceFunction(panel, 'function renderMessage(message, index, session, parent, options) {');
+    assert.match(render, /appendUserAttachmentCards\(bubble, message\)/);
+    // 占位文本只在有附件卡片时隐藏（无附件时照常显示）
+    assert.match(render, /isAttachPlaceholder/);
+    assert.match(render, /AI_ATTACH_PLACEHOLDER/);
+    assert.match(panel, /const AI_ATTACH_PLACEHOLDER = '（已附加引用\/文件，见 <attachments>）'/, '常量与发送端一致');
+    // CSS 有卡片样式
+    const style = read('../../src/style.css');
+    assert.match(style, /\.ai-user-attach-card \{/);
+});
+
 test('编辑区还原：媒体来自 images/videos、引用来自 content 前缀、文本类来自快照', () => {
     const load = sliceFunction(panel, 'function inlineAttachmentsOf(message) {');
     assert.match(load, /attachmentsFromImages\(message\.images\)\.concat\(attachmentsFromVideos\(message\.videos\)\)/);

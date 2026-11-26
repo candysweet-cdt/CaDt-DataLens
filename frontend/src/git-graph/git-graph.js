@@ -645,8 +645,14 @@ export function createGitGraph(ctx) {
         const dir = gitDir();
         if (!dir) return;
         try {
-            state.refs = await ctx.backend.GitGraphRefs(dir);
+            const refs = await ctx.backend.GitGraphRefs(dir);
+            // 竞态守卫：await 期间可能已切到别的工作区。旧仓的响应写回去会让分支列表
+            // 与「当前根」不一致（界面显示 A 仓分支，工具根已是 B）。同文件 loadCommitDetail
+            // 有同款守卫（比较 selectedSha），这里对齐。
+            if (dir !== gitDir()) return;
+            state.refs = refs;
         } catch (e) {
+            if (dir !== gitDir()) return;
             state.refs = null;
         }
         renderRefTree();
@@ -665,6 +671,9 @@ export function createGitGraph(ctx) {
         hideHint();
         try {
             const page = await ctx.backend.GitGraphCommits(dir, ref || '', DEFAULT_LIMIT, skip);
+            // 竞态守卫：await 期间切了工作区就丢弃这次结果——否则旧仓的提交会写进
+            // 新仓的列表（`state.loadedDir` 也会被旧值覆盖，下次判断"目录没变"就错了）。
+            if (dir !== gitDir()) return;
             // 失败判定要跟 Go 侧对齐：available 在跑 git log 之前就置 true（graph.go:79），
             // 坏 ref / 拉取失败只写 reason，所以「有 reason 且零提交」也按失败提示，别当成功收尾。
             if (graphPageFailed(page)) {

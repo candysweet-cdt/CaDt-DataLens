@@ -3564,9 +3564,13 @@ function renderWorkspaceCrumbs() {
     const orphan = !!isMultiWorkspace()
         && (focused === null ? viewRootOrphan : !focused);
     els.wsProject.classList.toggle('is-orphan', orphan);
-    els.wsProject.dataset.tip2 = orphan
+    // 提示必须写进 **data-tip**：core/tooltip.js 只读这个属性（它没有 tip2 消费者）。
+    // 我一度写成 dataset.tip2 —— 提示从来没显示过，等于这个功能没做（且当时还顺手删掉了
+    // index.html 里原有的 data-tip，把原来的「工作区」提示也弄丢了）。
+    // 非 orphan 时恢复默认文案，否则切回普通会话后仍挂着旧说明。
+    els.wsProject.dataset.tip = orphan
         ? '当前会话没有工作区（会话沙盒 / 临时会话）；文件树保留上次浏览的目录，AI 的工作范围按会话自身解析'
-        : '';
+        : '工作区';
     let branch = '';
     try { branch = (gitStateCache.available && gitStateCache.branch) || ''; } catch (e) {}
     els.wsBranch.classList.toggle('hidden', !branch);
@@ -3638,7 +3642,12 @@ function syncWindowRegRegistration(dir) {
 async function handleReuseSessionRequest(req) {
     const wantKey = sessionPathKey(req && req.workspace);
     if (!req || !req.sessionId || !wantKey) return 'mismatch';
-    if (wantKey !== sessionPathKey(workspaceFolder)) return 'mismatch';
+    // 多工作区窗口不按「窗口工作区」筛：它按设计**不绑定**任何目录（workspaceFolder 恒空），
+    // 硬比就永远 mismatch——跨窗口复用会话请求投过来必然被拒，投递方只能退化成另开新窗口，
+    // 多工作区窗口等于永远接不了这类请求。
+    // 这里改成「先接着试」：真不持有该会话时，下面 bridgeSwitchSession 的返回值校验会
+    // 判 mismatch，让投递方照常兜底。单工作区行为不变。
+    if (!isMultiWorkspace() && wantKey !== sessionPathKey(workspaceFolder)) return 'mismatch';
     if (!aiPanel || typeof aiPanel.bridgeSwitchSession !== 'function') return 'mismatch';
     // 面板收着时先强制展开：只切会话不开面板的话，用户只看到窗口前置、画面无任何变化
     //（与 focusAISession 同做法；open(true) = 强制打开，无参 open() 是 toggle 语义会关面板）
@@ -4077,6 +4086,13 @@ function applyViewRoot(root, opts) {
         // 快捷便签：作用域根跟着换，丢弃旧仓库的缓存并重载打开中的「工作区」页签。
         try {
             if (typeof memoWorkspaceChanged === 'function') memoWorkspaceChanged();
+        } catch (e) { /* 接线尚未完成 */ }
+        // Maven 触发判定 / 依赖树缓存都是「与具体项目绑定」的（maven-panel 的 key = 当前根）。
+        // 单工作区的 switchRootLight/openFolderWorkspace 都调了 syncTrigger，这条视图跟随路径
+        // 漏了：切到另一个仓库后 Maven 图标仍是上一个仓库的判定结果，点开还按旧 cache 命中。
+        // 与 memoWorkspaceChanged 并列——都是「根变了要跟着走的轻活」（同步、无 IO 扫描）。
+        try {
+            if (mavenUi) mavenUi.syncTrigger();
         } catch (e) { /* 接线尚未完成 */ }
         // 不调 refreshSessionBadge：它会重绘会话列表、可能再触发会话切换回调 → 递归。
     } finally {

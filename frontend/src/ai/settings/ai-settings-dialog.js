@@ -120,6 +120,11 @@ export function createAISettingsDialog(ctx) {
     const setAIChatFont = ctx.setAIChatFont;
     const applyPanelSettings = ctx.applyPanelSettings;
     const createSessionData = ctx.createSessionData;
+    // 清空会话后留下的那条兜底会话要用统一入口补根（多工作区下裸 createSessionData 会
+    // 让它会落到「未关联工作区」，用户在聚焦仓库的分组里看不到它）。
+    const makeSessionWithRoot = typeof ctx.makeSessionWithRoot === 'function'
+        ? ctx.makeSessionWithRoot
+        : createSessionData;
     const sessionStore = ctx.sessionStore;
     const sessionUseDisk = ctx.sessionUseDisk;
     // 排队消息的所有权在 ai-message-queue.js（阶段 A 迁移）：这里只要「清空」动作
@@ -1351,7 +1356,7 @@ export function createAISettingsDialog(ctx) {
                 return;
             }
             askConfirm('清空全部 AI 会话（含消息、任务清单与变更记录）？', () => {
-                setSessions([createSessionData()]);
+                setSessions([makeSessionWithRoot()]);
                 permMod.commandApprovalRules.clear();
                 clearMessageQueue();
                 getConfig().activeSessionId = getSessions()[0].id;

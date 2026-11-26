@@ -91,6 +91,29 @@ test('fsPathContains / relativeToFsRoot 行为正确（含边界）', async () =
     assert.equal(relativeToFsRoot('D:/Repo', 'D:/Other/x'), '');
 });
 
+test('legacyPathKey 与历史三段式逐字等价（含边界值）', async () => {
+    // 收编 17 处的前提就是「零行为变化」。这里用历史实现直接对拍：
+    // 一旦有人给 toPosixPath 加 trim / 加解析点段，这个测试立刻红。
+    const {legacyPathKey} = await import('../../src/core/path-key.js');
+    const historical = (v) => String(v == null ? '' : v)
+        .replace(/\\/g, '/')
+        .replace(/\/+$/, '')
+        .toLowerCase();
+    const samples = [
+        '', ' ', '  ',      // 空与空白：**不 trim**（历史实现不 trim，加了就不是逐字等价）
+        'D:\\A\\B', 'd:/a/b/', 'D:/a/b///', '  D:\\A\\B  ',
+        '/', '//', 'C:', '//server/share', '\\\\server\\share\\',
+        '.', '..', 'D:/a/../b', 'D:/a/./b',   // 不解析点段（那是 normalizePath 的职责）
+        'file://D:/x', 'mock://x/y',
+        'A\\B\\C\\', null, undefined, 0, false, '路径/带中文',
+    ];
+    for (const s of samples) {
+        assert.equal(legacyPathKey(s), historical(s),
+            'legacyPathKey(' + JSON.stringify(s) + ') 与历史三段式不等价——'
+            + '收编 17 处的前提是零行为变化，语义漂移会让那些替换变成静默 bug');
+    }
+});
+
 test('同形不同义：这些实现必须留在原地（不能误合并）', () => {
     // 每条都要有「为什么不合并」的依据，否则下一个人会把它们收编掉，然后行为漂移。
     const mustStay = [

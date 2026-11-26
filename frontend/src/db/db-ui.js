@@ -95,8 +95,10 @@ async function globalConnections() {
 // ---------- 添加入口 ----------
 
 // samePathKey 路径比较键：Windows 下大小写不敏感、反斜杠归一。
+// trim 是本函数**自己的**要求（用户填的路径可能带首尾空格），不属于 legacyPathKey 的契约
+// ——统一实现刻意不 trim，见 core/path-key.js 的注释。
 function samePathKey(path) {
-    return legacyPathKey(path || '')
+    return legacyPathKey(String(path || '').trim());
 }
 
 // findSqliteEntry 当前工作区清单里指向同一库文件的 sqlite 条目（拖放去重用）。

@@ -32,13 +32,17 @@
 //     JSONPath 段转义（`['a\\b']`），与文件系统毫无关系，只是名字像。
 
 /**
- * 反斜杠转正斜杠并去首尾空白。只做这一件事——不做大小写、不去尾斜杠。
- * 「原样保留大小写」的场合（展示、传后端）用这个。
+ * 反斜杠转正斜杠。只做这一件事——不 trim、不改大小写、不去尾斜杠。
+ *
+ * 为什么不 trim：这个名字只承诺「转斜杠」。加 trim 会让 legacyPathKey 不再等于
+ * 历史三段式（那三段里没有 trim），机械替换就不再是零行为变化——
+ * 而「零行为变化」正是这次收编敢一次性替换 17 处的前提。
+ * 需要 trim 的调用方自己 trim（如 db-ui 的 samePathKey）。
  * @param {*} value
  * @returns {string}
  */
 export function toPosixPath(value) {
-    return String(value == null ? '' : value).trim().replace(/\\/g, '/');
+    return String(value == null ? '' : value).replace(/\\/g, '/');
 }
 
 /**
@@ -54,8 +58,10 @@ export function stripTrailingSlashes(value) {
 /**
  * 历史三段式的精确等价：转斜杠 + 去尾斜杠 + 转小写。
  *
- * **不解析** `.` 与 `..`（与现存 19 处逐字一致）。要解析点段请用
- * ai/session/ai-session-scope.js 的 normalizePath——那个还要保留 scheme/盘符。
+ * **不解析** `.` 与 `..`（与现存 17 处逐字一致），**也不 trim**——
+ * 这两点都是「精确等价」的一部分：旧代码没有它们，收编后也不该有。
+ * 要解析点段请用 ai/session/ai-session-scope.js 的 normalizePath（那还要保留 scheme/盘符）；
+ * 要 trim 的调用方自己 trim（如 db/db-ui.js 的 samePathKey 原本就带 trim）。
  * @param {*} value
  * @returns {string}
  */
