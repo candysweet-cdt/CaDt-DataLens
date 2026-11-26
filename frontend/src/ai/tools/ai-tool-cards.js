@@ -77,6 +77,37 @@ export function liveToolStateText(parts) {
 const AI_SPIN_MS = 900; // 与 style.css .ai-tool-spinner::before 的 0.9s 保持一致
 const cardSpinStart = new WeakMap();
 const liveSpinStart = new WeakMap();
+// 可视化 loading 的相位（转环 0.9s / 扫光 1.9s / 呼吸 1.7s，与 style.css 三条动画周期一致）。
+// 流式每帧 md.innerHTML 重建 + park/restore 重新插入会重置 CSS 动画对象（currentTime 归零），
+// 给每个 pending widget 补负 animation-delay 继承全局相位，转环才不会「转一点又被弹回」。
+const WIDGET_SPIN_MS = 900;
+const WIDGET_SWEEP_MS = 1900;
+const WIDGET_BREATHE_MS = 1700;
+const widgetPhaseStart = new WeakMap();
+function syncWidgetLoadingPhase(root, message) {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    const pending = root.querySelectorAll('.ai-widget:not([data-widget-ready])');
+    if (!pending.length) return;
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    let start = widgetPhaseStart.get(message);
+    if (start === undefined) {
+        start = now;
+        widgetPhaseStart.set(message, start);
+    }
+    const phase = (period) => {
+        const p = ((now - start) % period + period) % period;
+        // floor 避免 round 把 899.7ms 抬成 900ms（≡0）导致相位跳回起点（审查轻微 1）。
+        return p >= 1 ? '-' + Math.floor(p) + 'ms' : '0ms';
+    };
+    const spin = phase(WIDGET_SPIN_MS);
+    const sweep = phase(WIDGET_SWEEP_MS);
+    const breathe = phase(WIDGET_BREATHE_MS);
+    for (const node of pending) {
+        node.style.setProperty('--ai-widget-spin-phase', spin);
+        node.style.setProperty('--ai-widget-sweep-phase', sweep);
+        node.style.setProperty('--ai-widget-breathe-phase', breathe);
+    }
+}
 function makeToolSpinner(reg, key) {
     const el = document.createElement('span');
     el.className = 'ai-tool-spinner';
@@ -1726,6 +1757,9 @@ export function createAIToolCards(ctx) {
                     resolveAIImages(md);
                     if (enhanceAIFileRefs) enhanceAIFileRefs(md);
                     if (streaming) restoreParkedWidgets(parked, md);
+                    // 重建/重新插入会重置 widget loading 的 CSS 动画对象，按消息起点补负 delay 相位，
+                    // 让扫光 / 转环 / 呼吸接着走而不是每帧回弹（用户 2026-11-27 反馈「转一点又被重置」）。
+                    if (streaming) syncWidgetLoadingPhase(md, message);
                     // svg / html / mermaid / echarts 围栏 → 可视化卡片；流式期间只占位，整轮结束后再挂载
                     enhanceWidgets(md, {
                         streaming: !!streaming,

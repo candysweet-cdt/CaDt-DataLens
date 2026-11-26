@@ -48,11 +48,30 @@ export function formatPasteTime(date) {
 // 摘要默认最大字符数（纯文本胶囊保持紧凑，不撑宽输入框）。
 export const PASTE_SUMMARY_MAX_LEN = 12;
 
+// 结构化内容的友好标签：粘贴 SVG / HTML / JSON 时首行常是 <svg t="…"> 之类的标记，
+// 直接截断当摘要会显示一堆尖括号（用户 2026-11-27 反馈胶囊里出现「<svg t="1795…」很难看）。
+// 命中这些前缀就用短标签代替，既不撑宽胶囊也不暴露原始标记。
+export function friendlyPasteLabel(firstLine) {
+    const s = String(firstLine == null ? '' : firstLine).trim();
+    // SVG 可能在首行带 XML 声明，先判 SVG 内容再判 XML（否则 <?xml 抢先命中）。
+    if (/^<svg[\s>]/i.test(s) || /^<\?xml[^>]*\?>\s*<svg[\s>]/i.test(s)) return 'SVG 图片';
+    if (/^<\?xml/i.test(s)) return 'XML 文档';
+    if (/^<!doctype\s+html/i.test(s) || /^<html[\s>]/i.test(s)) return 'HTML 页面';
+    if (/^<[a-z][a-z0-9-]*[\s/>]/i.test(s)) return 'HTML 内容';
+    // JSON 分支要闭合校验：以 { 或 [ 开头且以 } 或 ] 收尾，避免把 Markdown 链接 [标题](url)、
+    // 任务列表 [x] ... 误标成 JSON（审查 m2）。
+    if (/^[{[]/.test(s) && /[}\]]\s*$/.test(s)) return 'JSON 数据';
+    return '';
+}
+
 // 摘要：取首个非空行，去掉所有换行/制表符与会冲突的标记字符，截断到 maxLen 字符。
 // 关键：结果恒为单行——换行符一旦进入占位文本就会改变 textarea 行数、令镜像层错位。
+// 结构化内容（SVG/HTML/JSON）优先用友好标签，避免原始标记挤进胶囊（见 friendlyPasteLabel）。
 export function pasteSummary(text, maxLen) {
     const full = String(text == null ? '' : text);
     const firstLine = full.split(/\r\n|\r|\n/).map((s) => s.trim()).find(Boolean) || '';
+    const label = friendlyPasteLabel(firstLine);
+    if (label) return label;
     const cleaned = firstLine.replace(/[【】·#\t]/g, ' ').replace(/\s+/g, ' ').trim();
     const len = Math.max(4, Math.min(40, Number(maxLen) || PASTE_SUMMARY_MAX_LEN));
     const clipped = cleaned.length > len ? cleaned.slice(0, len) + '…' : cleaned;
@@ -143,8 +162,10 @@ export function buildPasteMirrorHtml(text, store) {
         if (r.start > cursor) parts.push(escHtml(value.slice(cursor, r.start)));
         const entry = store.get(r.id);
         const tip = pasteTooltip(r.id, entry);
+        // 右侧 × 快捷删除：绝对定位的小按钮，不占文本宽度（否则镜像与 textarea 错位、原生字透出来）。
         parts.push('<span class="ai-paste-pill" data-paste-id="' + r.id + '" data-tip="' + escHtml(tip) + '">' +
-            escHtml(value.slice(r.start, r.end)) + '</span>');
+            escHtml(value.slice(r.start, r.end)) +
+            '<span class="ai-paste-pill-close" data-paste-close="' + r.id + '" aria-hidden="true">×</span></span>');
         cursor = r.end;
     }
     parts.push(escHtml(value.slice(cursor)));

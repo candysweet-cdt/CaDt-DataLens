@@ -7,7 +7,7 @@ import {
     normalizePasteMode, shouldFoldPaste, makePasteMarker, pasteMarkerRe, pasteMarkerOneRe,
     scanPasteMarkers, markerAtCursor, buildPasteMirrorHtml, expandPasteMarkers,
     countPasteLines, makePasteEntry, pasteFullDocName, pasteTooltip,
-    pasteSummary, formatPasteTime, PASTE_MARKER_ICON,
+    pasteSummary, formatPasteTime, PASTE_MARKER_ICON, friendlyPasteLabel,
     PASTE_INLINE_MAX_CHARS, PASTE_ATTACH_MAX_CHARS, decidePasteAction,
     pasteFileAttachmentText, pasteOverflowPlaceholder,
 } from '../../../src/ai/chat/ai-paste.js';
@@ -46,6 +46,23 @@ test('摘要：取首个非空行、去掉所有换行符（恒单行）、剔�
     assert.equal(pasteSummary(''), '长文本');
     // 默认 12 字。
     assert.equal(pasteSummary('x'.repeat(100)).length, 13); // 12 + 省略号
+});
+
+test('friendlyPasteLabel：结构化内容给友好标签，不把原始标记塞进胶囊', () => {
+    assert.equal(friendlyPasteLabel('<svg t="1795234567890" class="icon" viewBox="0 0 1024 1024">'), 'SVG 图片');
+    assert.equal(friendlyPasteLabel('<?xml version="1.0" encoding="UTF-8"?>'), 'XML 文档');
+    assert.equal(friendlyPasteLabel('<!DOCTYPE html><html><body>x</body></html>'), 'HTML 页面');
+    assert.equal(friendlyPasteLabel('<div class="a">hello</div>'), 'HTML 内容');
+    assert.equal(friendlyPasteLabel('{"name":"test","value":1}'), 'JSON 数据');
+    assert.equal(friendlyPasteLabel('[1,2,3]'), 'JSON 数据');
+    // SVG 首行带 XML 声明时优先识别为 SVG（审查 m2）
+    assert.equal(friendlyPasteLabel('<?xml version="1.0"?><svg viewBox="0 0 24 24">'), 'SVG 图片');
+    // Markdown 链接 / 任务列表不误判为 JSON
+    assert.equal(friendlyPasteLabel('[标题](https://example.com)'), '');
+    assert.equal(friendlyPasteLabel('[x] 待办事项'), '');
+    assert.equal(friendlyPasteLabel('普通文本第一行'), '');
+    // 摘要本身也走友好标签
+    assert.equal(pasteSummary('<svg t="1795" viewBox="0 0 1024 1024">…长内容'), 'SVG 图片');
 });
 
 test('时间格式：HH:mm 补零', () => {
@@ -101,10 +118,12 @@ test('buildPasteMirrorHtml：只渲染 store 里存在的 id，手打同形文�
     const m1 = mark(1);
     const m99 = mark(99);
     const html = buildPasteMirrorHtml('前' + m1 + '中' + m99 + '后', store);
-    assert.equal((html.match(/ai-paste-pill/g) || []).length, 1, '只有 id=1 渲染成胶囊');
+    assert.equal((html.match(/class="ai-paste-pill"/g) || []).length, 1, '只有 id=1 渲染成胶囊');
     assert.match(html, /data-paste-id="1"/);
+    assert.match(html, /class="ai-paste-pill-close" data-paste-close="1"/, '胶囊带 × 快捷删除按钮');
     assert.ok(html.includes(m99), '手打的标记保持纯文本');
     assert.ok(!html.includes('data-paste-id="99"'));
+    assert.ok(!html.includes('data-paste-close="99"'), '手打标记没有删除按钮');
 });
 
 test('buildPasteMirrorHtml：普通文本 HTML 转义，不执行脚本', () => {

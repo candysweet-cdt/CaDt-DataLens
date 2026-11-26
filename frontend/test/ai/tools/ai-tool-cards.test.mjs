@@ -103,6 +103,27 @@ test('spinner 相位接线：CSS 周期与 JS 常量一致，且接受 --ai-spin
     assert.match(rule[0], /animation-delay:\s*var\(--ai-spin-phase/, '负 delay 变量不能丢，否则重建仍会回弹');
 });
 
+test('可视化 loading 相位接线：三条动画周期与 JS 常量一致，接受负 delay 变量', () => {
+    const css = readFileSync(new URL('../../../src/style.css', import.meta.url), 'utf8');
+    const cards = readFileSync(new URL('../../../src/ai/tools/ai-tool-cards.js', import.meta.url), 'utf8');
+    // 三条动画各自的周期（扫光 1.9s / 转环 0.9s / 呼吸 1.7s）与负 delay 变量必须接线
+    const before = css.match(/\.ai-widget:not\(\[data-widget-ready\]\):not\(\.ai-widget-oversize\)::before\s*\{[^}]*\}/);
+    const after = css.match(/\.ai-widget:not\(\[data-widget-ready\]\):not\(\.ai-widget-oversize\)::after\s*\{[^}]*\}/);
+    const base = css.match(/\.ai-widget:not\(\[data-widget-ready\]\):not\(\.ai-widget-oversize\)\s*\{[^}]*\}/);
+    assert.ok(before && after && base, '找不到 widget loading 的三条 CSS 规则');
+    assert.match(before[0], /animation:\s*ai-todo-spin\s+\.9s/, '转环周期须与 WIDGET_SPIN_MS = 900 同步');
+    assert.match(before[0], /animation-delay:\s*var\(--ai-widget-spin-phase/, '转环负 delay 不能丢');
+    assert.match(base[0], /animation:\s*ai-widget-sweep\s+1\.9s/, '扫光周期须与 WIDGET_SWEEP_MS = 1900 同步');
+    assert.match(base[0], /animation-delay:\s*var\(--ai-widget-sweep-phase/);
+    assert.match(after[0], /animation:\s*ai-widget-breathe\s+1\.7s/, '呼吸周期须与 WIDGET_BREATHE_MS = 1700 同步');
+    assert.match(after[0], /animation-delay:\s*var\(--ai-widget-breathe-phase/);
+    // JS 侧常量与每帧调用接线
+    assert.match(cards, /const WIDGET_SPIN_MS = 900/);
+    assert.match(cards, /const WIDGET_SWEEP_MS = 1900/);
+    assert.match(cards, /const WIDGET_BREATHE_MS = 1700/);
+    assert.match(cards, /if \(streaming\) syncWidgetLoadingPhase\(md, message\)/, 'restore 后必须补相位');
+});
+
 test('工具卡折叠动画：refreshToolWrap 在整卡重建时补收缩，且尊重减少动画', () => {
     // 工具卡 run_command / search_text 等 running 展开、done 折叠；状态更新走整卡重建
     // （wrap.innerHTML=''），新节点一出生就折叠，纯 CSS transition 不会触发。试点用 Web Animations

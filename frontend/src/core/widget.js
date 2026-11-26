@@ -507,8 +507,10 @@ export function enhanceWidgets(root, opts = {}) {
 // loading 就永远停在前几帧，看着就是「正在生成可视化…」一直闪。
 //
 // 保活做法：重建前把未挂载占位按文档顺序摘出（innerHTML 覆盖销毁不到），重建后按同序
-// 移植回新槽位——同一个节点对象在单个同步任务里离文档又回来，浏览器到帧边界才结算
-// 动画状态，动画因此连续。已挂载（data-widget-ready）的卡带事件与异步任务，不参与。
+// 移植回新槽位——保住节点对象与源码，避免每帧全新 DOM。注意 remove + insert 仍会重置 CSS
+// 动画对象（currentTime 归零，Chrome 实测），故 loading 相位由 ai-tool-cards.js 的
+// syncWidgetLoadingPhase 用负 animation-delay 补回，转环 / 扫光才看着连续。
+// 已挂载（data-widget-ready）的卡带事件与异步任务，不参与。
 //
 // 为什么按文档顺序、不按 data-widget-key（源码 hash）匹配：流式期间围栏内容每帧增长，
 // hash 每帧都变，按 hash 匹配永远对不上——旧节点被丢弃、新节点每帧重建，等于没保活。

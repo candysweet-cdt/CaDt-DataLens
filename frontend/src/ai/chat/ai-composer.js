@@ -1245,10 +1245,39 @@ export function createAIComposer(ctx) {
         return true;
     }
 
-    // 镜像层胶囊点击（事件委托）：镜像层 span 可点，点开对应虚拟标签页。
+    // 删除单个胶囊标记（× 按钮 / 键盘共用）：按 id 找到 range，整段从 textarea 抹掉并清 store。
+    function removePasteMarker(id) {
+        if (!el.input || !pasteStore.has(id)) return false;
+        const range = scanPasteMarkers(String(el.input.value || '')).find((r) => r.id === id);
+        if (!range) return false;
+        try {
+            el.input.setRangeText('', range.start, range.end, 'start');
+        } catch (err) {
+            el.input.value = el.input.value.slice(0, range.start) + el.input.value.slice(range.end);
+        }
+        pasteStore.delete(id);
+        // dispatchEvent(input) 已触发面板的 input 监听器（内含 refreshPasteMirror），不再重复重绘。
+        el.input.dispatchEvent(new Event('input', {bubbles: true}));
+        el.input.focus();
+        return true;
+    }
+
+    // 镜像层胶囊点击（事件委托）：× 快捷删除；点胶囊本体打开对应虚拟标签页。
     function handlePasteMirrorClick(e) {
-        if (!openPasteDoc || pasteMode() !== 'collapse') return;
-        const target = e.target && e.target.closest ? e.target.closest('.ai-paste-pill') : null;
+        if (pasteMode() !== 'collapse') return;
+        const el0 = e.target;
+        // × 优先：命中关闭按钮就整段删，不打开标签页。
+        if (el0 && el0.closest) {
+            const close = el0.closest('.ai-paste-pill-close');
+            if (close) {
+                e.preventDefault();
+                e.stopPropagation();
+                removePasteMarker(Number(close.getAttribute('data-paste-close')));
+                return;
+            }
+        }
+        if (!openPasteDoc) return;
+        const target = el0 && el0.closest ? el0.closest('.ai-paste-pill') : null;
         if (!target) return;
         const id = Number(target.getAttribute('data-paste-id'));
         if (!pasteStore.has(id)) return;

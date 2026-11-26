@@ -6864,6 +6864,9 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     background-size: 40% 1.5px;
     background-position: -45% 100%;
     animation: ai-widget-sweep 1.9s ease-in-out infinite;
+    /* 流式每帧 md.innerHTML 重建 + park/restore 重新插入会重置 CSS 动画对象（currentTime 归零），
+       负 animation-delay 继承全局相位，扫光才不会回弹（见 ai-tool-cards.js syncWidgetLoadingPhase）。 */
+    animation-delay: var(--ai-widget-sweep-phase, 0ms);
 }
 .ai-widget:not([data-widget-ready]):not(.ai-widget-oversize)::before {
     content: '';
@@ -6875,10 +6878,12 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     border: 1.5px solid color-mix(in srgb, var(--accent) 26%, transparent);
     border-top-color: var(--accent);
     animation: ai-todo-spin .9s linear infinite;
+    animation-delay: var(--ai-widget-spin-phase, 0ms);
 }
 .ai-widget:not([data-widget-ready]):not(.ai-widget-oversize)::after {
     content: '正在生成可视化…';
     animation: ai-widget-breathe 1.7s ease-in-out infinite;
+    animation-delay: var(--ai-widget-breathe-phase, 0ms);
 }
 /* 底部扫光：一条柔和高光从左往右掠过——只表达「在干活」，不用进度条（时长不可知）。 */
 @keyframes ai-widget-sweep {
@@ -7890,7 +7895,7 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
 }
 .ai-plan-file-path:hover { text-decoration: underline; }
 .ai-plan-file-meta { flex: none; color: var(--muted); font-size: 10.5px; }
-.ai-plan-file-note { margin-top: 5px; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+.ai-plan-file-note { flex: 1; min-width: 0; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
 .ai-plan-file-open,
 .ai-plan-card-open {
     flex: none;
@@ -7898,6 +7903,15 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     padding: 3px 9px;
     font-size: 11px;
 }
+/* 「查看完整计划」放该行最右且更显眼（用户 2026-11-27 反馈）：note 吃满剩余宽度把按钮顶到行尾，
+   accent 描边 + 加粗让它从灰色说明文字里跳出来，又不和底部主按钮「执行计划」的实心蓝撞色。 */
+.ai-plan-file-open {
+    margin-left: auto;
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+    font-weight: 600;
+}
+.ai-plan-file-open:hover { background: var(--accent-weak); }
 /* 消息区的计划卡：标题 + 文件 + 在标签页打开（计划正文不在这里重复） */
 .ai-plan-card {
     border: 1px solid var(--border);
@@ -8075,14 +8089,18 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
 /* 彩色胶囊：占据的字符与标记文本严格一致（不改排版）；不透明底盖住 textarea 原生文字。
    柔和玻璃质感：低饱和底色 + 细描边，避免大面积实色渐变在深色输入框里过于扎眼。 */
 .ai-paste-pill {
+    position: relative;
     pointer-events: auto;
     cursor: pointer;
     border-radius: 6px;
-    padding: 1px 4px;
+    /* 关键：镜像文字必须与 textarea 原生文字逐像素等宽等高，否则底下的原生字和光标会从胶囊边缘透出来。
+       font-weight 继承镜像层（JS 已按 textarea 计算样式同步），不能自行加粗；
+       padding 只给横向（配合负 margin 抵消宽度），纵向不设——否则镜像文字比原生文字低一行、上下透字。 */
+    padding: 0 4px;
     margin: 0 -4px;
+    font-weight: inherit;
     background: color-mix(in srgb, var(--accent) 20%, var(--panel));
     color: var(--accent);
-    font-weight: 600;
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 38%, transparent);
     /* 不设 nowrap：占位文本较长，需随镜像层的 pre-wrap / overflow-wrap:anywhere 一起折行，
        否则 textarea 折行而胶囊不折 → 错位（群聊 .gc-pill 同款约束）。 */
@@ -8092,6 +8110,29 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     background: color-mix(in srgb, var(--accent) 30%, var(--panel));
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 58%, transparent);
 }
+/* 胶囊最右侧的 × 快捷删除：绝对定位不占文本宽度（占宽会让原生字透出来 / 镜像错位），
+   盖住结尾的 】 一小段。默认半透明、hover 胶囊或自身时显现。 */
+.ai-paste-pill-close {
+    position: absolute;
+    right: 1px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 13px;
+    height: 13px;
+    display: grid;
+    place-items: center;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--accent) 30%, var(--panel));
+    color: var(--accent);
+    font-size: 12px;
+    line-height: 1;
+    /* 默认低透明常显（让用户看得到有个 × 可删），hover 时提亮 */
+    opacity: .5;
+    transition: opacity .12s ease, background .12s ease;
+}
+.ai-paste-pill:hover .ai-paste-pill-close,
+.ai-paste-pill-close:hover { opacity: 1; }
+.ai-paste-pill-close:hover { background: color-mix(in srgb, var(--red) 55%, var(--panel)); color: var(--red); }
 .ai-composer-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .ai-hint {
     min-width: 0;
@@ -8608,6 +8649,37 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+/* 用户消息里的文本类附件卡片（文件 / 引用 / 技能）：图标 + 文件名 + 类型·大小。
+   白色卡片（亮色主题下用 panel 底）衬在蓝色气泡里，像聊天应用里的文件附件。 */
+.ai-user-attach-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-bottom: 6px;
+}
+.ai-user-attach-card {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    max-width: 260px;
+    padding: 6px 9px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg);
+}
+.ai-user-attach-icon { flex: none; display: grid; place-items: center; }
+.ai-user-attach-icon svg { width: 20px; height: 20px; display: block; }
+.ai-user-attach-meta { min-width: 0; }
+.ai-user-attach-name {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ai-user-attach-sub { color: var(--muted); font-size: 10.5px; line-height: 1.4; }
 .ai-user-image {
     width: 76px;
     height: 76px;
@@ -9965,13 +10037,11 @@ body.console-only #app > :not(#dialog-mask) { display: none !important; }
     border-color: color-mix(in srgb, var(--red) 55%, var(--border));
 }
 #ai-permission.ai-pill.danger .ai-chip-chev { color: var(--red); }
-/* 会话运行中禁用「计划 / 隔离」入口（纯 UI 防误触，见 ai-panel.js syncModeTogglesRunning） */
-.ai-pill:disabled,
-.ai-pill:disabled:hover {
-    opacity: .4;
+/* 会话运行中禁用「计划 / 隔离」入口（见 ai-panel.js syncModeTogglesRunning）。
+   保留 disabled 语义（鼠标 / 键盘 / 读屏都拦），但覆盖灰显外观——用户嫌灰显和「生成中」
+   挤在一起难看。只改 cursor，颜色 / 边框 / 透明度维持正常态，看起来仍是可用的 pill。 */
+.ai-pill:disabled {
     cursor: not-allowed;
-    color: var(--muted);
-    border-color: var(--border);
 }
 .ai-model-pill { margin-left: auto; }
 
@@ -15960,13 +16030,13 @@ html[data-theme="light"] .ai-composer .ai-pill.active {
 html[data-theme="light"] .ai-composer .ai-pill.active:hover {
     background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
+/* 禁用态不灰显、也不吃 hover 反馈（保留 disabled 语义，见暗色主题说明） */
 html[data-theme="light"] .ai-composer .ai-pill:disabled,
 html[data-theme="light"] .ai-composer .ai-pill:disabled:hover {
-    opacity: .4;
-    cursor: not-allowed;
     color: var(--muted);
     background: transparent;
     border-color: transparent;
+    cursor: not-allowed;
 }
 html[data-theme="light"] #ai-permission.ai-pill.danger {
     color: var(--red);
