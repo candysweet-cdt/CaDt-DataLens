@@ -5,6 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, normalizePath, pickWorkspaceSession, workspaceKey, decideSessionOpen} from '../../../src/ai/session/ai-session-scope.js';
+import {createSessionBusyProbe, canStartTurn, canSendMessage, isUnboundSession} from '../../../src/ai/session/ai-session-scope.js';
 
 const MINE = 'd:/work/other'; // 本窗口打开的工作区
 const OTHER = 'd:/code/cadt-datalens'; // 上一个窗口（当前会话属于这里）
@@ -180,4 +181,86 @@ test('decideSessionOpen：无复用 → window（软切换），仅当后端有�
     assert.equal(decideSessionOpen({dir: 'D:/a', currentKey: 'd:/b', targetKey: 'd:/a', canNewWindow: true}).action, 'window');
     assert.equal(decideSessionOpen({dir: 'D:/a', currentKey: 'd:/b', targetKey: 'd:/a'}).action, 'invalid',
         '两个后端都没有时不假报 window');
+});
+
+// ===== 会话忙判定与「能不能起一轮」的统一构件 =====
+// 改造前 20+ 处手写 `streamOf(id) || compactOf(id)`，「能不能发」这门禁则有四套各缺一截的
+// 版本（UI 按钮不判忙、起轮内核完整、原地编辑保存漏 _loadError、队列冲刷漏 _loadError）。
+// 这组用例锁住构件的语义：哪些维度归它判、哪些**刻意不判**。
+
+test('isSessionBusy：流 / 压缩 / streams.has 任一命中即忙', () => {
+    const streams = new Map([['s-stream', {sessionId: 's-stream'}]]);
+    const isBusy = createSessionBusyProbe({
+        streams,
+        compactOf: (id) => (id === 's-compact' ? {sessionId: 's-compact'} : null),
+    });
+    assert.equal(isBusy('s-stream'), true, '注册表里有流就算忙');
+    assert.equal(isBusy('s-compact'), true, '正在压缩也算忙');
+    assert.equal(isBusy('s-idle'), false);
+    // 空 id 不该命中任何键（历史上 streamOf('') 曾被当成「当前会话」）
+    assert.equal(isBusy(''), false);
+    assert.equal(isBusy(null), false);
+    assert.equal(isBusy(undefined), false);
+});
+
+test('isSessionBusy：只给 streamOf 时同样生效；什么依赖都没给时恒 false（测试桩）', () => {
+    const withStreamOf = createSessionBusyProbe({streamOf: (id) => (id === 's1' ? {sessionId: 's1'} : null)});
+    assert.equal(withStreamOf('s1'), true);
+    assert.equal(withStreamOf('s2'), false);
+    assert.equal(createSessionBusyProbe(null)('s1'), false, '缺省依赖时不能抛错');
+});
+
+// compactStarting 是**全局**的「压缩正在准备」窗口（startCompact 拿租约 / 按 stat 重读期间），
+// 不属于任何单个会话。默认不判：否则一个会话开始压缩会拦住所有会话的发送门禁。
+// 起轮内核与它同源的守卫显式传 includeCompactStarting。
+test('isSessionBusy：compactStarting 是全局标志，只有显式要求才算忙', () => {
+    const isBusy = createSessionBusyProbe({compactStartingOf: () => true});
+    assert.equal(isBusy('s-any'), false, '默认不把全局的压缩准备算到某个会话头上');
+    assert.equal(isBusy('s-any', {includeCompactStarting: true}), true);
+    assert.equal(createSessionBusyProbe({compactStartingOf: () => false})('s-any', {includeCompactStarting: true}), false);
+    // 装配方没有 getter 时也支持直接给值
+    assert.equal(createSessionBusyProbe({compactStarting: true})('s', {includeCompactStarting: true}), true);
+});
+
+test('canStartTurn：内核的五个维度齐全，_stub 刻意不算拦截理由', () => {
+    const live = {id: 's1'};
+    assert.deepEqual(canStartTurn(live, {}), {ok: true, reason: ''});
+    assert.equal(canStartTurn(null).reason, 'no_session');
+    assert.equal(canStartTurn({}).reason, 'no_session');
+    assert.equal(canStartTurn(live, {sessionsPending: true}).reason, 'sessions_pending');
+    // 正文读取失败的会话写盘被写保护：这一轮只留在内存、重启即丢 —— 必须拒
+    assert.equal(canStartTurn({id: 's1', _loadError: 'session-too-large'}).reason, 'load_failed');
+    assert.equal(canStartTurn(live, {busy: true}).reason, 'busy');
+    assert.equal(canStartTurn({id: 's1', archivedAt: 1}).reason, 'archived');
+    // 懒加载占位不是拒绝理由：正文没读上来不等于发不出去，起轮内核会先 ensureSessionLoaded。
+    // 在这里拦会把「后台通知 / 队列投递到没点开过的会话」这条支持路径一起堵死。
+    assert.deepEqual(canStartTurn({id: 's1', _stub: true}, {}), {ok: true, reason: ''});
+});
+
+test('canStartTurn 的 reason 优先级与起轮内核的历史顺序一致', () => {
+    // 归档 + 忙：内核先判忙再判归档
+    assert.equal(canStartTurn({id: 's1', archivedAt: 1}, {busy: true}).reason, 'busy');
+    // 读取失败优先于忙：读取失败的会话连新一轮都不该起
+    assert.equal(canStartTurn({id: 's1', _loadError: 'x'}, {busy: true}).reason, 'load_failed');
+    // 会话列表还没读回来时任何会话都不能发（落到占位会话上会丢消息）
+    assert.equal(canStartTurn({id: 's1', _loadError: 'x'}, {sessionsPending: true}).reason, 'sessions_pending');
+});
+
+test('canSendMessage：忙不禁用（生成中点击是排队 / 插话 / 抢占三手势）', () => {
+    assert.deepEqual(canSendMessage({id: 's1'}, {busy: true}), {ok: true, reason: ''},
+        '生成中发送按钮仍可用：点击走排队，禁用了三手势就没了');
+    assert.equal(canSendMessage({id: 's1', archivedAt: 1}).reason, 'archived');
+    assert.equal(canSendMessage({id: 's1', _loadError: 'x'}).reason, 'load_failed');
+    assert.equal(canSendMessage(null).reason, 'no_session');
+    assert.equal(canSendMessage({id: 's1'}, {sessionsPending: true}).reason, 'sessions_pending');
+});
+
+test('isUnboundSession：临时会话与会话沙盒都算「不绑定工作区」，脏值不算', () => {
+    assert.equal(isUnboundSession({temp: true}), true);
+    assert.equal(isUnboundSession({noWorkspace: true}), true);
+    assert.equal(isUnboundSession({}), false);
+    assert.equal(isUnboundSession(null), false);
+    // 只认严格 true：老会话没有这些字段，缺省即普通会话
+    assert.equal(isUnboundSession({temp: 'true'}), false);
+    assert.equal(isUnboundSession({noWorkspace: 1}), false);
 });

@@ -24,7 +24,7 @@ function sliceFunction(source, marker) {
 test('syncModeTogglesRunning：按当前会话的流/压缩判运行，同时禁用两个 pill', () => {
     const fn = sliceFunction(panel, 'function syncModeTogglesRunning() {');
     assert.match(fn, /const session = currentSession\(\)/);
-    assert.match(fn, /streamOf\(session\.id\) \|\| compactOf\(session\.id\)/, '口径与底层守卫一致：流或压缩在跑');
+    assert.match(fn, /isSessionBusy\(session\.id\)/, '口径与底层守卫一致：流或压缩在跑（isSessionBusy）');
     assert.match(fn, /el\.plan\.disabled = running/);
     assert.match(fn, /el\.worktreeToggle\.disabled = running/);
 });
@@ -37,7 +37,7 @@ test('setStreamingUI 在流开始/结束都调用 syncModeTogglesRunning', () =>
 test('权限菜单「计划模式」「隔离工作区」两项运行中 disabled', () => {
     const fn = sliceFunction(panel, 'function showPermissionMenu() {');
     // 菜单里算运行中的口径与 pill 同源
-    assert.match(fn, /streamOf\(session\.id\) \|\| compactOf\(session\.id\)/);
+    assert.match(fn, /isSessionBusy\(session\.id\)/);
     const planItem = fn.slice(fn.indexOf("label: '计划模式'"), fn.indexOf("label: '隔离工作区'"));
     assert.match(planItem, /disabled: running/, '计划模式项要禁用');
     const wtItem = fn.slice(fn.indexOf("label: '隔离工作区'"));

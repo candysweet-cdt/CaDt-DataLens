@@ -11,6 +11,7 @@ import {
     scanRootDenyReason,
     hardReadDenyReason,
     ARTIFACT_DIR_NAME,
+    BACKING_DIR_NAME,
 } from '../../../src/ai/security/ai-read-roots.js';
 
 // ---------- normalizeReadRoot / normalizeReadRoots ----------
@@ -125,6 +126,23 @@ test('ai-artifacts 子树可读，密钥与会话目录仍拒', () => {
     assert.ok(sensitiveReadDenyReason(appDir + '/ai-sessions/x/session.v1.jsonl', appDir));
     // 扫描产物目录本身不触发「包含应用数据目录」的拒绝
     assert.equal(scanRootDenyReason(appDir + '/' + ARTIFACT_DIR_NAME, appDir), null);
+});
+
+// 会话沙盒是第二个例外：未绑定工作区的会话（harness 下的会话沙盒）以它为作用域根，
+// 被自己这条硬拒规则挡死的话，AI 连自己沙盒里的文件都读写不了（真机实测踩到）。
+test('ai-workspaces 会话沙盒可读，密钥与会话目录仍拒', () => {
+    const appDir = 'C:/Users/admin/AppData/Roaming/CaDt-DataLens';
+    const sandbox = appDir + '/' + BACKING_DIR_NAME + '/session-abc';
+    assert.equal(sensitiveReadDenyReason(sandbox + '/test.md', appDir), null);
+    assert.equal(sensitiveReadDenyReason(sandbox, appDir), null);
+    // 兄弟前缀不能误放行
+    assert.ok(sensitiveReadDenyReason(appDir + '/' + BACKING_DIR_NAME + 'X/a.txt', appDir));
+    // 例外只到 ai-workspaces：密钥 / 会话正文 / 产物之外的其它子树照旧拒绝
+    assert.ok(sensitiveReadDenyReason(appDir + '/ai-config.json', appDir));
+    assert.ok(sensitiveReadDenyReason(appDir + '/ai-sessions/x/session.v1.jsonl', appDir));
+    assert.ok(sensitiveReadDenyReason(appDir + '/ai-usage.db', appDir));
+    // 扫描沙盒根本身不触发「包含应用数据目录」的拒绝
+    assert.equal(scanRootDenyReason(sandbox, appDir), null);
 });
 
 // ---------- scanRootDenyReason ----------

@@ -6,6 +6,7 @@
 import {iconSvg} from '../../core/icons.js';
 import {createSwitch} from '../../core/form-controls.js';
 import {AI_WRITE_SCOPES} from '../core/ai-constants.js';
+import {createSessionBusyProbe} from '../session/ai-session-scope.js';
 import {isWebApproval} from '../security/ai-permissions.js';
 import {collectCommandFamilies, commandFamilySignature, mergePlanGrantItems} from '../security/ai-command-rules.js';
 import {planDigest, planPreviewSlice, PLAN_PREVIEW_CHARS} from '../core/ai-plan-file.js';
@@ -122,6 +123,8 @@ export function createAITakeover(ctx) {
     const scrollToBottom = ctx.scrollToBottom;
     const setScope = ctx.setScope;
     const streamOf = ctx.streamOf;
+    // 会话「忙」判定与面板同源（ai-session-scope.js 的探针），供「回退到此轮」等入口共用。
+    const isSessionBusy = createSessionBusyProbe({streamOf, compactOf});
     const positionOverlays = ctx.positionOverlays;
     const AI_CHEVRON_SVG = ctx.AI_CHEVRON_SVG;
     const renderDiffInto = ctx.renderDiffInto;
@@ -567,7 +570,7 @@ export function createAITakeover(ctx) {
     }
 
     function planApprovalMessage(session) {
-        if (!session || streamOf(session.id) || compactOf(session.id) || !session.planMode) return null;
+        if (!session || isSessionBusy(session.id) || !session.planMode) return null;
         // 计划唯一真源是 session.activePlan：pending 且属于本会话才弹审批卡。
         // 不扫消息——模型提交后补一句话、工具轮，都不影响卡的显示与指向。
         const plan = session.activePlan;

@@ -11,17 +11,36 @@ import {isReadableImagePath} from '../tools/ai-image-encode.js';
 import {isReadableVideoPath} from './ai-constants.js';
 import {wrapTurnReminder} from '../chat/ai-turn-reminder.js';
 import {cognitionRulesText} from '../settings/ai-cognition.js';
-import {isTransientSession, isNoWorkspaceSession} from '../session/ai-session-scope.js';
+import {isTransientSession, isNoWorkspaceSession, isUnboundSession} from '../session/ai-session-scope.js';
+// 路径归属判定与 aiPathInside 同口径（大小写不敏感、只认完整目录段）——<workspace_context>
+// 按工作区分层渲染时用它把「本会话根下」与「其它工作区」分开，不另写一份比较。
+import {readRootCovers} from '../security/ai-read-roots.js';
+
 
 // 空记忆占位引导：MEMORY.md 不存在或为空时注入，替代「整块消失」——模型由此得知记忆区的存在与写入时机
 // （块内带引导语的先例：<user_preferences> / <task_todos> / <task_reminders>）。
 const AI_MEMORY_PLACEHOLDER_TEXT = '（记忆区暂为空）你拥有跨会话持久记忆：值得跨会话保留的事实、结论与决定，' +
     '用 memory_write 写成 .md 文件并同步创建/更新 MEMORY.md 作为索引；索引内容会随本块每轮自动注入。';
 
+// 项目规则文档的候选顺序：AGENTS.md 是跨 harness 的通用约定，CLAUDE.md 是 Claude Code 的
+// 老约定。只认 AGENTS.md 会让「只有 CLAUDE.md 的仓库」完全不注入项目规则（实测踩到）。
+// 顺序即优先级：AGENTS.md 存在就用它，不再读 CLAUDE.md（不做合并，避免两份规则打架）。
+const AGENT_DOC_NAMES = ['AGENTS.md', 'CLAUDE.md'];
+
 export function createAISystemContext(ctx) {
-    function workspaceRulesText(scope, planMode) {
+    // 会话根（AI 作用域的唯一取根入口）：有面板注入的 ctx.scopeRootOf(session) 时**完全信任它**
+    // ——它返回空就表示「该会话确实没有根」（harness 未绑定会话 / 会话沙盒尚未就绪），此时绝不
+    // 能回落窗口根或活动文件父目录：否则 <workspace_rules> 的范围根与 <workspace_context> 会指向
+    // 别的仓库，和工具实际解析的根不一致（独立审查 🟡）。只有旧宿主（无该注入）才回落
+    // getScopeRoot()，保证未升级时行为逐字不变。
+    function sessionRoot(session) {
+        if (typeof ctx.scopeRootOf === 'function') return ctx.scopeRootOf(session) || '';
+        return ctx.getScopeRoot() || '';
+    }
+
+    function workspaceRulesText(scope, planMode, session) {
         if (!AI_SCOPES.includes(scope)) return '';
-        const root = ctx.getScopeRoot() || '';
+        const root = sessionRoot(session) || '';
         const full = scope === 'full';
         const auto = scope === 'auto';
         const canWrite = AI_WRITE_SCOPES.includes(scope);
@@ -170,7 +189,7 @@ export function createAISystemContext(ctx) {
         const blocks = [];
         // 临时 / 无工作区会话不注入工作区知识（活动文件 / 已打开文件 / 认知索引卷 / 维护提醒）：
         // 它们都是「没绑工作区」的会话，只带会话自身的清单、提醒、计划状态与附件。
-        const transient = isTransientSession(session) || isNoWorkspaceSession(session);
+        const transient = isUnboundSession(session);
         const meta = {
             workspace: {loaded: false, files: 0},
             attachments: {count: 0, chars: 0},
@@ -241,7 +260,7 @@ export function createAISystemContext(ctx) {
         // 工作区状态（活动文件 / 光标 / 选区 / 可见范围 / 已打开文件）
         if (!transient) {
             const context = ctx.getWorkspaceContext() || {};
-            const root = ctx.getScopeRoot() || '';
+            const root = sessionRoot(session) || '';
             const contextParts = [];
             // 不注入「当前会话 id」：改自己不需要（不传 id，宿主经 runAppAction 第 4 参自动注入
             // callerSessionId），改别人要的是别人的 id；「面板查看的会话 ≠ 自己」由 get_ai 的
@@ -249,8 +268,12 @@ export function createAISystemContext(ctx) {
             // 范围根只在 <workspace_rules> 首行注入一次（aiInjectRoot 门控在那边）；此处不再重复同一行
             const active = context.activeFile;
             if (active && active.path) {
+                // 活动文件**始终注入**（用户此刻在看的文件就是本轮上下文），但它可能属于别的
+                // 工作区（同一窗口从任意路径开文件）：显式标注「读取需授权」，否则模型会拿
+                // aiDisplayPath 给出的「（范围外）名」去拼相对路径直读，撞授权才回头问。
+                const crossRootNote = root && !readRootCovers(root, active.path) ? '（属于其它工作区，读取需授权）' : '';
                 if (ctx.settings.aiInjectActiveFile !== false) {
-                    contextParts.push('当前活动文件：' + ctx.aiDisplayPath(active.path, root) +
+                    contextParts.push('当前活动文件：' + ctx.aiDisplayPath(active.path, root) + crossRootNote +
                         (active.mode ? '（视图：' + active.mode + '）' : '') +
                         (active.dirty ? '（未保存）' : '') +
                         // 用户开着图片问「这张图怎么样」是最常见的误判点：不提示的话模型会去截应用窗口
@@ -274,21 +297,44 @@ export function createAISystemContext(ctx) {
             }
             let injectedFiles = 0;
             let injectedViews = 0;
+            let otherFiles = 0;
             if (ctx.settings.aiInjectOpenFiles !== false) {
+                // 分层渲染（不是过滤）：本会话根下的文件给相对路径；其它工作区的文件折叠成
+                // 「目录数 / 文件数 + 最多 4 个文件名」——路径一可解析，模型就会拿它去 read_file，
+                // 而跨根读取还要走授权；给文件名只是为了让它和用户嘴里的文件对得上号。
+                // 分组口径与 aiPathInside 同式（ai-read-roots.js 的 readRootCovers）。
                 const allOpenFiles = Array.isArray(context.openFiles) ? context.openFiles : [];
-                const openFiles = allOpenFiles.slice(0, 20);
+                // 无根（未打开工作区 / harness 未绑定会话）时全部按「本工作区」列——与改造前一致
+                const ownFiles = root ? allOpenFiles.filter((path) => readRootCovers(root, path)) : allOpenFiles.slice();
+                const foreignFiles = root ? allOpenFiles.filter((path) => !readRootCovers(root, path)) : [];
+                const openFiles = ownFiles.slice(0, 20);
                 if (openFiles.length) {
                     const activeKey = context.activeFile && context.activeFile.path ? ctx.aiNormalizePath(context.activeFile.path).toLowerCase() : '';
-                    contextParts.push('已打开文件（' + allOpenFiles.length + ' 个）：');
+                    contextParts.push('已打开文件（' + (foreignFiles.length ? '本工作区 ' : '') + ownFiles.length + ' 个）：');
                     for (const path of openFiles) {
                         contextParts.push('- ' + ctx.aiDisplayPath(path, root) + (activeKey && ctx.aiNormalizePath(path).toLowerCase() === activeKey ? '（当前）' : ''));
                     }
-                    if (allOpenFiles.length > openFiles.length) contextParts.push('…（仅列前 20 个）');
+                    if (ownFiles.length > openFiles.length) contextParts.push('…（仅列前 20 个）');
                     injectedFiles = openFiles.length;
+                }
+                if (foreignFiles.length) {
+                    // openFiles 只带路径、不带归属工作区，这里按「所在目录」分组当工作区代理：
+                    // 同一目录下的一批外区文件通常就是同一个仓库窗口开出来的。
+                    const dirs = new Set();
+                    for (const path of foreignFiles) {
+                        const full = ctx.aiNormalizePath(path);
+                        const cut = full.lastIndexOf('/');
+                        dirs.add((cut > 0 ? full.slice(0, cut) : full).toLowerCase());
+                    }
+                    const names = foreignFiles.slice(0, 4).map((path) => ctx.aiDisplayPath(path, root));
+                    contextParts.push('其它工作区的已打开文件（' + dirs.size + ' 个目录 / ' + foreignFiles.length + ' 个文件）：' +
+                        names.join('、') + (foreignFiles.length > names.length ? ' 等' : '') +
+                        '（只有文件名、路径不可直接读；需要读时请用户给出路径或先授权）');
+                    otherFiles = foreignFiles.length;
                 }
                 // 应用内标签页（浏览器 / 快捷便签 / 计划文档…）：它们没有文件路径，与文件分开
                 // 一行说明——混进上面的清单会被显示成「（范围外）xxx」，模型会以为工作区外
-                // 还有同名文件可读
+                // 还有同名文件可读。虚拟标签页不按工作区过滤（全列，≤12）。
                 const allViews = Array.isArray(context.openViews) ? context.openViews : [];
                 const openViews = allViews.slice(0, 12);
                 if (openViews.length) {
@@ -308,6 +354,7 @@ export function createAISystemContext(ctx) {
             if (contextParts.length) {
                 blocks.push(['<workspace_context>', ...contextParts, '</workspace_context>'].join('\n'));
                 meta.workspace = {loaded: true, files: injectedFiles, views: injectedViews};
+                if (otherFiles) meta.workspace.otherFiles = otherFiles;
             }
         }
 
@@ -345,7 +392,7 @@ export function createAISystemContext(ctx) {
         const parts = [base];
         // 临时 / 无工作区会话：不注入工作区知识——AGENTS.md、记忆、认知索引守则一律跳过。
         // 身份 / 人设 / 偏好 / 技能 / 环境变量是应用级能力，照旧保留。
-        const transient = isTransientSession(session) || isNoWorkspaceSession(session);
+        const transient = isUnboundSession(session);
         const transientOnly = isTransientSession(session);
         const noWorkspaceOnly = isNoWorkspaceSession(session);
         const meta = {
@@ -375,8 +422,9 @@ export function createAISystemContext(ctx) {
         } else if (noWorkspaceOnly) {
             parts.push([
                 '<no_workspace_session>',
-                '这是一条不绑定工作区的持久会话：没有注入 AGENTS.md、记忆、认知索引等工作区知识。',
-                '不要假定工作区上下文（用户说的「这个文件 / 这里」需要先问清路径）；当前权限档见 workspace_rules。',
+                '这是一条不绑定工作区的持久会话：它的根是应用数据下的「会话沙盒」目录（相对路径落在沙盒里，是会话自己的草稿区，不是用户的项目）；' +
+                    '没有注入 AGENTS.md、记忆、认知索引等工作区知识。',
+                '不要假定工作区上下文（用户说的「这个文件 / 这里」若指真实仓库，需要先问清路径或请用户绑定工作区）；当前权限档见 workspace_rules。',
                 '这条会话默认只读（用户可自行提权），会保留在会话列表里，重启应用后仍可继续。',
                 '</no_workspace_session>',
             ].join('\n'));
@@ -423,23 +471,39 @@ export function createAISystemContext(ctx) {
         }
 
         if (!transient && ctx.settings.aiInjectAgentsMd !== false) {
-            const project = ctx.aiProjectRoot();
+            // 项目根跟会话走：多工作区下 A 会话不该读到 B 仓库的 AGENTS.md
+            //（aiProjectRoot 批次 E 起接受可选 session；旧宿主零参签名忽略多余实参 = 旧行为）
+            const project = ctx.aiProjectRoot(session);
             if (project) {
-                const path = ctx.aiJoinPath(project, 'AGENTS.md');
-                try {
-                    const read = await ctx.readTextFile(path, 64 << 10);
-                    parts.push('<agents_md path="' + ctx.aiDisplayPath(path).replace(/"/g, '&quot;') + '">\n' + read.text + '\n</agents_md>');
-                    meta.agents = {loaded: true, chars: read.text.length, path};
-                } catch (e) {
-                    meta.agents.path = path;
+                // 依次探测：AGENTS.md 是跨 harness 的通用约定，CLAUDE.md 是 Claude Code 的
+                // 老约定。很多仓库只有后者（实测「日记星辰」就只放 CLAUDE.md），只认 AGENTS.md
+                // 会让那些仓库的项目规则完全不注入——AI 不知道写作规范、记忆在哪。
+                // AGENTS.md 存在时行为完全不变；这里只是补一个回退，不合并两份。
+                let picked = '';
+                let lastPath = '';
+                for (const name of AGENT_DOC_NAMES) {
+                    const path = ctx.aiJoinPath(project, name);
+                    lastPath = path;
+                    try {
+                        const read = await ctx.readTextFile(path, 64 << 10);
+                        picked = name;
+                        const attr = ' path="' + ctx.aiDisplayPath(path, sessionRoot(session)).replace(/"/g, '&quot;')
+                            + '" file="' + name + '"';
+                        parts.push('<agents_md' + attr + '>\n' + read.text + '\n</agents_md>');
+                        meta.agents = {loaded: true, chars: read.text.length, path, file: name};
+                        break;
+                    } catch (e) {
+                        // 该文件不存在（或读不到）：继续试下一个候选，全部落空才算没注入
+                    }
                 }
+                if (!picked) meta.agents.path = lastPath;
             }
         }
 
         if (!transient && ctx.settings.aiInjectMemory !== false) {
             try {
-                const mem = await ctx.resolveMemoryDir();
-                const memPath = mem.mode === 'workspace' ? ctx.aiDisplayPath(mem.dir) : '（应用数据）/ai-memory';
+                const mem = await ctx.resolveMemoryDir(session);
+                const memPath = mem.mode === 'workspace' ? ctx.aiDisplayPath(mem.dir, sessionRoot(session)) : '（应用数据）/ai-memory';
                 const attr = ' mode="' + mem.mode + '" path="' + memPath.replace(/"/g, '&quot;') + '"';
                 let memoryText = '';
                 try {
@@ -553,7 +617,7 @@ export function createAISystemContext(ctx) {
         // 系统提示词因此每轮完全一致，服务商前缀缓存可整段命中。
         const catalog = ctx.toolCatalogText(ctx.currentScopeOf(session), !!(session && session.planMode), session);
         if (catalog) parts.push(catalog);
-        const rules = workspaceRulesText(ctx.currentScopeOf(session), !!(session && session.planMode));
+        const rules = workspaceRulesText(ctx.currentScopeOf(session), !!(session && session.planMode), session);
         if (rules) parts.push(rules);
         // 认知索引守则（两态固定文案，属稳定区——变的是卷不是守则，§5.4）：存在性判断交给
         // 动态块（<cognition_index> 只在有卷时出现），这里只描述「有索引怎么做 / 没有怎么开」。

@@ -4,6 +4,7 @@
 import {aiTextOf} from '../core/ai-constants.js';
 import {iconSvg} from '../../core/icons.js';
 import {kvGet, kvSet} from '../../core/kv-store.js';
+import {AI_TODOS_BADGE_KEY} from '../../core/storage-keys.js';
 
 // 新建会话状态时的默认收起态：默认收起（只看一行进度摘要），
 // 设置页「任务清单默认展开」打开后为展开。纯函数便于单测。
@@ -66,7 +67,7 @@ export function createAITodos(ctx) {
     const settings = ctx.settings || {};
 
     // 收起态「进行中任务」小字开关：存 localStorage（默认开），不进设置页。
-    const TODO_CURRENT_BADGE_KEY = 'datalens-ai-todos-current-badge';
+    const TODO_CURRENT_BADGE_KEY = AI_TODOS_BADGE_KEY;
 
     function currentBadgeEnabled() {
         // 未存过（null）或存储不可用时按默认「开」——原实现 catch 里也是 true

@@ -1,6 +1,7 @@
 // 终端命令会话放行的纯函数：解析简单命令、生成同类签名、匹配规则。
 // 只接受单条简单命令；出现管道、重定向、命令串联或子表达式时不做同类放行。
 // 同类白名单只覆盖低风险开发命令与纯导航/回显命令；解释器与任意文件读取命令只能按“相同命令”放行。
+import {legacyPathKey} from '../../core/path-key.js';
 
 const INTERPRETER_EXES = new Set([
     'bash', 'sh', 'zsh', 'fish', 'dash', 'ksh',
@@ -404,7 +405,7 @@ export const GIT_FLOW_SAFE_SUBCOMMANDS = new Set([
 const GIT_EXEC_PROGRAM_FLAGS = ['--exec', '--upload-pack', '--receive-pack'];
 
 function normPathKey(value) {
-    return String(value == null ? '' : value).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    return legacyPathKey(value == null ? '' : value)
 }
 
 /**

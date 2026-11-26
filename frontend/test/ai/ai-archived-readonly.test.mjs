@@ -42,7 +42,7 @@ test('入口：归档会话的编辑动作收起，改写动作（重试/重新�
     // 四条改写动作都带 !archived
     assert.match(actions, /!sessionBusy && !archived && \(isLast \|\| stepMode === 'full'\)\) add\('retry'/);
     assert.match(actions, /isLast && !sessionBusy && !archived\) \{\s*add\('regenerate'/);
-    assert.match(actions, /!sessionBusy && !archived && !compactOf\(sessionNow\.id\)/);
+    assert.match(actions, /!sessionBusy && !archived && !isSessionBusy\(sessionNow\.id\)/);
     assert.match(actions, /!sessionBusy && !archived\) add\('branch'/);
     // 只读动作保留：复制、投递
     assert.match(actions, /add\('copy', '复制'\)/);
@@ -53,9 +53,11 @@ test('入口：canInlineEdit 与保存路径都挡住归档会话', () => {
     const can = sliceFunction(panel, 'function canInlineEdit(message, session) {');
     assert.match(can, /if \(owner && owner\.archivedAt\) return false;/);
     const begin = sliceFunction(panel, 'function beginInlineEdit(wrap, session, index) {');
-    assert.match(begin, /if \(session\.archivedAt\)/);
+    // 进编辑态与保存都走与起轮内核同源的门禁（canStartTurn），归档只是其中一维
+    assert.match(begin, /canStartTurn\(session, \{busy: isSessionBusy\(session\.id\)\}\)/);
     const save = sliceFunction(panel, 'function saveInlineEdit(skipConfirm) {');
-    assert.match(save, /if \(session\.archivedAt\) \{/);
+    assert.match(save, /canStartTurn\(session, \{busy: isSessionBusy\(session\.id\)\}\)/);
+    assert.match(save, /gate\.reason === 'archived'/);
 });
 
 test('兜底：archived 失败原因统一成中文文案，不露裸 reason 码', () => {

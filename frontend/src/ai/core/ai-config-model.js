@@ -15,7 +15,7 @@ export const THINKING_BUDGET_MAX = 393215;
 // 响应空闲超时的可配置范围（秒）与默认值：连续这么久无数据即中断请求。
 export const IDLE_TIMEOUT_MIN_SEC = 30;
 export const IDLE_TIMEOUT_MAX_SEC = 3600;
-export const IDLE_TIMEOUT_DEFAULT_SEC = 120;
+export const IDLE_TIMEOUT_DEFAULT_SEC = 300;
 
 // 「本次会话上下文上限」候选档位（模型选择器下拉可选的会话级窗口上限）。
 // 只列出 < 模型 contextWindow 的档位；模型窗口不大于最小档时整个设置不出现。
@@ -256,7 +256,7 @@ export function reasoningLevelInfo(account, entry) {
 }
 
 // 组装发请求用的 AIConfig：连接类字段取账号，模型类字段取条目。
-// idleTimeoutSec 为全局「响应空闲超时」（秒），缺省 120；Go 侧会再钳到 [30, 3600]。
+// idleTimeoutSec 为全局「响应空闲超时」（秒），缺省 300；Go 侧会再钳到 [30, 3600]。
 export function configForModel(account, entry, idleTimeoutSec) {
     const provider = ['anthropic', 'responses'].includes(account && account.provider) ? account.provider : 'openai';
     return {
@@ -274,7 +274,7 @@ export function configForModel(account, entry, idleTimeoutSec) {
         reasoningEffort: provider === 'anthropic' ? '' : (entry ? (entry.reasoningEffort || '') : ''),
         // 限流阈值随请求下发到 Go 侧（Config.RPMLimit），0 = 不限
         rpmLimit: entry ? (Number(entry.rpm) || 0) : 0,
-        // 响应空闲超时随请求下发到 Go 侧（Config.IdleTimeoutSec），缺省 120 秒
+        // 响应空闲超时随请求下发到 Go 侧（Config.IdleTimeoutSec），缺省 300 秒
         idleTimeoutSec: Number.isFinite(Number(idleTimeoutSec)) && Number(idleTimeoutSec) > 0
             ? Number(idleTimeoutSec) : IDLE_TIMEOUT_DEFAULT_SEC,
     };

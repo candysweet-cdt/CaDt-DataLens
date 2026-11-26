@@ -30,6 +30,7 @@ import {
 } from '../security/ai-permissions.js';
 import {matchCommandRule, commandFamilySignature, commandText} from '../security/ai-command-rules.js';
 import {canAutoFill} from '../core/model-catalog.js';
+import {createSessionBusyProbe} from '../session/ai-session-scope.js';
 
 export function createAISettingsDialog(ctx) {
     const el = ctx.el;
@@ -62,6 +63,9 @@ export function createAISettingsDialog(ctx) {
     const switchSession = ctx.switchSession;
     const compactOf = ctx.compactOf;
     const streamOf = ctx.streamOf;
+    // 会话「忙」判定与面板同源（ai-session-scope.js）：设置页的「运行中会话」清单
+    // 与内核口径必须一致，否则会出现「显示在运行但能改 / 显示空闲却改不动」。
+    const isSessionBusy = createSessionBusyProbe({streamOf, compactOf});
     const sendAppMessage = ctx.sendAppMessage;
     const activeProfile = ctx.activeProfile;
     const appControlOn = ctx.appControlOn;
@@ -436,7 +440,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.notifySound) opt.notifySound.checked = getConfig().notifySound !== false;
         if (opt.askTimeout) opt.askTimeout.value = String(aiClampInt(getConfig().askTimeout, 0, 3600, 300));
         if (opt.askTimeoutAction) opt.askTimeoutAction.value = getConfig().askTimeoutAction || 'recommended';
-        if (opt.idleTimeout) opt.idleTimeout.value = String(aiClampInt(getConfig().idleTimeoutSec, 30, 3600, 120));
+        if (opt.idleTimeout) opt.idleTimeout.value = String(aiClampInt(getConfig().idleTimeoutSec, 30, 3600, 300));
         if (opt.logPath) {
             opt.logPath.textContent = '统计中…';
             getAILogRoot().then((dir) => {
@@ -462,6 +466,12 @@ export function createAISettingsDialog(ctx) {
         if (!opt.memoryPath) return;
         opt.memoryPath.textContent = '记忆目录：统计中…';
         resolveMemoryDir().then((mem) => {
+            // 无根（workspace 模式 + harness 未绑定会话 / 会话沙盒未就绪）：明确说明不可用，
+            // 不再显示「（none）：」后面跟空串（独立审查 🟢）。
+            if (!mem || !mem.dir) {
+                opt.memoryPath.textContent = '记忆目录：不可用（当前会话未绑定工作区）';
+                return;
+            }
             opt.memoryPath.textContent = '记忆目录（' + mem.mode + '）：' + mem.dir;
         }).catch((e) => {
             opt.memoryPath.textContent = '记忆目录：' + ((e && e.message) || e);
@@ -939,7 +949,11 @@ export function createAISettingsDialog(ctx) {
         if (opt.appControl) opt.appControl.addEventListener('change', () => {
             getConfig().appControlEnabled = !!opt.appControl.checked;
             saveAIConfig();
-            getSkillsCache().at = 0;
+            // app_control 的显隐影响**所有**会话的技能列表（cadt-ui 技能随开关出现/消失），
+            // 必须清全桶。此前是 getSkillsCache().at = 0 —— 那个只失效「当前会话根」的槽，
+            // 别的会话根仍命中旧表（独立审查 🟡）。
+            if (typeof invalidateSkillsCache === 'function') invalidateSkillsCache();
+            else getSkillsCache().at = 0;
             setSettingsStatus('应用操作（app_control）：' + (opt.appControl.checked ? '已开启' : '已关闭'), 'ok');
         });
         if (opt.retryMax) opt.retryMax.addEventListener('change', () => {
@@ -1020,7 +1034,7 @@ export function createAISettingsDialog(ctx) {
             setSettingsStatus('AskQuestion 超时处理：' + labels[getConfig().askTimeoutAction], 'ok');
         });
         if (opt.idleTimeout) opt.idleTimeout.addEventListener('change', () => {
-            getConfig().idleTimeoutSec = aiClampInt(opt.idleTimeout.value, 30, 3600, 120);
+            getConfig().idleTimeoutSec = aiClampInt(opt.idleTimeout.value, 30, 3600, 300);
             opt.idleTimeout.value = String(getConfig().idleTimeoutSec);
             saveAIConfig();
             const sec = getConfig().idleTimeoutSec;
@@ -1331,7 +1345,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.clearSessions) opt.clearSessions.addEventListener('click', () => {
             // 有回合在跑时清空会把这些会话对象整体丢弃：在飞的那一轮消息既不落盘也不再属于
             // 任何会话（流仍往孤儿对象写）。与「删除会话」同一套守卫，先让用户停止。
-            const running = getSessions().filter((session) => streamOf(session.id) || compactOf(session.id));
+            const running = getSessions().filter((session) => isSessionBusy(session.id));
             if (running.length) {
                 setSettingsStatus('有会话正在生成或压缩，请先停止再清空', 'error');
                 return;

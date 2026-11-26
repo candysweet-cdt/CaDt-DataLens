@@ -40,7 +40,9 @@ test('createSessionData：noWorkspace = 只读 + 空 workspace + 标记 + 默认
     const fn = sliceFunction(panel, 'function createSessionData(title, sessionOpts)');
     assert.match(fn, /const noWorkspace = !!\(sessionOpts && sessionOpts\.noWorkspace === true\);/);
     assert.match(fn, /scope: \(transient \|\| noWorkspace\) \? 'read' : \(AI_SCOPES\.includes\(scopeOverride\)/);
-    assert.match(fn, /workspace: \(transient \|\| noWorkspace\) \? '' : currentWorkspacePath\(\)/);
+    // 多工作区下默认 workspace 也留空：windowWorkspacePath 那时为空、或退化成「活动文件
+    // 所在目录」（可能属于别的仓库），猜出来的根比空更难排查。真正的根由调用方补 viewRoot。
+    assert.match(fn, /workspace: \(transient \|\| noWorkspace \|\| isMultiWorkspace\(\)\) \? '' : windowWorkspacePath\(\)/);
     assert.match(fn, /noWorkspace,/);
     assert.match(fn, /desktopEnabled: !transient && !noWorkspace && /);
     // 默认标题回落「新会话」：标题正常生成的前提
@@ -64,39 +66,44 @@ test('buildSessionMeta 落盘 noWorkspace（与 temp 同口径，但读盘不过
 
 test('adopt / sync / 起轮三处守卫都含 noWorkspace', () => {
     const adopt = sliceFunction(panel, 'function adoptWorkspaceSession()');
-    assert.match(adopt, /isTransientSession\(current\) \|\| isNoWorkspaceSession\(current\)/, '否则启动会被 bind 收养');
+    // 统一构件 isUnboundSession = isTransientSession || isNoWorkspaceSession（ai-session-scope.js）
+    assert.match(adopt, /isUnboundSession\(current\)/, '否则启动会被 bind 收养');
 
     const sync = sliceFunction(panel, 'async function syncWorkspaceToSession(session)');
-    assert.match(sync, /isTransientSession\(session\) \|\| isNoWorkspaceSession\(session\)/, '否则切过去会绑工作区');
+    assert.match(sync, /isUnboundSession\(session\)/, '否则切过去会绑工作区');
 
     const turn = sliceFunction(panel, 'async function startSessionTurnInner(', '\n    async function ');
-    assert.match(turn, /!session\.workspace && !isTransientSession\(session\) && !isNoWorkspaceSession\(session\)/, '否则发第一条消息会被回填工作区');
+    assert.match(turn, /!session\.workspace[\s\S]{0,140}?!isUnboundSession\(session\)/, '否则发第一条消息会被回填工作区');
+    // 多工作区下连「回填」这一步都不走：那时 windowWorkspacePath 会退化成活动文件所在目录，
+    // 无关会话会被悄悄绑到别的仓库（工具根、记忆、AGENTS.md 全跟着错）。
+    assert.match(turn, /!session\.workspace && !isMultiWorkspace\(\)/,
+        'startSessionTurnInner 的工作区回填必须有多工作区短路');
 });
 
 test('newSession 空会话复用排除 noWorkspace（当前 + 列表两处）', () => {
     const create = sliceFunction(panel, 'function newSession()');
-    assert.match(create, /!isTransientSession\(current\) &&\s*\n\s*!isNoWorkspaceSession\(current\)/);
-    assert.match(create, /\.filter\(\(item\) => !isTransientSession\(item\) && !isNoWorkspaceSession\(item\)\)/);
+    assert.match(create, /!isUnboundSession\(current\)/);
+    assert.match(create, /\.filter\(\(item\) => !isUnboundSession\(item\)\)/);
 });
 
 test('legacy 回退不回填 noWorkspace 的工作区；认知预取跳过', () => {
     const legacy = sliceFunction(panel, 'function loadLegacySessions(rawList)');
     assert.match(legacy, /!session\.workspace && !isNoWorkspaceSession\(session\)/, 'legacy 回填不能收养无工作区会话');
-    assert.match(panel, /!isTransientSession\(session\) && !isNoWorkspaceSession\(session\)\) await cognitionMod\.prefetchTurnCache\(session\)/);
+    assert.match(panel, /if \(!isUnboundSession\(session\)\) await cognitionMod\.prefetchTurnCache\(session\)/);
 });
 
 test('派生：分支 / 支线继承 noWorkspace 且清空 workspace', () => {
     const branchFn = sliceFunction(panel, 'function branchSessionAt(', '\n    function ');
-    assert.match(branchFn, /isTransientSession\(branch\) \|\| isNoWorkspaceSession\(branch\)\) branch\.workspace = ''/);
+    assert.match(branchFn, /isUnboundSession\(branch\)\) branch\.workspace = ''/);
     assert.match(fork, /noWorkspace: src\.noWorkspace === true,/);
-    assert.match(sidechat, /child\.temp === true \|\| child\.noWorkspace === true\) child\.workspace = ''/);
+    assert.match(sidechat, /isUnboundSession\(child\)\) child\.workspace = ''/);
 });
 
 // ---- 上下文：不注入工作区知识 + 独立定性块 ----
 
 test('系统上下文：判定扩展 + noWorkspace 独立定性块（不含「关闭应用后消失」）', () => {
-    assert.match(systemCtx, /import \{isTransientSession, isNoWorkspaceSession\}/);
-    assert.match(systemCtx, /const transient = isTransientSession\(session\) \|\| isNoWorkspaceSession\(session\);/);
+    assert.match(systemCtx, /import \{isTransientSession, isNoWorkspaceSession, isUnboundSession\}/);
+    assert.match(systemCtx, /const transient = isUnboundSession\(session\);/);
     assert.match(systemCtx, /if \(transientOnly\) \{/);
     assert.match(systemCtx, /<no_workspace_session>/);
     assert.match(systemCtx, /这是一条不绑定工作区的持久会话/);
@@ -112,19 +119,20 @@ test('newNoWorkspaceSession：用 noWorkspace 造会话、空标题、不接草�
     const fn = sliceFunction(panel, 'function newNoWorkspaceSession()');
     assert.match(fn, /createSessionData\('', \{noWorkspace: true\}\)/);
     assert.match(fn, /loadComposerDraft\(session\.id, null\)/, '不接工作区草稿');
-    assert.match(fn, /sessionListMod\.expandWorkspaceGroup\(''\)/, '展开「未关联工作区」分组');
+    // 展开分组 + 滚到可见（revealSession 内含 expandWorkspaceGroup 与渲染）
+    assert.match(fn, /sessionListMod\.revealSession\(session\.id, session\)/, '展开「未关联工作区」分组并定位到新会话');
     assert.match(fn, /discardVirginOnLeave\(current\)/);
     assert.match(fn, /persistSessions\(\)/, '持久会话必须落盘');
     assert.match(fn, /isNoWorkspaceSession\(current\)/, '空会话复用判定');
     assert.match(fn, /logActivity\([^)]*noWorkspace: true/);
 });
 
-test('两个新建菜单都给出「新建无工作区会话」入口', () => {
+test('两个新建菜单都给出「新建会话沙盒」入口', () => {
     const newMenu = sliceFunction(panel, 'function showNewSessionMenu()');
-    assert.match(newMenu, /label: '新建无工作区会话'/);
+    assert.match(newMenu, /label: '新建会话沙盒'/);
     assert.match(newMenu, /newNoWorkspaceSession\(\)/);
     const listMenu = sliceFunction(panel, 'function showSessionListMenu()');
-    assert.match(listMenu, /label: '新建无工作区会话'/);
+    assert.match(listMenu, /label: '新建会话沙盒'/);
     assert.match(listMenu, /newNoWorkspaceSession\(\)/);
 });
 

@@ -6,6 +6,7 @@ import {
     WORKTREE_REASON_MAX,
     normalizeWorktreeState,
     worktreeRelPath,
+    pathInsideWorkspace,
     worktreeBlockText,
     formatWorktreeList,
     agentWorktreeWriteVerdict,
@@ -43,6 +44,18 @@ test('worktreeRelPath 与常量口径', () => {
     assert.equal(WORKTREE_REL_DIR, '.cadt/worktree');
     assert.equal(worktreeRelPath('demo-ab12'), '.cadt/worktree/demo-ab12');
     assert.ok(WORKTREE_PATCH_LIMIT > 0);
+});
+
+// 归属断言（批次 B）：删隔离区前比对「根 → wt.path」，根取错仓库时绝不删
+test('pathInsideWorkspace：归一大小写 / 反斜杠 / 尾斜杠后按前缀断言归属', () => {
+    const root = 'D:/repo';
+    assert.equal(pathInsideWorkspace(root, 'D:/repo/.cadt/worktree/demo-ab12'), true);
+    assert.equal(pathInsideWorkspace(root, 'd:\\REPO\\.cadt\\worktree\\demo-ab12\\'), true); // 反斜杠 + 大小写 + 尾斜杠
+    assert.equal(pathInsideWorkspace(root + '/', 'D:/repo'), true, '根本身算在内');
+    assert.equal(pathInsideWorkspace(root, 'D:/repo-other/.cadt/worktree/demo-ab12'), false, '同名前缀不算子目录');
+    assert.equal(pathInsideWorkspace('D:/other', 'D:/repo/.cadt/worktree/demo-ab12'), false);
+    assert.equal(pathInsideWorkspace('', 'D:/repo/x'), false);
+    assert.equal(pathInsideWorkspace(root, ''), false);
 });
 
 test('worktreeBlockText：写清前缀 / 分支 / 不承诺测试 / export 收尾', () => {

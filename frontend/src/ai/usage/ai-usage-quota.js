@@ -16,6 +16,7 @@ import {
     usageTemplatePresetCode,
 } from './ai-usage-templates.js';
 import {parseJson} from '../../core/json-safe.js';
+import {AI_USAGE_CACHE_KEY} from '../../core/storage-keys.js';
 
 // 沙箱单阶段（解析脚本 / 跑 extractor）的硬超时；查询整体另有 HTTP 超时兜底。
 const USAGE_WORKER_TIMEOUT_MS = 5000;
@@ -24,7 +25,7 @@ const USAGE_RESPONSE_MAX_BYTES = 262144;
 const USAGE_SNAPSHOT_ITEMS_MAX = 24;
 // localStorage 快照键：只存展示数据（items/error/at），绝不存 override apiKey。
 // v2：条目结构升级（结构化 resetAt + 百分比优先 used），旧版快照直接作废重查
-const USAGE_SNAPSHOT_STORAGE_KEY = 'cadt.ai-usage-cache.v2';
+const USAGE_SNAPSHOT_STORAGE_KEY = AI_USAGE_CACHE_KEY;
 
 // resetAt 归一：number 按 <1e12 视为秒、否则毫秒；字符串先试数字再按 ISO 解析。
 // 无效 / 非正数返回 0（调用方据此不显示倒计时）。

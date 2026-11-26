@@ -24,6 +24,9 @@ export function createAIChangesUI(ctx) {
     const openPath = ctx.openPath;
     const openVirtualDoc = ctx.openVirtualDoc;
     const getScopeRoot = ctx.getScopeRoot;
+    // 会话根（批次 B，ai-panel 注入 sessionScopeRoot）：汇总卡列的是**这个会话**改过的文件，
+    // 撤销/状态查询必须按会话根算——否则换标签后就回滚到别的仓库的同名路径上。
+    const scopeRootOf = typeof ctx.scopeRootOf === 'function' ? ctx.scopeRootOf : null;
     const backend = ctx.backend;
     const flash = ctx.flash;
     const askConfirm = typeof ctx.askConfirm === 'function' ? ctx.askConfirm : null;
@@ -34,7 +37,7 @@ export function createAIChangesUI(ctx) {
     // root 无 Git / 状态查询失败时按「已跟踪」处理（回滚会报错并 flash，不静默）。
     async function rollbackChangeFiles(files) {
         if (!rollbackGitPaths) return;
-        const root = getScopeRoot();
+        const root = (scopeRootOf ? scopeRootOf(currentSession()) : '') || getScopeRoot();
         let untrackedSet = null;
         try {
             const status = root && backend.GitStatusFor ? await backend.GitStatusFor(root) : null;
@@ -53,7 +56,9 @@ export function createAIChangesUI(ctx) {
             deleted.length ? '删除 ' + deleted.length + ' 个新建文件' : '',
         ].filter(Boolean).join('，');
         const target = files.length === 1 ? (files[0].relPath || files[0].path || '') : (files.length + ' 个文件');
-        const run = () => Promise.resolve(rollbackGitPaths(paths, untracked)).catch(() => {});
+        // 根作为可选第三参传下去（bridge-git 的 gitRollbackPaths(paths, untracked, root)）；
+        // 旧包装箭头只声明两个形参时它被静默丢弃 → 回落旧行为，不会错位。
+        const run = () => Promise.resolve(rollbackGitPaths(paths, untracked, root)).catch(() => {});
         if (askConfirm) {
             askConfirm((detail ? detail + '：' : '回滚 ') + target + '？', run);
         } else {
@@ -306,7 +311,9 @@ export function createAIChangesUI(ctx) {
             for (const file of changes) openPath(file.path || file.relPath);
             return;
         }
-        const root = getScopeRoot();
+        // 审阅的 diff 基准必须与回滚同源（会话根）：harness 下窗口根与会话根不同时，
+        // 用窗口根取 diff 会拿不到本会话改动的文件，审阅视图变空白。
+        const root = (scopeRootOf ? scopeRootOf(currentSession()) : '') || getScopeRoot();
         const limited = changes.slice(0, 20);
         const blocks = [];
         const notes = [];

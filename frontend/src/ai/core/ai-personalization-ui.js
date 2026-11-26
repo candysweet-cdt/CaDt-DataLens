@@ -117,6 +117,13 @@ export function createAIPersonalizationSettings(ctx, extras) {
         try {
             const mem = await resolveMemoryDir();
             if (seq !== memorySeq) return;
+            if (!mem || !mem.dir) {
+                // 无根（harness 未绑定会话 / 会话沙盒未就绪）：明确显示不可用，
+                // 不再用空 dir 拼 '/MEMORY.md' 让预览恒为空态（独立审查 🟢）。
+                if (el.memoryMode) el.memoryMode.textContent = '不可用（未绑定工作区）';
+                el.memoryPreview.textContent = '当前会话未绑定工作区，记忆不可用。';
+                return;
+            }
             if (el.memoryMode) el.memoryMode.textContent = mem.mode === 'workspace' ? '工作区 .cadt/memory' : '应用数据';
             const path = aiJoinPath ? aiJoinPath(mem.dir, 'MEMORY.md') : mem.dir + '/MEMORY.md';
             let text = '';

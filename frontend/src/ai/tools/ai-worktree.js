@@ -5,6 +5,7 @@
 // 丢弃 = worktree remove --force + 删隔离分支。路径一律显式长路径，不做前缀注入。
 import {aiTextOf} from '../core/ai-constants.js';
 import {iconSvg} from '../../core/icons.js';
+import {legacyPathKey} from '../../core/path-key.js';
 
 export const WORKTREE_REL_DIR = '.cadt/worktree';
 // 补丁超过此长度拒绝导出（与 propose_patch 的传输上限一致，防一次导出撑爆上下文）
@@ -33,6 +34,16 @@ export function normalizeWorktreeState(raw) {
 // 隔离区相对路径前缀（AI 文案与提示词块用）
 export function worktreeRelPath(name) {
     return WORKTREE_REL_DIR + '/' + name;
+}
+
+// 路径是否落在某个根之下（归一化反斜杠、去尾斜杠、忽略大小写）。用于 worktree 删除前的
+// 归属断言：git worktree remove 不可逆，根与会话不同源时可能删掉别的仓库登记的隔离区。
+export function pathInsideWorkspace(root, path) {
+    const norm = (value) => legacyPathKey(value == null ? '' : value)
+    const base = norm(root);
+    const full = norm(path);
+    if (!base || !full) return false;
+    return full === base || full.startsWith(base + '/');
 }
 
 // 子代理隔离写闸（纯函数）：wt 为子代理会话登记的隔离区，relPath 为相对主根的路径。
@@ -268,7 +279,9 @@ export function formatWorktreeList(result, sessions, stats) {
 
 export function createAIWorktree(deps) {
     const backend = deps.backend;
-    const getScopeRoot = () => deps.getScopeRoot();
+    // 根的语义已改为**会话根**（ai-panel 注入 sessionScopeRoot）：可选 session 参数，
+    // 缺省取面板当前会话。工具路径一律显式传 ctx.session，后台会话才不会串到用户正看的会话上。
+    const getScopeRoot = (session) => deps.getScopeRoot(session);
     const currentSession = () => deps.currentSession();
     const currentScopeOf = deps.currentScopeOf;
     const persistSessions = () => deps.persistSessions();
@@ -499,11 +512,23 @@ export function createAIWorktree(deps) {
             flash('有 ' + occupying.length + ' 个终端在这个隔离区中运行：请先关闭后再丢弃', true);
             return false;
         }
+        const root = getScopeRoot(session);
+        // 归属断言（批次 B）：要删的隔离区目录必须在本会话根之下。根取错（会话根与窗口根
+        // 不同源、或会话登记被拷到别的仓库）时 git worktree remove 会打到别的隔离区上，
+        // 不可逆——宁可拒绝也不删。老会话没有 wt.path（早期登记只有 name）时跳过该断言。
+        if (!root) {
+            flash('本会话没有工作区范围：无法丢弃隔离区', true);
+            return false;
+        }
+        if (wt.path && !pathInsideWorkspace(root, wt.path)) {
+            flash('隔离区 ' + wt.name + ' 不在本会话工作区范围内（' + wt.path + '）：已拒绝丢弃', true);
+            return false;
+        }
         worktreeBusy.add(session.id);
         try {
             // 保底快照（L3）：用户手点的丢弃同样先存档未导出改动
-            const snapPath = await snapshotWorktreePatch(getScopeRoot(), wt);
-            await backend.GitWorktreeRemove(getScopeRoot(), wt.name, true);
+            const snapPath = await snapshotWorktreePatch(root, wt);
+            await backend.GitWorktreeRemove(root, wt.name, true);
             if (session.worktree && session.worktree.name === wt.name) {
                 session.worktree = null;
                 persistSessions();
@@ -532,7 +557,7 @@ export function createAIWorktree(deps) {
         const wt = normalizeWorktreeState(session && session.worktree);
         if (!wt) return false;
         const statPromise = backend.GitWorktreeStat
-            ? backend.GitWorktreeStat(getScopeRoot(), wt.name, wt.baseSha).catch(() => '')
+            ? backend.GitWorktreeStat(getScopeRoot(session), wt.name, wt.baseSha).catch(() => '')
             : Promise.resolve('');
         const confirmed = await confirmDialog({
             title: '丢弃隔离工作区',
@@ -558,7 +583,7 @@ export function createAIWorktree(deps) {
         const wt = normalizeWorktreeState(session && session.worktree);
         if (!wt) return false;
         const statPromise = backend.GitWorktreeStat
-            ? backend.GitWorktreeStat(getScopeRoot(), wt.name, wt.baseSha).catch(() => '')
+            ? backend.GitWorktreeStat(getScopeRoot(session), wt.name, wt.baseSha).catch(() => '')
             : Promise.resolve('');
         const confirmed = await confirmDialog({
             title: '隔离工作区 ' + wt.name,
@@ -643,7 +668,7 @@ export function createAIWorktree(deps) {
             case 'create':
                 return manageCreate(session, toolMessage, input);
             case 'list':
-                return manageList();
+                return manageList(session);
             case 'stat':
                 return manageStat(session, input);
             case 'export':
@@ -659,7 +684,7 @@ export function createAIWorktree(deps) {
 
     function requireWriteSession(session) {
         if (!session) return '缺少会话上下文';
-        const root = getScopeRoot();
+        const root = getScopeRoot(session);
         if (!root) return '当前没有工作区范围：隔离工作区建在主根的 .cadt/worktree/ 下，请先打开文件夹';
         return '';
     }
@@ -676,7 +701,7 @@ export function createAIWorktree(deps) {
         const reasonCheck = worktreeReasonCheck(input && input.reason);
         if (reasonCheck.error) return deny('WORKTREE_REASON', reasonCheck.error, '补上 reason 后重试；它是审批卡给人看的首要信息');
         const reason = reasonCheck.reason;
-        const root = getScopeRoot();
+        const root = getScopeRoot(session);
         if (session.worktree && normalizeWorktreeState(session.worktree)) {
             const wt = session.worktree;
             return deny('WORKTREE_EXISTS', '本会话已有隔离工作区 ' + worktreeRelPath(wt.name)
@@ -822,7 +847,7 @@ export function createAIWorktree(deps) {
         const carry = !!(opts && opts.carry);
         let added;
         try {
-            added = await backend.GitWorktreeAdd(getScopeRoot(), aiTextOf(label).trim().slice(0, 80), session.id || '', carry);
+            added = await backend.GitWorktreeAdd(getScopeRoot(session), aiTextOf(label).trim().slice(0, 80), session.id || '', carry);
         } catch (e) {
             flash('创建隔离工作区失败：' + ((e && e.message) || e), true);
             return null;
@@ -852,19 +877,19 @@ export function createAIWorktree(deps) {
     }
 
     // 单个 worktree 的未提交改动统计尾行（尽力而为，失败返回空串）
-    async function statLineOf(relPath) {
+    async function statLineOf(relPath, session) {
         if (!backend.GitWorktreeStat) return '';
         const slug = String(relPath || '').split('/').pop();
         try {
-            const stat = await backend.GitWorktreeStat(getScopeRoot(), slug, '');
+            const stat = await backend.GitWorktreeStat(getScopeRoot(session), slug, '');
             return worktreeStatTotals(stat).label;
         } catch (e) {
             return '';
         }
     }
 
-    async function manageList() {
-        const root = getScopeRoot();
+    async function manageList(session) {
+        const root = getScopeRoot(session);
         if (!root) return deny('WORKTREE_CONTEXT', '当前没有工作区范围');
         try {
             const result = await backend.GitWorktreeList(root);
@@ -872,7 +897,7 @@ export function createAIWorktree(deps) {
             const stats = {};
             for (const item of result.items || []) {
                 if (item.underCadt && item.relPath) {
-                    stats[item.relPath] = await statLineOf(item.relPath);
+                    stats[item.relPath] = await statLineOf(item.relPath, session);
                 }
             }
             return formatWorktreeList(result, getSessions(), stats);
@@ -882,7 +907,7 @@ export function createAIWorktree(deps) {
     }
 
     async function manageStat(session, input) {
-        const root = getScopeRoot();
+        const root = getScopeRoot(session);
         if (!root) return deny('WORKTREE_CONTEXT', '当前没有工作区范围');
         const target = resolveTarget(session, input && input.name);
         if (!target) {
@@ -911,7 +936,7 @@ export function createAIWorktree(deps) {
     // conflict_detail（L3「冲突报告可消费」）：主根某文件相对基准的 diff，按需逐文件拉取，
     // 单文件行数封顶（Go 侧截断）——冲突细节按需取（贵），文件级清单在 export 回执里（便宜）。
     async function manageConflictDetail(session, input) {
-        const root = getScopeRoot();
+        const root = getScopeRoot(session);
         if (!root) return deny('WORKTREE_CONTEXT', '当前没有工作区范围');
         const target = resolveTarget(session, input && input.name);
         if (!target) {
@@ -939,7 +964,7 @@ export function createAIWorktree(deps) {
         const toolMessage = ctx && ctx.toolMessage;
         const missing = requireWriteSession(session);
         if (missing) return deny('WORKTREE_CONTEXT', missing);
-        const root = getScopeRoot();
+        const root = getScopeRoot(session);
         const target = resolveTarget(session, input && input.name);
         if (!target) {
             const wanted = String((input && input.name) || '').trim();
@@ -1105,7 +1130,7 @@ export function createAIWorktree(deps) {
         }
         // 销毁性动作：接管 composer 的审批卡（全档必弹，含完全权限），卡片里附改动汇总
         const statText = backend.GitWorktreeStat
-            ? await backend.GitWorktreeStat(getScopeRoot(), wt.name, wt.baseSha).catch(() => '')
+            ? await backend.GitWorktreeStat(getScopeRoot(session), wt.name, wt.baseSha).catch(() => '')
             : '';
         const stat = worktreeStatTotals(statText).label || '无改动';
         const decision = await requestWorktreeApproval(session, toolMessage, {
@@ -1125,7 +1150,7 @@ export function createAIWorktree(deps) {
             settleWorktreeApproval(session, toolMessage, 'cancelled', '用户已停止生成');
             return '用户已停止生成，丢弃已取消。';
         }
-        const root = getScopeRoot();
+        const root = getScopeRoot(session);
         // 保底快照（L3）：丢弃前把未导出改动落盘 .cadt/patches/，绝不静默丢工作
         const snapPath = await snapshotWorktreePatch(root, wt);
         worktreeBusy.add(session.id);

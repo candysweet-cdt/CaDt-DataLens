@@ -3,14 +3,24 @@
 import {VISUAL_RULES} from '../../core/visual-spec.js';
 import {formatBytes} from '../../core/humanize.js';
 import {newId} from '../../core/id.js';
+import {
+    AI_CONFIG_KEY,
+    AI_SESSIONS_KEY,
+    AI_STORAGE_MODE_KEY,
+    AI_CONFIG_MODE_KEY,
+    AI_SESSION_MIGRATED_AT_KEY,
+    AI_SESSION_MIGRATED_IDS_KEY,
+} from '../../core/storage-keys.js';
 
-export const AI_CONFIG_KEY = 'datalens-ai';
-export const AI_SESSIONS_KEY = 'datalens-ai-sessions';
-// 会话存储：默认写磁盘 JSONL；设为 legacy 可临时退回整包 localStorage（排障用）。
-export const AI_STORAGE_MODE_KEY = 'datalens-ai-storage';
-export const AI_CONFIG_MODE_KEY = 'datalens-ai-config';
-export const AI_SESSION_MIGRATED_AT_KEY = 'datalens-ai-sessions-migrated-at';
-export const AI_SESSION_MIGRATED_IDS_KEY = 'datalens-ai-sessions-migrated-ids';
+// 存储键名统一定义在 core/storage-keys.js（这里转出，保持既有 import 面不变）。
+export {
+    AI_CONFIG_KEY,
+    AI_SESSIONS_KEY,
+    AI_STORAGE_MODE_KEY,
+    AI_CONFIG_MODE_KEY,
+    AI_SESSION_MIGRATED_AT_KEY,
+    AI_SESSION_MIGRATED_IDS_KEY,
+};
 export const AI_LEGACY_KEEP_DAYS = 30;
 // 应用重启时仍在执行的工具：没有结果可回传，按「中断」呈现（区别于工具自己返回的失败）
 export const TOOL_INTERRUPTED_TEXT = '应用在这个工具执行期间关闭或重启，没收到执行结果（工具可能已经执行，也可能没有）。重试前请先确认是否已经产生了副作用。';
@@ -32,6 +42,14 @@ export const AI_ARCHIVE_LIMIT = 5000; // 与 /compact 共用：归档保留上�
 export const AI_LEGACY_SESSION_LIMIT = 50; // 仅 legacy 回退路径使用：旧 localStorage 整包容量有限
 export const AI_WRITE_LIMIT = 256 * 1024;
 export const AI_PATCH_LIMIT = 256 * 1024; // 单次补丁上限：模型输出就这么多，超了让它拆
+// run_command 的超时边界：与 Go 侧 aiShellDefaultTimeout / aiShellMaxTimeout
+// （internal/cmdbridge/ai_command_windows.go）同值——那里是强杀的真源，这里是下发前的钳制。
+// 比插件同步命令（120 s）宽松：AI 跑测试 / 构建属正常需求，但长任务该交给 background_command。
+export const AI_SHELL_TIMEOUT_DEFAULT_MS = 60000;
+export const AI_SHELL_TIMEOUT_MAX_MS = 600000;
+// 同一种失败提示的冷却：会话列表 / 配置 / 归档溢出 / 存储写入失败各自计时，但都按这个间隔
+// 去重（30 秒内不重复打扰）。四个计时器语义独立，值同源。
+export const AI_FAILURE_NOTICE_COOLDOWN_MS = 30000;
 export const AI_PATCH_MAX_ATTEMPTS = 3;
 export const AI_DIFF_MAX_LINES = 4000;
 export const AI_DIFF_PREVIEW_LIMIT = 40;
@@ -343,7 +361,8 @@ export const AI_BUILTIN_SKILLS = [
             '- install_plugin {name|url}：安装插件。name 按官方市场（cadt-datalens-plugins，Gitee/GitHub 镜像）解析；url 可直接给仓库地址。full 档直接装；auto 档官方市场直接装、非官方弹动作审批（未知来源红警）；edit 档一律审批；read 档拒绝。安装后插件代码以应用权限运行。',
             '- uninstall_plugin {id}：卸载插件（id 从 get_plugins 取）。DeletePlugin 是永久删除（不进回收站）：full 档直接删，其余档一律走动作审批。',
             '- open_browser_tab {url?, profileKey?}：在内容区打开内嵌浏览器标签页并返回 tab id（file:// 走与 browser_navigate 同一条读权限链）。',
-            '- close_browser_tab {id|name|url}：关闭指定内嵌浏览器标签页。',
+            '- close_browser_tab {id|name|url}：关闭指定内嵌浏览器标签页（不能关闭已交给 AI 的标签）。',
+            '- adopt_browser_tab {id|name|url|index, reason?}：接管用户手动打开的浏览器标签页（先用 get_state 看 tabs 的 name / browserUrl / browserTabId / index 定位）。**全档必弹高危审批卡**（含完全权限），批准后本会话的 browser_* 工具直接操作这张标签及其登录态；AI 不能关闭它，需用户手动关。接管后读取 file:// 页面不再重复走工作区外读取审批。',
             '- open_memo_panel {scope?}：在内容区打开用户的「快捷便签」面板标签页（scope=workspace/global，缺省 workspace）。只开面板不写内容没有意义，登记完再打开。',
             '- get_memo {scope?, block_id?, tag?, q?}：读快捷便签，返回紧凑文本（含各条 id 与标签 {a/b}）。默认读全部；可只读某分组（block_id）、按某个标签过滤（tag，精确匹配便签上自定义的标签）或按文本包含过滤（q）——便签多时优先用过滤，首行会汇报全局面板计数。用户提到「便签/记事/我的便签上有什么」先读它；用户消息里出现便签定位点（形如 cadt-memo://workspace/item/it-xxx，用户在面板里「复制定位点」得到）时，按其中的 scope 调 get_memo，再按 id 在清单里定位到对应块/条目，后续 update_memo/remove_memo 直接用这个 id。',
             '- add_memo {scope?,kind,block_id?,text,tags?}：往便签添加内容：kind=item 在指定块末尾加一条（block_id 缺省第一个块，没有块时自动建「便签」块兜底；tags 可给新条目挂自定义标签，≤4 个每个 ≤12 字）；kind=block 新建分组小节（text 即标题）。改完立即保存并刷新面板。',

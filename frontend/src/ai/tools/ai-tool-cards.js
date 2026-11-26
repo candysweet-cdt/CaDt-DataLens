@@ -177,6 +177,9 @@ export function createAIToolCards(ctx) {
     // 助手展示名（ai-panel 注入）：气泡角色标签跟随个性化命名，默认名时仍是「AI」行径不变
     const assistantName = typeof ctx.assistantName === 'function' ? ctx.assistantName : () => 'AI';
     const getScopeRoot = ctx.getScopeRoot;
+    // 会话根（批次 B，ai-panel 注入 sessionScopeRoot）：计划审批记规则 / 判 risky 都按会话根，
+    // 不按「用户此刻显示的窗口工作区」。未注入时回落 getScopeRoot（旧行为）。
+    const scopeRootOf = typeof ctx.scopeRootOf === 'function' ? ctx.scopeRootOf : null;
     const currentSession = ctx.currentSession;
     const currentScopeOf = ctx.currentScopeOf;
     const persistSessions = ctx.persistSessions;
@@ -590,6 +593,7 @@ export function createAIToolCards(ctx) {
         }
         switch (name) {
             case 'read_file': return {verb: '读取', icon: 'eye'};
+            case 'get_file_outline': return {verb: '文件大纲', icon: 'list'};
             case 'read_image': return {verb: '看图', icon: 'image'};
             case 'read_video': return {verb: '看视频', icon: 'play'};
             case 'list_dir': return {verb: '列目录', icon: 'folder'};
@@ -1853,7 +1857,9 @@ export function createAIToolCards(ctx) {
         // 勾选「在隔离区中执行」时隔离区已由包装层在落盘前建好（见 ai-panel 的 acceptPlan），
         // 这里只负责按勾选生成差异化的批准指令。
         const inWorktree = !!(opts && opts.inWorktree);
-        const cwd = getScopeRoot() || '';
+        // 命令规则的 cwd 按会话根（批次 B）：它会写进会话命令规则，根错了规则就永远不命中；
+        // 会话无根时才回落窗口根。
+        const cwd = (scopeRootOf ? scopeRootOf(session) : '') || getScopeRoot() || '';
         if (Array.isArray(grantItems) && cwd) {
             for (const item of grantItems) {
                 if (!item || item.dangerous) continue;

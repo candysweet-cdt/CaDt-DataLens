@@ -23,6 +23,14 @@ export const WIPEGUARD_NOTIFY_COOLDOWN_MS = 2 * 60 * 1000; // 向会话投递告
 export const WIPEGUARD_AI_ACTIVE_MS = 60 * 1000;     // AI 活跃窗口
 export const WIPEGUARD_FINGERPRINT_DEBOUNCE_MS = 3 * 1000; // 指纹去抖
 export const WIPEGUARD_FINGERPRINT_INTERVAL_MS = 10 * 60 * 1000; // 周期校准
+// L3 定期状态快照的节拍（main.js 的 setInterval）：与 Go 侧 internal/wipeguard 的
+// snapshotInterval = 10 * time.Minute 同值。注意别和上面那行「指纹周期校准」合并——
+// 两者数值相同但语义不同：一个是每根指纹的重新校准节奏，一个是全树快照的拍子。
+export const WIPEGUARD_SNAPSHOT_INTERVAL_MS = 10 * 60 * 1000;
+export const WIPEGUARD_WINDOW_LOG_MIN_MS = 2000; // 「窗口 N/seq」调试日志的最小间隔（同根）
+// per-root 状态表容量（方案 §4.9.7 F1/F5）：只保留最近 8 个活跃根。harness 下同时
+// 活着的根通常 1–3 个，超出的都是长时间没动静的旧工作区——它们的 watcher 也该退订。
+export const WIPEGUARD_PER_ROOT_LIMIT = 8;
 
 // watcher 计数排除的目录：与 Go 侧 skipFingerprintDir 同口径（internal/search 的
 // searchSkipDirs 忽略表 + .git + .cadt），另加构建输出与依赖目录——vite/wails 等构建链
@@ -157,8 +165,24 @@ export function shouldAlarmFromWatch(win, now) {
 
 // normalizeWsKey：工作区根归一化（与后端 WorkspaceKey 的归一化语义一致：\→/、去尾斜杠、小写），
 // 用于窗口与指纹基线的工作区切换判定。
+// normalizeWsKey：工作区根 → 分键用的归一化 key。
+// 与 ai-session-scope.js 的 workspaceKey 同口径地**归一点段**（`.` / `..`）：payload.root 若
+// 带 `..` 段，旧实现只做「反斜杠 + 尾斜杠 + 小写」，会与已登记的根分成两个键，事件被防护
+// 白名单过滤掉、整根静默失明（独立审查 🟢）。前导 `/` 与 UNC 的 `//` 保留。
 export function normalizeWsKey(ws) {
-    return String(ws || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const raw = String(ws || '').replace(/\\/g, '/');
+    if (!raw) return '';
+    const lead = raw.startsWith('//') ? '//' : (raw.startsWith('/') ? '/' : '');
+    const parts = [];
+    for (const seg of raw.split('/')) {
+        if (!seg || seg === '.') continue;
+        if (seg === '..') {
+            if (parts.length) parts.pop();
+            continue;
+        }
+        parts.push(seg);
+    }
+    return (lead + parts.join('/')).replace(/\/+$/, '').toLowerCase();
 }
 
 // humanAgo：时间戳 → 相对时间（告警消息里用最短的说法，别占提示词）。
@@ -271,17 +295,83 @@ export function createAIWipeguard(deps) {
     //               决定要不要把告警插队投递给会话（没人在跑就没必要唤醒一个空闲会话）
     //   onCritical   (info) => critical 告警动作（状态栏红条 + 向活跃会话插队投递应用消息）
     //   onWarn       (info) => warn 提示（状态栏黄条）
+    //   onRootEvicted （可选）(root) => 某根被 LRU 淘汰 / 显式退订：宿主在这里 Unwatch
     //   settleMs     （可选，测试用）覆盖 WIPEGUARD_SETTLE_MS
     // }
-    let watchWindow = null;
-    let wsKey = '';
-    let lastFingerprint = null;   // run_command 前的基线
-    let lastFingerprintAt = 0;
-    let lastAlarmAt = 0;
+    // per-root 状态表（方案 §4.9.7 F1 / F5）：此前是单值状态机——`handleWorkspaceEvent`
+    // 一发现换根就把滚动窗口与指纹基线清零，harness 下 A→B→A 的来回切换于是把「切走期间」
+    // 攒下的删除事件整批抹掉（真破坏漏报）；告警冷却也只有全局一份（A 根报过警，2 分钟内
+    // B 根的真破坏被抑制）。现在每个根各持一份窗口 / 基线 / 确认延迟 / 冷却，换根只初始化新条目。
+    const perRoot = new Map(); // wsKey -> {root, watchWindow, lastFingerprint, lastFingerprintAt,
+                              //            settleTimer, lastAlarmAt, lastSeenAt, calibrating, snapshotAlarm}
     let fingerprintTimer = null;
-    let settleTimer = null;       // 超阈值后的确认延迟（等「删除后又重建」的事件落地）
-    let calibrating = false;
     const settleMs = typeof deps.settleMs === 'number' ? deps.settleMs : WIPEGUARD_SETTLE_MS;
+
+    // ensureRoot：取（必要时初始化）某个根的状态条目，并刷新 lastSeenAt（LRU 依据）。
+    // 根为空 = 无条目（harness 下未绑定会话的窗口没有可保护的对象）。
+    function ensureRoot(root, now) {
+        const key = normalizeWsKey(root);
+        if (!key) return null;
+        const ts = Number(now) || Date.now();
+        let entry = perRoot.get(key);
+        if (!entry) {
+            entry = {
+                root: String(root || ''),
+                watchWindow: {events: [], presents: [], seq: 0},
+                lastFingerprint: null,
+                lastFingerprintAt: 0,
+                settleTimer: null,     // 超阈值后的确认延迟（等「删除后又重建」的事件落地）
+                lastAlarmAt: 0,
+                lastSeenAt: ts,
+                lastWindowLogAt: 0,    // 上一条「窗口 N/seq」调试日志的时间（同根节流）
+                calibrating: false,
+                snapshotAlarm: snapshotAlarmReset(),
+            };
+            perRoot.set(key, entry);
+            evictRoots();
+        }
+        entry.root = String(root || entry.root || '');
+        entry.lastSeenAt = ts;
+        return entry;
+    }
+
+    // dropRoot：摘条目 + 清确认延迟 + 通知宿主退订 watcher（不再防护的根不该继续烧内核句柄）。
+    function dropRoot(key) {
+        const entry = perRoot.get(key);
+        if (!entry) return;
+        if (entry.settleTimer) {
+            clearTimeout(entry.settleTimer);
+            entry.settleTimer = null;
+        }
+        perRoot.delete(key);
+        if (typeof deps.onRootEvicted === 'function') {
+            try {
+                deps.onRootEvicted(entry.root);
+            } catch (e) {
+                console.warn('[wipeguard] 根退出回调失败（该根监听可能残留到窗口关闭）', e);
+            }
+        }
+    }
+
+    // evictRoots：只保留最近 WIPEGUARD_PER_ROOT_LIMIT 个根（LRU）。
+    // 取舍顺序：当前根**永不淘汰**（丢了它就是对着正在干活的仓库失明）＞ 有会话在跑的根
+    // （isAIActive 为真的根最不能丢，淘汰了它等于让正在删文件的会话失去信号）＞ lastSeenAt 最旧。
+    function evictRoots() {
+        if (perRoot.size <= WIPEGUARD_PER_ROOT_LIMIT) return;
+        const currentKey = normalizeWsKey(deps.getWsRoot ? deps.getWsRoot() : '');
+        const cold = [];
+        const aiBusy = [];
+        for (const [key, entry] of perRoot) {
+            if (key === currentKey) continue;
+            const active = deps.isAIActive ? !!deps.isAIActive(entry.root) : false;
+            (active ? aiBusy : cold).push([key, entry]);
+        }
+        const pool = cold.length ? cold : aiBusy;
+        if (!pool.length) return; // 只剩当前根：宁可短暂超出上限，也不淘汰正在防护的根
+        pool.sort((a, b) => (a[1].lastSeenAt || 0) - (b[1].lastSeenAt || 0));
+        dropRoot(pool[0][0]);
+        evictRoots();
+    }
 
     function settingsOf() {
         const wg = (deps.getSettings && deps.getSettings().wipeGuard) || {};
@@ -320,9 +410,13 @@ export function createAIWipeguard(deps) {
 
     function fireAlarm(verdict, source, root) {
         const now = Date.now();
-        if (now - lastAlarmAt < WIPEGUARD_FINGERPRINT_DEBOUNCE_MS) return;
-        lastAlarmAt = now;
         root = root || (deps.getWsRoot ? deps.getWsRoot() : '') || '';
+        // 告警去抖（3s）按根独立：A 根刚报过警，不该压住 B 根随即出现的第一次真破坏（F5）。
+        const entry = ensureRoot(root, now);
+        if (entry) {
+            if (now - entry.lastAlarmAt < WIPEGUARD_FINGERPRINT_DEBOUNCE_MS) return;
+            entry.lastAlarmAt = now;
+        }
         const aiActive = deps.isAIActive ? !!deps.isAIActive(root) : false;
         backend().WipeGuardAlarm(verdict.level, verdict.reason,
             `${source} · AI活跃=${aiActive} · 样例=${(verdict.paths || []).slice(0, 12).join(', ')}`)
@@ -339,29 +433,55 @@ export function createAIWipeguard(deps) {
     }
 
     async function calibrateFingerprint(root, {force} = {}) {
-        if (!root || calibrating) return;
+        if (!root) return;
         const now = Date.now();
-        if (!force && now - lastFingerprintAt < WIPEGUARD_FINGERPRINT_DEBOUNCE_MS) return;
-        calibrating = true;
+        const key = normalizeWsKey(root);
+        const entry = ensureRoot(root, now);
+        if (!entry || entry.calibrating) return;
+        if (!force && now - entry.lastFingerprintAt < WIPEGUARD_FINGERPRINT_DEBOUNCE_MS) return;
+        entry.calibrating = true;
         try {
             const after = await takeFingerprint(root);
-            lastFingerprintAt = Date.now();
-            if (after && lastFingerprint) {
-                const verdict = await backend().WipeGuardCompare(lastFingerprint, after).catch(() => null);
+            if (perRoot.get(key) !== entry) return; // 取指纹期间该根被 LRU 淘汰：结果作废
+            entry.lastFingerprintAt = Date.now();
+            if (after && entry.lastFingerprint) {
+                const verdict = await backend().WipeGuardCompare(entry.lastFingerprint, after).catch(() => null);
                 if (verdict && verdict.level) {
                     fireAlarm({level: verdict.level, reason: verdict.reason, paths: []}, '指纹校准', root);
                 }
             }
-            lastFingerprint = after; // 基线滚动（无论是否告警，旧基线已过时）
+            entry.lastFingerprint = after; // 基线滚动（无论是否告警，旧基线已过时）
         } finally {
-            calibrating = false;
+            entry.calibrating = false;
         }
+    }
+
+    // harness / 未绑定会话下 getWsRoot() 可能为空：此前是静默 return，用户以为防护开着
+    // 其实周期校准与定期快照都没跑（方案 §4.9.7 F4）。这里只在「由有变无 / 由无变有」时
+    // 各记一条，避免每 10 分钟刷一条日志。
+    let idleRootWarned = false;
+    function reportIdleRoot(kind) {
+        const hasRoot = !!(deps.getWsRoot ? deps.getWsRoot() : '');
+        if (hasRoot) {
+            if (idleRootWarned) {
+                idleRootWarned = false;
+                console.info('[wipeguard] 已恢复工作区根，' + kind + '恢复运行');
+            }
+            return false;
+        }
+        if (!idleRootWarned) {
+            idleRootWarned = true;
+            console.warn('[wipeguard] 当前没有工作区根：' + kind + '暂停（周期校准 / 定期快照不会执行，' +
+                '破坏防护只剩 watcher 主信号）。harness 下请确认会话已绑定工作区或会话沙盒。');
+        }
+        return true;
     }
 
     function startCalibrationLoop() {
         if (fingerprintTimer) return;
         fingerprintTimer = setInterval(() => {
             if (!settingsOf().enabled) return;
+            if (reportIdleRoot('周期校准')) return;
             const root = deps.getWsRoot ? deps.getWsRoot() : '';
             if (root) calibrateFingerprint(root, {force: true});
         }, WIPEGUARD_FINGERPRINT_INTERVAL_MS);
@@ -374,42 +494,32 @@ export function createAIWipeguard(deps) {
         }
     }
 
-    // ---- 事件入口（main.js 的 workspace-changed 监听转发）----
+    // ---- 事件入口（main.js 的多根 watcher 转发）----
     // 超阈值不立即告警，而是延迟 WIPEGUARD_SETTLE_MS 再复核：删除与随后的重建常常
     // 不在同一批内核事件里（插件更新 = os.RemoveAll 整目录 + 立刻复制新目录），第一批
-    // 只含删除就会被误判成大范围消失。延迟到期时用同一窗口重算「净消失」。
-    function armSettle(root) {
-        if (settleTimer) return;
-        settleTimer = setTimeout(() => {
-            settleTimer = null;
-            const verdict = shouldAlarmFromWatch(watchWindow, Date.now());
-            if (verdict) fireAlarm(verdict, 'watcher', root);
+    // 只含删除就会被误判成大范围消失。延迟到期时用**同一个根的**窗口重算「净消失」。
+    function armSettle(entry) {
+        if (entry.settleTimer) return;
+        entry.settleTimer = setTimeout(() => {
+            entry.settleTimer = null;
+            const verdict = shouldAlarmFromWatch(entry.watchWindow, Date.now());
+            if (verdict) fireAlarm(verdict, 'watcher', entry.root);
         }, settleMs);
     }
 
-    function clearSettle() {
-        if (settleTimer) {
-            clearTimeout(settleTimer);
-            settleTimer = null;
-        }
-    }
-
+    // handleWorkspaceEvent：按 payload.root 分流到该根自己的滚动窗口。
+    // **换根不再清零**（F1）：A 会话跑着长任务、用户切到 B，A 的删除事件仍要攒在 A 的
+    // 窗口里；切回来时第一次事件不该从零开始，否则「切走期间的破坏」永远凑不够阈值。
     function handleWorkspaceEvent(payload) {
         if (!settingsOf().enabled) return;
         const root = (payload && payload.root) || (deps.getWsRoot ? deps.getWsRoot() : '') || '';
-        const key = normalizeWsKey(root);
-        if (key !== wsKey) {
-            // 切工作区：窗口与指纹基线重置（防止跨工作区误判）
-            watchWindow = {events: [], presents: [], seq: 0};
-            wsKey = key;
-            lastFingerprint = null;
-            clearSettle();
-        }
+        const now = Date.now();
+        const entry = ensureRoot(root, now);
+        if (!entry) return;
         if (payload && payload.overflow) {
-            // 内核丢事件：立即重扫指纹兜底
+            // 内核丢事件：立即重扫指纹兜底（只扫这个根，不牵连别的根）
             calibrateFingerprint(root, {force: true});
         }
-        const now = Date.now();
         // 只计「消失」类事件（payload.removed 由 Go 侧按 FILE_ACTION_REMOVED / RENAMED_OLD_NAME
         // 分组）：原子写与补丁回灌产生的是 added/renamed_new/modified，几十个文件的合法写入
         // 不该计入破坏判定（2026-11-19 补丁应用误报实录）。
@@ -417,20 +527,71 @@ export function createAIWipeguard(deps) {
         // （插件更新删旧目录再复制：旧文件消失半程不该算破坏）。
         const removedPaths = (payload && Array.isArray(payload.removed)) ? payload.removed : [];
         const presentPaths = (payload && Array.isArray(payload.present)) ? payload.present : [];
-        watchWindow = registerDeleteEvents(watchWindow, removedPaths, now, presentPaths);
-        if (shouldAlarmFromWatch(watchWindow, now)) armSettle(root);
+        const prevSeq = (entry.watchWindow && entry.watchWindow.seq) || 0;
+        entry.watchWindow = registerDeleteEvents(entry.watchWindow, removedPaths, now, presentPaths);
+        // 演练可观测性（方案 §6.1 D1）：`watchWindow.seq` 是纯函数内部值，不打日志就无法
+        // 用机械判据区分「换根后窗口清零」与「窗口延续」——只能靠告警 reason 里的 N 猜。
+        // 但判据只能是「窗口 seq 有增量」而不是「原批事件非空」：watcher 每批变更都会推
+        // 事件，git status 写 `.git/index.lock`、构建写 dist、应用写 .cadt 都是批批都有，
+        // 而这些路径全被排除表滤掉、seq 不动（2026-11-26 实录：工作区里有 git 轮询时调试台
+        // 每秒刷一条 `seq=0 events=0 removed=0`，纯噪音）。真实删除/重建仍有增量，
+        // 再叠同根 2s 节流防事件洪峰刷屏。debug 级别：只进调试台，不影响正常用户。
+        const delta = ((entry.watchWindow && entry.watchWindow.seq) || 0) - prevSeq;
+        if (delta > 0 && now - (entry.lastWindowLogAt || 0) >= WIPEGUARD_WINDOW_LOG_MIN_MS) {
+            entry.lastWindowLogAt = now;
+            console.debug('[wipeguard] 窗口 N/seq', root, 'seq=' + entry.watchWindow.seq,
+                'events=' + entry.watchWindow.events.length, 'removed=' + removedPaths.length,
+                'delta=' + delta);
+        }
+        if (shouldAlarmFromWatch(entry.watchWindow, now)) armSettle(entry);
     }
 
     // ---- run_command / background_command 前后保底（ai-panel 调用）----
+    // 前后必须用**同一个根**：会话根从窗口根解耦后，换手 / 切会话期间
+    // preCommand(A) 与 postCommand 各取一次根，就会拿 B 的 after 跟 A 的 before 比，
+    // 判出「整仓顶层条目被清空」这类跨仓库误报（方案 §4.9.7 F3）。
+    // 因此 preCommand 返回 {root, fp}，postCommand 只认这一个根，不再接受第二个来源。
+    // 基线也按根滚动（entry.lastFingerprint）：多根并存时「最近一次观测到的指纹」若只有
+    // 全局一份，周期校准会把 A 的基线与 B 的现状比。
     async function preCommand(root) {
         if (!settingsOf().enabled || !root) return null;
-        return takeFingerprint(root);
+        const fp = await takeFingerprint(root);
+        if (!fp) return null;
+        const entry = ensureRoot(root, Date.now());
+        if (entry) {
+            entry.lastFingerprint = fp;
+            entry.lastFingerprintAt = Date.now();
+        }
+        return {root, fp};
     }
 
-    async function postCommand(root, before) {
+    // 新形式 postCommand(before4)；旧形式 postCommand(root, beforeSnapshot) 也兼容。
+    // 关键：**只要第二个参数是 preCommand 返回的快照，就用快照自带的 root**——
+    // 这比调用方现取的根可信（ai-panel 传的是 getScopeRoot()，换手后已不是 A 了）。
+    // 因此即使调用点还没改造，只要 before 是新形式快照，跨仓库误报也已被挡住。
+    async function postCommand(a, b) {
+        const isSnapshot = (v) => !!(v && typeof v === 'object' && v.root && v.fp);
+        let root = '';
+        let before = null;
+        if (isSnapshot(a)) {
+            root = String(a.root);
+            before = a.fp;
+        } else if (isSnapshot(b)) {
+            root = String(b.root);   // 以快照自带根为准，忽略调用方传的根
+            before = b.fp;
+        } else {
+            root = String(a || '');
+            before = b || null;      // 未改造的旧调用方：只能信任它传的根
+        }
         if (!before || !root) return;
         const after = await takeFingerprint(root);
         if (!after) return;
+        // 该根的基线滚动到命令后的现状（周期校准据此比较，不跨根）
+        const entry = ensureRoot(root, Date.now());
+        if (entry) {
+            entry.lastFingerprint = after;
+            entry.lastFingerprintAt = Date.now();
+        }
         try {
             const verdict = await backend().WipeGuardCompare(before, after);
             if (verdict && verdict.level) {
@@ -444,31 +605,34 @@ export function createAIWipeguard(deps) {
     // ---- L3 定期快照（设置页 / main.js 的 10 分钟定时器调用）----
     // 失败 / 跳过文件升级进消息中心（30 分钟节流，见 snapshotAlarmDecide）：
     // 2026-11-21 frontend\nul 让快照连败 13 轮约 2 小时，只有调试日志、没有任何用户可见表象。
-    let snapshotAlarmState = snapshotAlarmReset();
+    // 只对**当前根**做一拍（一个窗口一份快照，避免磁盘占用随根数线性增长）；
+    // 失败连击状态按根记在条目里，切根回来不会把「已连续 N 次」串到别的仓库上。
     async function snapshotTick() {
         const st = settingsOf();
         if (!st.enabled || !st.snapshots) return null;
+        if (reportIdleRoot('定期快照')) return null;
         const root = deps.getWsRoot ? deps.getWsRoot() : '';
         if (!root) return null;
+        const entry = ensureRoot(root, Date.now());
         try {
             const res = await backend().WipeGuardSnapshot(root);
-            if (res && res.excluded) {
-                snapshotAlarmState = applySnapshotAlarm('excluded', res.excluded);
-            } else {
-                snapshotAlarmState = snapshotAlarmReset(); // 干净成功：失败连击清零
+            if (entry && res && res.excluded) {
+                entry.snapshotAlarm = applySnapshotAlarm(entry, 'excluded', res.excluded);
+            } else if (entry) {
+                entry.snapshotAlarm = snapshotAlarmReset(); // 干净成功：失败连击清零
             }
             return res;
         } catch (e) {
             console.warn('[wipeguard] 定期快照失败（下轮再试）', e);
-            snapshotAlarmState = applySnapshotAlarm('error', e && e.message);
+            if (entry) entry.snapshotAlarm = applySnapshotAlarm(entry, 'error', e && e.message);
             return null;
         }
     }
 
     // applySnapshotAlarm 走节流决策后投消息中心（deps.notify 由 main.js 注入 messageCenter.add）。
-    // 返回新的告警状态。通知缺失时只维护状态、不投递（测试/无消息中心环境）。
-    function applySnapshotAlarm(kind, detail) {
-        const decision = snapshotAlarmDecide(snapshotAlarmState, Date.now(), kind);
+    // 返回该根新的告警状态。通知缺失时只维护状态、不投递（测试/无消息中心环境）。
+    function applySnapshotAlarm(entry, kind, detail) {
+        const decision = snapshotAlarmDecide(entry && entry.snapshotAlarm, Date.now(), kind);
         if (decision.notify && typeof deps.notify === 'function') {
             if (kind === 'error') {
                 deps.notify({
@@ -539,6 +703,26 @@ export function createAIWipeguard(deps) {
         }
     }
 
+    // ---- 多根监听登记（main.js 的 wipe-guard watcher 同步调用）----
+    // 「条目存在」= 这个根还在防护范围里：订阅一个根就建条目；退订 / LRU 淘汰就摘条目并
+    // 清确认延迟、通知宿主 Unwatch。事件入口自己也走 ensureRoot，所以即使调用方没登记
+    // （单测 / 旧调用点）事件照样计入判定——登记只影响生命周期与 LRU。
+    function trackRoot(root) {
+        return !!ensureRoot(root, Date.now());
+    }
+
+    function untrackRoot(root) {
+        const key = normalizeWsKey(root);
+        if (!key || !perRoot.has(key)) return false;
+        dropRoot(key);
+        return true;
+    }
+
+    function tracksRoot(root) {
+        const key = normalizeWsKey(root);
+        return !!key && perRoot.has(key);
+    }
+
     return {
         syncConfig,
         handleWorkspaceEvent,
@@ -551,5 +735,8 @@ export function createAIWipeguard(deps) {
         stopCalibrationLoop,
         isWriteBlocked,
         clearBlocked,
+        trackRoot,
+        untrackRoot,
+        tracksRoot,
     };
 }

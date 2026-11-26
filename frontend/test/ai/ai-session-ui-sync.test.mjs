@@ -69,7 +69,7 @@ test('plan_mode 工具按 ctx.session 切换，后台会话不刷新面板 UI', 
     const body = fnBody('setPlanMode');
     assert.ok(body.includes('const isViewed = session === viewed'),
         'setPlanMode 要区分「目标会话」与「面板当前查看的会话」');
-    assert.ok(body.includes('streams.has(session.id)'),
+    assert.ok(body.includes('isSessionBusy(session.id)'),
         '生成中判定要按目标会话的流，不能用面板镜像 stream');
     const earlyReturn = body.indexOf('if (!isViewed) return true;');
     assert.ok(earlyReturn > 0, '非当前会话改状态后必须早退，不刷面板 UI');

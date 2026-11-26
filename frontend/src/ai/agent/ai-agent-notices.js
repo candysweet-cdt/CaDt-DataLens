@@ -7,6 +7,7 @@
 // 唤醒单飞：并发通知只有第一个真正执行唤醒，后来者发现已有流即转排队（§4.4）。
 import {normalizeAppMessage} from '../security/ai-app-message.js';
 import {newId} from '../../core/id.js';
+import {createSessionBusyProbe} from '../session/ai-session-scope.js';
 
 // 信箱深度（未消费条数）上限：满则拒收回执——会话投递可丢，结算 / 提问只合并不丢弃（§4.12.4）。
 export const NOTICE_DEPTH_MAX = 10;
@@ -131,6 +132,9 @@ export function createAIAgentNotices(ctx) {
     const sessionById = ctx.sessionById;
     const streamOf = ctx.streamOf;
     const compactOf = ctx.compactOf;
+    // 「忙」判定与面板同源（ai-session-scope.js 的探针）。sessionStateOf 仍分开报
+    // 'streaming' / 'compacting'：投递回执要区分这两种状态，不能合并成一个 busy。
+    const isSessionBusy = createSessionBusyProbe({streamOf, compactOf});
     const startSessionTurn = ctx.startSessionTurn;
     const currentSession = ctx.currentSession;
     const isOpen = ctx.isOpen;
@@ -312,7 +316,7 @@ export function createAIAgentNotices(ctx) {
         // 入队即唤醒 wait_agent：内容仍在下面的轮边界注入，这里只让等待方别再睡。
         notifyWaiters(session.id);
         // 目标忙 → 排队等下一边界；目标空闲 → 立刻唤醒（单飞，冲突则留在队列里）。
-        if (streamOf(session.id) || compactOf(session.id)) {
+        if (isSessionBusy(session.id)) {
             renderSessionList();
             return {ok: true, reason: 'queued', messageId: item.messageId, woke: false};
         }
@@ -345,7 +349,7 @@ export function createAIAgentNotices(ctx) {
             return {woke: false, reason: 'gone'};
         }
         if (!pendingCount(sessionId)) return {woke: false, reason: 'empty'};
-        if (streamOf(sessionId) || compactOf(sessionId)) return {woke: false, reason: 'busy'};
+        if (isSessionBusy(sessionId)) return {woke: false, reason: 'busy'};
         return wakeWith(session, NOTICE_FOLD_MAX);
     }
 

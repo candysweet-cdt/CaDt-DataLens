@@ -194,15 +194,15 @@ test('configForModel：连接字段取账号、模型字段取条目，Anthropic
     assert.equal(openai.thinking, false);
 });
 
-test('configForModel：idleTimeoutSec 随请求下发，缺省 120 秒', () => {
+test('configForModel：idleTimeoutSec 随请求下发，缺省 300 秒', () => {
     const account = {provider: 'openai', baseURL: 'https://x.test/v1', apiKey: 'k'};
     const entry = {model: 'm', outputWindow: 4096};
     assert.equal(configForModel(account, entry, 300).idleTimeoutSec, 300);
     assert.equal(configForModel(account, entry, 3600).idleTimeoutSec, 3600);
-    // 缺省 / 非法值回落到 120 秒，与 Go 侧默认值一致。
-    assert.equal(configForModel(account, entry).idleTimeoutSec, 120);
-    assert.equal(configForModel(account, entry, 0).idleTimeoutSec, 120);
-    assert.equal(configForModel(account, entry, 'bad').idleTimeoutSec, 120);
+    // 缺省 / 非法值回落到 300 秒，与 Go 侧默认值一致。
+    assert.equal(configForModel(account, entry).idleTimeoutSec, 300);
+    assert.equal(configForModel(account, entry, 0).idleTimeoutSec, 300);
+    assert.equal(configForModel(account, entry, 'bad').idleTimeoutSec, 300);
 });
 
 test('reasoningLevelInfo：openai 系按 reasoningEffort 推导，非法/缺省归自动', () => {

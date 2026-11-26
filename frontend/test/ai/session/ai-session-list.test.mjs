@@ -3,7 +3,7 @@
 // 磁盘存储才有「复制会话路径」；普通对话不再出现一排灰掉的无关项。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention, workspaceGroupExpanded, sessionOverLimitOf, sessionOverLimitTip, sessionFilterHit, buildWorkspaceSubgroups, subgroupPageKey} from '../../../src/ai/session/ai-session-list.js';
+import {buildSessionMenuItems, buildWorkspaceMenuItems, buildSubgroupMenuItems, subgroupFolded, aggregateSessionBadge, planPendingNeedsAttention, workspaceGroupExpanded, sessionOverLimitOf, sessionOverLimitTip, sessionFilterHit, buildWorkspaceSubgroups, subgroupPageKey} from '../../../src/ai/session/ai-session-list.js';
 import {ICONS} from '../../../src/core/icons.js';
 
 const baseEnv = {pendingNoticeCount: () => 0, diskStorage: true};
@@ -249,6 +249,33 @@ test('分组默认展开：未打开工作区时展开第一个分组', () => {
     assert.equal(workspaceGroupExpanded('ws-c', {current: false}, env), false, '其余仍收起');
 });
 
+// 多工作区（窗口没绑定工作区）默认展开的是**聚焦会话所在的组**，不是按名字序的第一组。
+// 踩过的坑：把「不置顶排序」和「展开哪一组」当成同一个开关，结果重启后当前会话那组收着、
+// 不相干的组开着。
+test('分组默认展开：多工作区跟聚焦会话所在组，而不是第一个组', () => {
+    const env = {
+        override: new Map(),
+        currentKey: () => '',            // 多工作区：窗口没有绑定工作区
+        focusedKey: () => 'ws-modedev',  // 但聚焦会话属于 ws-modedev
+        firstKey: 'ws-aaa',              // 名字序第一组是别人
+    };
+    assert.equal(workspaceGroupExpanded('ws-modedev', {current: false}, env), true,
+        '聚焦会话所在的组必须展开');
+    assert.equal(workspaceGroupExpanded('ws-aaa', {current: false}, env), false,
+        '名字序第一组不该因为排序而展开');
+    // 用户显式折叠过就听用户的
+    const env2 = {...env, override: new Map([['ws-modedev', false]])};
+    assert.equal(workspaceGroupExpanded('ws-modedev', {current: false}, env2), false,
+        'override 优先于聚焦组');
+});
+
+test('分组默认展开：focusedKey 缺失时回落到旧规则（不破坏单工作区与老调用）', () => {
+    const env = groupEnv('ws-a', new Map(), 'ws-a');
+    assert.equal(workspaceGroupExpanded('ws-a', {current: true}, env), true, '仍按当前工作区展开');
+    const env2 = groupEnv('', new Map(), 'ws-b');
+    assert.equal(workspaceGroupExpanded('ws-b', {current: false}, env2), true, '仍展开第一个');
+});
+
 test('分组默认展开：显式切换覆盖默认（记住用户选择）', () => {
     const override = new Map([['ws-b', true], ['ws-a', false]]);
     const env = groupEnv('ws-a', override, 'ws-a');
@@ -333,4 +360,57 @@ test('subgroupPageKey：归档标志 + 工作区 + 子分组名三段唯一', ()
     assert.equal(subgroupPageKey(true, 'ws1', '前端'), 'archived:ws1:前端');
     assert.notEqual(subgroupPageKey(false, 'ws1', '前端'), subgroupPageKey(false, 'ws1', '后端'), '不同子分组分页互不影响');
     assert.equal(subgroupPageKey(false, 'ws1', ''), 'active:ws1:', '未分组桶也有独立键');
+});
+
+// 自定义子分组头「⋯」菜单：命名分组给重命名/新建/解散，未分组只给新建，归档区不给新建。
+// groupKey 为空（未关联工作区）的桶没有工作区归属，新建会错绑当前工作区，故也不给新建。
+test('子分组菜单（命名分组，进行中）：重命名 / 在此新建 / 解散，解散带条数', () => {
+    const sub = {name: '前端', sessions: [{id: 'a'}, {id: 'b'}, {id: 'c'}]};
+    const items = buildSubgroupMenuItems(sub, {archived: false, groupKey: 'ws1'});
+    const labels = labelsOf(items);
+    assert.ok(labels.includes('重命名分组…'));
+    assert.ok(labels.includes('在此分组新建会话'));
+    assert.ok(labels.some((l) => l.includes('解散分组') && l.includes('3 条')), '解散项带组内条数');
+    for (const item of items) {
+        if (!item.sep) assert.ok(item.act, '缺少 act: ' + JSON.stringify(item));
+    }
+});
+
+test('子分组菜单（未分组，有工作区）：只给在此新建，无重命名/解散', () => {
+    const items = buildSubgroupMenuItems({name: '', sessions: [{id: 'a'}]}, {archived: false, groupKey: 'ws1'});
+    const labels = labelsOf(items);
+    assert.deepEqual(labels, ['在此分组新建会话']);
+});
+
+test('子分组菜单（未关联工作区）：不给新建，只有命名分组的重命名/解散', () => {
+    const ungrouped = buildSubgroupMenuItems({name: '', sessions: [{id: 'a'}]}, {archived: false, groupKey: ''});
+    assert.deepEqual(labelsOf(ungrouped), [], '未关联工作区的未分组桶没有任何操作');
+    const named = buildSubgroupMenuItems({name: '前端', sessions: [{id: 'a'}]}, {archived: false, groupKey: ''});
+    assert.ok(!labelsOf(named).includes('在此分组新建会话'), '未关联工作区不该新建（会错绑当前工作区）');
+    assert.ok(labelsOf(named).includes('重命名分组…'));
+});
+
+test('子分组菜单（归档区）：命名分组也不给新建，仍可重命名/解散', () => {
+    const items = buildSubgroupMenuItems({name: '前端', sessions: [{id: 'a'}]}, {archived: true, groupKey: 'ws1'});
+    const labels = labelsOf(items);
+    assert.ok(!labels.includes('在此分组新建会话'), '归档区不该新建会话');
+    assert.ok(labels.includes('重命名分组…'));
+    assert.ok(labels.some((l) => l.includes('解散分组')));
+});
+
+test('子分组菜单：每个非分隔项图标已注册', () => {
+    for (const sub of [{name: '前端', sessions: [{}, {}]}, {name: '', sessions: [{}]}]) {
+        for (const item of buildSubgroupMenuItems(sub, {archived: false, groupKey: 'ws1'})) {
+            if (item.sep) continue;
+            assert.ok(item.icon, '菜单项缺 icon: ' + item.label);
+            assert.ok(ICONS[item.icon], '图标未注册: ' + item.icon + '（' + item.label + '）');
+        }
+    }
+});
+
+test('subgroupFolded：默认展开，仅显式折叠过才收起', () => {
+    const folded = new Set(['active:ws1:前端']);
+    assert.equal(subgroupFolded('active:ws1:前端', {folded}), true, '显式折叠的桶收起');
+    assert.equal(subgroupFolded('active:ws1:后端', {folded}), false, '没折叠过的默认展开');
+    assert.equal(subgroupFolded('x', {}), false, '无 folded 集合不报错，默认展开');
 });

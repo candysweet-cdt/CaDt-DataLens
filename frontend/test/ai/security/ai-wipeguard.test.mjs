@@ -8,6 +8,7 @@ import {
     WIPEGUARD_DELETE_THRESHOLD,
     WIPEGUARD_FINGERPRINT_DEBOUNCE_MS,
     WIPEGUARD_NOTIFY_COOLDOWN_MS,
+    WIPEGUARD_PER_ROOT_LIMIT,
     wipeGuardSkipPath,
     registerDeleteEvents,
     shouldAlarmFromWatch,
@@ -24,6 +25,18 @@ test('normalizeWsKey：与后端 WorkspaceKey 的归一化语义一致', () => {
     assert.equal(normalizeWsKey('D:\\OraSkyC\\Project\\CandySweet\\CaDt-DataLens\\'), 'd:/oraskyc/project/candysweet/cadt-datalens');
     assert.equal(normalizeWsKey('d:/oraskyc/project/candysweet/cadt-datalens'), 'd:/oraskyc/project/candysweet/cadt-datalens');
     assert.equal(normalizeWsKey(''), '');
+});
+
+// 点段归一（独立审查 🟢）：payload.root 若带 `.` / `..` 段，旧实现只做「反斜杠 + 尾斜杠 + 小写」，
+// 会与已登记的根分成两个键 → 事件被防护白名单过滤掉、整根静默失明。
+test('normalizeWsKey：归一点段，同一目录不同写法必须同键', () => {
+    const want = 'd:/ws/proj';
+    for (const variant of ['D:/ws/proj', 'D:\\ws\\proj\\', 'D:/ws/./proj', 'D:/ws/other/../proj', 'D://ws//proj']) {
+        assert.equal(normalizeWsKey(variant), want, `${variant} 应归一为 ${want}`);
+    }
+    // 盘符根与 UNC 的前导斜杠不能被吃掉
+    assert.equal(normalizeWsKey('D:/'), 'd:');
+    assert.equal(normalizeWsKey('//server/share/'), '//server/share');
 });
 
 test('共享测试向量：归一化 key 的 sha256 前 8 hex 与 Go TestWorkspaceKey 相同', () => {
@@ -309,15 +322,57 @@ test('控制器：preCommand/postCommand 前后指纹对比走 Go 判定（阈�
     assert.equal(backend.calls.alarms[0].level, 'critical');
 });
 
-test('控制器：切工作区重置窗口与基线（跨工作区不误判）', async () => {
+// 方案 §4.9.7 F3：换手/切会话期间 preCommand(A) 与 postCommand 各取一次根，
+// 会拿 B 的 after 跟 A 的 before 比，判出「整仓顶层条目被清空」这类跨仓库误报。
+// preCommand 返回 {root, fp} 后，postCommand 一律用快照自带的根。
+test('控制器：postCommand 以快照自带的根为准——调用方传别的根也不跨仓库比较', async () => {
+    const {ctrl, backend} = makeController();
+    const roots = [];
+    backend.WipeGuardFingerprint = async (root) => {
+        roots.push(root);
+        // pre 取到「满仓」、post 取到「被清空」：同根比较才应判 critical
+        return roots.length === 1
+            ? {rootEntries: 98, depth1Dirs: 20, markers: {'.git': true}, fileCount: 500, sampled: false}
+            : {rootEntries: 1, depth1Dirs: 0, markers: {}, fileCount: 0, sampled: false};
+    };
+    const before = await ctrl.preCommand('D:/repo-a');
+    assert.equal(before.root, 'D:/repo-a');
+    assert.ok(before.fp, '快照带指纹');
+    // 用户在命令跑的时候换手到 B：调用点此刻现取到的根已是 B
+    await ctrl.postCommand('E:/repo-b', before);
+    assert.ok(roots.length >= 2, 'pre + post 各取一次');
+    assert.ok(roots.every((r) => r === 'D:/repo-a'),
+        '每一次取指纹（含告警后的兜底重扫）都必须用快照根，绝不能出现调用方现取的 E:/repo-b');
+    assert.equal(backend.calls.alarms.length, 1, '同根比较，critical 正常上报');
+});
+
+test('控制器：postCommand 新形式 postCommand(snapshot) 与旧形式等价', async () => {
+    const {ctrl, backend} = makeController();
+    const before = await ctrl.preCommand('D:/demo');
+    backend.WipeGuardFingerprint = async () => ({rootEntries: 1, depth1Dirs: 0, markers: {}, fileCount: 0, sampled: false});
+    await ctrl.postCommand(before);
+    assert.equal(backend.calls.compares.length, 1);
+    assert.equal(backend.calls.alarms.length, 1);
+});
+
+test('控制器：旧调用方传裸指纹（非快照）时仍按传入的根比较（向后兼容）', async () => {
+    const {ctrl, backend} = makeController();
+    const rawFp = {rootEntries: 98, depth1Dirs: 20, markers: {'.git': true}, fileCount: 500, sampled: false};
+    backend.WipeGuardFingerprint = async () => ({rootEntries: 1, depth1Dirs: 0, markers: {}, fileCount: 0, sampled: false});
+    await ctrl.postCommand('D:/legacy', rawFp);
+    assert.equal(backend.calls.compares.length, 1, '未改造的调用方不能被静默跳过');
+});
+
+test('控制器：跨工作区不误判——两个根的滚动窗口互不影响（per-root 而非换根清零）', async () => {
     const {ctrl} = makeController();
     const paths = Array.from({length: WIPEGUARD_DELETE_THRESHOLD - 1}, (_, i) => `f${i}.js`);
     ctrl.handleWorkspaceEvent({root: 'D:/demo', removed: paths, overflow: false});
-    // 换工作区：上一窗口的 39 条删除不应带入
+    // 换到 E: 根：E 自己从空窗口起算，D 的 39 条不会带过来（跨根不误判）
     ctrl.handleWorkspaceEvent({root: 'E:/other', removed: ['one.js'], overflow: false});
-    assert.equal(ctrl.handleWorkspaceEvent({root: 'E:/other', removed: ['two.js'], overflow: false}), undefined);
-    const {backend} = {backend: null};
-    void backend;
+    ctrl.handleWorkspaceEvent({root: 'E:/other', removed: ['two.js'], overflow: false});
+    // 两个根各自独立存在于防护表里
+    assert.ok(ctrl.tracksRoot('D:/demo'));
+    assert.ok(ctrl.tracksRoot('E:/other'));
 });
 
 test('控制器：配置同步（开关对象原样发 Go）', async () => {
@@ -348,6 +403,27 @@ test('handleWorkspaceEvent：只计 removed 事件——added/modified（回灌/
     ctrl.handleWorkspaceEvent({root: 'D:/demo', removed: gone, overflow: false});
     await settle();
     assert.equal(backend.calls.alarms.length, 1);
+});
+
+test('handleWorkspaceEvent：整批事件都被排除表滤掉时不打「窗口 N/seq」日志（调试台防刷屏）', async () => {
+    const {ctrl} = makeController();
+    const logs = [];
+    const orig = console.debug;
+    console.debug = (...a) => logs.push(a);
+    try {
+        // 真实形态（2026-11-26 实录）：git status 写 .git/index.lock、应用写 .cadt、构建写 dist，
+        // 每批都推事件但全被 wipeGuardSkipPath 滤掉、窗口 seq 不动 —— 这些批次不该刷调试台。
+        ctrl.handleWorkspaceEvent({root: 'D:/demo', removed: ['.git/index.lock'], present: ['.git/index.lock'], overflow: false});
+        ctrl.handleWorkspaceEvent({root: 'D:/demo', present: ['.cadt/logs/2026/11/2026-11-26.md'], overflow: false});
+        ctrl.handleWorkspaceEvent({root: 'D:/demo', present: ['frontend/dist/assets/index.js', 'node_modules/x/index.js'], overflow: false});
+        assert.equal(logs.length, 0, '被排除的事件不进窗口，也不该打日志');
+        // 真删除仍要留可观测性（演练 §6.1 D1 靠这条日志区分「换根清零」与「窗口延续」）
+        ctrl.handleWorkspaceEvent({root: 'D:/demo', removed: ['src/gone.js'], overflow: false});
+        assert.equal(logs.length, 1, '窗口 seq 有增量时照常记一条');
+        assert.match(String(logs[0][0]), /窗口 N\/seq/);
+    } finally {
+        console.debug = orig;
+    }
 });
 
 test('handleWorkspaceEvent：删除后同路径重建（插件更新）不计入净消失', async () => {
@@ -389,4 +465,113 @@ test('告警按工作区归因：onCritical 带着被告警的 root（投递侧�
     } finally {
         Date.now = realNow;
     }
+});
+
+// ---- per-root 状态表（方案 §4.9.7 F1/F5/F6）----
+// 单值状态机时代：换根清空滚动窗口（F1 漏报）、告警冷却全局一份（F5 抑制）。
+// 这些用例把两条失效钉住。
+
+test('per-root：换根不清零——A 攒下的删除在切到 B 再切回 A 后仍然算数', async () => {
+    const {ctrl, backend, fired} = makeController({isAIActive: () => true});
+    const short = WIPEGUARD_DELETE_THRESHOLD - 1; // 差 1 条不够阈值
+    const a = Array.from({length: short}, (_, i) => 'a' + i + '.js');
+    ctrl.handleWorkspaceEvent({root: 'D:/repo-a', removed: a, overflow: false});
+    // 用户切到 B（A 的会话还在跑）：B 的事件不能把 A 的窗口抹掉
+    ctrl.handleWorkspaceEvent({root: 'E:/repo-b', removed: ['b.js'], overflow: false});
+    await settle();
+    assert.equal(backend.calls.alarms.length, 0, 'A 还差 1 条，先不报');
+    // 切回 A：再来一条就到阈值——若换根清零，这里只有 1 条，真破坏永远报不出来
+    ctrl.handleWorkspaceEvent({root: 'D:/repo-a', removed: ['last.js'], overflow: false});
+    await settle();
+    assert.equal(fired.critical.length, 1, '切走期间攒的计数必须还在');
+    assert.equal(normalizeWsKey(fired.critical[0].root), 'd:/repo-a', '告警归属仍是被害根 A');
+});
+
+test('per-root：A 根条目在切到 B 之后仍存在，键按归一化合并', async () => {
+    const {ctrl} = makeController();
+    ctrl.handleWorkspaceEvent({root: 'D:/repo-a', removed: ['x.js'], overflow: false});
+    ctrl.handleWorkspaceEvent({root: 'E:/repo-b', removed: ['y.js'], overflow: false});
+    assert.ok(ctrl.tracksRoot('D:/repo-a'), 'A 仍在防护表里');
+    assert.ok(ctrl.tracksRoot('e:\\repo-b\\'), '同一个根换个写法只占一格（normalizeWsKey）');
+    assert.ok(!ctrl.tracksRoot('F:/never-seen'), '没见过的根不占位');
+});
+
+test('per-root：告警冷却按根独立——A 刚报过警，B 的真破坏不被抑制', async () => {
+    const realNow = Date.now;
+    let fake = 5000000;
+    Date.now = () => fake;
+    try {
+        const {ctrl, fired} = makeController({isAIActive: () => true});
+        const flood = (prefix) => Array.from({length: 41}, (_, i) => prefix + i + '.js');
+        ctrl.handleWorkspaceEvent({root: 'D:/repo-a', removed: flood('a'), overflow: false});
+        await settle();
+        assert.equal(fired.critical.length, 1);
+        // 同一时刻另一个根的真破坏：全局冷却（F5）会把这条吞掉
+        ctrl.handleWorkspaceEvent({root: 'E:/repo-b', removed: flood('b'), overflow: false});
+        await settle();
+        assert.equal(fired.critical.length, 2, 'B 根不受 A 根冷却影响');
+        assert.equal(normalizeWsKey(fired.critical[1].root), 'e:/repo-b');
+        // 同一根仍守自己的 3 秒去抖
+        ctrl.handleWorkspaceEvent({root: 'D:/repo-a', removed: flood('a2-'), overflow: false});
+        await settle();
+        assert.equal(fired.critical.length, 2, '同一根去抖不放松');
+    } finally {
+        Date.now = realNow;
+    }
+});
+
+test('per-root：LRU 只保留最近 N 个根，淘汰时回调宿主退订', async () => {
+    const evicted = [];
+    const {ctrl} = makeController({
+        getWsRoot: () => 'D:/current',
+        onRootEvicted: (root) => evicted.push(root),
+    });
+    for (let i = 0; i < WIPEGUARD_PER_ROOT_LIMIT + 2; i++) ctrl.trackRoot('D:/ws-' + i);
+    assert.equal(evicted.length, 2, '超出上限的两个根被淘汰');
+    assert.ok(!ctrl.tracksRoot('D:/ws-0') && !ctrl.tracksRoot('D:/ws-1'), '淘汰最久没动静的');
+    assert.ok(ctrl.tracksRoot('D:/ws-' + (WIPEGUARD_PER_ROOT_LIMIT + 1)), '最近的仍在');
+});
+
+test('per-root：有会话在跑的根优先保留，无会话的根先被淘汰；当前根永不淘汰', async () => {
+    const evicted = [];
+    const busy = new Set(['D:/busy']);
+    const {ctrl} = makeController({
+        getWsRoot: () => 'D:/busy',
+        isAIActive: (root) => busy.has(root),
+        onRootEvicted: (root) => evicted.push(root),
+    });
+    // busy 根既是最旧的、也是当前根：两重保护下都不该被淘汰
+    ctrl.trackRoot('D:/busy');
+    for (let i = 0; i < WIPEGUARD_PER_ROOT_LIMIT + 1; i++) ctrl.trackRoot('D:/cold-' + i);
+    assert.ok(ctrl.tracksRoot('D:/busy'), '有会话在跑（且是当前根）的根不淘汰');
+    assert.ok(evicted.length >= 2, '超限的冷根被淘汰：' + evicted.join(','));
+    assert.ok(evicted.every((r) => r.indexOf('cold-') >= 0), '淘汰的全是无会话的根');
+});
+
+test('per-root：untrackRoot 摘条目并通知宿主，重复退订幂等', async () => {
+    const evicted = [];
+    const {ctrl} = makeController({onRootEvicted: (root) => evicted.push(root)});
+    ctrl.trackRoot('D:/repo-a');
+    assert.equal(ctrl.untrackRoot('D:/repo-a'), true);
+    assert.equal(ctrl.untrackRoot('D:/repo-a'), false, '重复退订返回 false');
+    assert.deepEqual(evicted, ['D:/repo-a']);
+    assert.ok(!ctrl.tracksRoot('D:/repo-a'));
+});
+
+test('per-root：快照失败连击按根记——切根回来不会串到别的仓库', async () => {
+    let current = 'D:/repo-a';
+    const notices = [];
+    const {ctrl, backend} = makeController({
+        getWsRoot: () => current,
+        notify: (msg) => notices.push(msg),
+    });
+    backend.WipeGuardSnapshot = async () => {
+        throw new Error('fatal: boom');
+    };
+    await ctrl.snapshotTick(); // A 第 1 次失败 → 通知（连击 1）
+    current = 'E:/repo-b';
+    await ctrl.snapshotTick(); // B 第 1 次失败 → 也应通知（共用状态会因冷却静默）
+    assert.equal(notices.length, 2);
+    assert.ok(notices[0].body.includes('已连续 1 次'));
+    assert.ok(notices[1].body.includes('已连续 1 次'), 'B 的连击从 1 开始，不是 2');
 });

@@ -6,6 +6,7 @@ import {createInput, createSelect, createTextarea} from '../../core/form-control
 import {pageHeader, commandBar, filterChips, statusBadge, stateBlock, relativeTime} from '../../app-pages/ui-kit.js';
 import {describeAISchedule, aiFormatLocalMs, aiClampInt, aiTextOf} from '../core/ai-constants.js';
 import {kvGet, kvSet} from '../../core/kv-store.js';
+import {schedFireKey} from '../../core/storage-keys.js';
 
 export function createAISchedule(ctx) {
     const opt = ctx.opt;
@@ -43,10 +44,15 @@ export function createAISchedule(ctx) {
     let mountedList = null;
 
     function renderScheduleSettings(host) {
+        // 刷新顺序很重要：缓存 / 头部胶囊的更新**不依赖任何容器**（胶囊在面板头部，与
+        // 「定时任务页是否开着」无关），所以必须放在 target 判空之前。
+        // 踩过的坑：opt.schedules 指向的设置页容器（#ai-opt-schedules）在定时任务迁成
+        // 应用页面标签页后已从 index.html 移除 → 它恒为 null → 只要定时任务页没开着，
+        // 这里就 `return` 掉，缓存永不更新，头部胶囊永远不显示（AI 用 schedule_create
+        // 建完任务同样看不到）。
+        refreshSchedulesUI();
         const target = host || mountedList || opt.schedules;
         if (!target) return;
-        // 列表渲染顺带刷新头部胶囊与弹层缓存（CRUD 工具与手动操作都汇到这条路径）
-        refreshSchedulesUI();
         if (!backend.AIScheduleList) {
             target.innerHTML = '';
             const empty = document.createElement('span');
@@ -240,6 +246,10 @@ export function createAISchedule(ctx) {
     // 其他会话与未绑定任务在「自动化」对话框与设置页可见。
     // 列表缓存一份供弹层同步渲染（避免异步填充把弹层定位撑偏）。
     let scheduleListCache = [];
+    // 是否成功拉过一次列表：syncChip 据此决定「按缓存重算」还是「先拉一次」。
+    // 面板初始化时 currentSession 可能还没就绪，那次 renderChip 算出来的 mine 是空的；
+    // 之后切会话只读缓存就永远显示不出来（缓存有数据，但没人拿新 sid 重算过）。
+    let scheduleLoaded = false;
 
     function chipEl() {
         return ctx.chipSchedules || null;
@@ -272,9 +282,11 @@ export function createAISchedule(ctx) {
     }
 
     function refreshSchedulesUI(onReady) {
-        if (!backend.AIScheduleList) return;
+        // 旧后端不支持定时任务：标记为「已加载」，免得 syncChip 每次切会话都重试一遍空拉取。
+        if (!backend.AIScheduleList) { scheduleLoaded = true; return; }
         Promise.resolve(backend.AIScheduleList()).then((list) => {
             scheduleListCache = Array.isArray(list) ? list : [];
+            scheduleLoaded = true;
             updateChipFromCache();
             // 弹层开着时原位重渲染（重新定位）
             if (typeof ctx.onSchedulesChanged === 'function') ctx.onSchedulesChanged();
@@ -290,9 +302,14 @@ export function createAISchedule(ctx) {
         refreshSchedulesUI();
     }
 
-    // 切会话时的胶囊同步（syncActiveSessionUI 调用）：只按缓存重算显隐/角标，不拉后端。
-    // 定时任务只在 CRUD 与触发时变化，那些路径都会先过 refreshSchedulesUI 更新缓存。
+    // 切会话时的胶囊同步（syncActiveSessionUI 调用）：按缓存重算显隐/角标。
+    // 缓存从没拉过（面板刚建 / 首次拉取失败）时补一次——初始化那次 renderChip 可能早于
+    // 会话恢复，sid 还是空的，只按空缓存算会让胶囊永久隐藏。
     function syncChip() {
+        if (!scheduleLoaded) {
+            refreshSchedulesUI();
+            return;
+        }
         updateChipFromCache();
     }
 
@@ -603,7 +620,7 @@ export function createAISchedule(ctx) {
 
     async function handleScheduleFire(fire) {
         if (!fire || !fire.scheduleId) return;
-        const key = 'datalens-sched-fire-' + fire.scheduleId + '-' + (fire.runNo || 0);
+        const key = schedFireKey(fire.scheduleId, fire.runNo);
         const claimed = () => {
             if (kvGet(key)) return false;
             kvSet(key, String(Date.now())); // 写不进（配额/隐私模式）也算认领，同原实现

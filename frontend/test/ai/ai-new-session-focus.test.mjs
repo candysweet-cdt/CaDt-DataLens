@@ -43,8 +43,10 @@ test('后台路径：不打开面板、不切会话、不碰输入区，走 star
     assert.doesNotMatch(bg, /\bnewSession\(\)/);
     assert.doesNotMatch(bg, /\bsubmitText\(/);
     assert.doesNotMatch(bg, /setActiveSessionId\(/);
-    // 必须经会话级内核起轮，且落盘 + 刷列表
-    assert.match(bg, /createSessionData\(title \|\| undefined, \{/);
+    // 必须经会话级内核起轮，且落盘 + 刷列表。
+    // 建会话走统一入口 makeSessionWithRoot(title, opts)——多工作区下补视图根，
+    // 见 ai-session-root-binding.test.mjs（漏补会让会话落到「未关联工作区」分组）。
+    assert.match(bg, /makeSessionWithRoot\(title \|\| undefined, \{/);
     assert.match(bg, /sessions\.push\(session\)/);
     assert.match(bg, /persistSessions\(\)/);
     assert.match(bg, /startSessionTurn\(session, message\)/);

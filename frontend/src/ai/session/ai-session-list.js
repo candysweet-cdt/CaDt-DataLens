@@ -7,6 +7,7 @@ import {aiTextOf, aiFormatSessionTime, aiFormatBytes, AI_SESSION_READ_LIMIT} fro
 import {sessionActivityTs} from './ai-session-store.js';
 import {planAwaitingUserReply} from '../core/ai-plan-file.js';
 import {isTransientSession} from './ai-session-scope.js';
+import {isMultiWorkspace} from '../../core/root-scope.js';
 
 // 活动栏「AI 会话」图标状态点的聚合（纯函数，env 注入判定，便于单测）：
 // 只统计当前工作区的非归档会话，按 error > pending > done 取最高优先级的一个；
@@ -90,10 +91,18 @@ export function sessionFilterHit(session, text) {
 // - 用户手动切换过该分组（override 有布尔值）→ 尊重显式选择；
 // - 否则默认只展开当前工作区，其余收起；
 // - 未打开工作区（currentKey 为空）时展开第一个分组，避免所有会话都藏在收起的分组里。
+// 分组默认是否展开。优先级：用户显式 override > 聚焦组 > 当前工作区组 > 第一组。
+// 「聚焦组」与「当前工作区」是两件事，别合并（踩过坑）：
+//   · 单工作区：聚焦组 == 当前工作区（group.current）
+//   · 多工作区：窗口没有绑定工作区，但**当前会话**属于某个工作区——默认该展开它，
+//     而不是按名字序展开第一组（那会让用户重启后看到"当前会话那组收着、别的组开着"）。
+// override 恒优先：用户手动折叠/展开过的分组不被默认规则抢走。
 export function workspaceGroupExpanded(key, group, env) {
     const override = env && env.override && typeof env.override.get === 'function'
         ? env.override.get(key) : undefined;
     if (typeof override === 'boolean') return override;
+    const focusedKey = env && typeof env.focusedKey === 'function' ? env.focusedKey() : '';
+    if (focusedKey) return key === focusedKey;
     const currentKey = typeof env.currentKey === 'function' ? env.currentKey() : (env && env.currentKey) || '';
     if (currentKey) return !!(group && group.current);
     return key === (env && env.firstKey);
@@ -203,15 +212,27 @@ export function buildWorkspaceMenuItems(group, env) {
     const path = group && group.path ? group.path : '';
     const isCurrent = !!(group && group.current && path);
     const recent = Array.isArray(env.recent) ? env.recent : [];
+    const expanded = !!(env && env.expanded);
+    const multiRoot = !!(env && env.multiRoot);
     const items = [];
     if (path) {
         items.push({label: '在文件资源管理器中显示', act: 'reveal'});
         items.push({label: '复制工作区路径', act: 'copyPath'});
         items.push({label: '在新窗口打开此工作区', act: 'openNewWindow', disabled: isCurrent});
         items.push({sep: true});
-        items.push({label: '在此工作区新建会话', act: 'newSession'});
+        items.push({label: '在此工作区新建会话', icon: 'plus', act: 'newSession'});
+        // 「切换到此工作区」只对多工作区有意义：单工作区下换工作区＝开新窗口/换根，
+        // 与「在新窗口打开」重复。多工作区下它把视图（树/面包屑/git）切到这个仓库。
+        if (multiRoot) items.push({label: '切换到此工作区', icon: 'folder', act: 'switchHere'});
         items.push({sep: true});
     }
+    // 展开 / 折叠：当前分组一个动作（按现状二选一），再加「全部」两个（分组多时省事）
+    items.push(expanded
+        ? {label: '折叠此分组', icon: 'chevron-up', act: 'collapseOne'}
+        : {label: '展开此分组', icon: 'chevron-down', act: 'expandOne'});
+    items.push({label: '展开所有分组', icon: 'chevron-down', act: 'expandAll'});
+    items.push({label: '折叠所有分组', icon: 'chevron-up', act: 'collapseAll'});
+    items.push({sep: true});
     items.push({label: '打开文件夹…', act: 'openFolder'});
     if (recent.length) {
         items.push({
@@ -228,6 +249,31 @@ export function buildWorkspaceMenuItems(group, env) {
         items.push({label: '关闭当前工作区', act: 'close'});
     }
     return items;
+}
+
+// 自定义子分组头「⋯」菜单组装（纯函数，配 ai-session-list.test.mjs）：act 是符号动作键，
+// showSubgroupMenu 负责映射成真实闭包。命名分组才有「重命名 / 解散」；未分组只有新建；
+// 归档区的桶不给「在此分组新建会话」（归档会话不该被新建出来）。解散把组内会话移入未分组。
+// env.groupKey 为空（未关联工作区）时不给新建——那条桶没有工作区归属，新建会错绑当前工作区。
+export function buildSubgroupMenuItems(sub, env) {
+    const name = sub && sub.name ? String(sub.name) : '';
+    const count = sub && Array.isArray(sub.sessions) ? sub.sessions.length : 0;
+    const archived = !!(env && env.archived);
+    const groupKey = env && env.groupKey ? String(env.groupKey) : '';
+    const items = [];
+    if (name) items.push({label: '重命名分组…', icon: 'rename', act: 'rename'});
+    if (!archived && groupKey) items.push({label: '在此分组新建会话', icon: 'plus', act: 'newSession'});
+    if (name) {
+        if (items.length) items.push({sep: true});
+        items.push({label: '解散分组（' + count + ' 条移入未分组）', icon: 'eraser', act: 'dissolve'});
+    }
+    return items;
+}
+
+// 子分组折叠判定（纯函数，配 ai-session-list.test.mjs）：默认展开；只有用户显式折叠过
+//（folded.has(key)）才收起。过滤时渲染层强制展开，不经过这里。
+export function subgroupFolded(key, env) {
+    return !!(env && env.folded && typeof env.folded.has === 'function' && env.folded.has(key));
 }
 
 export function createAISessionList(ctx) {
@@ -260,7 +306,7 @@ export function createAISessionList(ctx) {
     const messageCountOf = typeof ctx.messageCount === 'function'
         ? ctx.messageCount
         : ((session) => (session && session.messages ? session.messages.length : 0));
-    const currentWorkspacePath = ctx.currentWorkspacePath;
+    const windowWorkspacePath = ctx.windowWorkspacePath;
     const isOpen = ctx.isOpen;
     const ensureOpen = ctx.ensureOpen;
     const persistSessions = ctx.persistSessions;
@@ -274,6 +320,10 @@ export function createAISessionList(ctx) {
     const renameSession = ctx.renameSession;
     // 会话自定义分组：缺省空操作，保证浮窗/测试不报错
     const setSessionGroup = typeof ctx.setSessionGroup === 'function' ? ctx.setSessionGroup : () => {};
+    // 子分组头操作：重命名 / 解散 / 在此分组新建（宿主惰性注入，缺省空操作）
+    const renameSessionGroup = typeof ctx.renameSessionGroup === 'function' ? ctx.renameSessionGroup : () => {};
+    const dissolveSessionGroup = typeof ctx.dissolveSessionGroup === 'function' ? ctx.dissolveSessionGroup : () => {};
+    const newSessionInGroup = typeof ctx.newSessionInGroup === 'function' ? ctx.newSessionInGroup : () => {};
     const exportSession = ctx.exportSession;
     const showSessionDiagnostics = ctx.showSessionDiagnostics;
     const archiveSession = ctx.archiveSession;
@@ -285,6 +335,14 @@ export function createAISessionList(ctx) {
     const showContextMenu = ctx.showContextMenu;
     // 工作区管理菜单的宿主能力（由 main.js 注入；缺省空操作，浮窗/测试不报错）
     const workspaceMenuHost = ctx.workspaceMenu || {};
+    // 「聚焦会话所在工作区」的分组 key（决定默认展开哪个组）。宿主没注入时回落到
+    // 「单工作区看窗口工作区 / 多工作区看聚焦会话」，都不行就返回空（展开第一组）。
+    const focusedWorkspaceKeyOf = typeof ctx.focusedWorkspaceKey === 'function'
+        ? ctx.focusedWorkspaceKey
+        : () => '';
+    function focusedWorkspaceKey() {
+        try { return aiWorkspaceKey(focusedWorkspaceKeyOf()) || ''; } catch (e) { return ''; }
+    }
     const getSessions = ctx.getSessions;
     const setStickBottom = ctx.setStickBottom;
     // 活动栏会话图标状态点：宿主注入的回调（缺省空操作），由本域统一计算并推送
@@ -298,6 +356,8 @@ export function createAISessionList(ctx) {
     // 用户显式切换过的分组展开状态：key → boolean。无记录的分组走默认判定
     //（只展开当前工作区，其余收起，见 workspaceGroupExpanded），切换后记住选择。
     const workspaceGroupOverrides = new Map();
+    // 自定义子分组的折叠状态：分页键 → true 表示用户显式折叠。默认展开，见 subgroupFolded。
+    const subgroupFoldedKeys = new Set();
 
     // 过滤行开合（对齐文件树 toggleSidebarFilter）：显示时聚焦并全选输入，收起时清词重画。
     function toggleSessionFilter(force) {
@@ -347,6 +407,47 @@ export function createAISessionList(ctx) {
     // 那个分组默认收起——不展开的话用户点完「新建临时会话」在列表里看不到它）。
     function expandWorkspaceGroup(key) {
         workspaceGroupOverrides.set(String(key || ''), true);
+    }
+
+    // 最近一次渲染出现过的分组 key（渲染顺序）。右键菜单的「展开/折叠所有」按它遍历；
+    // 空列表时先渲染一次再取，保证菜单作用于「用户眼前这些分组」。
+    let lastGroupKeys = [];
+
+    // 一次性展开 / 折叠所有分组。只写 override（用户显式意图），不清 override 表——
+    // 清掉会让「没有 override 的分组」回落到默认展开规则，表现为部分分组行为突变。
+    function setAllGroupsExpanded(expanded) {
+        const keys = lastGroupKeys.length ? lastGroupKeys : [];
+        for (const key of keys) workspaceGroupOverrides.set(key, !!expanded);
+        renderSessionList();
+    }
+
+    // 让某条会话在列表里可见：展开它所在的工作区分组（用户折叠过也要展开），
+    // 重绘后把条目滚进视野。多工作区下「新建会话」必须走这里——新会话归它自己的工作区
+    // 分组，那个分组若收着/在滚动区外，用户建完根本看不到它建在哪。
+    function revealSession(sessionId, session) {
+        const id = String(sessionId || '');
+        if (!id || !sessionListEl) return;
+        const target = session || sessions.find((item) => item.id === id);
+        if (!target) return;
+        // 分组 key 与 buildWorkspaceGroups 同源：会话的 workspace（无 → '' = 未关联工作区）
+        workspaceGroupOverrides.set(aiWorkspaceKey(sessionWorkspacePath(target)) || '', true);
+        renderSessionList();
+        // 渲染是同步的，但滚动要等 DOM 落地：条目多时列表会整段换掉。
+        setTimeout(() => {
+            if (!sessionListEl) return;
+            const node = Array.from(sessionListEl.querySelectorAll('[data-ai-session-id]'))
+                .find((item) => item.dataset.aiSessionId === id);
+            if (!node) return;
+            const box = sessionListEl.getBoundingClientRect();
+            const rect = node.getBoundingClientRect();
+            // 已经整条在可视区内：不动。新建会话往往就在眼前，这时再滚一下反而打断视线。
+            if (rect.top >= box.top && rect.bottom <= box.bottom) return;
+            // 不在视野内才滚，且**尽量靠上**（第一眼要看到它，而不是停在列表最下一行）。
+            // 直接改 scrollTop 而不是 scrollIntoView：只动会话列表这一个容器，不波及其它滚动区；
+            // 末尾几条没有余量时 scrollTop 会被浏览器 clamp，自然落在偏低处——正是想要的。
+            const PAD = 6; // 与 .ai-session-item 的 scroll-margin-top 一致，避免贴着分组头
+            sessionListEl.scrollTop += (rect.top - box.top) - PAD;
+        }, 0);
     }
     // 每个工作区分组一次只渲染最近 AI_SESSION_GROUP_PAGE 条会话，点分组底部的「···」再追加一页。
     // key = 列表类型 + 工作区 key，进行中与已归档互不影响；只是渲染层的展开状态，不动会话数据。
@@ -429,7 +530,7 @@ export function createAISessionList(ctx) {
                 return status === 'running' ? '' : status;
             },
             workspaceKeyOf: (session) => aiWorkspaceKey(sessionWorkspacePath(session)),
-            currentWorkspaceKey: () => aiWorkspaceKey(currentWorkspacePath()),
+            currentWorkspaceKey: () => aiWorkspaceKey(windowWorkspacePath()),
         });
         onBadgeChange(kind);
     }
@@ -643,7 +744,10 @@ export function createAISessionList(ctx) {
         const buildWorkspaceGroups = (list) => {
             const groups = [];
             const byKey = new Map();
-            const currentKey = aiWorkspaceKey(currentWorkspacePath());
+            // 多工作区模式不置顶任何分组：窗口不属于某个工作区，「当前工作区」这个概念
+            // 在这里没有意义。置顶会让用户一点会话就把某个仓库排到最前，和单工作区
+            // 的语义混在一起。
+            const currentKey = isMultiWorkspace() ? '' : aiWorkspaceKey(windowWorkspacePath());
             for (const session of list) {
                 const path = sessionWorkspacePath(session);
                 const key = aiWorkspaceKey(path) || '';
@@ -656,10 +760,16 @@ export function createAISessionList(ctx) {
                 group.sessions.push(session);
                 group.latest = Math.max(group.latest, sessionActivity(session));
             }
-            // 当前工作区排最前；其余按最近活动时间倒序；未关联工作区的放最后。
+            // 单工作区：当前工作区排最前，其余按最近活动时间倒序，未关联工作区的放最后。
+            // 多工作区：**按路径名固定排序**，不随操作跳位。用「最近活动」排序的话，
+            // 在某个分组头点「+」新建会话会立刻把它顶到第一位（新建会话的 updatedAt 最新），
+            // 表现为「点一下 + 就置顶了」——位置记忆被反复打乱。名字序稳定、可预测。
+            const multi = !!isMultiWorkspace();
+            const pathOf = (g) => String(g.path || '');
             groups.sort((a, b) => {
                 if (a.current !== b.current) return a.current ? -1 : 1;
                 if (!!a.key !== !!b.key) return a.key ? -1 : 1;
+                if (multi) return pathOf(a).localeCompare(pathOf(b), 'zh-Hans-CN');
                 return b.latest - a.latest;
             });
             return groups;
@@ -669,9 +779,15 @@ export function createAISessionList(ctx) {
             const groups = buildWorkspaceGroups(list);
             const showHeaders = groups.length > 1 || !!(groups[0] && groups[0].path);
             const firstKey = groups.length ? groups[0].key : '';
+            // 记下本次渲染的分组顺序：右键菜单的「展开/折叠所有」按它遍历
+            if (!archived) lastGroupKeys = groups.map((g) => g.key);
             const groupEnv = {
                 override: workspaceGroupOverrides,
-                currentKey: () => aiWorkspaceKey(currentWorkspacePath()),
+                // 排序：多工作区不置顶任何分组（按名称固定序），这里传空是对的。
+                currentKey: () => (isMultiWorkspace() ? '' : aiWorkspaceKey(windowWorkspacePath())),
+                // 展开：跟**聚焦会话所在组**。多工作区下就是当前会话的工作区——不跟它的话，
+                // 重启后会按名字序展开第一组，用户看到「当前会话那组收着、不相干的组开着」。
+                focusedKey: () => focusedWorkspaceKey(),
                 firstKey,
             };
             for (const group of groups) {
@@ -726,6 +842,13 @@ export function createAISessionList(ctx) {
                     });
                     actions.append(add, menu);
                     head.append(chev, icon, name, actions);
+                    // 右键分组头 = 同一个工作区菜单（以前只有悬浮的「⋯」能打开，
+                    // 右键没反应，用户以为列表缺功能）。
+                    head.addEventListener('contextmenu', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        showWorkspaceMenu(group, e.clientX, e.clientY);
+                    });
                     if (collapsible) {
                         const toggle = () => {
                             workspaceGroupOverrides.set(group.key, !workspaceGroupExpanded(group.key, group, groupEnv));
@@ -775,8 +898,18 @@ export function createAISessionList(ctx) {
                 };
                 if (showSubHeaders) {
                     for (const sub of subgroups) {
+                        const pageKey = subgroupPageKey(archived, group.key, sub.name);
+                        // 过滤时命中分组一律展开（对齐工作区分组 / 文件树行为），否则收起的桶会吞掉匹配会话
+                        const folded = !sessionFilterText && subgroupFolded(pageKey, {folded: subgroupFoldedKeys});
                         const subHead = document.createElement('div');
-                        subHead.className = 'ai-session-subgroup-head';
+                        subHead.className = 'ai-session-subgroup-head' + (folded ? '' : ' expanded')
+                            + (sub.name ? '' : ' ungrouped');
+                        subHead.tabIndex = 0;
+                        subHead.setAttribute('role', 'button');
+                        subHead.setAttribute('aria-expanded', String(!folded));
+                        const chev = document.createElement('span');
+                        chev.className = 'ai-session-subgroup-chev';
+                        chev.innerHTML = iconSvg('chevron-right', 11);
                         const subIcon = document.createElement('span');
                         subIcon.className = 'ai-session-subgroup-icon';
                         subIcon.innerHTML = iconSvg(sub.name ? 'tag' : 'circle', 11);
@@ -786,9 +919,35 @@ export function createAISessionList(ctx) {
                         const subCount = document.createElement('span');
                         subCount.className = 'ai-session-subgroup-count';
                         subCount.textContent = String(sub.sessions.length);
-                        subHead.append(subIcon, subName, subCount);
+                        // 分组头「⋯」：重命名 / 新建 / 解散（悬浮才显形，对齐工作区分组头）
+                        const more = document.createElement('button');
+                        more.type = 'button';
+                        more.className = 'ai-session-subgroup-action';
+                        more.dataset.tip = '分组操作';
+                        more.setAttribute('aria-label', '分组操作：' + (sub.name || '未分组'));
+                        more.innerHTML = iconSvg('more', 12);
+                        more.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            const rect = more.getBoundingClientRect();
+                            showSubgroupMenu(group, sub, archived, rect.left, rect.bottom + 4);
+                        });
+                        const actions = document.createElement('span');
+                        actions.className = 'ai-session-subgroup-actions';
+                        actions.appendChild(more);
+                        subHead.append(chev, subIcon, subName, subCount, actions);
+                        const toggle = () => {
+                            if (subgroupFolded(pageKey, {folded: subgroupFoldedKeys})) subgroupFoldedKeys.delete(pageKey);
+                            else subgroupFoldedKeys.add(pageKey);
+                            renderSessionList();
+                        };
+                        subHead.addEventListener('click', toggle);
+                        subHead.addEventListener('keydown', (e) => {
+                            if (e.target !== subHead || (e.key !== 'Enter' && e.key !== ' ')) return;
+                            e.preventDefault();
+                            toggle();
+                        });
                         sessionListEl.appendChild(subHead);
-                        renderBucket(sub, subgroupPageKey(archived, group.key, sub.name));
+                        if (!folded) renderBucket(sub, pageKey);
                     }
                 } else {
                     renderBucket(subgroups[0] || {sessions: []}, subgroupPageKey(archived, group.key, ''));
@@ -912,6 +1071,16 @@ export function createAISessionList(ctx) {
                 newSessionInWorkspace(group);
                 renderSessionList();
             },
+            // 多工作区：把视图（树 / 面包屑 / git / 便签）切到这个仓库，不新建会话
+            switchHere: () => {
+                workspaceGroupOverrides.set(group.key, true);
+                if (path && workspaceMenuHost.switchToWorkspace) workspaceMenuHost.switchToWorkspace(path);
+                renderSessionList();
+            },
+            expandOne: () => { workspaceGroupOverrides.set(group.key, true); renderSessionList(); },
+            collapseOne: () => { workspaceGroupOverrides.set(group.key, false); renderSessionList(); },
+            expandAll: () => { setAllGroupsExpanded(true); },
+            collapseAll: () => { setAllGroupsExpanded(false); },
             openFolder: () => { if (workspaceMenuHost.openFolder) workspaceMenuHost.openFolder(); },
             openRecent: (arg) => { if (arg && workspaceMenuHost.openFolderSmart) workspaceMenuHost.openFolderSmart(arg); },
             close: () => { if (workspaceMenuHost.closeFolder) workspaceMenuHost.closeFolder(); },
@@ -920,7 +1089,15 @@ export function createAISessionList(ctx) {
             ? workspaceMenuHost.baseName
             : (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
         const recent = typeof workspaceMenuHost.recent === 'function' ? workspaceMenuHost.recent() : [];
-        const items = buildWorkspaceMenuItems(group, {recent, baseName})
+        const expanded = workspaceGroupExpanded(group.key, group, {
+            override: workspaceGroupOverrides,
+            currentKey: () => (isMultiWorkspace() ? '' : aiWorkspaceKey(windowWorkspacePath())),
+            focusedKey: () => focusedWorkspaceKey(),
+            firstKey: lastGroupKeys.length ? lastGroupKeys[0] : '',
+        });
+        const items = buildWorkspaceMenuItems(group, {
+            recent, baseName, expanded, multiRoot: !!isMultiWorkspace(),
+        })
             .map((item) => {
                 if (item.submenu) {
                     return {
@@ -934,6 +1111,21 @@ export function createAISessionList(ctx) {
             });
         showContextMenu(items, x, y);
     }
+
+    function showSubgroupMenu(group, sub, archived, x, y) {
+        if (!showContextMenu) return;
+        const name = sub && sub.name ? String(sub.name) : '';
+        // 重命名/解散必须带 archived 维度：同名分组可同时存在于归档区与进行中区，
+        // 宿主侧据此只操作当前分区的会话，避免从归档桶误伤进行中的会话。
+        const actions = {
+            rename: () => renameSessionGroup(name, group, archived),
+            newSession: () => newSessionInGroup(name, group),
+            dissolve: () => dissolveSessionGroup(name, group, archived),
+        };
+        const items = buildSubgroupMenuItems(sub, {archived, groupKey: group && group.key})
+            .map((item) => (item.act && actions[item.act]) ? {...item, action: actions[item.act]} : item);
+        showContextMenu(items, x, y);
+    }
     return {
         renderProfileSelect,
         sessionActivity,
@@ -944,6 +1136,7 @@ export function createAISessionList(ctx) {
         clearSessionUnread,
         refreshBadge,
         expandWorkspaceGroup,
+        revealSession,
         toggleSessionFilter,
     };
 }

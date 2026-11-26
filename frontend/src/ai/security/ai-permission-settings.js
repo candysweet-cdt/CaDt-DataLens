@@ -683,13 +683,22 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
 
     // ---------- 项目级权限规则（<工作区>/.cadt/permissions.json） ----------
 
-    function projectRulesPath() {
-        const root = aiProjectRoot();
+    function projectRulesPath(session) {
+        const root = projectRulesRoot(session);
         return root ? aiJoinPath(root, '.cadt/permissions.json') : '';
     }
 
-    function projectRulesKey() {
-        return aiWorkspaceKey(aiProjectRoot());
+    // 读侧与写侧必须同源：文件路径 / 缓存 key / 落盘 root 都经 projectRulesRoot（会话根），
+    // 否则会话根 ≠ 窗口根时会出现「读 A 仓库的规则、写 B 仓库的文件」。
+    function projectRulesKey(session) {
+        return aiWorkspaceKey(projectRulesRoot(session));
+    }
+
+    // 写侧的根（会话根）：aiProjectRoot 自批次 E 起接受可选 session（会话 workspace 优先），
+    // 旧宿主是零参签名、多余实参被忽略 = 旧行为。缺 session 时用当前会话。
+    function projectRulesRoot(session) {
+        const current = session || (typeof currentSession === 'function' ? currentSession() : null);
+        return aiProjectRoot(current) || '';
     }
 
     let projectRulesCache = {key: '', rules: emptyPermissionRules(), at: 0};
@@ -732,9 +741,10 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         return rules;
     }
 
-    async function saveProjectRules(rules) {
-        const path = projectRulesPath();
-        if (!path) throw new Error('当前没有工作区，无法保存项目权限规则');
+    async function saveProjectRules(rules, session) {
+        const root = projectRulesRoot(session);
+        if (!root) throw new Error('当前没有工作区，无法保存项目权限规则');
+        const path = aiJoinPath(root, '.cadt/permissions.json');
         const payload = {
             version: PERMISSION_VERSION,
             command: rules.command,
@@ -742,11 +752,21 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
             web: rules.web,
         };
         const text = JSON.stringify(payload, null, 2) + '\n';
-        if (backend.AIEnsureDir) {
-            try { await backend.AIEnsureDir(aiPathDir(path)); } catch (e) {}
+        if (typeof backend.AIProjectRulesWrite === 'function') {
+            // 锁 + 原子写（后端先解析 JSON 校验、坏 JSON 拒绝且不动既有文件）：窗口内串行只挡
+            // 本窗口的两条并发改，同工作区的另一个窗口仍在整份覆盖；读侧 3s TTL 缓存还会把
+            // 被覆盖的结果读回来。写通道统一走这里。
+            await backend.AIProjectRulesWrite(root, text);
+        } else {
+            // 旧宿主回落：目录先建、整份覆盖（.cadt 目录可能尚不存在）
+            if (backend.AIEnsureDir) {
+                try { await backend.AIEnsureDir(aiPathDir(path)); } catch (e) {} // 建目录失败由随后的写报错
+            }
+            await backend.SaveFile(path, text, 'lf', false, 'utf-8');
         }
-        await backend.SaveFile(path, text, 'lf', false, 'utf-8');
-        projectRulesCache = {key: projectRulesKey(), rules: normalizePermissionRules(payload), at: Date.now()};
+        // 缓存 key 必须与落盘 root 同源（都经 session）：无参会退化成「当前会话」，
+        // 后台会话写规则时会把结果缓存到当前会话的 key 下，3s TTL 内读到别人的规则。
+        projectRulesCache = {key: projectRulesKey(session), rules: normalizePermissionRules(payload), at: Date.now()};
         return path;
     }
 

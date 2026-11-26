@@ -16,6 +16,7 @@ const DRIFT_KINDS = [
 
 export function createAICognitionPage(deps) {
     let hostEl = null;
+    let mountedRoot = ''; // 本标签页绑定的工作区（perWorkspace：一个标签一个仓库）
     let statusEl = null;
     let listEl = null;
     let bar = null;
@@ -30,7 +31,12 @@ export function createAICognitionPage(deps) {
     const PAGE_SIZE = 30;         // 与补丁库同款前端分页，避免 205 条一次铺开
 
     function alive() { return !!(hostEl && hostEl.isConnected); }
-    function workspace() { return String((deps.getWorkspace && deps.getWorkspace()) || ''); }
+    function workspace() {
+        // 应用页面标签页在 mount 时给了固定根：一律用它。认知索引的卷就在 <ws>/.cadt/cognition，
+        // 是工作区级数据——不固定的话，切走工作区后开着的那份会去读别的仓库的索引。
+        if (mountedRoot) return mountedRoot;
+        return String((deps.getWorkspace && deps.getWorkspace()) || '');
+    }
     function readSupported() { return !!(deps.backend && typeof deps.backend.CognitionRead === 'function'); }
     function cognitionOn() { return !!(deps.settings && deps.settings.aiCognition === true); }
 
@@ -345,11 +351,12 @@ export function createAICognitionPage(deps) {
         }
     }
 
-    function mount(host) {
+    function mount(host, workspaceRoot) {
         if (!host) return null;
         host.textContent = '';
         host.classList.add('cog-root');
         hostEl = host;
+        mountedRoot = String(workspaceRoot || '');
 
         const refreshBtn = iconButton({icon: 'refresh', tip: '重新读取认知索引', label: '刷新', onClick: () => reload()});
         host.appendChild(pageHeader({
@@ -357,6 +364,15 @@ export function createAICognitionPage(deps) {
             desc: '工作区 .cadt/cognition/ 的语义索引浏览：路径地图、条目职责 / 强关联 / 契约 / 暗约束。卷由 AI 会话维护，这里只读。',
             actions: [refreshBtn],
         }));
+        // 页头显示所属工作区：同一个「认知索引」可能同时开着两三份（各绑一个仓库），
+        // 只显示标题分不清哪份是哪个仓库；给完整路径，长路径由 title 兜住。
+        if (mountedRoot) {
+            const wsEl = document.createElement('div');
+            wsEl.className = 'cog-workspace';
+            wsEl.textContent = '工作区：' + mountedRoot;
+            wsEl.title = mountedRoot;
+            host.appendChild(wsEl);
+        }
 
         statusEl = document.createElement('div');
         statusEl.className = 'cog-status hidden';

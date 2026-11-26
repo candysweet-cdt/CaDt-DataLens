@@ -40,6 +40,21 @@ export const AI_TOOL_DEFS = {
             required: ['path'],
         },
     },
+    get_file_outline: {
+        name: 'get_file_outline',
+        description: '取一个源码文件的结构大纲：分节导航（带序号、起始行-结束行）+ 顶层函数/箭头/case 分支索引（带行号）。用于超大文件（如 main.js、ai-panel.js）先摸清「哪段是干啥的」再精准 read_file，避免盲读上万行。只读、不返回正文，行号实时解析不会漂移。path 为相对范围根的文件路径或已授权的工作区外绝对路径，授权规则与 read_file 相同。符号索引支持分页：默认每页 200 条（上限 500），结果回报「本次返回 N 条 / 共 M 条 / offset」，未取完时用 offset+返回条数续取，避免撑爆上下文；section 传分节标题的子串可只看某段的符号（分节导航始终全量，带序号便于选段）；sectionsOnly:true 时只返回分节导航（最省 token）。二进制 / >10 MB 文件不支持。要具体内容仍用 read_file；找文本用 search_text，找文件用 glob。',
+        parameters: {
+            type: 'object',
+            properties: {
+                path: {type: 'string', description: '相对范围根的源码文件路径，或已授权的工作区外绝对路径'},
+                sectionsOnly: {type: 'boolean', description: '只返回分节导航、不列符号索引（大文件省 token），默认 false'},
+                offset: {type: 'integer', description: '符号索引分页起点，跳过前 N 条（默认 0）；结果会回报本次条数/总条数/offset，未取完用 offset+本次条数续取'},
+                limit: {type: 'integer', description: '每页符号数，默认 200、上限 500；超出夹到 500，传 0 或负数夹到 1'},
+                section: {type: 'string', description: '按分节标题子串过滤符号，只返回落在该分节行区间内的符号；无匹配时会提示可选分节标题'},
+            },
+            required: ['path'],
+        },
+    },
     read_image: {
         name: 'read_image',
         description: '读取一张图片文件并把画面附加到对话（之后你就能直接看到它）。支持 png / jpg / webp / gif / bmp / svg；超过长边 2048（或像素/体积预算）会自动等比降采样压缩，不需要你预先处理。也接受公网图片 URL（http/https 直链，作为 path 传入）：抓取后同样附加到对话，内网地址、需要登录或防盗链的链接取不到。工作区外路径的授权规则与 read_file 相同（用户点名可直接读，否则 read/edit 档请求批准、auto/full 直接读；应用数据目录始终拒绝）。返回尺寸与字节数，图片本身作为一条独立消息挂在工具结果之后。每张图约占 800–1600 token 上下文：只在确实要看画面（截图、图表、UI 核对、照片）时用，同一张图不要反复读；文本内容仍用 read_file，不要用本工具读文本。当前聊天模型未启用图像输入时会直接报错。',
@@ -1111,6 +1126,7 @@ export function buildSpawnAgentDef(choices, defaultRounds) {
 export const AI_TOOL_CATALOG = {
     list_dir: {group: 'read', blurb: '列目录与文件大小；depth 传 2–8 可递归出树，一次摸清多层结构'},
     read_file: {group: 'read', blurb: '读文件正文（可指定行范围），改文件前必须先读'},
+    get_file_outline: {group: 'read', blurb: '取源码文件的分节+函数+case 大纲（带行号），超大文件先摸结构再精准 read_file；行号实时不漂移'},
     read_image: {group: 'read', blurb: '读图片把画面附加到对话（截图 / 图表 / UI 核对 / 公网图片 URL）；文本内容仍用 read_file'},
     read_video: {group: 'read', blurb: '读本地 mp4 把视频画面附加到对话（演示录屏 / 操作过程，≤16 MB）；图片用 read_image'},
     search_text: {group: 'read', blurb: '文本搜索（字面量/正则/全词，排除通配，files/count 聚合，offset/limit 分页+字符预算，includeIgnored 临时放行忽略目录），拿 path:line 或文件清单；结果不足再 read_file'},
@@ -1228,6 +1244,9 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.read_file,
             AI_TOOL_DEFS.read_image,
             AI_TOOL_DEFS.search_text,
+            // 文件大纲：纯只读解析，超大文件先摸结构再精准 read_file；全档位与计划模式可用。
+            // 放在 read_video 的 splice(3,0) 插入点之后，避免破坏「read_video 紧跟 read_image」的顺序契约。
+            AI_TOOL_DEFS.get_file_outline,
             // 文件发现：只读（Go FindFiles），所有档位与计划模式可用
             AI_TOOL_DEFS.glob,
             AI_TOOL_DEFS.memory_list,
@@ -1411,6 +1430,7 @@ export function createAIToolDefs(ctx) {
         lines.push(
             '调度原则：',
             '- 先查后答：涉及文件、代码或数据时先读再下结论，不要凭记忆编造内容、行号或命令输出。',
+            '- 超大文件（几千行以上，如 main.js / ai-panel.js）：先 get_file_outline 拿分节+函数+case 大纲定位行段，再 read_file 精准读；不要整段试读或用 search_text 反复猜关键词。',
             '- 并行读、串行写：互不依赖的只读调用可在同一轮一起发（多个文件、多个关键词）；有依赖时按结果顺序来。',
             '- 有专用工具就不要用 run_command 绕：列目录 / 读文件 / 搜索 / 找文件用 list_dir / read_file / search_text / glob；正则要用 search_text 的 regex:true，别拼 grep；工作区外路径也能直接传（已授权或会弹审批），不要拼 shell 命令去搜——引号与编码转义容易出错。',
             '- 工作区外的路径：用户明确给过路径的直接读/搜；没给过时 read/edit 档会请求批准（批准过的目录免询问）、auto/full 档可直接访问。search_text / glob 传 path 与 read_file 同权。被拒绝的路径不要反复尝试。',
@@ -1425,6 +1445,7 @@ export function createAIToolDefs(ctx) {
         const hasAll = (names) => names.every((name) => available.has(name));
         const chains = [
             {need: ['read_file'], text: '读懂代码/数据：search_text 定位 → read_file（多个文件可并行读）→ 结论标 path:line'},
+            {need: ['get_file_outline', 'read_file'], text: '读懂超大文件：get_file_outline 拿分节/函数大纲定位行段 → read_file 按 startLine/endLine 精准读'},
             {need: ['read_image'], text: '看画面：截图 / 图表 / 设计稿 / 照片一律 read_image 直接附加到对话（read_file 读二进制会报错）；公网图片链接也传给它（web_fetch 只读文本）'},
             {need: ['read_video'], text: '看视频：需要理解本地 mp4（演示 / 录屏）时 read_video 把视频附加到对话（≤16 MB；图片用 read_image）'},
             {need: ['read_file', 'edit_file'], text: '修改文件：read_file 确认原文 → edit_file 最小替换 → run_command 跑测试/构建验证'},

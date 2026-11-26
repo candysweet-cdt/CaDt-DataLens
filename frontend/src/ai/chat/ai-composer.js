@@ -18,6 +18,7 @@ import {iconSvg} from '../../core/icons.js';
 import {dataUrlToFile} from '../../core/image-clipboard.js';
 import {createShiftDoubleTap} from '../../core/shift-double-tap.js';
 import {openEditMenu} from '../../shell/edit-menu.js';
+import {createSessionBusyProbe} from '../session/ai-session-scope.js';
 
 function attachmentChipPrefix(item) {
     if (item.kind === 'skill') return '技能 · ';
@@ -116,6 +117,15 @@ export function createAIComposer(ctx) {
     const el = ctx.el;
     const backend = ctx.backend || {};
     const compactOf = ctx.compactOf;
+    // 会话「忙」判定：与面板同一套构件（ai-session-scope.js）。composer 只服务当前查看会话，
+    // 所以流镜像 syncStreamView() 就是「当前会话的流」——按传入 id 比对，避免误判别的会话。
+    const isSessionBusy = createSessionBusyProbe({
+        streamOf: (id) => {
+            const live = syncStreamView();
+            return live && live.sessionId === id ? live : null;
+        },
+        compactOf,
+    });
     const currentSession = ctx.currentSession;
     const flash = ctx.flash;
     const getSelection = ctx.getSelection;
@@ -240,9 +250,12 @@ export function createAIComposer(ctx) {
     }
 
     // 把超长文本写成工作区临时文件，返回路径（无工作区或写盘失败返回空串）。
+    // 落盘走原子写：这是 .cadt/tmp 下的应用内务文件，不留半截（进程被杀时正常写会留下
+    // 截断的 paste-N.txt，附件路径指向残缺内容比写失败更难发现）。旧宿主没有该绑定则回落 SaveFile。
     async function writePasteTempFile(text) {
         const root = aiTextOf(getScopeRoot());
-        if (!root || !backend.AIEnsureDir || !backend.SaveFile) return '';
+        const atomic = typeof backend.SaveFileAtomic === 'function';
+        if (!root || !backend.AIEnsureDir || (!atomic && typeof backend.SaveFile !== 'function')) return '';
         const now = new Date();
         const pad = (n) => String(n).padStart(2, '0');
         const stamp = '' + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '-' +
@@ -251,7 +264,9 @@ export function createAIComposer(ctx) {
         const path = scopePath(dir, 'paste-' + stamp + '-' + (++pasteFileSeq) + '.txt');
         try {
             await backend.AIEnsureDir(dir);
-            await backend.SaveFile(path, text, 'lf', false, 'utf-8');
+            // 绑定必须带 backend 前缀调用：mock / 服务化绑定是对象方法（SaveFileAtomic 内部转调 this.SaveFile）
+            if (atomic) await backend.SaveFileAtomic(path, text, 'lf', false, 'utf-8');
+            else await backend.SaveFile(path, text, 'lf', false, 'utf-8');
             return path;
         } catch (e) {
             // 落盘失败不致命：调用方退化为截断附件（内容仍能发出去，只是会明说截断）
@@ -917,7 +932,7 @@ export function createAIComposer(ctx) {
             updateSendState();
         }
         // 只有本会话在生成 / 压缩时才并入排队；别的会话在跑不影响本会话直接发送。
-        if (syncStreamView() || compactOf((currentSession() || {}).id)) {
+        if (isSessionBusy((currentSession() || {}).id)) {
             // 排队/插话/抢占由 captureComposerMessage 从输入区读原文并展开胶囊。
             // 这里不要预先展开、也不要改写 el.input.value——否则用户会看到胶囊在入队瞬间
             // 「变回一大段原文」（发送后输入区随即清空，展开结果根本不需要显示出来）。
@@ -1002,7 +1017,7 @@ export function createAIComposer(ctx) {
         if (e.repeat) return;
         // 生成中三手势（方案 §4.1）：Enter 排队 / Ctrl+Enter 插话（不打断）/
         // Ctrl+Shift+Enter 抢占（停掉重来）；Shift+Enter 与 Alt+Enter 保持换行（现状）。
-        if (syncStreamView() || compactOf((currentSession() || {}).id)) {
+        if (isSessionBusy((currentSession() || {}).id)) {
             if (e.altKey) return;
             const ctrl = e.ctrlKey || e.metaKey;
             if (!ctrl && e.shiftKey) return;   // Shift+Enter 换行

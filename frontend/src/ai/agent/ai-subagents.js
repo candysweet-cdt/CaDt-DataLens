@@ -613,6 +613,9 @@ export function createAISubagents(ctx) {
         const list = [
             AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.read_image, AI_TOOL_DEFS.search_text,
             AI_TOOL_DEFS.web_search, AI_TOOL_DEFS.web_fetch,
+            // 文件大纲：只读，超大文件先摸结构再精准 read_file。
+            // 放在 read_video 的 splice(4,0) 插入点之后，不动其顺序契约。
+            AI_TOOL_DEFS.get_file_outline,
             AI_TOOL_DEFS.memory_list, AI_TOOL_DEFS.memory_read,
             // 主会话计时器的只读快照：子代理与孙代理共享本表，只有读权（不能启动 / 停止 / 打标记）
             AI_TOOL_DEFS.timer_list,

@@ -223,7 +223,7 @@ export function createAISettingsIO(ctx, extras) {
                 getConfig().askTimeoutAction = data.askTimeoutAction;
             }
             if (Number.isFinite(Number(data.idleTimeoutSec))) {
-                getConfig().idleTimeoutSec = aiClampInt(data.idleTimeoutSec, 30, 3600, 120);
+                getConfig().idleTimeoutSec = aiClampInt(data.idleTimeoutSec, 30, 3600, 300);
             }
             // 个性化：字段级合并——导出时未勾选「含个性化设定」的旧文件不会冲掉本地设定
             if (data.persona && typeof data.persona === 'object') {

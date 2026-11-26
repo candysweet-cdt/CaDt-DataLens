@@ -48,14 +48,18 @@ test('appPageGroups：按 settings.aiCognition 过滤，其余页面不受影响
 });
 
 test('main.js：挂载器登记 cognition，工厂 deps 完整', () => {
-    assert.ok(/'cognition': \(root\) => cognitionPage\.mount\(root\)/.test(mainSrc),
-        'appPageMounters 必须登记 cognition（漏了 = 标签页只显示「界面尚未就绪」）');
+    // perWorkspace 页：每个标签页新建独立实例（模块有模块级状态，共用会互相覆盖），
+    // 并把绑定的工作区根传给 mount。
+    assert.ok(/'cognition': \(root, ws\) => \{[\s\S]{0,220}?makeCognitionPage\(ws\)[\s\S]{0,220}?\.mount\(root, ws\)/.test(mainSrc),
+        'appPageMounters 必须登记 cognition，且每标签新建实例并传绑定根（漏了 = 标签页只显示「界面尚未就绪」）');
+    assert.ok(/function makeCognitionPage\(workspaceRoot\)/.test(mainSrc),
+        '认知索引要用工厂（每标签一实例），不能共用单例——模块内部有 hostEl / snapshot 等模块级状态');
     assert.ok(/import \{createAICognitionPage\} from '\.\/ai\/settings\/ai-cognition-page\.js';/.test(mainSrc),
         'main.js 必须导入 createAICognitionPage');
     assert.ok(/get openCognitionSettings\(\)/.test(mainSrc) && /getElementById\('ai-opt-cognition'\)/.test(mainSrc),
         '「去设置开启」CTA 必须定位到 AI 页的认知开关行（openSettingsAtRow 先例）');
     assert.ok(/get getWorkspace\(\)/.test(mainSrc),
-        '页面必须注入 getWorkspace（认知索引按窗口工作区生效）');
+        '页面必须注入 getWorkspace（无挂载根时的回落来源）');
 });
 
 test('main.js：四个入口全部传 settings 给 appPageGroups（visibleWhen 的统一漏斗）', () => {
@@ -80,14 +84,17 @@ test('main.js：settings-changed 用 payload 权威值 + lastCog 基线判翻转
         '必须用模块级 lastCog 独立基线比对（跨窗口/本窗口两条路径统一）');
     assert.ok(/refreshAppPagesNavIfVisible\(\)/.test(mainSrc) && /refreshCognitionPageIfVisible\(\)/.test(mainSrc),
         '翻转后必须同时刷新侧栏入口与已开的认知页');
-    const helper = mainSrc.slice(mainSrc.indexOf('function refreshCognitionPageIfVisible'));
-    assert.ok(/d\.appPage === 'cognition'/.test(helper) && /appPageRoot\.isConnected/.test(helper),
-        '认知页刷新必须判标签开着（同 refreshExternalToolsPaneIfVisible 先例）');
+    const helper = mainSrc.slice(mainSrc.indexOf('function refreshCognitionPageIfVisible'), mainSrc.indexOf('function refreshCognitionPageIfVisible') + 900);
+    // 多工作区下同一个页面可能开着多份（各绑一个仓库），所以要遍历全部标签而不是 find 第一个
+    assert.ok(/doc\.appPage !== 'cognition'/.test(helper) && /appPageRoot\.isConnected/.test(helper),
+        '认知页刷新必须逐标签判「开着」（同 refreshExternalToolsPaneIfVisible 先例）');
+    assert.ok(/for \(const doc of docs\)/.test(helper),
+        '必须遍历所有认知页标签：perWorkspace 页可以同时开多个工作区各一份');
 });
 
 test('页面模块：mount/unmount 对称、数据走 CognitionRead/CognitionStatus', () => {
     assert.ok(/export function createAICognitionPage\(deps\)/.test(pageSrc), '必须是 factory + deps 注入形态');
-    const mountBody = pageSrc.slice(pageSrc.indexOf('function mount(host)'), pageSrc.indexOf('function refresh()'));
+    const mountBody = pageSrc.slice(pageSrc.indexOf('function mount(host'), pageSrc.indexOf('function refresh()'));
     assert.ok(/host\.classList\.add\('cog-root'\)/.test(mountBody), 'mount 必须给宿主加 .cog-root（纵向节奏）');
     assert.ok(/hostEl\.classList\.remove\('cog-root'\)/.test(pageSrc), '卸载必须移除 .cog-root（对称契约）');
     assert.ok(/return \(\) =>/.test(mountBody), 'mount 必须返回卸载函数');

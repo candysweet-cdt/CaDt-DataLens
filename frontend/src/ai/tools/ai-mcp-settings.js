@@ -9,7 +9,9 @@ import {DESKTOP_MCP_SERVER} from './ai-desktop-control.js';
 import {escapeHtml} from '../../core/escape.js';
 
 const MCP_SERVER_NAME_RULE = /^[A-Za-z0-9_-]{1,32}$/;
-const MCP_TIMEOUT_MAX_MS = 600000;
+// MCP 服务器超时上限（毫秒）：与 Go 侧 internal/mcp 的 mcpTimeoutMaxMs 同值，
+// 护栏 test/core/backend-constants-parity 逐项比对。
+export const MCP_TIMEOUT_MAX_MS = 600000;
 
 // ---- 可测纯辅助函数 ----
 

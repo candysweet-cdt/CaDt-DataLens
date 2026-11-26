@@ -417,6 +417,8 @@ export function buildSessionMeta(session) {
         // 消息不承载计划内容。空计划归一成 null，不写空壳。
         activePlan: normalizeActivePlan(session && session.activePlan),
         browserTabId: textOf(session && session.browserTabId),
+        // 用户交给 AI 的标签（禁止 AI 关闭）：与 browserTabId 一起持久化
+        browserTabAdopted: (session && session.browserTabAdopted) === true,
         round: Number(session && session.round) || 0,
         archivedAt: Number(session && session.archivedAt) || 0,
         pinned: !!(session && session.pinned),

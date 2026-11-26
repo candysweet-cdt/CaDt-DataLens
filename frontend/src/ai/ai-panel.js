@@ -1,5 +1,10 @@
 // ai-panel.js：右侧 AI 助手面板（批次 2–6：会话 / 流式聊天 / 思考链 / 三形态 / 工具桥 / 记忆 / 技能 / 写审批 / Todolist / 变更记录 / 提示词 / 压缩 / 设置）
 // 设计文档见 docs/finished-plans/ai-panel.md。
+// 文件地图：本文件约 2 万行，按 `// ---------- xxx ----------` 分节。
+//   精确行号刻意不写在这里——会随改动漂移。查 ai-panel.map.md
+//   （scripts/gen-file-maps.mjs 生成的分节 + 函数 + 工具 case 索引，--check 可验是否需刷新）。
+//   定位顺序：先读地图找目标行段 → read_file 精准读；executeToolInner 的工具分支 case 名即工具名。
+//   域逻辑（会话/工具/安全/群聊等）优先在 ai/<域>/ 找对应模块，本文件主要是 createAIPanel 闭包内的编排。
 // 模块级生命周期钩子回填点：所有审批最终汇入 registerPendingApproval（在 createAIPanel 闭包内），
 // 面板创建时把 runLifecycle 装进本变量，PermissionRequest 事件在审批卡出现前阻塞执行。
 // 未注入（mock / 旧宿主）时为 no-op，零影响。
@@ -8,6 +13,8 @@ export function setPermissionLifecycleHook(fn) {
     permissionLifecycleHook = typeof fn === 'function' ? fn : () => Promise.resolve();
 }
 import {iconSvg} from '../core/icons.js';
+import {isMultiWorkspace} from '../core/root-scope.js';
+import {formatOutlineText, parseOutline} from '../core/file-outline.js';
 import {overlayStack} from '../core/overlay-stack.js';
 import {createContextMenu} from '../shell/contextmenu.js';
 import {mergePluginAIRequest, pluginAIAccounts} from '../shell/plugin-ai-providers.js';
@@ -27,8 +34,10 @@ import {createModelCatalogStore} from './core/model-catalog.js';
 import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs, normalizeSessionGroup, resolveSessionGroupName, buildSessionMeta} from './session/ai-session-store.js';
 import {mergeLoadedSessions} from './session/ai-session-merge.js';
 import {buildGuardNotice} from './security/ai-wipeguard.js';
-import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, isNoWorkspaceSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey} from './session/ai-session-scope.js';
+import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, isNoWorkspaceSession, isUnboundSession, isWorkspaceEligibleSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey, scopeRootOf, createSessionBusyProbe, canStartTurn, canSendMessage} from './session/ai-session-scope.js';
+import {draftLSKey as aiDraftLSKey, wsDraftLSKey as aiWsDraftLSKey} from '../core/storage-keys.js';
 import {formatSessionSearchResult, sessionLogDigest} from './session/ai-session-tools.js';
+import {showNewSessionPicker} from './session/ai-new-session-picker.js';
 import {
     spillWanted,
     persistBudgetText,
@@ -51,6 +60,7 @@ import {
     clampWaitTimeout,
     describeKeyCombo,
     describeWait,
+    resolveBrowserTabAdoption,
     resolveSessionBrowserTabId,
     WAIT_POLL_MS,
 } from './tools/ai-browser-tools.js';
@@ -212,6 +222,9 @@ import {
     AI_LEGACY_SESSION_LIMIT,
     AI_WRITE_LIMIT,
     AI_PATCH_LIMIT,
+    AI_SHELL_TIMEOUT_DEFAULT_MS,
+    AI_SHELL_TIMEOUT_MAX_MS,
+    AI_FAILURE_NOTICE_COOLDOWN_MS,
     AI_PATCH_MAX_ATTEMPTS,
     AI_DIFF_PREVIEW_LIMIT,
     AI_CHANGES_LIMIT,
@@ -411,7 +424,10 @@ export function createAIPanel(options) {
     const runLifecycle = (event, opts2) => {
         if (!lifecycleEvent) return Promise.resolve({ran: 0});
         const o = opts2 || {};
-        const ws = o.ws || (o.session && o.session.workspace) || currentWorkspacePath() || '';
+        // 多工作区：前两者都空时不再回落窗口根——windowWorkspacePath 会退化成活动文件目录，
+        // 让 lifecycle 钩子跑到别的仓库去匹配配置。无根就不跑（下面 ws 为空直接返回）。
+        const ws = o.ws || (o.session && o.session.workspace)
+            || (isMultiWorkspace() ? '' : windowWorkspacePath()) || '';
         if (!ws) return Promise.resolve({ran: 0});
         const job = Promise.resolve(lifecycleEvent(event, o.tool || '', ws))
             .catch((e) => { /* 尽力而为路径：钩子失败不阻断宿主流程（控制器已兜错，这里双保险） */ });
@@ -598,9 +614,12 @@ export function createAIPanel(options) {
     let chipsPopKind = '';
 
     const sessionListEl = document.getElementById('ai-session-list');
-    // 会话侧栏顶部操作区（标题栏的 [+] 已并入）：新建会话（右侧「⋯」开更多新建方式）/ 自动化
+    // 会话侧栏顶部操作区（标题栏的 [+] 已并入）：
+    //   主体 = 直接在**当前根**新建；内部 ⌄ = 选工作区新建（最近工作区 / 打开文件夹 / 会话沙盒）；
+    //   右侧「⋯」= 其它新建方式（临时会话等）
     const sessionActionNewBtn = document.getElementById('ai-session-action-new');
-    const sessionActionNewMoreBtn = document.getElementById('ai-session-action-new-more');
+    const sessionActionNewChev = document.getElementById('ai-session-action-chev');
+    const sessionActionNewMoreBtn = document.getElementById('ai-session-action-more');
     const sessionActionAutoBtn = document.getElementById('ai-session-action-auto');
     const sessionActionSendBtn = document.getElementById('ai-session-action-send');
     // 会话过滤三件套（漏斗按钮 + 过滤行 + 输入框，事件接线在 ai-session-list 域内）
@@ -803,6 +822,17 @@ export function createAIPanel(options) {
     let compactStarting = false;
     // 资源 watch 正在整份重读的会话：重读期间禁止起新轮/压缩，避免覆盖刚 push 的消息。
     const sessionReloading = new Set();
+    // 会话「忙不忙」（生成中 / 压缩中）的唯一口径：原先 20+ 处逐字重复
+    // `streamOf(id) || compactOf(id)`（有的写 streams.has）。判定本体在 ai-session-scope.js，
+    // 这里只把三个闭包状态注入进去（建在状态声明之后，任何调用点都能安全引用）。
+    // compactStarting 是**全局**的「压缩正在准备」窗口（startCompact 拿回合租约 / 按 stat
+    // 重读期间置位，不属于任何单个会话），默认不判——只有起轮内核与同源守卫显式传
+    // {includeCompactStarting: true}；否则一个会话开始压缩会拦住所有会话的发送门禁。
+    const isSessionBusy = createSessionBusyProbe({
+        streamOf,
+        compactOf,
+        compactStartingOf: () => compactStarting,
+    });
     let titleJob = null;
     // 自动标题最多尝试 2 次：失败（4xx / 空回复 / 被取消）后下一轮还能补，但不会每轮白跑请求。
     // 用计数而非「试过就永久跳过」——原逻辑把一次偶发失败变成该会话永久停留在首条消息截断。
@@ -862,6 +892,9 @@ export function createAIPanel(options) {
     let pendingEdit = null;
     let attachSeq = 0;
     let appDirPromise = null;
+    // 记忆「回落」提示标记：批次 E2 起记忆不再回落到应用数据目录（无会话根时直接返回不可用），
+    // 面板内已无消费者；保留声明与 setMemoryFallbackNotified 注入（设置页切模式时会复位它），
+    // 避免破坏既有注入契约。
     let memoryFallbackNotified = false;
     // 上下文占用估算依赖「真正会发给模型的系统提示词」：面板重开 / 切换会话 / 注入开关变化后
     // 需要异步重建，否则会沿用默认或旧值，显示偏小或带着旧工作区上下文。
@@ -1068,7 +1101,7 @@ export function createAIPanel(options) {
             askTimeoutAction: ['recommended', 'wait', 'abort', 'ai_decide'].includes(stored.askTimeoutAction)
                 ? stored.askTimeoutAction
                 : 'recommended',
-            // 响应空闲超时：连续 N 秒无数据即中断请求，默认 120 秒（30~3600）。
+            // 响应空闲超时：连续 N 秒无数据即中断请求，默认 300 秒（30~3600）。
             idleTimeoutSec: aiClampInt(stored.idleTimeoutSec, IDLE_TIMEOUT_MIN_SEC, IDLE_TIMEOUT_MAX_SEC, IDLE_TIMEOUT_DEFAULT_SEC),
             // 个性化（身份命名 / 回复风格 / 人设 / 长期指令）：旧配置缺该字段即默认态，升级零迁移
             persona: normalizePersona(stored.persona),
@@ -1215,7 +1248,7 @@ export function createAIPanel(options) {
 
     function notifyConfigStoreError(error) {
         const now = Date.now();
-        if (now - configStoreErrorAt < 30000) return;
+        if (now - configStoreErrorAt < AI_FAILURE_NOTICE_COOLDOWN_MS) return;
         configStoreErrorAt = now;
         try {
             if (typeof flash === 'function') flash('AI 配置保存失败：' + ((error && error.message) || error), true);
@@ -1288,7 +1321,7 @@ export function createAIPanel(options) {
         }
         const theirs = normalizeAIConfig(theirsRaw);
         const merged = mergeAIConfig(lastConfigSnapshot, config, theirs, {
-            ownWorkspaceKey: aiWorkspaceKey(currentWorkspacePath()),
+            ownWorkspaceKey: aiWorkspaceKey(windowWorkspacePath()),
         });
         config = normalizeAIConfig(merged.config);
         syncPluginAIAccounts();
@@ -2056,6 +2089,8 @@ export function createAIPanel(options) {
             // 表现为「开了开关、装好了、胶囊也亮着，但 windows_control_mode 说尚未启用」
             desktopEnabled: raw.desktopEnabled === true,
             browserTabId: aiTextOf(raw.browserTabId),
+            // 用户交给 AI 的标签（禁止 AI 关闭）：与 browserTabId 一起落盘，重启后仍守住
+            browserTabAdopted: raw.browserTabAdopted === true,
             round: Number(raw.round) || 0,
             logFile: aiTextOf(raw.logFile),
             logSavedAt: Number(raw.logSavedAt) || 0,
@@ -2155,7 +2190,11 @@ export function createAIPanel(options) {
             // 临时 / 无工作区会话固定只读（无工作区、不注入工作区知识）
             // scopeOverride 由 ai_new_session 传入（已校验「不比调用方宽」），只在这里落值。
             scope: (transient || noWorkspace) ? 'read' : (AI_SCOPES.includes(scopeOverride) ? scopeOverride : normalizeDefaultScope(config.defaultScope)),
-            workspace: (transient || noWorkspace) ? '' : currentWorkspacePath(),
+            // 多工作区下**不猜根**：windowWorkspacePath 此时为空，或退化成「活动文件所在目录」
+            // （那个文件可能属于别的仓库）。猜出来的根比空更难排查——工具根、记忆、AGENTS.md
+            // 全跟着错。真正的根由调用方补（newSession / newSessionInWorkspace 都用 viewRoot）；
+            // 兜底新建（删光会话后）保持无根，这与 noWorkspace 会话的合法状态一致。
+            workspace: (transient || noWorkspace || isMultiWorkspace()) ? '' : windowWorkspacePath(),
             // 临时会话标记（见 ai-session-scope.js 的 isTransientSession）
             temp: transient,
             // 无工作区会话标记（持久、不绑工作区；见 isNoWorkspaceSession）
@@ -2187,6 +2226,25 @@ export function createAIPanel(options) {
             // OpenCode（Zen/Go）的稳定会话标识：整会话复用，用于 x-opencode-session 头。
             opencodeSessionId: newOpencodeSessionId(),
         };
+    }
+
+    // 新建一条会话并定好它的根。
+    //
+    // 根来源优先级：显式设过的（sessionOpts 里带 / 调用方随后赋值）> **调用方会话的工作区**
+    // > 视图根。为什么中间那档是关键：后台场景下 caller 与「当前视图根」可以不是同一个
+    // 仓库——用户在 A 会话里干活，B 会话（后台）调 ai_new_session，新会话必须落在 B 的仓库，
+    // 否则 AI 工具根、AGENTS.md、记忆全跟着视图跑偏。
+    //
+    // 为什么要有这个函数：createSessionData 多工作区下**刻意不猜根**（windowWorkspacePath
+    // 会退化成活动文件所在目录，可能属于别的仓库），于是每个新建入口都得自己补根，
+    // 漏一处那条会话就落到「未关联工作区」——用户在聚焦仓库的分组里看不到它
+    // （实测两次回归：ai_new_session 后台新建、归档/删除最后一条会话后的兜底新建）。
+    function makeSessionWithRoot(title, sessionOpts, baseSession) {
+        const session = createSessionData(title, sessionOpts);
+        if (isUnboundSession(session) || sessionWorkspacePath(session)) return session;
+        const ws = sessionWorkspacePath(baseSession) || viewRoot();
+        if (ws) session.workspace = ws;
+        return session;
     }
 
     function sessionImageBytes(images) {
@@ -2248,7 +2306,7 @@ export function createAIPanel(options) {
 
     function loadAISessions() {
         const out = loadLegacySessions();
-        if (!out.length) out.push(createSessionData());
+        if (!out.length) out.push(makeSessionWithRoot());
         return out;
     }
 
@@ -2280,7 +2338,7 @@ export function createAIPanel(options) {
         // 两者都是预期的跳过，不提示“保存失败”。
         if (text.includes('session-busy') || text.includes('session-gone')) return;
         const now = Date.now();
-        if (now - sessionStoreErrorAt < 30000) return;
+        if (now - sessionStoreErrorAt < AI_FAILURE_NOTICE_COOLDOWN_MS) return;
         sessionStoreErrorAt = now;
         try {
             const detail = String((error && error.message) || error || '未知错误');
@@ -2333,12 +2391,12 @@ export function createAIPanel(options) {
     // 单值 activeSessionId 只在没有本工作区条目时兜底。读写一律走这两个函数，
     // 别直接动 config.activeSessionId——多窗口会互相把对方的视图切走。
     function activeSessionId() {
-        return activeSessionIdFor(config, aiWorkspaceKey(currentWorkspacePath()));
+        return activeSessionIdFor(config, aiWorkspaceKey(windowWorkspacePath()));
     }
 
     function setActiveSessionId(id) {
         const prev = activeSessionId();
-        rememberActiveSession(config, aiWorkspaceKey(currentWorkspacePath()), id);
+        rememberActiveSession(config, aiWorkspaceKey(windowWorkspacePath()), id);
         // 当前会话改指 → 支线对话标签页的「在位 / 失联」要重算。通知原先只挂在
         // switchSession 末尾，另外几处改指入口（新建 / 删除兜底 / 工作区对齐 / 磁盘重读）
         // 全被漏掉，表现为标签页里按发送毫无反应（submit 因 inPlace=false 静默 return）。
@@ -2361,19 +2419,25 @@ export function createAIPanel(options) {
     // refreshSessionList）三处，漏一处就会有一种启动顺序串台。
     function adoptWorkspaceSession() {
         if (sessionsPending()) return false;
-        const ownKey = aiWorkspaceKey(currentWorkspacePath());
+        // 多工作区：窗口不绑定工作区，压根没有「把会话收养进本窗口工作区」这件事。
+        // 这个早退必须写在 ownKey 之前——下面那句 `if (!ownKey) return false` 拦不住：
+        // windowWorkspacePath() 在没有窗口工作区时会退化成「活动文件所在目录」，
+        // 于是随手打开一个文件就可能把当前会话绑到那个仓库，或者把面板静默切走/新建。
+        // （触发入口很多：初始化、配置节流重读、会话读完盘、refreshSessionList、switchSession）
+        if (isMultiWorkspace()) return false;
+        const ownKey = aiWorkspaceKey(windowWorkspacePath());
         if (!ownKey) return false;
         const current = currentSession();
         // 临时 / 无工作区会话不绑工作区（decision 会判成 bind 并写入 workspace，把会话收养进工作区）
-        if (isTransientSession(current) || isNoWorkspaceSession(current)) return false;
-        const busy = !!(current && (streams.has(current.id) || compactOf(current.id)));
+        if (isUnboundSession(current)) return false;
+        const busy = !!(current && isSessionBusy(current.id));
         const decision = decideSessionForWorkspace(
             current, ownKey, sessions,
             (session) => aiWorkspaceKey(sessionWorkspacePath(session)),
             {busy},
         );
         if (decision.action === 'bind') {
-            current.workspace = currentWorkspacePath();
+            current.workspace = windowWorkspacePath();
             // 把这条会话记到本工作区名下：老配置只有一个全局 activeSessionId，
             // 谁先打开谁「收养」它，之后各工作区各记各的，不再互相改写。
             setActiveSessionId(current.id);
@@ -2381,7 +2445,7 @@ export function createAIPanel(options) {
             return false;
         }
         if (decision.action !== 'switch' && decision.action !== 'create') return false;
-        const next = decision.session || createSessionData();
+        const next = decision.session || makeSessionWithRoot();
         if (!decision.session) sessions.push(next);
         // 工作区对齐也会改指当前会话：作废在飞的切换意图（它按旧工作区算，已经无意义）
         invalidatePendingSwitch();
@@ -2492,7 +2556,7 @@ export function createAIPanel(options) {
         if (session.id !== activeSessionId()) return false;
         // 支线有独立标签页承载：静默删掉会让那个标签页指向不存在的会话
         if (aiTextOf(session.sideOf)) return false;
-        if (streams.has(session.id) || compactOf(session.id)) return false;
+        if (isSessionBusy(session.id)) return false;
         stashWorkspaceDraft(session);
         sessions = sessions.filter((item) => item !== session);
         commandApprovalRules.delete(session.id);
@@ -2551,7 +2615,7 @@ export function createAIPanel(options) {
                 sessions = sessionStore.toStubs(metas, normalizeSession);
             } else {
                 // 磁盘为空就是真的空（包括用户删光）：不能把启动时用于占位的 legacy 会话再写回去。
-                sessions = [createSessionData()];
+                sessions = [makeSessionWithRoot()];
             }
             if (!sessions.some((session) => session.id === activeSessionId())) {
                 setActiveSessionId(sessions[0] ? sessions[0].id : '');
@@ -2704,7 +2768,7 @@ export function createAIPanel(options) {
 
     function notifyArchiveOverflow(dropped) {
         const now = Date.now();
-        if (now - archiveOverflowAt < 30000) return; // 30 秒内不重复打扰
+        if (now - archiveOverflowAt < AI_FAILURE_NOTICE_COOLDOWN_MS) return; // 30 秒内不重复打扰
         archiveOverflowAt = now;
         try {
             const detail = '最旧的 ' + dropped + ' 条已被丢弃；建议先「导出 Markdown」留存历史';
@@ -2795,7 +2859,7 @@ export function createAIPanel(options) {
 
     function notifyStorageFailed() {
         const now = Date.now();
-        if (now - storageFailAt < 30000) return;
+        if (now - storageFailAt < AI_FAILURE_NOTICE_COOLDOWN_MS) return;
         storageFailAt = now;
         try {
             if (typeof showNote === 'function') {
@@ -2868,7 +2932,7 @@ export function createAIPanel(options) {
 
     function leaseOwnerLabel() {
         try {
-            const ws = String(currentWorkspacePath() || '').trim();
+            const ws = String(windowWorkspacePath() || '').trim();
             return ws ? ('AI · ' + ws) : 'AI';
         } catch (e) {
             return 'AI';
@@ -2975,10 +3039,10 @@ export function createAIPanel(options) {
         // 只关心日志/meta；图片/视频等附件写入不触发重放。
         const paths = Array.isArray(payload.paths) ? payload.paths : [];
         if (paths.length && !paths.some((p) => /(^|[\\/])(session\.v1\.jsonl|meta\.json)$/i.test(String(p)))) return;
-        if (streamOf(id) || compactOf(id) || sessionReloading.has(id)) return;
+        if (isSessionBusy(id) || sessionReloading.has(id)) return;
         if (!backend.AISessionStat || !sessionStore || !sessionStore.sameLogStat) return;
         const check = (retries) => {
-            if (streamOf(id) || compactOf(id) || sessionReloading.has(id)) return;
+            if (isSessionBusy(id) || sessionReloading.has(id)) return;
             const status = backend.AISessionLeaseStatus
                 ? backend.AISessionLeaseStatus(id)
                 : Promise.resolve({busy: false});
@@ -3000,7 +3064,7 @@ export function createAIPanel(options) {
                     const baseline = session._logStat || null;
                     if (sessionStore.sameLogStat(baseline, stat)) return;
                     // reload 会整份替换 messages：再查一次忙，避免覆盖刚起的新一轮。
-                    if (streamOf(id) || compactOf(id) || sessionReloading.has(id)) return;
+                    if (isSessionBusy(id) || sessionReloading.has(id)) return;
                     sessionReloading.add(id);
                     return sessionStore.reloadSession(session).then(() => {
                         if (isOpen() && currentSession() === session) renderMessages(true);
@@ -3470,6 +3534,8 @@ export function createAIPanel(options) {
         openPath,
         openVirtualDoc,
         getScopeRoot,
+        // 会话根（批次 B）：汇总卡「撤销」的 Git 状态查询与回滚都按会话根算
+        scopeRootOf: (session) => sessionScopeRoot(session),
         backend,
         flash,
         askConfirm,
@@ -3516,7 +3582,26 @@ export function createAIPanel(options) {
         // 条数单一来源：懒加载占位读 meta 缓存，已载体的现算
         messageCount: sessionMessageCount,
         currentSession,
-        currentWorkspacePath,
+        // **窗口绑定**的工作区（多工作区下恒空）。会话列表用它算 activeSessionByWorkspace 的
+        // key 与「当前工作区分组」——这两件事本来就是窗口级语义，不是「当前在哪个目录」。
+        // 名字带 window 前缀是刻意的：它曾被误当作「当前根」注入给 Git 入口等模块，
+        // 结果那些功能在多工作区下永久失效（实测）。
+        windowWorkspacePath,
+        // 「聚焦会话所在工作区」的路径：默认展开哪个分组由它决定。
+        // **直接读当前会话的 workspace**，不经过 viewRoot()（= lastFocusedRoot）——
+        // 后者由 followActiveSession 在异步阶段才设置，第一帧渲染时还是空，会先落到
+        // 「名字序第一组」，几帧后才纠正，用户能肉眼看到分组先展开别的再收起的跳动。
+        // 会话对象在启动恢复时就带着 workspace，第一帧即可命中。
+        focusedWorkspaceKey: () => {
+            // 不用 currentSession()：它末尾有 `|| sessions[0]` 兜底，active 还没恢复时会
+            // 返回列表第一条会话（可能是别的工作区），照样跳一次。这里只认 active 精确命中的那条。
+            const id = activeSessionId();
+            const sess = id ? sessions.find((s) => s.id === id) : null;
+            const own = sessionWorkspacePath(sess);
+            if (own) return own;
+            // 当前会话没有工作区（沙盒 / 临时 / 尚未就绪）→ 退回视图根，再不行交给调用方兜底
+            return viewRoot();
+        },
         isOpen,
         ensureOpen,
         persistSessions,
@@ -3530,6 +3615,9 @@ export function createAIPanel(options) {
         toggleSessionPin,
         renameSession,
         setSessionGroup,
+        renameSessionGroup,
+        dissolveSessionGroup,
+        newSessionInGroup,
         exportSession,
         showSessionDiagnostics,
         archiveSession,
@@ -3555,9 +3643,9 @@ export function createAIPanel(options) {
         if (!sessionMoreBtn || !showContextMenu) return;
         const rect = sessionMoreBtn.getBoundingClientRect();
         showContextMenu([
-            {label: '新建会话', icon: 'plus', action: () => { ensureOpen(); newSession(); }},
+            {label: '新建会话', icon: 'plus', action: () => { ensureOpen(); requestNewSession(); }},
             {label: '新建临时会话', icon: 'clock', action: () => { ensureOpen(); newTempSession(); }},
-            {label: '新建无工作区会话', icon: 'circle', action: () => { ensureOpen(); newNoWorkspaceSession(); }},
+            {label: '新建会话沙盒', icon: 'circle', action: () => { ensureOpen(); newNoWorkspaceSession(); }},
             {sep: true},
             {label: '自动化（定时任务）', icon: 'lifecycle', action: () => { ensureOpen(); openSchedulesPage(); }},
             {label: '投递：发给其他会话', icon: 'forward', action: () => { ensureOpen(); openDeliverComposer(); }},
@@ -3609,7 +3697,7 @@ export function createAIPanel(options) {
         getPluginLoadErrors,
         refreshPlugins,
         setSessions: (value) => { sessions = value; },
-        getSkillsCache: () => skillsCache,
+        getSkillsCache: () => skillsCacheSlot(skillsCacheKeyOf()),
         getPermissionAudit: () => permissionAudit,
         setMemoryFallbackNotified: (value) => { memoryFallbackNotified = value; },
         // 惰性转发：三别名构造于本模块之后（对话框 / 定时任务互引）
@@ -3683,7 +3771,8 @@ export function createAIPanel(options) {
     // requestPatchApproval / patchResultText 构造于本模块之后，一律惰性转发。
     const worktreeMod = createAIWorktree({
         backend,
-        getScopeRoot,
+        // 根按会话取（批次 B）：模块内所有取根都传 ctx.session，后台会话不会串到当前显示的会话
+        getScopeRoot: (session) => sessionScopeRoot(session),
         currentSession,
         currentScopeOf,
         persistSessions,
@@ -3755,9 +3844,12 @@ export function createAIPanel(options) {
         openSettings,
         // 「全部管理」统一走定时任务应用页面标签页（悬浮窗降级回对话框）
         openSchedulesPage,
-        // 会话归属判定：自动化弹层只展示本工作区会话的任务（跨工作区的折叠成提示行）
-        isSessionLocal: (session) => !session || !session.workspace
-            || aiWorkspaceKey(session.workspace) === aiWorkspaceKey(currentWorkspacePath()),
+        // 会话归属判定：自动化弹层只展示本工作区会话的任务（跨工作区的折叠成提示行）。
+        // 多工作区窗口里所有会话都算「本地」：窗口本就不绑定目录，各会话按自己的 workspace
+        // 解析上下文；若按 windowWorkspacePath（恒空）照判，会把除沙盒外的会话全判成外区，
+        // 弹层里几乎什么都不剩。
+        isSessionLocal: (session) => !session || !session.workspace || isMultiWorkspace()
+            || aiWorkspaceKey(session.workspace) === aiWorkspaceKey(windowWorkspacePath()),
         // 胶囊 = 当前会话口径（与计时胶囊一致）
         getSessionId: () => {
             const session = currentSession();
@@ -3921,8 +4013,12 @@ export function createAIPanel(options) {
                 persistSessions();
                 renderSessionList();
             }
-            // 跨工作区口径同定时任务（§4.13.4）：按本窗口工作区解析系统上下文，跨区目标保持失败
-            if (session.workspace && aiWorkspaceKey(session.workspace) !== aiWorkspaceKey(currentWorkspacePath())) {
+            // 跨工作区口径同定时任务（§4.13.4）：按本窗口工作区解析系统上下文，跨区目标保持失败。
+            // 多工作区窗口**不做这个判定**：它本来的职责就是管多个仓库的会话，每个会话按自己的
+            // workspace 解析上下文（scopeRootOf）；而 windowWorkspacePath 在这里恒为空，照判会
+            // 让所有绑定工作区的会话都被打成「属于其他工作区」——计时器到点永远送达不了。
+            if (!isMultiWorkspace() && session.workspace
+                && aiWorkspaceKey(session.workspace) !== aiWorkspaceKey(windowWorkspacePath())) {
                 const detail = '计时器「' + label + '」到点，但目标会话属于其他工作区，请到对应窗口处理';
                 flash(detail, true);
                 notifyFailure('计时器到点 · 需到其他窗口处理', detail, {key: 'timer-cross-ws', kind: 'info'});
@@ -3964,7 +4060,10 @@ export function createAIPanel(options) {
                 persistSessions();
                 renderSessionList();
             }
-            if (session.workspace && aiWorkspaceKey(session.workspace) !== aiWorkspaceKey(currentWorkspacePath())) {
+            // 多工作区窗口不判「跨工作区」：理由同计时器那条（windowWorkspacePath 恒空，
+            // 照判会让所有绑定工作区的会话都被打成外区，生成任务结束时永远送不回来）。
+            if (!isMultiWorkspace() && session.workspace
+                && aiWorkspaceKey(session.workspace) !== aiWorkspaceKey(windowWorkspacePath())) {
                 const detail = '生成任务「' + (job && job.entryName || '任务') + '」已结束，但目标会话属于其他工作区，请到对应窗口处理';
                 flash(detail, true);
                 notifyFailure('生成任务结束 · 需到其他窗口处理', detail, {key: 'gen-cross-ws', kind: 'info'});
@@ -4311,7 +4410,7 @@ export function createAIPanel(options) {
         if (!session || !backend.AISessionVacuum) return;
         // 整份重读会把在飞回合的 assistant 占位从 messages 里甩掉：与右键「瘦身归档」同一套
         // 守卫（回合/压缩中拒绝、登记 sessionReloading 防并发的 resource-change 重读）。
-        if (streamOf(session.id) || compactOf(session.id)) {
+        if (isSessionBusy(session.id)) {
             flash('该会话正在运行，请先停止再重试整理', true);
             return;
         }
@@ -4351,7 +4450,7 @@ export function createAIPanel(options) {
     // 「临时加载」：真空角落整份读入（用户自担慢），载入后可正常对话与压缩。
     async function forceLoadSession(session) {
         if (!session || !backend.AISessionReadForce) return;
-        if (streamOf(session.id) || compactOf(session.id)) {
+        if (isSessionBusy(session.id)) {
             flash('该会话正在运行，请先停止再临时加载', true);
             return;
         }
@@ -4391,7 +4490,7 @@ export function createAIPanel(options) {
     // 重读期间登记 sessionReloading，避免 resource-change 触发的并发整份重读。
     function vacuumSessionArchiveAction(session) {
         if (!session) return;
-        if (streamOf(session.id) || compactOf(session.id)) {
+        if (isSessionBusy(session.id)) {
             flash('该会话正在运行，请先停止再整理', true);
             return;
         }
@@ -4669,7 +4768,7 @@ export function createAIPanel(options) {
     const sideChatEditMedia = new Map(); // sessionId -> {images, videos}
     function beginSideChatEdit(session) {
         if (!session) return {ok: false};
-        if (streamOf(session.id) || compactOf(session.id)) return {ok: false};
+        if (isSessionBusy(session.id)) return {ok: false};
         const userIndex = lastUserIndex(session);
         if (userIndex < 0) return {ok: false};
         const message = session.messages[userIndex];
@@ -4918,7 +5017,7 @@ export function createAIPanel(options) {
 
     async function resumeInterruptedTurn(session) {
         if (!session) return;
-        if (streamOf(session.id) || compactOf(session.id) || compactStarting) return;
+        if (isSessionBusy(session.id, {includeCompactStarting: true})) return;
         session._interruptNotice = false;
         if (isOpen() && currentSession() === session) renderMessages(true);
         try {
@@ -6206,7 +6305,7 @@ export function createAIPanel(options) {
             } else if (isLast && !sessionBusy && !archived) {
                 add('regenerate', '重新生成');
             }
-            if (!sessionBusy && !archived && !compactOf(sessionNow.id) && index < sessionNow.messages.length - 1) {
+            if (!sessionBusy && !archived && !isSessionBusy(sessionNow.id) && index < sessionNow.messages.length - 1) {
                 add('rewind', '回退到此轮（丢弃之后的消息）');
             }
             // 回合收尾信息：分支 / 本轮用量 / 耗时。生成中与失败轮不显示（还没得看、也没意义）
@@ -6614,7 +6713,7 @@ export function createAIPanel(options) {
         if (!session) return Promise.resolve();
         const sessionId = session.id;
         // 本会话正在生成/压缩时跳过：本轮用的是它自己的快照，不会被这次估算覆盖
-        if (streamOf(sessionId) || compactOf(sessionId) || !isOpen()) return Promise.resolve();
+        if (isSessionBusy(sessionId) || !isOpen()) return Promise.resolve();
         if (!force && Date.now() - promptCachedAt(sessionId) < 2000) return Promise.resolve();
         // in-flight 也按会话去重：A 的估算在飞不该让 B 直接复用它
         const running = promptJobs.get(sessionId);
@@ -6622,7 +6721,7 @@ export function createAIPanel(options) {
         const job = Promise.resolve()
             .then(() => assembleSystemContext(session, getAttachments()))
             .then((bundle) => {
-                if (streamOf(sessionId) || compactOf(sessionId)) return;
+                if (isSessionBusy(sessionId)) return;
                 rememberPrompt(sessionId, bundle);
                 const viewing = currentSession();
                 if (!viewing || viewing.id !== sessionId) return;
@@ -6843,7 +6942,21 @@ export function createAIPanel(options) {
         return base + (useBackslash ? '\\' : '/') + String(rel).replace(/^\.?[\\/]+/, '');
     }
 
-    function aiProjectRoot() {
+    // 「这个会话的项目根」（记忆 / 技能 / 项目规则 / AGENTS.md 共用）。
+    // sessionOverride 可选（批次 E）：会话自己的 workspace 优先，会话可能属于别的仓库，
+    // 也可能是无工作区会话的沙盒。无会话根时保持旧的三级回落（窗口工作区 → 活动文件
+    // 父目录 → getScopeRoot），老宿主 / 面板未初始化时行为不变。
+    function aiProjectRoot(sessionOverride) {
+        const session = sessionOverride || currentSession();
+        const root = sessionScopeRoot(session);
+        if (root) return root;
+        // noWorkspace 会话：根**只有会话沙盒一个来源**。沙盒尚未就绪（首次 IPC 在飞 /
+        // 刚失败）或取不到时必须返回空、让调用方按「无根」处理，**绝不能**回落到窗口
+        // 工作区——否则记忆 / 项目规则 / AGENTS.md 会落进真实仓库（独立审查 🔴）。
+        if (session && session.noWorkspace === true) return '';
+        // harness 窗口下「无会话根」是确定结论（scopeRootOf 第 3 步），不许再用窗口工作区 /
+        // 活动文件目录补齐——否则 AGENTS.md / 记忆 / 项目规则会读错仓库（方案核心设计 §1）。
+        if (isMultiWorkspace()) return '';
         const context = getWorkspaceContext() || {};
         const workspace = aiTextOf(context.workspaceFolder);
         if (workspace) return workspace;
@@ -6859,8 +6972,10 @@ export function createAIPanel(options) {
         const session = sessionOverride || currentSession();
         const plan = session && session.activePlan;
         if (!plan || !String(plan.markdown || '').trim()) return null;
-        // 根优先取会话记下的工作区：用户后来换了工作区也不会把旧计划写到新目录去
-        const root = aiTextOf(session.workspace) || getScopeRoot() || aiProjectRoot();
+        // 根优先取会话记下的工作区：用户后来换了工作区也不会把旧计划写到新目录去。
+        // 会话根为空时才回落 aiProjectRoot(session)（批次 E：去掉了「窗口根」这一档，
+        // 否则后台会话的计划会写到用户当前查看的工作区里）。
+        const root = aiTextOf(session.workspace) || aiProjectRoot(session);
         if (!root) return null;
         const rel = planFileRelPath(session.id || '');
         return {
@@ -6871,11 +6986,14 @@ export function createAIPanel(options) {
         };
     }
 
+    // 计划文件是应用内务文件（`.cadt/plan/`）：走 SaveFileAtomic（同目录临时文件 + 原子替换），
+    // 视图里正在预览计划时也不会读到半截正文。老宿主没有该绑定时退回 SaveFile。
     function writePlanFile(target) {
-        if (!target || !backend.AIEnsureDir || !backend.SaveFile) return Promise.resolve(false);
+        const save = backend.SaveFileAtomic || backend.SaveFile;
+        if (!target || !backend.AIEnsureDir || !save) return Promise.resolve(false);
         return Promise.resolve()
             .then(() => backend.AIEnsureDir(target.dir))
-            .then(() => backend.SaveFile(target.abs, target.body, 'lf', false, 'utf-8'))
+            .then(() => save(target.abs, target.body, 'lf', false, 'utf-8'))
             .then(() => {
                 if (typeof onFileChanged === 'function') onFileChanged(target.abs);
                 return true;
@@ -6944,7 +7062,7 @@ export function createAIPanel(options) {
         return best;
     }
 
-    function currentWorkspacePath() {
+    function windowWorkspacePath() {
         const context = getWorkspaceContext() || {};
         const folder = aiTextOf(context.workspaceFolder);
         if (folder) return aiNormalizePath(folder);
@@ -6958,20 +7076,41 @@ export function createAIPanel(options) {
         return session && session.workspace ? aiNormalizePath(session.workspace) : '';
     }
 
+    // 「视图根」：新建会话 / 复用空会话时用来决定「这条新会话属于谁」的根。
+    // 单工作区 = 窗口工作区（既有语义，行为不变）。
+    // 多工作区 = 面板当前聚焦会话的工作区（宿主经 opts.getViewRoot 注入 lastFocusedRoot）——
+    //   缺了它，多工作区下新建会话的 workspace 为空，会让视图跳到「无工作区」把树清掉，
+    //   而且新会话没有根、AI 工具直接不可用。
+    // 注意与 windowWorkspacePath 的分工：那个是 activeSessionByWorkspace 的 key，多工作区必须
+    // 恒空（否则会话切换↔key 变化成环）；这里只用于「新建给谁」。
+    function viewRoot() {
+        if (isMultiWorkspace() && typeof opts.getViewRoot === 'function') {
+            return aiNormalizePath(aiTextOf(opts.getViewRoot())).replace(/\/+$/, '');
+        }
+        return windowWorkspacePath();
+    }
+
     // 打开/切换到某个会话时对齐应用工作区：会话有工作区就切过去，
     // 老会话没有工作区则绑定到当前工作区（只绑定一次）。
     async function syncWorkspaceToSession(session) {
         if (!session) return '';
         // 临时 / 无工作区会话没有工作区归属，也不该被「绑到当前工作区」：切过去就只是换个对话
-        if (isTransientSession(session) || isNoWorkspaceSession(session)) return '';
+        if (isUnboundSession(session)) return '';
+        // 多工作区模式：**切会话只是换对话，不换窗口工作区**。这里直接返回，既不把当前
+        // 会话绑到目标工作区，也不调 openWorkspaceFolder（那会把树/监听/标题切走，表现为
+        // 「点一个会话，工作区被清空/换掉」）。视图跟随由 main.js 的 followSessionWorkspace
+        // 负责（只更新树/监听/面包屑，不写 workspaceFolder）。
+        // 注意不能改成让 windowWorkspacePath() 返回会话工作区——它是 activeSessionByWorkspace
+        // 的 key，依赖当前会话会形成「会话切换↔key 变化」的循环（栈溢出）。
+        if (isMultiWorkspace()) return '';
         const target = sessionWorkspacePath(session);
         if (!target) {
-            const current = currentWorkspacePath();
+            const current = windowWorkspacePath();
             if (!current) return '';
             session.workspace = current;
             return 'assigned';
         }
-        const current = currentWorkspacePath();
+        const current = windowWorkspacePath();
         if (current && aiWorkspaceKey(current) === aiWorkspaceKey(target)) return '';
         if (!openWorkspaceFolder) return '';
         try {
@@ -7001,8 +7140,83 @@ export function createAIPanel(options) {
         return p === r || p.startsWith(r + '/');
     }
 
+    // ---- 会话根（AI 作用域的唯一取根入口，批次 B）----
+    // 改造前 getScopeRoot() = 工作区文件夹 ‖ 活动文件父目录，与「会话」无关：切个标签，
+    // 工具的相对路径就跟着换仓库。工具路径一律改按**会话根**：会话自己的 workspace 优先，
+    // 其次会话沙盒（批次 F 实现），harness 未绑定会话无根，最后才回落窗口工作区 / 活动文件
+    // 父目录（兼容旧行为）。四步顺序与纯函数见 ai-session-scope.js 的 scopeRootOf。
+    // 非 AI 的 UI 逻辑（树根 / 标题 / Git 面板 / 浮窗根）继续用 getScopeRoot()，不要全局替换。
+    function getWindowWorkspaceForScope() {
+        return (getWorkspaceContext() || {}).workspaceFolder || '';
+    }
+
+    // 返回的是**活动文件路径**（不是目录）：scopeRootOf 内部按 activeFileDir() 折算目录。
+    // 沿用任务书的函数名（getActiveFileDirForScope），语义以本注释为准——
+    // 见 .cadt/tmp/agent-host-platform/STATUS.md 偏离说明 1。
+    function getActiveFileDirForScope() {
+        const active = (getWorkspaceContext() || {}).activeFile;
+        return (active && active.path) || '';
+    }
+
+    // 会话沙盒（backing workspace，批次 F4）：noWorkspace 会话的根 = 应用数据下的
+    // `<appData>/ai-workspaces/<sessionId>`——Go 侧 AIBackingWorkspace 负责校验 id、建目录、
+    // 首次落一份礼仪 AGENTS.md。结果按 sessionId 缓存：取根是同步高频路径（每轮上下文、每个
+    // 工具调用都要），每次过 IPC 太贵。
+    // **失败不永久缓存**：一次 IPC 失败就把 '' 缓存下来，会让该会话在本次运行内永远没有沙盒根
+    // （独立审查 🟡）。改为失败后 5 秒才允许重试，既不刷日志也能自愈。
+    const backingWorkspaceCache = new Map();     // sessionId -> 根（只缓存成功值）
+    const backingWorkspaceInflight = new Map();  // sessionId -> Promise（防重复 IPC）
+    const backingWorkspaceRetryAt = new Map();   // sessionId -> 最早重试时间戳
+    const BACKING_RETRY_MS = 5000;
+    function sessionBackingWorkspace(session) {
+        if (!session || session.noWorkspace !== true) return '';
+        const id = aiTextOf(session.id).trim();
+        if (!id) return '';
+        if (backingWorkspaceCache.has(id)) return backingWorkspaceCache.get(id);
+        const now = Date.now();
+        if ((backingWorkspaceRetryAt.get(id) || 0) > now) return '';
+        if (!backingWorkspaceInflight.has(id) && backend && typeof backend.AIBackingWorkspace === 'function') {
+            const pending = Promise.resolve(backend.AIBackingWorkspace(id))
+                .then((dir) => {
+                    const root = aiNormalizePath(aiTextOf(dir)).replace(/\/+$/, '');
+                    if (root) {
+                        backingWorkspaceCache.set(id, root);
+                        backingWorkspaceRetryAt.delete(id);
+                    } else {
+                        backingWorkspaceRetryAt.set(id, Date.now() + BACKING_RETRY_MS);
+                    }
+                    return root;
+                })
+                .catch((e) => {
+                    // 沙盒取不到就当无根：这一轮照旧能跑（只读 + 绝对路径），不打断对话
+                    console.debug('[会话沙盒] AIBackingWorkspace 失败（稍后重试）：' + ((e && (e.message || e)) || e));
+                    backingWorkspaceRetryAt.set(id, Date.now() + BACKING_RETRY_MS);
+                    return '';
+                })
+                .finally(() => { backingWorkspaceInflight.delete(id); });
+            backingWorkspaceInflight.set(id, pending);
+        }
+        return '';
+    }
+
+    function sessionScopeRoot(session) {
+        return scopeRootOf(session || currentSession(), {
+            windowWorkspace: getWindowWorkspaceForScope(),
+            activeFileDir: getActiveFileDirForScope(),
+            // harness 窗口标记由 bridge-ui 启动时设置（--harness 窗口不恢复工作区）
+            isHarness: !!isMultiWorkspace(),
+            backingWorkspaceOf: (s) => sessionBackingWorkspace(s),
+        });
+    }
+
+    // 当前会话的根（供宿主 / 其它域取根，如 main.js 的 watcher 换根）。
+    // 面板未初始化时不在这里暴露；调用方按「空 = 回落旧行为」处理。
+    function currentSessionScopeRoot() {
+        return sessionScopeRoot(currentSession());
+    }
+
     function aiResolveScopePath(value, session) {
-        const root = getScopeRoot() || '';
+        const root = sessionScopeRoot(session || currentSession()) || '';
         const rel = aiTextOf(value).trim() || '.';
         const absolute = aiIsAbsolutePath(rel);
         if (currentScopeOf(session || currentSession()) === 'full') {
@@ -7138,7 +7352,7 @@ export function createAIPanel(options) {
     async function resolveScanRoot(ctx, toolName, inputPath, opts) {
         const start = aiTextOf(inputPath).trim();
         if (!start) {
-            const scopeRoot = getScopeRoot() || '';
+            const scopeRoot = sessionScopeRoot(ctx && ctx.session) || '';
             if (!scopeRoot) {
                 return {ok: false, message: '当前没有工作区范围，请先打开文件或文件夹，或用 path 指定目录'};
             }
@@ -7185,17 +7399,19 @@ export function createAIPanel(options) {
         return appDirPromise;
     }
 
-    async function resolveMemoryDir() {
-        const project = aiProjectRoot();
-        if (config.memoryMode === 'workspace' && project) {
+    // 记忆目录的唯一解析点。sessionOverride 可选（批次 E2）：内部按**会话根**取项目根。
+    // 无会话根时**不再静默回落到应用数据目录**：记忆是用户数据，回落会让「本会话」与别的
+    // 会话共写同一份 MEMORY.md。返回 {dir:'', mode:'none', project:''}，调用方负责提示
+    // 「本会话未绑定工作区，记忆不可用」。
+    // 「应用数据记忆」仍是用户显式选的模式（config.memoryMode !== 'workspace'），不是回落。
+    async function resolveMemoryDir(sessionOverride) {
+        const project = aiProjectRoot(sessionOverride || currentSession());
+        if (config.memoryMode === 'workspace') {
+            if (!project) return {dir: '', mode: 'none', project: ''};
             return {dir: aiNormalizePath(aiJoinPath(project, '.cadt/memory')), mode: 'workspace', project};
         }
         const app = aiNormalizePath(await getAIAppDir());
         if (!app) throw new Error('无法定位应用数据目录');
-        if (config.memoryMode === 'workspace' && !project && !memoryFallbackNotified) {
-            memoryFallbackNotified = true;
-            flash('未打开工作区，记忆临时使用应用数据目录');
-        }
         return {dir: aiNormalizePath(aiJoinPath(app, 'ai-memory')), mode: 'app', project};
     }
 
@@ -7222,9 +7438,11 @@ export function createAIPanel(options) {
         return builtinSkillsDirPromise;
     }
 
-    async function resolveSkillDirs() {
+    // 技能来源目录：工作区两档按**会话根**扫（批次 E5），会话的仓库与当前窗口不同时
+    // 读到的是本会话的技能；应用数据 / 用户目录 / 内置三档与工作区无关，照旧。
+    async function resolveSkillDirs(sessionOverride) {
         const dirs = [];
-        const project = aiProjectRoot();
+        const project = aiProjectRoot(sessionOverride || currentSession());
         if (project) {
             dirs.push({source: 'workspace', dir: aiNormalizePath(aiJoinPath(project, '.cadt/skills')), rank: AI_SKILL_RANKS.workspace});
             dirs.push({source: 'workspace-agents', dir: aiNormalizePath(aiJoinPath(project, '.agents/skills')), rank: AI_SKILL_RANKS.workspaceAgents});
@@ -7300,7 +7518,31 @@ export function createAIPanel(options) {
         return {name: name || fallbackName, description: description || '（无描述）', content: text};
     }
 
-    let skillsCache = {at: 0, list: []};
+    // 技能扫描缓存：按**会话根**分桶（批次 E5）。原来是一个单槽 {at, list}——harness 下
+    // 两个会话的根不同，A 会话刚扫完，B 会话就会把 A 的技能表（含 A 的 workspace 技能）当成自己的。
+    // 键 = 会话根 key（aiWorkspaceKey，空根单独一格），上限 8 格（超出丢最早插入的一格）。
+    const AI_SKILLS_CACHE_TTL = 5000;
+    const AI_SKILLS_CACHE_MAX = 8;
+    const skillsCacheByRoot = new Map(); // wsKey -> {at, list}
+
+    function skillsCacheKeyOf(session) {
+        const root = sessionScopeRoot(session || currentSession());
+        return root ? aiWorkspaceKey(root) : '';
+    }
+
+    // 取（必要时建）某会话根对应的缓存槽。槽对象身份稳定，`slot.at = 0` 就是就地失效
+    //（设置页 ai-settings-dialog 的 getSkillsCache().at = 0 走这条语义，故不改成整体替换）。
+    function skillsCacheSlot(key) {
+        const hit = skillsCacheByRoot.get(key);
+        if (hit) return hit;
+        if (skillsCacheByRoot.size >= AI_SKILLS_CACHE_MAX) {
+            const oldest = skillsCacheByRoot.keys().next();
+            if (oldest && !oldest.done) skillsCacheByRoot.delete(oldest.value);
+        }
+        const slot = {at: 0, list: []};
+        skillsCacheByRoot.set(key, slot);
+        return slot;
+    }
 
     let exePathPromise = null;
     function getAIExePath() {
@@ -7324,8 +7566,18 @@ export function createAIPanel(options) {
         return '应用';
     }
 
-    async function listSkillsRaw(force) {
-        if (!force && Date.now() - skillsCache.at < 5000) return skillsCache.list;
+    // force=true 强扫；sessionOverride 可选（按会话根取缓存与工作区技能目录）。
+    // 兼容把会话当第一参的写法（listSkillsRaw(session)）：对象首参按会话处理，不强扫。
+    async function listSkillsRaw(force, sessionOverride) {
+        let forceScan = force === true;
+        let session = sessionOverride;
+        if (force && typeof force === 'object') {
+            session = force;
+            forceScan = false;
+        }
+        const target = session || currentSession();
+        const cache = skillsCacheSlot(skillsCacheKeyOf(target));
+        if (!forceScan && Date.now() - cache.at < AI_SKILLS_CACHE_TTL) return cache.list;
         const candidates = [];
         for (let index = 0; index < AI_BUILTIN_SKILLS.length; index += 1) {
             const builtin = AI_BUILTIN_SKILLS[index];
@@ -7344,7 +7596,7 @@ export function createAIPanel(options) {
             });
         }
         let rootOrder = 0;
-        for (const root of await resolveSkillDirs()) {
+        for (const root of await resolveSkillDirs(target)) {
             rootOrder += 1;
             let listing;
             try {
@@ -7401,12 +7653,13 @@ export function createAIPanel(options) {
             disabled: disabled.has(skill.name.toLowerCase()),
             hidden: hidden.has(skill.name.toLowerCase()),
         })).sort((a, b) => a.name.localeCompare(b.name));
-        skillsCache = {at: Date.now(), list};
+        cache.at = Date.now();
+        cache.list = list;
         return list;
     }
 
-    async function listSkills(force) {
-        return (await listSkillsRaw(force)).filter((skill) => !skill.disabled);
+    async function listSkills(force, sessionOverride) {
+        return (await listSkillsRaw(force, sessionOverride)).filter((skill) => !skill.disabled);
     }
 
     // 斜杠补全持有自己的技能缓存（TTL 5s）：技能管理里新建 / 启停 / 隐藏后要同步失效，
@@ -7414,7 +7667,9 @@ export function createAIPanel(options) {
     let slashSkillsInvalidate = null;
 
     function invalidateSkillsCache() {
-        skillsCache = {at: 0, list: []};
+        // 技能目录来自配置与磁盘（新建 / 启停 / 隐藏 / 换根都可能变）：所有会话根的桶一起丢掉，
+        // 下次访问按需重建（槽对象重建后 at=0，天然失效）。
+        skillsCacheByRoot.clear();
         if (!slashSkillsInvalidate) return;
         try {
             slashSkillsInvalidate();
@@ -7547,6 +7802,8 @@ export function createAIPanel(options) {
         get settings() { return settings; },
         backend,
         getScopeRoot,
+        // 会话根（批次 E）：认知索引的「工作区」跟会话走，不跟当前标签走
+        scopeRootOf: (session) => sessionScopeRoot(session),
     });
     const pluginToolAuth = () => (config && config.pluginTools && typeof config.pluginTools === 'object')
         ? config.pluginTools
@@ -7617,6 +7874,12 @@ export function createAIPanel(options) {
         get currentScopeOf() { return currentScopeOf; },
         get getWorkspaceContext() { return getWorkspaceContext; },
         get getScopeRoot() { return getScopeRoot; },
+        // 会话根（批次 E1）：范围根 / AGENTS.md / 记忆 / 认知守则都按发起这一轮的会话取根。
+        // 与 getScopeRoot（窗口根，留给非 AI 的 UI 逻辑）并存，别混用。
+        get scopeRootOf() { return (session) => sessionScopeRoot(session); },
+        // 当前会话的根（批次 F）：宿主侧（如 main.js 的文件监听换根）需要「AI 根」时用它，
+        // 不要自己组装 env。面板未初始化 / 无会话根时返回空串，调用方按空回落旧行为。
+        get currentSessionScopeRoot() { return currentSessionScopeRoot; },
         // 支线定性块要显示主对话标题（<side_chat> 里点名「主对话：「X」」），按 id 查会话
         get sessionById() { return sessionById; },
         // 隔离 worktree 块：会话持有活跃 worktree 时每轮注入（含目录存在性校验与失效清登记）
@@ -7637,6 +7900,9 @@ export function createAIPanel(options) {
     const planModeBlock = () => systemCtxMod.planModeBlock();
 
     const MEMORY_NAME_RULE = /^[A-Za-z0-9_\-\u4e00-\u9fff]{1,64}\.md$/i;
+    // 记忆不可用（批次 E2）：无会话根时 resolveMemoryDir 返回空目录、不再回落到应用数据目录，
+    // 三个记忆工具统一用这一句回复（模型据此知道是「没绑工作区」而不是文件不存在）。
+    const MEMORY_NO_ROOT_TEXT = '本会话未绑定工作区，记忆不可用（先为本会话绑定工作区，或在设置 → AI → 记忆 里切到应用数据模式）';
 
     // ---- 浏览器使用（每会话独立标签页 + 独立 profile）----
 
@@ -7655,6 +7921,8 @@ export function createAIPanel(options) {
         });
         session.browserTabId = opened && opened.browserTab ? opened.browserTab.id : '';
         if (!session.browserTabId) throw new Error('浏览器标签页创建失败');
+        // 惰性重建的标签是会话自建的，不再是用户接管的标签（用户可能已手动关掉旧标签）
+        session.browserTabAdopted = false;
         persistSessions();
         return {id: session.browserTabId, state: null};
     }
@@ -7756,10 +8024,11 @@ export function createAIPanel(options) {
     }
 
     // 给模型看的路径：工作区内用相对路径；工作区外只留文件名，避免把用户名/盘符/目录结构发出去。
+    // 缺省基准是**会话根**（批次 E）：路径与相对路径必须同源，否则会话根下的路径会显示成「范围外」。
     function aiDisplayPath(value, root) {
         const full = aiNormalizePath(value);
         if (!full) return '';
-        const base = aiNormalizePath(root == null ? getScopeRoot() : root).replace(/\/+$/, '');
+        const base = aiNormalizePath(root == null ? sessionScopeRoot(currentSession()) : root).replace(/\/+$/, '');
         if (base) {
             if (full.toLowerCase() === base.toLowerCase()) return '.';
             if (full.toLowerCase().startsWith(base.toLowerCase() + '/')) return full.slice(base.length + 1);
@@ -7772,7 +8041,7 @@ export function createAIPanel(options) {
     //（Go 的 `GetFileAttributesEx D:/…` 会把盘符与目录结构一起带回模型）。
     // 单条路径走 aiDisplayPath；两者边界口径一致：只有 full 档不设边界。
     function redactToolText(text, session) {
-        return redactScopePaths(text, getScopeRoot(), currentScopeOf(session || currentSession()));
+        return redactScopePaths(text, sessionScopeRoot(session || currentSession()), currentScopeOf(session || currentSession()));
     }
 
     function aiDisplayRootLabel(root) {
@@ -8508,6 +8777,8 @@ async function requestApproval(session, toolMessage, info) {
         const sessionId = (session && session.id) || '';
         const id = (sessionId || 'session') + '#classifier-' + (++classifierSeq);
         // 走 configForProfile：插件 provider 的虚拟账号同样要拿到每轮动态补丁
+        // 判定用的展示基准 = 发起命令的那个会话的根（后台会话不会串到当前显示的会话）
+        const classifyRoot = sessionScopeRoot(session) || '';
         const cfg = Object.assign(configForProfile(modelRef.account, modelRef.entry), {
             // 512 而非小预算：部分兼容网不认「关闭思考」参数时，思考链也烧不完预算，
             // 正文仍能产出（JSON 判定本身 <60 token）
@@ -8518,8 +8789,9 @@ async function requestApproval(session, toolMessage, info) {
         });
         const userPayload = {
             command: commandText(command).slice(0, 2000),
-            cwd: aiDisplayPath(cwd, getScopeRoot()),
-            workspace: aiDisplayRootLabel(getScopeRoot()),
+            // 展示基准按**会话根**（批次 E）：拿窗口根会把会话根下的路径显示成「范围外」
+            cwd: aiDisplayPath(cwd, classifyRoot),
+            workspace: aiDisplayRootLabel(classifyRoot),
             // 用户设置的判定严格度与端侧共用（loose 0.30 / standard 0.15 / strict 0.07）
             strictness: normalizeLocalClassifierStrictness(config.localClassifierStrictness),
         };
@@ -9235,8 +9507,10 @@ async function requestApproval(session, toolMessage, info) {
         } catch (e) {}
     }
 
-    function isAutoWriteRisky(path) {
-        const rel = aiRelPath(getScopeRoot(), path).toLowerCase();
+    // risky 判定按「会话根」折算相对路径（会话根与窗口根不同时必须同源，否则 .cadt / AGENTS.md
+    // 的豁免与风险判定会跟着窗口根漂）。session 缺省时按面板当前会话取根。
+    function isAutoWriteRisky(path, session) {
+        const rel = aiRelPath(sessionScopeRoot(session), path).toLowerCase();
         if (rel === 'agents.md' || rel.endsWith('/agents.md')) return true;
         if (rel === '.git' || rel.startsWith('.git/') || rel.includes('/.git/')) return true;
         // .cadt/worktree 是 AI 隔离 worktree（草稿区，炸了不伤主根）：auto 档免逐写审批。
@@ -9255,7 +9529,7 @@ async function requestApproval(session, toolMessage, info) {
     async function applyWorkspaceWrite(session, toolMessage, info) {
         const scope = currentScopeOf(session);
         const dirty = isFileDirty(info.path);
-        const risky = dirty || isAutoWriteRisky(info.path);
+        const risky = dirty || isAutoWriteRisky(info.path, session);
         const rules = await ensureProjectRules(false);
         // 规则 / 审批 await 期间用户可能已按停止：不再落盘（同 run_command 的停止闸门）
         if (toolHalted(toolMessage)) {
@@ -9264,7 +9538,7 @@ async function requestApproval(session, toolMessage, info) {
             refreshToolWrap(session, toolMessage);
             return '用户已停止生成，写入已取消。';
         }
-        const relRaw = aiRelPath(getScopeRoot(), info.path);
+        const relRaw = aiRelPath(sessionScopeRoot(session), info.path);
         const rel = writeRuleSubject(relRaw);
         // 主会话隔离写闸：隔离区开启期间主根只读（全档生效，含完全权限）——回灌只能走
         // worktree_manage(export) 的补丁审批卡。否则导出预检冲突时模型会「直接改主根对齐」
@@ -9875,7 +10149,7 @@ async function requestApproval(session, toolMessage, info) {
             throw new Error('没有可用的' + genKindLabel(kind) + '条目' +
                 (modelRef ? '：「' + modelRef + '」未找到或未启用' : '（请在 设置 → AI → 生图与视频模型 里配置）'));
         }
-        const workspace = getScopeRoot();
+        const workspace = sessionScopeRoot(ctx && ctx.session);
         if (!workspace) throw new Error('当前没有工作区，无法保存生成产物');
         // 参考图（图生图 / edits）：只有配了 editPath 的同步型生图条目能承载。
         // 空白元素先剔掉——否则 reference: "" 这种输入会误触发「未配编辑端点」。
@@ -10211,7 +10485,9 @@ async function requestApproval(session, toolMessage, info) {
         if (!backend.CognitionRead) throw new Error('当前版本不支持认知索引（请重新构建或更新应用）');
     }
     function cognitionWorkspace() {
-        const ws = getScopeRoot();
+        // 根按会话取（批次 B）：认知卷是「每个工作区一卷」，会话根与窗口根不同时以会话为准。
+        // 该工具无 ctx 参数（cognition_edit/read/status 都由当前回合发起），用当前会话即可。
+        const ws = sessionScopeRoot(currentSession());
         if (!ws) throw new Error('认知索引按工作区生效：当前没有打开工作区');
         return ws;
     }
@@ -10336,6 +10612,31 @@ async function requestApproval(session, toolMessage, info) {
                 if (view.startLine != null) head += '，行 ' + view.startLine + '-' + view.endLine + '，共 ' + view.totalLines + ' 行';
                 head += '）\n\n';
                 return head + view.text + (view.hint ? '\n' + view.hint : '');
+            }
+            case 'get_file_outline': {
+                // 与 read_file 同一条路径授权链（工作区外 read/edit 弹卡、auto/full 直读、点名直读）。
+                const resolved = await resolveReadPathWithApproval(ctx, 'get_file_outline', input.path);
+                if (!resolved.ok) return resolved.message;
+                const path = resolved.path;
+                let read;
+                try {
+                    // 不设 maxChars：大纲要覆盖全文符号，readTextFile 的 >10MB / 二进制护栏照常生效。
+                    read = await readTextFile(path, null);
+                } catch (err) {
+                    const hint = await missingFileHint(err, input.path, path, ctx);
+                    if (hint) return hint;
+                    throw err;
+                }
+                recordRead(ctx && ctx.session, path, read.data && read.data.mtime, read.data && read.data.size);
+                if (ctx && ctx.toolMessage) ctx.toolMessage.targetPath = path;
+                const outline = parseOutline(read.text);
+                const shown = redactToolText(input.path || path, ctx && ctx.session);
+                return formatOutlineText(shown, outline, {
+                    sectionsOnly: !!input.sectionsOnly,
+                    offset: input.offset,
+                    limit: input.limit,
+                    section: input.section,
+                }) + '\n\n（大纲仅供定位；要某段正文请用 read_file 指定 startLine/endLine。）';
             }
             case 'read_image': {
                 const target = aiTextOf(input.path).trim();
@@ -10629,7 +10930,7 @@ async function requestApproval(session, toolMessage, info) {
                 const denied = await approveExternalWrite('text_to_speech', ctx,
                     'text_to_speech · voice=' + voice + '：' + text.slice(0, 80) + (text.length > 80 ? '…' : ''));
                 if (denied) return denied;
-                const workspace = getScopeRoot();
+                const workspace = sessionScopeRoot(ctx && ctx.session);
                 if (!workspace) throw new Error('当前没有工作区，无法保存语音产物');
                 if (!backend.ExternalTTS) throw new Error('外部语音合成通道不可用（请重新构建或更新应用）');
                 const result = await backend.ExternalTTS(workspace, text, voice);
@@ -10690,7 +10991,8 @@ async function requestApproval(session, toolMessage, info) {
                 return text;
             }
             case 'memory_list': {
-                const mem = await resolveMemoryDir();
+                const mem = await resolveMemoryDir(ctx && ctx.session);
+                if (!mem.dir) throw new Error(MEMORY_NO_ROOT_TEXT);
                 if (backend.AIEnsureDir) await backend.AIEnsureDir(mem.dir);
                 let listing;
                 try {
@@ -10704,7 +11006,8 @@ async function requestApproval(session, toolMessage, info) {
             }
             case 'memory_read': {
                 const name = memoryFileName(input.name);
-                const mem = await resolveMemoryDir();
+                const mem = await resolveMemoryDir(ctx && ctx.session);
+                if (!mem.dir) throw new Error(MEMORY_NO_ROOT_TEXT);
                 const read = await readTextFile(aiJoinPath(mem.dir, name), 64 << 10);
                 return '记忆文件：' + name + '\n\n' + read.text;
             }
@@ -10713,11 +11016,19 @@ async function requestApproval(session, toolMessage, info) {
                 let content = aiTextOf(input.content);
                 if (!content.trim()) throw new Error('记忆内容为空');
                 if (content.length > 60 << 10) {
-                    content = content.slice(0, 60 << 10) + '\n…（内容过长，已截断到 60KB）';
+                    // 留出提示语的余量：Go 侧按 rune 复核同一上限并拒绝超限内容（不静默截断）
+                    content = content.slice(0, (60 << 10) - 32) + '\n…（内容过长，已截断到 60KB）';
                 }
-                const mem = await resolveMemoryDir();
+                const mem = await resolveMemoryDir(ctx && ctx.session);
+                if (!mem.dir) throw new Error(MEMORY_NO_ROOT_TEXT);
                 if (backend.AIEnsureDir) await backend.AIEnsureDir(mem.dir);
-                await backend.SaveFile(aiJoinPath(mem.dir, name), content, 'lf', false, 'utf-8');
+                // 走锁 + 原子写通道（批次 E3）：两会话并发写同一份 MEMORY.md 时，
+                // 裸 SaveFile 整份替换会丢更新。首参是**记忆目录**（mem.dir），不是工作区根。
+                if (!backend.AIMemoryWrite) {
+                    await backend.SaveFile(aiJoinPath(mem.dir, name), content, 'lf', false, 'utf-8');
+                } else {
+                    await backend.AIMemoryWrite(mem.dir, name, content);
+                }
                 return '已写入记忆 ' + name + '（' + content.length + ' 字符，' + mem.mode + '）';
             }
             case 'write_worklog': {
@@ -10726,7 +11037,8 @@ async function requestApproval(session, toolMessage, info) {
                     throw new Error('工作日志已被用户关闭（设置 → AI → 权限 → AI 工具权限）');
                 }
                 if (!backend.AIWorklogAppend) throw new Error('当前版本不支持工作日志');
-                const worklogRoot = aiProjectRoot() || getScopeRoot();
+                // 会话根（批次 E：aiProjectRoot 已会话化，内部就是会话根 + 兼容回落）
+                const worklogRoot = sessionScopeRoot(ctx && ctx.session) || aiProjectRoot(ctx && ctx.session);
                 if (!worklogRoot) throw new Error('当前没有工作区，无法写工作日志');
                 const worklogTitle = aiTextOf(input.title).trim();
                 if (!worklogTitle) throw new Error('日志标题为空');
@@ -10923,7 +11235,7 @@ async function requestApproval(session, toolMessage, info) {
             case 'skill_use': {
                 const name = aiTextOf(input.name).trim();
                 if (!name) throw new Error('技能名称为空');
-                const skills = await listSkills(true);
+                const skills = await listSkills(true, ctx && ctx.session);
                 const skill = skills.find((item) => item.name.toLowerCase() === name.toLowerCase());
                 if (!skill) throw new Error('技能不存在：' + name);
                 const baseDir = skill.path ? aiPathDir(skill.path) : '';
@@ -10932,7 +11244,7 @@ async function requestApproval(session, toolMessage, info) {
                     '\n\n' + skill.content + '\n\n请遵循该技能指令。';
             }
             case 'skill_list': {
-                const skills = await listSkillsRaw(true);
+                const skills = await listSkillsRaw(true, ctx && ctx.session);
                 if (!skills.length) return '当前没有可用技能。把 SKILL.md 放进技能目录即可（工作区 .cadt/skills、.agents/skills 或应用数据 ai-skills）。';
                 const groups = new Map();
                 for (const skill of skills) {
@@ -10977,7 +11289,9 @@ async function requestApproval(session, toolMessage, info) {
                 return sessionLogDigest(raw, {
                     limit: aiClampInt(input.limit, 1, 50, 20),
                     query: aiTextOf(input.query).trim(),
-                    workspace: getScopeRoot(),
+                    // 比对基准 = **调用方所在会话**的根（与日志头里的 workspace 比对，跨工作区时
+                    // 摘要里追加「这是别的工作区的会话」提示）。批次 E：从窗口根改为会话根。
+                    workspace: sessionScopeRoot(ctx && ctx.session),
                     group: digestSession ? (digestSession.group || '') : '',
                     id,
                 });
@@ -11153,6 +11467,8 @@ async function requestApproval(session, toolMessage, info) {
                      'cognition_toggle',
                      // 桌面控制授权是会话状态变更 + 让 AI 接管键鼠：批准计划前不许申请
                      'request_desktop_control',
+                     // 接管用户浏览器标签是会话能力变更 + 读取用户已登录页面：批准计划前不许申请
+                     'adopt_browser_tab',
                      // 旧名（pre-command 时代）同样拦：别名不能成为计划模式的绕行通道
                      'add_pre_command', 'update_pre_command', 'remove_pre_command'].includes(action)) {
                     throw new Error('计划模式下禁止 ' + action + '：该动作会真实改变应用状态或触发模型调用，属于执行阶段，等用户批准计划后再执行（设置树 / 群列表等只读动作不受限）。');
@@ -11174,6 +11490,11 @@ async function requestApproval(session, toolMessage, info) {
                         if (!resolved.ok) throw new Error(resolved.message);
                         params.url = local.url;
                     }
+                }
+                // 接管态的标签禁止 AI 关闭：宿主侧按 protectedId 拒绝（模型可能用 name/url 而非 id
+                // 定位，所以守卫放宿主）。browser_close 工具侧另有独立拦截，双保险。
+                if (action === 'close_browser_tab' && ctx && ctx.session && ctx.session.browserTabAdopted) {
+                    params.protectedId = ctx.session.browserTabId;
                 }
                 let result;
                 try {
@@ -11210,13 +11531,16 @@ async function requestApproval(session, toolMessage, info) {
                     persistSessions();
                     return '截图已捕获并作为图片附加到对话（下一轮请求模型可见）。';
                 }
-                // app_control 的 open_browser_tab / close_browser_tab 与 browser_* 工具共享
-                // 会话标签页身份：否则 AI 用它打开网页后，browser_screenshot 走 ensureBrowserTab
-                // 看不到 id 会另开 about:blank「新标签页」，截到白图（2026-11-22 高频 bug）。
-                if (ctx && ctx.session && (action === 'open_browser_tab' || action === 'close_browser_tab')) {
+                // app_control 的 open_browser_tab / adopt_browser_tab / close_browser_tab 与
+                // browser_* 工具共享会话标签页身份：否则 AI 用它打开网页后，browser_screenshot
+                // 走 ensureBrowserTab 看不到 id 会另开 about:blank「新标签页」，截到白图
+                // （2026-11-22 高频 bug）。adopt 成功时同时置接管态（禁止 AI 关闭）。
+                if (ctx && ctx.session && (action === 'open_browser_tab' || action === 'adopt_browser_tab' || action === 'close_browser_tab')) {
                     const nextId = resolveSessionBrowserTabId(action, params, result, ctx.session.browserTabId);
-                    if (nextId !== ctx.session.browserTabId) {
+                    const nextAdopted = resolveBrowserTabAdoption(action, result, ctx.session.browserTabAdopted);
+                    if (nextId !== ctx.session.browserTabId || nextAdopted !== ctx.session.browserTabAdopted) {
                         ctx.session.browserTabId = nextId;
+                        ctx.session.browserTabAdopted = nextAdopted;
                         persistSessions();
                     }
                 }
@@ -11494,10 +11818,16 @@ async function requestApproval(session, toolMessage, info) {
             case 'browser_close': {
                 const tabId = ctx.session.browserTabId;
                 if (!tabId) return '本会话没有绑定的浏览器标签页。';
+                // 用户交给 AI 的标签禁止 AI 关闭（宿主侧 close_browser_tab 也有 protectedId 守卫，
+                // 双保险）；只由用户手动关闭。
+                if (ctx.session.browserTabAdopted) {
+                    return '这是你手动打开并交给我的浏览器标签页，我不能关闭它，请手动关闭。';
+                }
                 if (runHostAppAction) {
                     await runHostAppAction('close_browser_tab', {id: tabId});
                 }
                 ctx.session.browserTabId = '';
+                ctx.session.browserTabAdopted = false;
                 persistSessions();
                 return '已关闭浏览器标签页。';
             }
@@ -11511,7 +11841,9 @@ async function requestApproval(session, toolMessage, info) {
                 if (patchText.length > AI_PATCH_LIMIT) {
                     return patchErrorText('PATCH_LIMIT', '补丁超过 256 KB：请拆成 2–3 个补丁分批提交', '当前 ' + Math.round(patchText.length / 1024) + ' KB', false);
                 }
-                const root = getScopeRoot();
+                // 根按会话取（会话根优先于窗口根）：补丁落在会话所属仓库的 .cadt/patches，
+                // 预检 / 应用也在同一根上做——否则换标签后补丁会落到别的仓库。
+                const root = sessionScopeRoot(ctx && ctx.session);
                 if (!root) {
                     return patchErrorText('PATCH_PATH_DENIED', '当前没有工作区范围：请先打开文件夹再生成补丁', '', false);
                 }
@@ -11728,7 +12060,7 @@ async function requestApproval(session, toolMessage, info) {
             case 'write_file': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');
                 const path = aiResolveScopePath(input.path, ctx.session);
-                const relPath = aiRelPath(getScopeRoot(), path);
+                const relPath = aiRelPath(sessionScopeRoot(ctx.session), path);
                 assertNotCognitionPath(relPath);
                 const content = aiTextOf(input.content);
                 if (!content.trim()) throw new Error('文件内容为空');
@@ -11751,7 +12083,7 @@ async function requestApproval(session, toolMessage, info) {
                     await wipeguardRef().backupWrite({
                         sessionId: ctx.session.id,
                         tool: 'write_file',
-                        ws: getScopeRoot(),
+                        ws: sessionScopeRoot(ctx.session),
                         relPath,
                         absPath: path,
                         content: oldText,
@@ -11779,7 +12111,7 @@ async function requestApproval(session, toolMessage, info) {
             case 'edit_file': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');
                 const path = aiResolveScopePath(input.path, ctx.session);
-                const relPath = aiRelPath(getScopeRoot(), path);
+                const relPath = aiRelPath(sessionScopeRoot(ctx.session), path);
                 assertNotCognitionPath(relPath);
                 const oldString = aiTextOf(input.oldString);
                 const newString = aiTextOf(input.newString);
@@ -11794,7 +12126,7 @@ async function requestApproval(session, toolMessage, info) {
                     await wipeguardRef().backupWrite({
                         sessionId: ctx.session.id,
                         tool: 'edit_file',
-                        ws: getScopeRoot(),
+                        ws: sessionScopeRoot(ctx.session),
                         relPath,
                         absPath: path,
                         content: text,
@@ -11942,13 +12274,13 @@ async function requestApproval(session, toolMessage, info) {
                 if (!command) throw new Error('命令不能为空');
                 if (!backend.AIRunShellCommand) throw new Error('当前版本不支持执行命令');
                 const cwd = commandCwdOf(ctx.session, input.cwd);
-                const timeoutMs = aiClampInt(input.timeoutMs, 1000, 600000, 60000);
+                const timeoutMs = aiClampInt(input.timeoutMs, 1000, AI_SHELL_TIMEOUT_MAX_MS, AI_SHELL_TIMEOUT_DEFAULT_MS);
                 // 显式 shell（gitbash / pwsh / powershell / cmd）：空串 = 按旧优先级自动选择。
                 // 合法性由 Go 侧统一判定（不可用直接报错，绝不静默换一个 shell）。
                 const shell = aiTextOf(input.shell).trim();
                 // 子代理：一律走 OS 沙箱，且永不弹审批（没人可答；沙箱即边界，对齐 dsh 的
                 // approval pin never）。主会话：审批链照旧，行为零变化。
-                const sandbox = subSandboxPolicy(ctx.session, getScopeRoot());
+                const sandbox = subSandboxPolicy(ctx.session, sessionScopeRoot(ctx.session));
                 if (sandbox) {
                     if (!backend.AIRunShellCommandConfined) throw new Error('当前版本不支持沙箱执行命令');
                     // 子代理不弹审批（没人可答），但项目里写死的 deny 规则必须照旧生效——
@@ -11972,7 +12304,8 @@ async function requestApproval(session, toolMessage, info) {
                 if (toolHalted(ctx.toolMessage)) return '用户已停止生成，命令未执行。';
                 // wipe-guard 指纹保底（方案 §5.3）：命令前后各取一次，大范围消失立刻判 critical。
                 // 判定单一来源在 Go（WipeGuardCompare）；主信号仍是 watcher（存活的子进程只有它看得见）。
-                const wgFpBefore = wipeguardRef() ? await wipeguardRef().preCommand(getScopeRoot()) : null;
+                // 根取**会话根**（不是窗口根）：harness 下窗口根为空，传窗口根等于整条兜底静默关闭。
+                const wgFpBefore = wipeguardRef() ? await wipeguardRef().preCommand(sessionScopeRoot(ctx.session)) : null;
                 ctx.toolMessage.status = 'running';
                 ctx.toolMessage.content = '执行中…';
                 // runId 注册到 Go 取消注册表：用户停止会话时按 id 杀进程树（AIStopShellRun）
@@ -12033,8 +12366,10 @@ async function requestApproval(session, toolMessage, info) {
                 if (stdout) lines.push('stdout：\n' + stdout);
                 if (stderr) lines.push('stderr：\n' + stderr);
                 if (!stdout && !stderr) lines.push('（无输出）');
-                // wipe-guard：命令结束做前后指纹对比（早退路径交给 watcher 覆盖）
-                if (wipeguardRef()) await wipeguardRef().postCommand(getScopeRoot(), wgFpBefore);
+                // wipe-guard：命令结束做前后指纹对比（早退路径交给 watcher 覆盖）。
+                // 用 postCommand 的新形式（只传快照）：根取自快照本身，换手期间调用方现取的根
+                // 已经变了也不会跨仓库比较（方案 §4.9.7 F3）。
+                if (wipeguardRef()) await wipeguardRef().postCommand(wgFpBefore);
                 return lines.join('\n');
             }
             case 'background_command': {
@@ -12047,7 +12382,7 @@ async function requestApproval(session, toolMessage, info) {
                 const shell = aiTextOf(input.shell).trim();
                 // 与 run_command 同口径：子代理走沙箱、永不弹审批，只过项目 deny 规则；
                 // 主会话审批链不变。
-                const sandbox = subSandboxPolicy(ctx.session, getScopeRoot());
+                const sandbox = subSandboxPolicy(ctx.session, sessionScopeRoot(ctx.session));
                 if (sandbox) {
                     if (!backend.AICommandStartConfined) throw new Error('当前版本不支持沙箱后台命令');
                     const denyHit = evaluatePermissionRules(await ensureProjectRules(false), 'command', command);
@@ -12066,8 +12401,9 @@ async function requestApproval(session, toolMessage, info) {
                 }
                 // 同 run_command：停止之后不再拉起后台作业
                 if (toolHalted(ctx.toolMessage)) return '用户已停止生成，命令未启动。';
-                // wipe-guard 指纹保底：后台命令只取「前」基线（进程存活期间 / 结束后的变化由 watcher 覆盖）
-                if (wipeguardRef()) await wipeguardRef().preCommand(getScopeRoot());
+                // wipe-guard 指纹保底：后台命令只取「前」基线（进程存活期间 / 结束后的变化由 watcher 覆盖）。
+                // 根同 run_command：会话根（harness 下窗口根为空，传窗口根会让基线根本取不到）。
+                if (wipeguardRef()) await wipeguardRef().preCommand(sessionScopeRoot(ctx.session));
                 ctx.toolMessage.status = 'running';
                 ctx.toolMessage.content = '正在启动…';
                 refreshToolWrap(ctx.session, ctx.toolMessage);
@@ -12323,7 +12659,7 @@ async function requestApproval(session, toolMessage, info) {
     // 判断口径与底层守卫一致：当前查看会话的流或压缩在跑就算运行中。
     function syncModeTogglesRunning() {
         const session = currentSession();
-        const running = !!(session && (streamOf(session.id) || compactOf(session.id)));
+        const running = !!(session && isSessionBusy(session.id));
         if (el.plan) el.plan.disabled = running;
         if (el.worktreeToggle) el.worktreeToggle.disabled = running;
     }
@@ -12400,12 +12736,16 @@ async function requestApproval(session, toolMessage, info) {
             return;
         }
         syncStreamView();
-        const hasProfile = !!profileOf(currentSession());
-        const viewingId = (currentSession() || {}).id;
-        const busy = !!stream || !!compactOf(viewingId);
         const session = currentSession();
-        const archived = !!(session && session.archivedAt);
-        const loadFailed = !!(session && session._loadError);
+        const hasProfile = !!profileOf(session);
+        const viewingId = (session || {}).id;
+        const busy = isSessionBusy(viewingId);
+        // 会话维度的门禁与起轮内核同源（ai-session-scope.js 的 canSendMessage）：
+        // 忙**不禁用**——生成中点发送是排队 / 插话 / 抢占三手势（见 syncSendStopButtons）；
+        // 归档 / 正文读取失败两处必须与内核一致，否则用户会先被问「将丢弃之后的 N 条对话」再失败。
+        const gate = canSendMessage(session, {busy});
+        const archived = gate.reason === 'archived';
+        const loadFailed = gate.reason === 'load_failed';
         const hasText = !!(el.input && el.input.value.trim());
         const attachedItems = getAttachments();
         const hasImages = attachedItems.some((item) => item.kind === 'image');
@@ -12419,7 +12759,7 @@ async function requestApproval(session, toolMessage, info) {
         // 超限时任何发送（含排队/插话/抢占手势）都会被预检拒绝，按钮直接禁用并说明原因
         const ctxOverLimit = ctxGate.blocked;
         syncArchivedBanner(archived);
-        el.send.disabled = !hasProfile || archived || loadFailed || imageBlocked || videoBlocked || ctxOverLimit ||
+        el.send.disabled = !hasProfile || !gate.ok || imageBlocked || videoBlocked || ctxOverLimit ||
             (!hasText && !hasImages && !hasVideos && !hasTextAttachments);
         syncSendStopButtons(busy);
         if (!busy && el.hint) {
@@ -12639,16 +12979,20 @@ async function requestApproval(session, toolMessage, info) {
             const ok = await ensureSessionLoaded(session);
             if (!ok || session._stub) return {ok: false, reason: 'load_failed'};
         }
-        // 正文读取失败（超限拒载 / IO 失败）的会话：写盘被写保护，这一轮只存在于内存，
-        // 重启即丢。明确拒绝并让调用方报错，好过静默丢一轮（后台注入会报回发起方）。
-        if (session._loadError) return {ok: false, reason: 'load_failed'};
-        // 只有「本会话」在生成 / 压缩时才拒绝；别的会话在跑不影响这里（各自独立）。
-        if (streamOf(session.id) || compactOf(session.id) || compactStarting) return {ok: false, reason: 'busy'}
-        if (session.archivedAt) return {ok: false, reason: 'archived'};
+        // 正文读取失败 / 忙 / 归档：这三条与 UI 发送门禁、原地编辑保存、队列冲刷共用同一个
+        // 判定（ai-session-scope.js 的 canStartTurn）。改造前四处各缺一截——原地编辑保存漏
+        // _loadError，用户会先被问「将丢弃之后的 N 条对话」，点确定后才被告知发不出去。
+        {
+            const gate = canStartTurn(session, {busy: isSessionBusy(session.id, {includeCompactStarting: true})});
+            if (!gate.ok) return gate;
+        }
         // 临时 / 无工作区会话不绑工作区：这里曾把空 workspace 的会话回填成当前工作区——发第一条
         // 消息就会走到这，等于把会话收进工作区分组；临时会话还会在重启后被当成该工作区的会话恢复。
-        if (!session.workspace && !isTransientSession(session) && !isNoWorkspaceSession(session)) {
-            const current = currentWorkspacePath();
+        // 多工作区下**不**做这个回填：windowWorkspacePath 此时为空，回落值会取「活动文件所在目录」——
+        // 那个文件完全可能属于别的仓库，于是无关会话被悄悄绑到错误工作区（工具根也随之跑偏）。
+        // 无根会话本身就是合法状态（见 noWorkspace / 会话沙盒），要绑由新建流程补 viewRoot。
+        if (!session.workspace && !isMultiWorkspace() && !isUnboundSession(session)) {
+            const current = windowWorkspacePath();
             if (current) session.workspace = current;
         }
         const profile = profileOf(session);
@@ -12690,7 +13034,7 @@ async function requestApproval(session, toolMessage, info) {
         // 双方都还没注册流），各自起轮后后者顶掉前者的流注册，落败方在下方守卫处退出——
         // 它的 assistant 占位没人收尾，永远停在流式「…」。真正落消息前再查一次忙，
         // 把这个窗口关死；队列冲刷对 busy 会自动重新入队，不会丢消息。
-        if (streamOf(session.id) || compactOf(session.id) || compactStarting) return {ok: false, reason: 'busy'}
+        if (isSessionBusy(session.id, {includeCompactStarting: true})) return {ok: false, reason: 'busy'};
 
         // 下面每个 await（whenIdle / 回合租约 / 交接重读 / 生命周期钩子）都是「sessions 被
         // 整体替换」的窗口。第一道防线是 startingTurns：applyLoadedSessions 见到起轮中的
@@ -12756,7 +13100,7 @@ async function requestApproval(session, toolMessage, info) {
 
         // whenIdle / 租约获取两个 await 把“最终忙检查”到落用户消息之间拉开了窗口：
         // 双发或压缩准备期撞车时，释放刚拿到的租约并返回 busy（队列会重新入队）。
-        if (streamOf(session.id) || compactOf(session.id) || compactStarting || sessionReloading.has(session.id)) {
+        if (isSessionBusy(session.id, {includeCompactStarting: true}) || sessionReloading.has(session.id)) {
             if (leaseHeld) {
                 leaseHeld = false;
                 await releaseLeaseNow(session.id);
@@ -12806,7 +13150,7 @@ async function requestApproval(session, toolMessage, info) {
             // 认知索引 overview 预取（本地文件读，≈1–2ms）：bundle 只同步消费缓存、不自己调
             // 后端（§5.3 注入落点约束）。未启用时零开销；失败按无索引处理（内部吞错）。
             // 临时 / 无工作区会话不注入认知索引，也就不必预取。
-            if (!isTransientSession(session) && !isNoWorkspaceSession(session)) await cognitionMod.prefetchTurnCache(session);
+            if (!isUnboundSession(session)) await cognitionMod.prefetchTurnCache(session);
             turnBlock = systemCtxMod.turnContextBundle(session, textAttachments).text;
         } catch (e) {
             // 尽力而为路径：环境块生成失败时按无块发送，下一轮会重建
@@ -13192,7 +13536,7 @@ async function requestApproval(session, toolMessage, info) {
     // tries = 轮询次数（每次 200ms），耗尽即放弃（调用方不必再处理）。
     function whenSessionLeaseFree(sessionId, run, tries) {
         const left = Number(tries) || 0;
-        if (streamOf(sessionId) || compactOf(sessionId) || compactStarting) {
+        if (isSessionBusy(sessionId, {includeCompactStarting: true})) {
             if (left > 0) setTimeout(() => whenSessionLeaseFree(sessionId, run, left - 1), 200);
             return;
         }
@@ -13555,6 +13899,22 @@ async function requestApproval(session, toolMessage, info) {
                     maybeAutoCompact(session);
                 }
             }, 0);
+        }
+        // 轮次完成后自动补查「当前会话绑定账号」的用量（cc-switch 式）：
+        // fire-and-forget——不 await、不 flash、不弹用量层，失败只落 error 缓存，全程静默；
+        // 走 queryAccountUsage 的 autoIntervalMin 节流，避免每轮真发请求（0 = 有缓存就不再查）。
+        // 只认正在查看且自然完成的轮：后台会话 / 停止 / 报错都不打扰。
+        if (session && wasViewed && isOpen() && !current.stopped && current.assistant.status === 'done') {
+            const quotaProfile = sessionModelRef(session).profile;
+            const quotaUsage = quotaProfile && normalizeUsageConfig(quotaProfile.usage);
+            if (quotaProfile && quotaUsage && quotaUsage.enabled) {
+                void usageQuota().queryAccountUsage(quotaProfile).then(() => {
+                    // 补查期间可能已切会话：只刷新仍属于该会话的胶囊
+                    if (currentSession() === session) renderQuotaPill();
+                }).catch(() => {
+                    // 尽力而为的后台补查：查询管线本身不抛，这里兜住意外并静默忽略
+                });
+            }
         }
     }
 
@@ -14711,7 +15071,7 @@ async function requestApproval(session, toolMessage, info) {
         persistSessions();
         updateScopeUI();
         updateSendState();
-        if (scope !== 'full' && !getScopeRoot()) {
+        if (scope !== 'full' && !sessionScopeRoot(session)) {
             showNote('当前没有工作区范围：请先打开文件或文件夹，工具才能执行。', true);
         }
         if (scope === 'edit' && !editHintShown.has(session.id)) {
@@ -14794,7 +15154,7 @@ async function requestApproval(session, toolMessage, info) {
         const isViewed = session === viewed;
         if (isViewed) syncStreamView();
         // 「生成中」按目标会话自己的流判定，不用面板镜像：后台会话切换不该看前台的脸
-        if ((streams.has(session.id) || compactOf(session.id)) && force !== true) {
+        if (isSessionBusy(session.id) && force !== true) {
             if (announce !== false) flash('生成中不能切换计划模式', true);
             return false;
         }
@@ -14836,7 +15196,7 @@ async function requestApproval(session, toolMessage, info) {
         const session = currentSession();
         const worktree = normalizeWorktreeState(session && session.worktree);
         // 会话运行中：与两个 pill 同源的纯 UI 防误触（底层 AI 工具路径仍可 force/allowRunning 进入）。
-        const running = !!(session && (streamOf(session.id) || compactOf(session.id)));
+        const running = !!(session && isSessionBusy(session.id));
         // 会话模式两行（对齐 ZCode 的权限弹窗）：窄宽度时「计划」「隔离」两个 pill 会被容器
         // 查询收掉，这里是它们的唯一入口——所以**任何宽度都保留**，宽档 pill 与菜单并存。
         const modeItems = [
@@ -15540,7 +15900,10 @@ async function requestApproval(session, toolMessage, info) {
     const gitUiMod = createAIGitUi({
         el,
         getGitRepo,
-        currentWorkspacePath,
+        // Git 快捷操作针对的仓库 = 当前会话的作用域根（与 AI 工具根同源）。
+        // 参数名是 scopeRoot 而不是 windowWorkspacePath：语义就是「会话根」，用窗口那个名字
+        // 会诱导后来者传 windowWorkspacePath（多工作区下恒空 → 头部 Git 按钮永久消失，实测）。
+        scopeRoot: () => sessionScopeRoot(currentSession()),
         currentScopeOf,
         syncStreamView,
         compactOf,
@@ -15665,7 +16028,7 @@ async function requestApproval(session, toolMessage, info) {
     // composer——媒体附件随轮直接带给 startSessionTurn。
     function regenerateLast(sessionOverride) {
         const session = sessionOverride || currentSession();
-        if (!session || streamOf(session.id) || compactOf(session.id) || compactStarting) return;
+        if (!session || isSessionBusy(session.id, {includeCompactStarting: true})) return;
         const assistantIndex = lastAssistantIndex(session);
         if (assistantIndex < 0) return;
         const userIndex = lastUserIndex(session);
@@ -15707,12 +16070,12 @@ async function requestApproval(session, toolMessage, info) {
     function rewindToMessage(session, index) {
         const target = session || currentSession();
         if (!target) return;
-        if (streams.has(target.id)) {
-            flash('请先停止当前会话的生成', true);
-            return;
-        }
-        if ((oneShot && oneShot.sessionId === target.id) || compactStarting) {
-            flash('该会话正在压缩上下文，请先停止', true);
+        // 生成中 / 压缩中都不许回退（裁剪历史会与在飞的写入打架）。判定用统一构件；
+        // compactStarting 也一并算上（它是「压缩正在准备」的全局窗口，回退同样不能抢跑）。
+        if (isSessionBusy(target.id, {includeCompactStarting: true})) {
+            flash(compactOf(target.id) || compactStarting
+                ? '该会话正在压缩上下文，请先停止'
+                : '请先停止当前会话的生成', true);
             return;
         }
         const messages = target.messages || [];
@@ -15799,12 +16162,12 @@ async function requestApproval(session, toolMessage, info) {
     function branchSessionAt(session, index) {
         const source = session || currentSession();
         if (!source) return;
-        if (streams.has(source.id)) {
-            flash('请先停止当前会话的生成再分支', true);
-            return;
-        }
-        if (oneShot && oneShot.sessionId === source.id) {
-            flash('该会话正在压缩上下文，请先停止', true);
+        // 生成中 / 压缩中都不许分支（历史快照与在飞的写入会打架）。口径同 isSessionBusy；
+        // compactStarting 不算：分支不写原会话，只是读它当下的消息。
+        if (isSessionBusy(source.id)) {
+            flash(compactOf(source.id)
+                ? '该会话正在压缩上下文，请先停止'
+                : '请先停止当前会话的生成再分支', true);
             return;
         }
         const messages = source.messages || [];
@@ -15826,8 +16189,11 @@ async function requestApproval(session, toolMessage, info) {
         Object.assign(branch, forkSettings(source));
         // 临时 / 无工作区会话的分支仍是同类：别让它悄悄变成会注入 AGENTS.md / 记忆、
         // 绑定工作区的普通会话（forkSettings 已带 temp/noWorkspace，这里清掉兜底绑上的工作区）。
-        if (isTransientSession(branch) || isNoWorkspaceSession(branch)) branch.workspace = '';
-        else branch.workspace = branch.workspace || currentWorkspacePath();
+        if (isUnboundSession(branch)) branch.workspace = '';
+        // 母会话本就带 workspace（forkSettings 已拷）时用它；否则**多工作区下保持无根**：
+        // 这里的回落会取「活动文件所在目录」，那文件完全可能属于别的仓库，分出来一条绑错仓库
+        // 的分支会话比无根更难排查（工具根、记忆、AGENTS.md 全跟着错）。
+        else branch.workspace = branch.workspace || (isMultiWorkspace() ? '' : windowWorkspacePath());
         branch.messages = forked.messages;
         branch.updatedAt = Date.now();
         saveComposerDraft(currentSession() && currentSession().id);
@@ -16056,12 +16422,12 @@ async function requestApproval(session, toolMessage, info) {
         if (!wrap || !session) return;
         const message = session.messages[index];
         if (!canInlineEdit(message, session)) return;
-        if (session.archivedAt) {
-            flash('该会话已归档，取消归档后再编辑', true);
-            return;
-        }
-        if (streamOf(session.id) || compactOf(session.id)) {
-            flash('该会话正在生成，结束后再编辑', true);
+        // 与起轮内核同一判定（canStartTurn）：归档 / 正文读取失败 / 正在生成都不给进编辑态。
+        const gate = canStartTurn(session, {busy: isSessionBusy(session.id)});
+        if (!gate.ok) {
+            flash(gate.reason === 'archived' ? '该会话已归档，取消归档后再编辑'
+                : (gate.reason === 'load_failed' ? '会话正文读取失败，不能编辑；可清空该会话或检查 ai-sessions 目录'
+                    : '该会话正在生成，结束后再编辑'), true);
             return;
         }
         // 同一时间只允许一条消息处于编辑态：先静默收掉旧的
@@ -16174,12 +16540,13 @@ async function requestApproval(session, toolMessage, info) {
             endInlineEdit();
             return;
         }
-        if (session.archivedAt) {
-            flash('该会话已归档，取消归档后再发送', true);
-            return;
-        }
-        if (streamOf(session.id) || compactOf(session.id)) {
-            flash('该会话正在生成，结束后再保存', true);
+        // 与起轮内核同一判定（canStartTurn）：改造前这里只判「归档 + 忙」，漏了 _loadError ——
+        // 用户先被问「将丢弃之后的 N 条对话」，点确定之后才被告知发不出去。
+        const gate = canStartTurn(session, {busy: isSessionBusy(session.id)});
+        if (!gate.ok) {
+            flash(gate.reason === 'archived' ? '该会话已归档，取消归档后再发送'
+                : (gate.reason === 'load_failed' ? '会话正文读取失败，已禁止追加；可清空该会话或检查 ai-sessions 目录'
+                    : '该会话正在生成，结束后再保存'), true);
             return;
         }
         // 编辑期间可能发生过磁盘重读（另一窗口写入）：按 mid 现算目标下标。
@@ -16378,22 +16745,20 @@ async function requestApproval(session, toolMessage, info) {
     // 切到别的会话要各自保留、互不夹带（否则在 A 粘的图片 / 写了一半的话会被发到 B）。
     // 文本草稿额外持久化到 localStorage（键名带会话 id）：重开面板 / 重启后切换回来仍能恢复；
     // 附件可能含大体积 dataURL，不落盘，只留在内存。
+    // 两种草稿键（按会话 / 按工作区）的键名与构造器在 core/storage-keys.js，这里只是转调。
     const drafts = new Map(); // sessionId -> {text, attachments}
 
-    const AI_DRAFT_KEY_PREFIX = 'datalens-ai-draft:';
     // 工作区级草稿槽：空会话「没发出去就切走」时会被直接删掉，输入框里的内容不能跟着
     // 会话一起消失。按工作区（归一化路径）暂存，下次在该工作区新建会话时回填——不同
     // 工作区的草稿互不串门。文字照旧落 localStorage，附件（可能是大体积 dataURL）只随内存走。
     const workspaceDrafts = new Map(); // wsKey -> {text, attachments}
 
-    const AI_WS_DRAFT_KEY_PREFIX = 'datalens-ai-draft-ws:';
-
     function draftLSKey(sessionId) {
-        return AI_DRAFT_KEY_PREFIX + sessionId;
+        return aiDraftLSKey(sessionId);
     }
 
     function wsDraftLSKey(wsKey) {
-        return AI_WS_DRAFT_KEY_PREFIX + (wsKey || '');
+        return aiWsDraftLSKey(wsKey);
     }
 
     function saveComposerDraft(sessionId) {
@@ -16593,6 +16958,9 @@ async function requestApproval(session, toolMessage, info) {
         // 面板切了会话：支线标签页据此重新判定「在位 / 失联」（统一收口在
         // notifySessionSwitchListeners：其余改指入口也走同一处）
         notifySessionSwitchListeners(id);
+        // 会话沙盒预取（批次 F4）：切到 noWorkspace 会话时先把 backing workspace 目录拿回来，
+        // 否则第一条消息里的工具路径会撞上「沙盒还没解析完」的空根。命中缓存时是纯 Map 查表。
+        sessionBackingWorkspace(target);
     }
 
     function newSession() {
@@ -16604,10 +16972,10 @@ async function requestApproval(session, toolMessage, info) {
         // 懒加载占位（_stub）也不算「没发过消息」——它的 messages 空只是正文还没读上来，
         // 复用等于什么都不做（实测：停在「正在载入对话…」时点新建，只弹一句「当前会话为空，
         // 已复用」，看上去像按钮失灵）。
-        if (current && !current._stub && !current.archivedAt && !isTransientSession(current) &&
-            !isNoWorkspaceSession(current) && !(current.messages || []).length) {
+        if (current && !current._stub && !current.archivedAt && !isUnboundSession(current) &&
+            !(current.messages || []).length) {
             const target = sessionWorkspacePath(current);
-            const now = currentWorkspacePath();
+            const now = viewRoot();
             if (!target || !now || aiWorkspaceKey(target) === aiWorkspaceKey(now)) {
                 if (!target && now) {
                     current.workspace = now;
@@ -16627,11 +16995,11 @@ async function requestApproval(session, toolMessage, info) {
         // 列表里已有当前工作区（或未绑定工作区）的空会话：直接切换过去复用，
         // 不再新建。主窗口与悬浮窗进程各建过占位空会话、或空会话不是当前会话时，
         // 旧逻辑会再攒一个「新会话 · 0 条消息」。
-        const nowKey = aiWorkspaceKey(currentWorkspacePath());
+        const nowKey = aiWorkspaceKey(viewRoot());
         const spare = sessions
             .filter((item) => item !== current && isVirginSession(item))
             // 临时 / 无工作区会话不参与复用：它们没有工作区归属，复用会把会话变成工作区会话
-            .filter((item) => !isTransientSession(item) && !isNoWorkspaceSession(item))
+            .filter((item) => !isUnboundSession(item))
             .filter((item) => {
                 const key = aiWorkspaceKey(sessionWorkspacePath(item));
                 return !key || !nowKey || key === nowKey;
@@ -16639,8 +17007,8 @@ async function requestApproval(session, toolMessage, info) {
             .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))[0];
         if (spare) {
             saveComposerDraft(current && current.id);
-            if (!sessionWorkspacePath(spare) && currentWorkspacePath()) {
-                spare.workspace = currentWorkspacePath();
+            if (!sessionWorkspacePath(spare) && viewRoot()) {
+                spare.workspace = viewRoot();
                 persistSessions();
             }
             // 复用的空会话可能很早就 pin 了当时的模型（启动占位 / 另一个进程建的占位），
@@ -16657,7 +17025,8 @@ async function requestApproval(session, toolMessage, info) {
         // 当前会话若是没发过消息的空会话，新建即离开：删掉它（草稿已进工作区槽），
         // 由下面的新会话把草稿接回来。
         discardVirginOnLeave(current);
-        const session = createSessionData();
+        // 建到当前视图根（多工作区下 createSessionData 不猜根，由统一入口补）。
+        const session = makeSessionWithRoot();
         pendingEdit = null;
         // 用户显式新建：让在飞的会话切换 / 补水回调作废（否则几秒后会被切回旧会话，
         // 这个新建的空会话还会被当成「离开的空会话」删掉）。
@@ -16670,8 +17039,10 @@ async function requestApproval(session, toolMessage, info) {
         loadComposerDraft(session.id, session);
         persistSessions();
         logActivity('ai.session', session.id, {op: 'create', title: session.title || ''}, {actor: 'user', source: 'user'});
-        renderSessionList();
-        if (sessionListEl) sessionListEl.scrollTop = 0;
+        // 多工作区下：展开新会话所在的工作区分组并滚到可见。它归**自己的工作区**分组，
+        // 那个分组可能收着或在滚动区外——建完看不到它建在哪，等于功能没生效。
+        // 单工作区下只有一组，等价于滚动到顶部（旧行为）。
+        sessionListMod.revealSession(session.id, session);
         syncActiveSessionUI();
         if (el.input) el.input.focus();
     }
@@ -16706,26 +17077,25 @@ async function requestApproval(session, toolMessage, info) {
         loadComposerDraft(session.id, null);
         persistSessions();
         logActivity('ai.session', session.id, {op: 'create', title: session.title || '', temp: true}, {actor: 'user', source: 'user'});
-        // 临时会话归「未关联工作区」分组，那个分组默认收起——先展开，否则点完看不到它
-        sessionListMod.expandWorkspaceGroup('');
-        renderSessionList();
-        if (sessionListEl) sessionListEl.scrollTop = 0;
+        // 临时会话归「未关联工作区」分组：展开并滚到可见，否则点完看不到它
+        sessionListMod.revealSession(session.id, session);
         syncActiveSessionUI();
         if (el.input) el.input.focus();
     }
 
-    // 无工作区会话（侧栏「新建会话」右侧「⋯」→ 新建无工作区会话）：持久会话。
-    // 语义：默认只读、不绑定工作区、不注入 AGENTS.md / 记忆 / 认知索引等工作区知识；
+    // 会话沙盒（侧栏「新建会话」右侧「⋯」→ 新建会话沙盒）：持久会话。
+    // 语义：不绑定工作区，根是应用数据下的会话沙盒目录（批次 F4 的 backing workspace）；
+    // 不注入 AGENTS.md / 记忆 / 认知索引等工作区知识，默认只读（用户可自行提权）。
     // 与临时会话的区别：标题正常生成、不显示「临时」徽标、重启后仍留在会话列表里。
     function newNoWorkspaceSession() {
         if (groupBridge.getPanelView() !== 'session') setPanelView('session');
         const current = currentSession();
-        // 当前就是一张没写过的无工作区会话：直接复用（连点不刷一堆空会话）。
-        // 排除 _stub：无工作区会话持久保留，重启后会被懒加载成占位（messages 空但正文未读），
+        // 当前就是一张没写过的会话沙盒：直接复用（连点不刷一堆空会话）。
+        // 排除 _stub：会话沙盒持久保留，重启后会被懒加载成占位（messages 空但正文未读），
         // 复用它会提示「已复用」却不新建——临时会话读盘被滤、永不成为 _stub，没有这个问题。
         if (isNoWorkspaceSession(current) && !current._stub && !current.archivedAt && !(current.messages || []).length) {
             pendingEdit = null;
-            flash('当前无工作区会话为空，已复用');
+            flash('当前会话沙盒为空，已复用');
             if (el.input) el.input.focus();
             return;
         }
@@ -16739,19 +17109,20 @@ async function requestApproval(session, toolMessage, info) {
         sessions.push(session);
         setActiveSessionId(session.id);
         saveAIConfig();
-        // 不接工作区草稿（无工作区会话不该吃工作区草稿）
+        // 不接工作区草稿（会话沙盒不该吃工作区草稿）
         loadComposerDraft(session.id, null);
         persistSessions();
         logActivity('ai.session', session.id, {op: 'create', title: session.title || '', noWorkspace: true}, {actor: 'user', source: 'user'});
-        // 归「未关联工作区」分组，默认收起：先展开，否则点完看不到它
-        sessionListMod.expandWorkspaceGroup('');
-        renderSessionList();
-        if (sessionListEl) sessionListEl.scrollTop = 0;
+        // 展开它所在的工作区分组并滚到可见（多工作区下新会话归它自己的分组，
+        // 那个分组若收着或在滚动区外，用户建完看不到它建在哪）
+        sessionListMod.revealSession(session.id, session);
         syncActiveSessionUI();
+        // 沙盒目录预取：建完就发 IPC，用户写第一条消息时根已经就位（失败按无根处理）
+        sessionBackingWorkspace(session);
         if (el.input) el.input.focus();
     }
 
-    // 侧栏「新建会话」右侧的「⋯」：新建方式的菜单（常规 / 临时 / 无工作区）
+    // 侧栏「新建会话」右侧的「⋯」：新建方式的菜单（常规 / 临时 / 会话沙盒）
     function showNewSessionMenu() {
         if (!showContextMenu) {
             newSession();
@@ -16761,18 +17132,30 @@ async function requestApproval(session, toolMessage, info) {
         if (!anchor) return;
         const rect = anchor.getBoundingClientRect();
         showContextMenu([
-            {label: '新建会话', icon: 'plus', description: '绑定当前工作区，权限取「新会话默认读写权限」', action: () => { ensureOpen(); newSession(); }},
+            {label: '新建会话', icon: 'plus', description: '绑定当前工作区，权限取「新会话默认读写权限」', action: () => { ensureOpen(); requestNewSession(); }},
             {label: '新建临时会话', icon: 'clock', description: '只读 · 不绑工作区 · 不注入 AGENTS.md 与记忆，关闭应用后不再显示', action: () => { ensureOpen(); newTempSession(); }},
-            {label: '新建无工作区会话', icon: 'circle', description: '只读 · 不绑工作区 · 不注入 AGENTS.md 与记忆，重启后仍保留在会话列表', action: () => { ensureOpen(); newNoWorkspaceSession(); }},
+            {label: '新建会话沙盒', icon: 'circle', description: '不绑工作区 · 根是应用数据下的会话沙盒 · 不注入 AGENTS.md 与记忆，重启后仍保留在会话列表', action: () => { ensureOpen(); newNoWorkspaceSession(); }},
         ], rect.left - 120, rect.bottom + 4);
     }
 
-    // 分组头「+」：当前工作区直接新建；其他工作区把会话建在它的名下，
+    // 分组头「+」：在当前工作区直接新建；别的工作区把会话建在它的名下，
     // 落盘后走软切换（目标工作区在新窗口打开并选中该会话），避免会话落到错误的分组。
+    // 「未关联工作区」组（没有 path）→ 建**会话沙盒**：那一组装的就是不绑工作区的会话，
+    // 在那里点「+」却建出一条绑当前仓库的会话，用户会以为按钮绑错了组。
     function newSessionInWorkspace(group) {
         const path = group && group.path ? aiNormalizePath(group.path) : '';
-        const now = currentWorkspacePath();
-        if (!path || !now || aiWorkspaceKey(path) === aiWorkspaceKey(now)) {
+        if (!path) {
+            newNoWorkspaceSession();
+            return;
+        }
+        // 多工作区下没有「窗口工作区」，取视图根（聚焦会话的工作区）作为「当前在哪」；
+        // 用 windowWorkspacePath 会恒为空 → 下面的 !now 短路 → 丢 path 走 newSession()，
+        // 结果在「日记星辰」组头点「+」却建出一条无根会话（视图跳到「无工作区」）。
+        // 换用 viewRoot 后两种情况都正确：
+        //   path == 视图根 → newSession()（它会把视图根绑给新会话）
+        //   path != 视图根 → 走下面的跨根路径，显式带 path 建会话
+        const now = viewRoot();
+        if (!now || aiWorkspaceKey(path) === aiWorkspaceKey(now)) {
             newSession();
             return;
         }
@@ -16782,11 +17165,97 @@ async function requestApproval(session, toolMessage, info) {
         sessions.push(session);
         persistSessions();
         logActivity('ai.session', session.id, {op: 'create', title: session.title || ''}, {actor: 'user', source: 'user'});
-        renderSessionList();
+        // 建在**别的工作区**名下：展开那个分组并滚到可见，否则用户点完组头「+」
+        // 在当前分组里找不到新会话（它跑到另一个分组去了）。
+        sessionListMod.revealSession(session.id, session);
         // 先等新会话落盘，目标工作区的新窗口才能按 --ai-session 恢复它。
         Promise.resolve(sessionStore && sessionStore.flush ? sessionStore.flush() : null)
             .catch(() => {})
             .then(() => switchSession(session.id));
+    }
+
+    // ---- harness 窗口的「新建会话」：先选根（最近工作区 / 打开文件夹 / 会话沙盒）----
+    // 非 harness 窗口行为逐字不变（直接 newSession()）。背景见
+    // docs/unfinished-plans/agent-host-platform.md §4.8：harness 不带工作区，静默建一条无根会话
+    // 会让模型没有可解析的相对路径。
+
+    // 最近工作区：会话表里出现过的 workspace，按最近更新排序（去重后取前 N 个）。
+    function recentSessionWorkspaces(limit) {
+        const best = new Map();
+        for (const item of sessions) {
+            const dir = sessionWorkspacePath(item);
+            if (!dir) continue;
+            const key = aiWorkspaceKey(dir);
+            if (!key) continue;
+            const at = Number(item.updatedAt) || 0;
+            const prev = best.get(key);
+            if (!prev || prev.at < at) best.set(key, {dir, at});
+        }
+        return [...best.values()]
+            .sort((a, b) => b.at - a.at)
+            .slice(0, limit || 5)
+            .map((entry) => entry.dir);
+    }
+
+    // 换根 + 在新根上建会话：只切根 + 轻刷（switchRootLight，不跑 lifecycle 钩子），
+    // 再走 newSessionInWorkspace——同根时它就是 newSession()，跨根时回到既有「另一窗口建会话」路径。
+    function adoptWorkspaceForNewSession(dir) {
+        const root = aiTextOf(dir).trim();
+        if (!root) return;
+        // 多工作区窗口**不能**调 switchRootLight：它会把 dir 写进 workspaceFolder，而多工作区
+        // 的窗口级工作区必须恒为空（否则模式 chip / 会话快照槽 / activeSession key 全部跟着错，
+        // 还会连带触发会话切换级联）。这里只建一条带 root 的会话，视图跟随交给会话切换回调。
+        if (!isMultiWorkspace() && typeof opts.switchRootLight === 'function') {
+            try {
+                opts.switchRootLight(root);
+            } catch (e) {
+                // 换根失败不拦建会话：会话自己带 workspace，工具路径按会话根解析仍然对
+                console.debug('[新建会话] switchRootLight 失败：' + ((e && e.message) || e));
+            }
+        }
+        newSessionInWorkspace({path: root});
+    }
+
+    // 「打开文件夹…」：系统目录对话框 → 换根 → 建会话。
+    function pickWorkspaceForNewSession() {
+        if (!backend || typeof backend.OpenFolderDialog !== 'function') {
+            newSession();
+            return;
+        }
+        Promise.resolve(backend.OpenFolderDialog(''))
+            .then((dir) => {
+                const root = aiTextOf(dir).trim();
+                if (!root) return; // 用户取消
+                adoptWorkspaceForNewSession(root);
+            })
+            .catch((e) => flash('打开文件夹失败：' + ((e && (e.message || e)) || e), true));
+    }
+
+    // 「新建会话」统一入口：**始终在当前根建**，不再弹选择器。
+    //   当前根 = 单工作区：窗口工作区；多工作区：聚焦会话的工作区。
+    //   没有当前根（没开文件夹 / 聚焦的是沙盒会话）→ 建成会话沙盒。
+    // 需要挑**别的工作区**时才走按钮右侧的 ⌄（showNewSessionPicker）：挑工作区是例外情况，
+    // 不该成为每次新建的必经步骤。
+    function requestNewSession() {
+        if (!viewRoot()) {
+            newNoWorkspaceSession();
+            return;
+        }
+        newSession();
+    }
+
+    // 按钮右侧 ⌄：列出最近工作区 / 打开文件夹 / 会话沙盒（图3 那份菜单）。
+    function requestNewSessionHere(anchor) {
+        showNewSessionPicker({
+            anchor: anchor || sessionActionNewBtn || el.newBtn || sessionMoreBtn,
+            recents: recentSessionWorkspaces(5),
+            // 多工作区下 windowWorkspacePath() 恒空，选择器就没法标出「当前在哪」。
+            // 用视图根（聚焦会话的工作区）代替。
+            currentWorkspace: viewRoot(),
+            onPickWorkspace: (dir) => adoptWorkspaceForNewSession(dir),
+            onOpenFolder: () => pickWorkspaceForNewSession(),
+            onSandbox: () => newNoWorkspaceSession(),
+        });
     }
 
     function renameSession(target) {
@@ -16852,15 +17321,115 @@ async function requestApproval(session, toolMessage, info) {
         });
     }
 
+    // 自定义分组是「工作区内归类」：同名分组可存在于不同工作区、也可同时存在于归档区与
+    // 进行中区，所以重命名 / 解散必须用 group.key + archived 双重限定，否则会误伤别处的同名分组。
+    function sessionsOfGroup(name, group, archived) {
+        const key = group ? group.key : '';
+        return sessions.filter((session) => !!session.group && session.group === name &&
+            !!session.archivedAt === !!archived &&
+            aiWorkspaceKey(sessionWorkspacePath(session)) === key);
+    }
+
+    // 分组头「⋯」→ 重命名分组：批量改该工作区内同组会话的 group 名。
+    // 空名拒绝；与同工作区其他分组近似重名（去空白 + 小写）时拒绝，避免列表被近义组切碎。
+    function renameSessionGroup(name, group, archived) {
+        if (!showNameDialog) {
+            const next = window.prompt('重命名分组（原名称：' + name + '）', name);
+            if (next != null) applyRename(next);
+            return;
+        }
+        showNameDialog({
+            title: '重命名分组',
+            label: '分组名称',
+            value: name,
+            okLabel: '重命名',
+            onSubmit: (value) => applyRename(value),
+        });
+        function applyRename(value) {
+            const wanted = normalizeSessionGroup(value);
+            if (!wanted) throw new Error('分组名称不能为空');
+            const targets = sessionsOfGroup(name, group, archived);
+            if (!targets.length) return;
+            const key = group ? group.key : '';
+            const others = [];
+            for (const session of sessions) {
+                if (!session.group || session.group === name) continue;
+                if (!!session.archivedAt !== !!archived) continue;
+                if (aiWorkspaceKey(sessionWorkspacePath(session)) !== key) continue;
+                if (!others.includes(session.group)) others.push(session.group);
+            }
+            if (resolveSessionGroupName(wanted, others) !== wanted) {
+                throw new Error('该工作区已有相近的分组，请换一个名字');
+            }
+            if (wanted === name) return;
+            for (const session of targets) session.group = wanted;
+            logActivity('ai.session', targets[0].id, {op: 'rename-group', from: name, to: wanted, count: targets.length}, {actor: 'user', source: 'user'});
+            persistSessions();
+            renderSessionList();
+            flash('已将分组「' + name + '」重命名为「' + wanted + '」（' + targets.length + ' 条）');
+        }
+    }
+
+    // 分组头「⋯」→ 解散分组：组内会话的 group 清空（移入「未分组」），会话本身不删。
+    function dissolveSessionGroup(name, group, archived) {
+        const targets = sessionsOfGroup(name, group, archived);
+        if (!targets.length) return;
+        askConfirm('解散分组「' + name + '」？组内 ' + targets.length + ' 条会话将移入「未分组」，会话本身不会被删除。', () => {
+            for (const session of targets) session.group = '';
+            logActivity('ai.session', targets[0].id, {op: 'dissolve-group', group: name, count: targets.length}, {actor: 'user', source: 'user'});
+            persistSessions();
+            renderSessionList();
+            flash('已解散分组「' + name + '」，' + targets.length + ' 条会话移入未分组');
+        }, '解散分组', undefined, 'danger');
+    }
+
+    // 分组头「⋯」→ 在此分组新建会话：建在分组所属工作区，并直接归入该分组。
+    // 跨工作区分组走软切换（对齐 newSessionInWorkspace）：落盘前不写 activeSessionId，
+    // 免得把外区会话登记到本窗口当前工作区的 active 记录里。
+    function newSessionInGroup(name, group) {
+        const path = group && group.path ? aiNormalizePath(group.path) : '';
+        // 用 viewRoot 而不是 windowWorkspacePath：后者是 activeSessionByWorkspace 的 key，
+        // 多工作区下**恒空**，会让 `crossWorkspace` 对任何分组都成立 → 在「当前仓库的分组」
+        // 里新建也被当成跨工作区，不走立即激活而去做软切换（实测：分组内新建会话跑到别的窗口）。
+        // 同款逻辑见 newSessionInWorkspace（那里已经用 viewRoot）。
+        const now = viewRoot();
+        const crossWorkspace = !!path && (!now || aiWorkspaceKey(path) !== aiWorkspaceKey(now));
+        const current = currentSession();
+        // 与 newSession 同款三件套：先存当前草稿、丢掉刚离开的空会话，避免草稿丢失与空会话堆积
+        saveComposerDraft(current && current.id);
+        discardVirginOnLeave(current);
+        const session = createSessionData('', {group: name});
+        if (path) session.workspace = path;
+        pendingEdit = null;
+        invalidatePendingSwitch();
+        sessions.push(session);
+        // 同工作区 / 未关联：立即切过去并接回草稿（含工作区槽里的暂存）。
+        // 跨工作区：不写 active，靠 switchSession 在目标工作区落地（对齐 newSessionInWorkspace）。
+        if (!crossWorkspace) {
+            setActiveSessionId(session.id);
+            saveAIConfig();
+        }
+        loadComposerDraft(session.id, session);
+        persistSessions();
+        logActivity('ai.session', session.id, {op: 'create', title: '', group: session.group}, {actor: 'user', source: 'user'});
+        renderSessionList();
+        if (crossWorkspace) {
+            Promise.resolve(sessionStore && sessionStore.flush ? sessionStore.flush() : null)
+                .catch(() => {})
+                .then(() => switchSession(session.id));
+        } else {
+            syncActiveSessionUI();
+            if (el.input) el.input.focus();
+        }
+    }
+
     function archiveSession(target, archived) {
         const session = target && target.id ? target : currentSession();
         if (!session) return;
-        if (streams.has(session.id)) {
-            flash('请先停止当前会话的生成', true);
-            return;
-        }
-        if (oneShot && oneShot.sessionId === session.id) {
-            flash('该会话正在压缩上下文，请先停止', true);
+        // 生成中 / 压缩中都不许归档（归档会清队列、改指当前会话）。判定用统一构件，
+        // 压缩的提示更具体所以单列；compactStarting 不算——它是全局准备窗口，归档不写会话正文。
+        if (isSessionBusy(session.id)) {
+            flash(compactOf(session.id) ? '该会话正在压缩上下文，请先停止' : '请先停止当前会话的生成', true);
             return;
         }
         session.archivedAt = archived ? Date.now() : 0;
@@ -16872,7 +17441,10 @@ async function requestApproval(session, toolMessage, info) {
                 .filter((item) => item.id !== session.id && !item.archivedAt)
                 .sort((a, b) => sessionActivity(b) - sessionActivity(a))[0];
             if (!next) {
-                const fresh = createSessionData();
+                // 兜底新建要跟当前视图根：多工作区下 createSessionData 不猜根，
+                // 不补的话这条兜底会话会落到「未关联工作区」，用户在一个会话都没剩下的
+                // 当前仓库分组里看不到它（同 bridgeNewSession 的回归）。
+                const fresh = makeSessionWithRoot();
                 sessions.push(fresh);
                 persistSessions();
                 switchSession(fresh.id);
@@ -16908,12 +17480,9 @@ async function requestApproval(session, toolMessage, info) {
     function deleteSession(target) {
         const session = target && target.id ? target : currentSession();
         if (!session) return;
-        if (streams.has(session.id)) {
-            flash('请先停止当前会话的生成', true);
-            return;
-        }
-        if (oneShot && oneShot.sessionId === session.id) {
-            flash('该会话正在压缩上下文，请先停止', true);
+        // 与 archiveSession 同一口径（见那里的注释）：生成中 / 压缩中都不许删。
+        if (isSessionBusy(session.id)) {
+            flash(compactOf(session.id) ? '该会话正在压缩上下文，请先停止' : '请先停止当前会话的生成', true);
             return;
         }
         askConfirm('删除会话「' + (session.title || '新会话') + '」及其全部消息？', () => {
@@ -16937,7 +17506,7 @@ async function requestApproval(session, toolMessage, info) {
                 // 删会话也会改指当前会话：作废在飞的切换/补水回调，避免它把视图切回
                 // 一个刚被删掉的会话
                 invalidatePendingSwitch();
-                const fresh = createSessionData();
+                const fresh = makeSessionWithRoot();
                 sessions.push(fresh);
                 setActiveSessionId(fresh.id);
             }
@@ -17793,7 +18362,7 @@ async function requestApproval(session, toolMessage, info) {
         const session = sessionOverride || currentSession();
         if (!session) return;
         const notify = sessionOverride ? flash : showNote;
-        if (streamOf(session.id) || compactOf(session.id)) {
+        if (isSessionBusy(session.id)) {
             notify('请先停止当前生成，再清空会话。', true);
             return;
         }
@@ -17947,7 +18516,9 @@ async function requestApproval(session, toolMessage, info) {
             flash('当前版本不支持独立窗口', true);
             return;
         }
-        const root = getScopeRoot() || '';
+        // 浮窗继承**当前会话根**（批次 E）：浮窗里的工具与面板同一个作用域，
+        // 不能因为「窗口工作区」不同就把浮窗钉到别的根上
+        const root = sessionScopeRoot(currentSession()) || '';
         Promise.resolve(backend.OpenAIFloatWindow(root)).then(() => {
             flash('已在独立窗口打开 AI 助手');
             open(false);
@@ -18347,16 +18918,38 @@ async function requestApproval(session, toolMessage, info) {
         if (el.sideBtn) el.sideBtn.addEventListener('click', togglePanelSide);
         if (el.floatFullscreen) el.floatFullscreen.addEventListener('click', toggleFloatFullscreen);
         if (el.floatCollapse) el.floatCollapse.addEventListener('click', () => setFloatCollapsed(!floatCollapsed));
-        if (el.newBtn) el.newBtn.addEventListener('click', () => newSession());
+        if (el.newBtn) el.newBtn.addEventListener('click', () => requestNewSession());
         if (el.gitBtn) el.gitBtn.addEventListener('click', showGitMenu);
-        if (sessionActionNewBtn) sessionActionNewBtn.addEventListener('click', () => {
+        if (sessionActionNewBtn) sessionActionNewBtn.addEventListener('click', (e) => {
+            // ⌄ 嵌在按钮内部：命中它就走「选工作区」，其余区域直接在**当前根**新建。
+            const chev = e.target && e.target.closest
+                ? e.target.closest('#ai-session-action-chev')
+                : null;
             ensureOpen();
-            newSession();
+            if (chev) {
+                e.stopPropagation();
+                requestNewSessionHere(sessionActionNewChev || sessionActionNewBtn);
+                return;
+            }
+            requestNewSession();
         });
-        if (sessionActionNewMoreBtn) sessionActionNewMoreBtn.addEventListener('click', () => {
-            ensureOpen();
-            showNewSessionMenu();
-        });
+        // ⌄ 是 span（button 里不能嵌 button）：回车 / 空格也要能触发，保持键盘可达。
+        if (sessionActionNewChev) {
+            sessionActionNewChev.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                e.stopPropagation();
+                ensureOpen();
+                requestNewSessionHere(sessionActionNewChev);
+            });
+        }
+        // 右侧「⋯」：其它新建方式（临时会话等）。
+        if (sessionActionNewMoreBtn) {
+            sessionActionNewMoreBtn.addEventListener('click', () => {
+                ensureOpen();
+                showNewSessionMenu();
+            });
+        }
         if (sessionActionAutoBtn) sessionActionAutoBtn.addEventListener('click', () => {
             ensureOpen();
             openSchedulesPage();
@@ -19455,6 +20048,8 @@ async function requestApproval(session, toolMessage, info) {
         openPlan: (...args) => openPlan(...args),
         settings,
         getScopeRoot,
+        // 会话根（批次 B）：计划审批卡记命令规则的 cwd 按会话根，不按当前显示的工作区
+        scopeRootOf: (session) => sessionScopeRoot(session),
         currentSession,
         currentScopeOf,
         persistSessions,
@@ -19705,12 +20300,36 @@ async function requestApproval(session, toolMessage, info) {
         toggle,
         open,
         isOpen,
-        // wipe-guard（工作区破坏防护）：AI 活跃度判定（critical 是否停会话），main.js 的
-        // wipeguard 控制器经懒 getter 调用。按工作区判定：本窗口的工具只跑在本窗口工作区
-        // （getScopeRoot），root 不匹配即本工作区静默，不该停任何会话
+        // 当前会话的作用域根（AI 工具「以哪个目录为根」）。main.js 的 wipe-guard watcher
+        // 订阅、snapshotTick、周期校准都靠它取根：这里若不导出，那边的 typeof 守卫会恒假、
+        // 回落到 window.workspaceFolder —— harness 下两者皆空，防护的主信号与长驻保护
+        // 会一起静默失效（预审 §🔴1）。函数名与内部实现同名，直接简写导出。
+        currentSessionScopeRoot,
+        // wipe-guard（工作区破坏防护）：某个根上「有没有正在跑的 AI」——main.js 的
+        // wipeguard 控制器用它判 critical 要不要插队投递，以及 LRU 淘汰时的「活跃根」标记。
+        // 语义是**按根查询**，不是拿当前会话去比对：A 会话在 A 根删文件、用户已切到 B 会话时，
+        // fireAlarm 传的仍是 A 根——若按「当前会话根」比对会得出 false，告警投不出去、
+        // A 根还会被当成空闲根优先淘汰（方案 §6.1 D3 的验收场景）。
         wipeguardIsAIActive: (root) => {
-            if (root && aiWorkspaceKey(root) !== aiWorkspaceKey(getScopeRoot())) return false;
-            return wipeguardBusyTools > 0 || (Date.now() - wipeguardLastToolAt < 60000);
+            const want = aiWorkspaceKey(root || '') || aiWorkspaceKey(sessionScopeRoot(currentSession()));
+            if (!want) return false;
+            // ① 该根上有会话在飞 / 正在压缩：活跃的常态（用户切走不影响判定）
+            for (const sess of sessions) {
+                if (!isSessionBusy(sess.id)) continue;
+                if (aiWorkspaceKey(sessionScopeRoot(sess)) === want) return true;
+            }
+            // ② 本窗口此刻有工具在跑：写效应还没落盘，归属算不准（会话可能刚被切走/删除），
+            // 宁可多投一条告警（只是插队一条消息，不停会话），也不要漏。
+            if (wipeguardBusyTools > 0) return true;
+            // ③ 工具刚跑完的 60 秒内仍按活跃处理：watcher 的 settling 事件常在工具返回之后才到。
+            // 已知边界（独立审查 🟢）：这两个计数器是**窗口级**的（不按会话/根分），所以只有
+            // 「当前会话根 == 查询根」时才算得准；A 会话工具刚跑完、用户已切到 B 时，查 A 根
+            // 走不到这一层。取舍：宁可少投一次会话提醒（红条与运行日志照常写），也不引入
+            // 「按会话记时间戳」的额外状态——它的失效方式是最多漏投一条告警，不是漏报。
+            if (aiWorkspaceKey(sessionScopeRoot(currentSession())) === want) {
+                return Date.now() - wipeguardLastToolAt < 60000;
+            }
+            return false;
         },
         // wipe-guard critical 处置（2026-11-19 作者裁定：不再自动停会话）：
         // 改为以**应用消息插队投递**给挂在该工作区、正在运行的会话——模型知道自己刚在
@@ -19733,9 +20352,14 @@ async function requestApproval(session, toolMessage, info) {
             for (const stream of Array.from(streams.values())) {
                 const sess = sessionById(stream.sessionId);
                 if (!sess) continue;
-                const sessKey = sess.workspace ? aiWorkspaceKey(sess.workspace) : '';
-                // 只投给被告警的工作区：别的后台会话不该被牵连
-                if (key && sessKey && sessKey !== key) continue;
+                // 归属用**会话根**（不是 sess.workspace 原字段）：会话沙盒 / noWorkspace 会话
+                // 的原字段为空，用旧写法会因「两边的 key 都为空」而绕过比对，让沙盒会话收到
+                // 所有真实仓库的告警。沙盒根 ≠ 真实仓库根，下面自然被跳过。
+                const sessKey = aiWorkspaceKey(sessionScopeRoot(sess));
+                // 只投给被告警的那个工作区：别的后台会话不该被牵连。
+                // 被告警的根未知时不投（宁缺勿滥——不知道该唤醒谁）。
+                if (!key) continue;
+                if (sessKey !== key) continue;
                 const receipt = noticesMod.deliverAgentNotice(sess, {
                     kind: 'wipeguard',
                     label: '工作区防护 · 大面积文件消失',
@@ -19971,11 +20595,14 @@ async function requestApproval(session, toolMessage, info) {
             if (typeof createSessionData !== 'function' || typeof startSessionTurn !== 'function') {
                 throw new Error('会话桥不可用');
             }
-            const session = createSessionData(title || undefined, {
+            // 与 newSession 同款：统一入口补根。第三参传 baseSession（调用方会话）——
+            // 后台场景下 caller 与「当前视图根」可能不是同一个仓库，新会话必须落在 caller 的
+            // 仓库里（否则工具根 / AGENTS.md / 记忆全跟着视图跑偏）。
+            const session = makeSessionWithRoot(title || undefined, {
                 scope: resolvedScope,
                 ...(resolvedModel ? {model: resolvedModel} : {}),
                 group: resolvedGroup,
-            });
+            }, baseSession);
             sessions.push(session);
             persistSessions();
             renderSessionList();
@@ -20200,6 +20827,69 @@ async function requestApproval(session, toolMessage, info) {
             return () => bgUpdateListeners.delete(cb);
         },
         bridgeStopBgJob: async (jobId) => bridgeStopBgJob(String(jobId || '')),
+        // 「切换到此工作区」后把面板会话也对齐：不切的话主区显示的是**别的仓库**的会话，
+        // 而树/面包屑已经换到新仓库，两处不一致（用户实测觉得歧义）。
+        // 只在该工作区确有会话时才切；没有就返回 false，由调用方提示，不擅自新建。
+        bridgeSwitchToWorkspaceSession: (path) => {
+            const key = aiWorkspaceKey(aiTextOf(path));
+            if (!key) return false;
+            // 用统一的候选池谓词：**排归档、排支线、排临时/沙盒**。
+            // 早先这里只排了 transient/noWorkspace（且因为 workspace 恒空，那两句本来就是
+            // 冗余的），漏了归档与支线——「切换到此工作区」可能切到一条已归档的会话，
+            // 或切到支线（支线有独立标签页承载，不该当主会话）。
+            const pool = (sessions || []).filter((s) =>
+                isWorkspaceEligibleSession(s) &&
+                aiWorkspaceKey(sessionWorkspacePath(s)) === key);
+            if (!pool.length) return false;
+            // 取最近活动的一条（与列表排序同源），避免切到一条很早以前的旧对话
+            pool.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+            const target = pool[0];
+            if (target.id !== activeSessionId()) switchSession(target.id);
+            // 切过去的会话可能在那组的很下面、或整组收着：展开分组并滚进视野，
+            // 否则用户点了「切换到此工作区」却在列表里找不到它（主区已经换了，列表没跟）。
+            sessionListMod.revealSession(target.id, target);
+            return true;
+        },
+        // 把「当前会话」带到切换后的槽位。切模式会换 activeSession 的 key
+        // （多工作区用全局回退 config.activeSessionId，单工作区用 map[工作区hash]），
+        // 不搬运的话两边各读各的历史值：多→单 会跳回「上次单工作区的会话」，
+        // 再切回多又跳回多工作区那条（用户实测的「很抽象的 Bug」）。
+        // 校验：单工作区下只恢复属于本工作区的会话，避免面板停在别的仓库的对话上。
+        bridgeRestoreActiveSession: (id) => {
+            const sid = String(id || '');
+            if (!sid) return false;
+            const sess = (sessions || []).find((s) => s.id === sid);
+            // 与「切换到此工作区」共用同一个候选池谓词：排归档、排支线、排临时/沙盒。
+            // 早先这里排了归档与支线、漏了临时/沙盒，两处条件各缺一截（同一语义两套条件
+            // 正是「判定散落」的典型——漏的那一侧就是静默错误）。
+            if (!sess || !isWorkspaceEligibleSession(sess)) return false;
+            if (!isMultiWorkspace()) {
+                const own = aiWorkspaceKey(windowWorkspacePath());
+                const sw = aiWorkspaceKey(sessionWorkspacePath(sess));
+                if (own && sw && own !== sw) return false;
+            }
+            if (sess.id === activeSessionId()) {
+                renderSessionList();
+                syncActiveSessionUI();
+                return true;
+            }
+            invalidatePendingSwitch();
+            setActiveSessionId(sess.id);
+            saveAIConfig();
+            renderSessionList();
+            syncActiveSessionUI();
+            return true;
+        },
+        // 让**当前会话**在列表里可见（切模式后排序规则变了，当前会话可能被排出滚动区）。
+        // 与 revealSession 同源：展开它所在分组 + 滚进视野，已在视野内则不动。
+        bridgeRevealActiveSession: () => {
+            const id = activeSessionId();
+            if (!id) return false;
+            const sess = (sessions || []).find((s) => s.id === id);
+            if (!sess) return false;
+            sessionListMod.revealSession(sess.id, sess);
+            return true;
+        },
         bridgeListSessions: (callerSessionId) => {
             const caller = String(callerSessionId || '').trim();
             return (sessions || []).map((s) => ({

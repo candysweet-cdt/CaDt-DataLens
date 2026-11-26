@@ -9,7 +9,13 @@ import {createMarkdownRenderer} from '../../core/markdown.js';
 import {iconSvg} from '../../core/icons.js';
 
 // 尾随的流式事件集合（与 event-scope.js 的 'session' 档一致，按 sessionId 认领）。
-export const MONITOR_STREAM_EVENTS = ['ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error', 'ai-retry', 'ai-queue'];
+export const MONITOR_STREAM_EVENTS = [
+    'ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error', 'ai-retry', 'ai-queue',
+];
+// 为什么没有 ai-param-adjust：它的 payload 只有 `id`（**roundId**，不是 sessionId），
+// 而监控按 `payload.sessionId === 本会话` 归属。加进来只会让匹配恒假。
+// 它由 ai-panel.handleEvent 单独按 roundId 路由（含非会话流的状态栏兜底提示）。
+// 覆盖范围见 frontend/test/ai/ai-monitor-view.test.mjs 的 MONITOR 断言。
 
 // ---- 纯函数（配 frontend/test/ai/ai-monitor-view.test.mjs）----
 

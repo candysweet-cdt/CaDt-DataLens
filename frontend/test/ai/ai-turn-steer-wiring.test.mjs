@@ -35,7 +35,7 @@ const makeShell = () => createAIMessageQueue({el: {}});
 
 test('生成中手势：Enter 排队 / Ctrl+Enter 插话 / Ctrl+Shift+Enter 抢占 / Shift+Enter 换行', () => {
     const handler = sliceBetween(composer, 'function handleComposerKey(e) {', 'function currentQueueItems()');
-    const branchStart = handler.indexOf('if (syncStreamView() || compactOf(');
+    const branchStart = handler.indexOf('if (isSessionBusy(');
     assert.notEqual(branchStart, -1, '找不到生成中分支');
     const branch = handler.slice(branchStart);
     assert.match(branch, /if \(!ctrl && e\.shiftKey\) return;/);

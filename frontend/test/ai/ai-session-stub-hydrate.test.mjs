@@ -51,7 +51,7 @@ test('S1：adoptWorkspaceSession 切会话时只改 active（渲染侧兜底）�
 
 test('S3：newSession 的「空会话复用」不把 _stub 当空会话', () => {
     const fn = sliceFunction(panel, 'function newSession()');
-    assert.match(fn, /if \(current && !current\._stub && !current\.archivedAt && !isTransientSession\(current\) &&/,
+    assert.match(fn, /if \(current && !current\._stub && !current\.archivedAt && !isUnboundSession\(current\) &&/,
         '懒加载占位的 messages 空只是还没读：当成空会话复用 → 点新建会话等于什么都没做');
     // 列表里的空会话候选同样不能是 stub（isVirginSession 已排除，这里钉住依赖关系）
     assert.match(fn, /\.filter\(\(item\) => item !== current && isVirginSession\(item\)\)/);

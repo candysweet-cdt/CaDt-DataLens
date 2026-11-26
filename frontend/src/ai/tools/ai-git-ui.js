@@ -3,11 +3,12 @@
 // gitEntryState 为本域私有 let，随域迁入模块；其余依赖引用稳定，经 ctx 注入。
 import {GIT_ACTIONS, OTHER_ACTIONS, buildGitActionPrompt} from './ai-git.js';
 import {aiTextOf} from '../core/ai-constants.js';
+import {createSessionBusyProbe} from '../session/ai-session-scope.js';
 
 export function createAIGitUi(ctx) {
     const el = ctx.el;
     const getGitRepo = ctx.getGitRepo;
-    const currentWorkspacePath = ctx.currentWorkspacePath;
+    const scopeRoot = ctx.scopeRoot;
     const currentScopeOf = ctx.currentScopeOf;
     const syncStreamView = ctx.syncStreamView;
     const compactOf = ctx.compactOf;
@@ -19,6 +20,15 @@ export function createAIGitUi(ctx) {
     const showContextMenu = ctx.showContextMenu;
     const setGitFlowToken = ctx.setGitFlowToken;
     const getSettings = ctx.getSettings;
+    // 「忙」判定与面板同源（ai-session-scope.js 的探针）：git-ui 只服务当前查看会话，
+    // 流镜像即当前会话的流，按 id 比对避免误判。
+    const isSessionBusy = createSessionBusyProbe({
+        streamOf: (id) => {
+            const live = syncStreamView();
+            return live && live.sessionId === id ? live : null;
+        },
+        compactOf,
+    });
 
     // ---------- Git 快捷操作 ----------
 
@@ -33,7 +43,7 @@ export function createAIGitUi(ctx) {
         } catch (e) {
             repo = null;
         }
-        const root = currentWorkspacePath();
+        const root = scopeRoot();
         const available = !!(repo && repo.available && root);
         gitEntryState = {
             available,
@@ -54,7 +64,7 @@ export function createAIGitUi(ctx) {
     // 所有快捷操作共用的门禁 + 发送：git 动作与「其他操作」只差 meta（图标 / 令牌 / 标签前缀）。
     function runAction(action, meta) {
         if (!meta) return;
-        if (syncStreamView() || compactOf((currentSession() || {}).id)) {
+        if (isSessionBusy((currentSession() || {}).id)) {
             flash('AI 正在生成，请等本轮结束后再执行快捷操作', true);
             return;
         }

@@ -29,7 +29,7 @@ test('空会话切走即删：只处理正在看的那个会话，且不碰支�
     assert.match(panel, /if \(session\.id !== activeSessionId\(\)\) return false;/);
     // E2：支线有独立标签页承载；有流 / 正在压缩的不能删
     assert.match(panel, /if \(aiTextOf\(session\.sideOf\)\) return false;/);
-    assert.match(panel, /if \(streams\.has\(session\.id\) \|\| compactOf\(session\.id\)\) return false;/);
+    assert.match(panel, /if \(isSessionBusy\(session\.id\)\) return false;/);
 });
 
 test('空会话切走即删：switchSession 与 newSession 都先存草稿再删', () => {
@@ -45,9 +45,12 @@ test('空会话切走即删：switchSession 与 newSession 都先存草稿再删
         '必须先保存草稿再删会话，否则输入框内容没进草稿槽',
     );
 
-    // E3（新建）：新建分支也是「离开当前会话」，同样先存后删
-    const newBlock = panel.match(/saveComposerDraft\(current && current\.id\);\s*\/\/[\s\S]*?discardVirginOnLeave\(current\);\s*const session = createSessionData\(\);/);
-    assert.ok(newBlock, 'newSession 新建分支应先存草稿、删空会话，再建新会话');
+    // E3（新建）：新建分支也是「离开当前会话」，同样先存后删。
+    // 建会话改用统一入口 makeSessionWithRoot()（多工作区下补视图根，见
+    // ai-session-root-binding.test.mjs）——形状变了，但「先存草稿 → 删空会话 → 再建」
+    // 的顺序必须保持。
+    const newBlock = panel.match(/saveComposerDraft\(current && current\.id\);[\s\S]{0,600}?discardVirginOnLeave\(current\);[\s\S]{0,200}?makeSessionWithRoot\(\)/);
+    assert.ok(newBlock, 'newSession 新建分支应先存草稿、删空会话，再建新会话（用 makeSessionWithRoot）');
 });
 
 test('空会话切走即删：磁盘删目录，legacy 重写全量快照', () => {
@@ -59,8 +62,11 @@ test('空会话切走即删：磁盘删目录，legacy 重写全量快照', () =
 
 test('草稿按工作区暂存：槽键统一为归一化工作区路径', () => {
     assert.match(panel, /const workspaceDrafts = new Map\(\);/);
-    assert.match(panel, /const AI_WS_DRAFT_KEY_PREFIX = 'datalens-ai-draft-ws:'/);
-    assert.match(panel, /function wsDraftLSKey\(wsKey\) \{/);
+    // 键名与构造器都在 core/storage-keys.js（持久化键名的唯一登记处）：面板只转调，
+    // 不再自己写字面量——两处各写一份时改名必然漏一边，读回来就成了「草稿没保存」。
+    assert.match(panel, /import \{draftLSKey as aiDraftLSKey, wsDraftLSKey as aiWsDraftLSKey\} from '\.\.\/core\/storage-keys\.js';/);
+    assert.match(panel, /function wsDraftLSKey\(wsKey\) \{\s*return aiWsDraftLSKey\(wsKey\);/);
+    assert.match(panel, /function draftLSKey\(sessionId\) \{\s*return aiDraftLSKey\(sessionId\);/);
 
     const stash = panel.match(/function stashWorkspaceDraft\(session\) \{[\s\S]*?\n    \}/);
     assert.ok(stash, '缺少 stashWorkspaceDraft');

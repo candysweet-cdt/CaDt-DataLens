@@ -260,6 +260,13 @@ export function createAIManageDialogs(ctx) {
         let mem;
         try {
             mem = await resolveMemoryDir();
+            // workspace 模式下没有会话根（harness 未绑定会话 / 会话沙盒未就绪）时 dir 为空：
+            // 再往下 AIEnsureDir('') 会落到盘符根、aiJoinPath('', name) 会拼出 /MEMORY.md
+            // （独立审查 🟡）。这里直接按「不可用」收口，不进入后续流程。
+            if (!mem || !mem.dir) {
+                showNote('当前会话未绑定工作区，记忆不可用：请先绑定工作区，或把记忆模式改为「应用数据」', true);
+                return;
+            }
             if (backend.AIEnsureDir) await backend.AIEnsureDir(mem.dir);
         } catch (e) {
             showNote('读取记忆目录失败：' + ((e && e.message) || e), true);

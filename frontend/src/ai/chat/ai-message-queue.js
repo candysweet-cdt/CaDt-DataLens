@@ -3,6 +3,8 @@
 // 方案见 docs/finished-plans/ai-turn-steering.md。
 import {iconSvg} from '../../core/icons.js';
 import {kvGetJson, kvRemove, kvSet} from '../../core/kv-store.js';
+import {AI_MSG_QUEUE_KEY} from '../../core/storage-keys.js';
+import {createSessionBusyProbe, canStartTurn} from '../session/ai-session-scope.js';
 import {AI_QUOTE_KIND, quoteMarkupFromAttachments} from './ai-quote.js';
 import {shouldAnimateLayout, heightKeyframes, LAYOUT_MOTION_OPTIONS} from './ai-layout-motion.js';
 
@@ -40,7 +42,7 @@ function nextQueueItemId() {
 // 局限：多窗口双开时各自恢复同一批条目（队列本就 per-window、互不同步），只有窗口
 // 主动消费才会发送，风险面与恢复前一致。
 
-const QUEUE_STORAGE_KEY = 'datalens-ai-msg-queue';
+const QUEUE_STORAGE_KEY = AI_MSG_QUEUE_KEY;
 // 序列化超过这个体积就整体放弃（恢复后重写同样守它）：localStorage 配额 5MB，快照
 // 是尽力而为的兜底，不能反过来把存储撑爆。
 const QUEUE_STORAGE_BUDGET = 800 * 1024;
@@ -311,11 +313,9 @@ export function createAIMessageQueue(ctx) {
         return cur && cur.id === sessionId ? cur : null;
     }
 
-    // 会话是否忙（生成中 / 压缩中）：队列一律等服务。
-    function sessionBusy(sessionId) {
-        if (streams && typeof streams.has === 'function' && streams.has(sessionId)) return true;
-        return typeof compactOf === 'function' && !!compactOf(sessionId);
-    }
+    // 会话是否忙（生成中 / 压缩中）：队列一律等服务。判定本体在 ai-session-scope.js
+    // （与面板、子代理信箱、起轮内核同一口径），这里只注入 streams / compactOf。
+    const sessionBusy = createSessionBusyProbe({streams, compactOf});
 
     // 当前查看会话的流是否还能接受 steer：已停止 / 已收尾的流不再收——stopGeneration 后
     // 最多 1.2s 内 streams 仍登记着它，此时入队 steer 会被 finishStream 的 clearSteer 丢掉。
@@ -778,7 +778,12 @@ export function createAIMessageQueue(ctx) {
     function takeQueuedItem(sessionId) {
         if (!sessionId || sessionBusy(sessionId)) return null;
         const session = sessionOf(sessionId);
-        if (!session || session.archivedAt) return null;
+        if (!session) return null;
+        // 归档 / 正文读取失败与起轮内核同一判定（canStartTurn）：改造前这里只判归档，
+        // _loadError 的会话会把条目取走再被内核拒收，然后每 2.5s 自愈重试一次（永远发不出去）。
+        // _stub 刻意不算拦截理由：正文还没读上来时内核会先 ensureSessionLoaded，
+        // 「投递到没点开过的会话」正是靠这条路径工作的。
+        if (!canStartTurn(session, {busy: false}).ok) return null;
         // 待回答：输入区被接管卡占着，队列不动（与手动发送同一口径）
         if (typeof currentPendingAskEntry === 'function' && currentPendingAskEntry(sessionId)) return null;
         // 计划待批准只在审批卡「正显示」时拦队列：被「继续规划」或抢占收起后输入区已空闲、

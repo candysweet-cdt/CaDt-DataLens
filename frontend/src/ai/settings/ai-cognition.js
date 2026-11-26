@@ -7,6 +7,7 @@
 // 起轮前刷新（本地文件读 ≈1–2ms），bundle 只消费缓存。
 
 import {parseJson} from '../../core/json-safe.js';
+import {workspaceKey} from '../session/ai-session-scope.js';
 
 // 注入正文预算（字符）：overview 注入总量 1–2K token ≈ 4–6K 字符，正文留 4500（§5.3）。
 export const OVERVIEW_BODY_BUDGET = 4500;
@@ -183,33 +184,64 @@ export function cognitionRulesText(enabled) {
 // ---------- 运行时（factory + 显式依赖注入） ----------
 
 export function createAICognition(deps) {
-    // deps: {settings(对象，活引用), backend, getScopeRoot}
+    // deps: {settings(对象，活引用), backend, getScopeRoot, scopeRootOf?(可选：按会话取根)}
     const isEnabled = () => !!(deps.settings && deps.settings.aiCognition === true);
     // 会话指纹登记表（内存，不持久化）：应用重启 / 恢复会话后为空 → 首次 status 必报
     // needsReread，这是预期行为不是缺陷（保守方向，§4.4）。登记表同时是 edit 的 CAS base 来源。
     const fingerprints = new Map(); // sessionId -> fingerprint
-    // overview 预取缓存（按工作区）：bundle 同步消费；每轮起轮前刷新（本地文件读，≈1–2ms）。
-    let cache = {ws: '', snapshot: null};
+    // overview 预取缓存：**按工作区分桶**（Map<workspaceKey, snapshot|null>，最多留最近
+    // CACHE_LIMIT 个）。bundle 同步消费；每轮起轮前刷新（本地文件读，≈1–2ms）。
+    // 单槽的原缺陷：两窗口 / 两会话各绑不同工作区、用户在两处交替起轮时，每轮都把对方的
+    // 槽冲掉——缓存永远 miss，「预取」等于每轮白跑一遍后端读。键用 workspaceKey（与 Go 端
+    // 分桶同口径：反斜杠 / 大小写 / 尾斜杠归一），同一目录换个拼写不会分成两格。
+    const CACHE_LIMIT = 8;
+    const cache = new Map(); // workspaceKey -> snapshot|null
 
-    const wsOf = () => {
-        try { return deps.getScopeRoot() || ''; } catch (e) { return ''; }
+    // 会话根优先（deps.scopeRootOf 由面板注入：多工作区下轮上下文必须按会话自己的卷）；
+    // 旧宿主没有该注入时回落 getScopeRoot()，行为与改造前一致。
+    const wsOf = (session) => {
+        try {
+            const scoped = typeof deps.scopeRootOf === 'function' ? deps.scopeRootOf(session) : '';
+            return scoped || deps.getScopeRoot() || '';
+        } catch (e) {
+            return '';
+        }
     };
+
+    function cacheSnapshotOf(ws) {
+        const key = workspaceKey(ws);
+        if (!key) return null;
+        return cache.has(key) ? cache.get(key) : null;
+    }
+
+    // 写入即「最近使用」（先删后插把键挪到 Map 队尾），超上限从队首淘汰。
+    function cacheStore(ws, snapshot) {
+        const key = workspaceKey(ws);
+        if (!key) return;
+        cache.delete(key);
+        cache.set(key, snapshot);
+        while (cache.size > CACHE_LIMIT) {
+            const oldest = cache.keys().next();
+            if (oldest.done) break;
+            cache.delete(oldest.value);
+        }
+    }
 
     async function prefetchTurnCache(session) {
         if (!isEnabled()) return;
         // 支线对话不注入（§5.3：v1 只挂主会话轮）
         if (session && session.sideOf) return;
-        const ws = wsOf();
+        const ws = wsOf(session);
         if (!ws || !deps.backend || !deps.backend.CognitionRead) return;
         try {
             const raw = await deps.backend.CognitionRead(ws, '{}');
             const snapshot = JSON.parse(raw);
-            cache = {ws, snapshot: snapshot && snapshot.exists ? snapshot : null};
+            cacheStore(ws, snapshot && snapshot.exists ? snapshot : null);
             // 刻意不写 fingerprints：CAS base / needsReread 只由 cognition_read / status / edit
             // 三个工具响应登记（§4.3/§4.4——预取若续期登记，会把「没读就改拒绝」与
             // 「恢复会话首查必报 needsReread」两条保守防线静默拆掉）
         } catch (e) {
-            cache = {ws, snapshot: null}; // 预取失败按无索引处理，不阻塞起轮（§5.3）
+            cacheStore(ws, null); // 预取失败按无索引处理，不阻塞起轮（§5.3）
         }
     }
 
@@ -230,8 +262,8 @@ export function createAICognition(deps) {
     function turnBlocks(session) {
         if (!isEnabled()) return {index: '', nudge: ''};
         if (session && session.sideOf) return {index: '', nudge: ''}; // 支线对话不注入（§5.3）
-        const ws = wsOf();
-        const snapshot = cache.ws === ws ? cache.snapshot : null;
+        const ws = wsOf(session);
+        const snapshot = cacheSnapshotOf(ws);
         if (!snapshot) return {index: '', nudge: ''};
         const messages = (session && session.messages) || [];
         let index = '';

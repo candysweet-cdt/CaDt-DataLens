@@ -47,6 +47,125 @@ function sectionOf(text, tag) {
     return match ? match[0] : null;
 }
 
+// 多工作区下「工作区知识跟会话走」：同一个面板里 A 会话在 repo-a、B 会话在 repo-b，
+// 注入的 AGENTS.md 与记忆目录必须各读各的仓库。
+// 这条曾经是测试空白——测试桩把 aiProjectRoot 写成固定 `/w`，多工作区串仓库的 bug
+// 无论如何都测不出来（2026-11-26 补）。
+test('AGENTS.md 跟会话根走：不同会话读各自仓库的那份', async () => {
+    const readPaths = [];
+    const mod = createAISystemContext(makeCtx({
+        settings: {aiInjectAgentsMd: true},
+        ctx: {
+            // 模拟 aiProjectRoot(session)：根由会话自己带
+            aiProjectRoot: (session) => (session && session.workspace) || '',
+            readTextFile: async (path) => {
+                readPaths.push(path);
+                return {text: 'AGENTS of ' + path};
+            },
+        },
+    }));
+    const a = await mod.assembleSystemContext({workspace: '/repo-a', todos: []}, []);
+    const b = await mod.assembleSystemContext({workspace: '/repo-b', todos: []}, []);
+    assert.deepEqual(readPaths, ['/repo-a/AGENTS.md', '/repo-b/AGENTS.md'],
+        '两次组装必须各读各自仓库的 AGENTS.md，不能共用固定根');
+    assert.match(sectionOf(a.text, 'agents_md'), /AGENTS of \/repo-a\/AGENTS\.md/);
+    assert.match(sectionOf(b.text, 'agents_md'), /AGENTS of \/repo-b\/AGENTS\.md/);
+    assert.equal(a.meta.agents.path, '/repo-a/AGENTS.md');
+    assert.equal(b.meta.agents.path, '/repo-b/AGENTS.md');
+});
+
+test('会话根为空时（多工作区无归属）不注入 AGENTS.md', async () => {    const readPaths = [];
+    const mod = createAISystemContext(makeCtx({
+        settings: {aiInjectAgentsMd: true},
+        ctx: {
+            aiProjectRoot: () => '',   // harness 下无会话根 = 确定结论
+            readTextFile: async (path) => { readPaths.push(path); return {text: 'X'}; },
+        },
+    }));
+    const {text} = await mod.assembleSystemContext({todos: []}, []);
+    assert.equal(readPaths.length, 0, '没有根就不该发起读盘（否则会去读进程 cwd 的 AGENTS.md）');
+    assert.equal(sectionOf(text, 'agents_md'), null);
+});
+
+test('记忆目录跟会话根走：不同会话各解析各的工作区记忆', async () => {
+    const dirs = [];
+    const mod = createAISystemContext(makeCtx({
+        settings: {aiInjectMemory: true},
+        ctx: {
+            // 模拟 resolveMemoryDir(session)：workspace 模式落在会话自己的仓库
+            resolveMemoryDir: async (session) => {
+                const dir = ((session && session.workspace) || '/mem') + '/.cadt/memory';
+                dirs.push(dir);
+                return {dir, mode: 'workspace'};
+            },
+            readTextFile: async (path) => {
+                if (path.endsWith('MEMORY.md')) return {text: 'MEM of ' + path};
+                return {text: 'X'};
+            },
+        },
+    }));
+    await mod.assembleSystemContext({workspace: '/repo-a', todos: []}, []);
+    await mod.assembleSystemContext({workspace: '/repo-b', todos: []}, []);
+    assert.deepEqual(dirs, ['/repo-a/.cadt/memory', '/repo-b/.cadt/memory']);
+});
+
+// 项目规则文档回退：很多仓库只有 CLAUDE.md（实测「日记星辰」就是），只认 AGENTS.md 会让
+// 项目规则完全不注入——AI 不知道写作规范、记忆在哪，行为看起来「怪但没报错」。
+// 口径：AGENTS.md 优先且**独占**（存在就不再读 CLAUDE.md，避免两份规则打架）。
+const docCtx = (files) => ({
+    settings: {aiInjectAgentsMd: true},
+    ctx: {
+        aiProjectRoot: () => '/repo',
+        readTextFile: async (path) => {
+            const name = path.split('/').pop();
+            if (!(name in files)) throw new Error('ENOENT ' + path);
+            return {text: files[name]};
+        },
+    },
+});
+
+test('项目规则文档：AGENTS.md 优先，存在时不读 CLAUDE.md', async () => {
+    const reads = [];
+    const mod = createAISystemContext(makeCtx({
+        settings: {aiInjectAgentsMd: true},
+        ctx: {
+            aiProjectRoot: () => '/repo',
+            readTextFile: async (path) => {
+                reads.push(path.split('/').pop());
+                return {text: 'FROM ' + path.split('/').pop()};
+            },
+        },
+    }));
+    const {text, meta} = await mod.assembleSystemContext({todos: []}, []);
+    assert.deepEqual(reads, ['AGENTS.md'], '两份都在时只看 AGENTS.md，不该再读 CLAUDE.md');
+    assert.equal(meta.agents.file, 'AGENTS.md');
+    assert.match(sectionOf(text, 'agents_md'), /FROM AGENTS\.md/);
+});
+
+test('项目规则文档：只有 CLAUDE.md 时回退读它，并标明来源', async () => {
+    const {text, meta} = await (async () => {
+        const mod = createAISystemContext(makeCtx(docCtx({'CLAUDE.md': 'CLAUDE-RULES'})));
+        return mod.assembleSystemContext({todos: []}, []);
+    })();
+    const block = sectionOf(text, 'agents_md');
+    assert.ok(block, '只有 CLAUDE.md 也必须注入（否则项目规则整块丢失）');
+    assert.match(block, /CLAUDE-RULES/);
+    assert.match(block, /file="CLAUDE\.md"/, '标签要标明实际来源文件，便于排查');
+    assert.equal(meta.agents.loaded, true);
+    assert.equal(meta.agents.file, 'CLAUDE.md');
+    assert.equal(meta.agents.path, '/repo/CLAUDE.md');
+});
+
+test('项目规则文档：两份都没有时不注入，且 meta 诚实标 loaded=false', async () => {
+    const {text, meta} = await (async () => {
+        const mod = createAISystemContext(makeCtx(docCtx({})));
+        return mod.assembleSystemContext({todos: []}, []);
+    })();
+    assert.equal(sectionOf(text, 'agents_md'), null);
+    assert.equal(meta.agents.loaded, false);
+    assert.equal(meta.agents.path, '/repo/CLAUDE.md', '两个候选都试过了，path 留最后一个候选便于排查');
+});
+
 test('基座在最前，系统提示词只含稳定段（动态块不进系统提示词）', async () => {
     const mod = createAISystemContext(makeCtx({
         settings: {
@@ -217,6 +336,125 @@ test('workspace_context：openViews 超过 12 个截断，缺 openViews 字段�
     }));
     const r2 = await legacy.assembleSystemContext({todos: []}, []);
     assert.equal(sectionOf(r2.turnBlock, 'workspace_context'), null, '没有任何内容时不注入空壳');
+});
+
+// 会话根 / 分层渲染（批次 E）：aiDisplayPath 的真实口径——根内给相对路径、根外只留文件名。
+function displayPath(value, root) {
+    const full = String(value == null ? '' : value).replace(/\\/g, '/');
+    const base = String(root == null ? '' : root).replace(/\\/g, '/').replace(/\/+$/, '');
+    if (base) {
+        if (full.toLowerCase() === base.toLowerCase()) return '.';
+        if (full.toLowerCase().startsWith(base.toLowerCase() + '/')) return full.slice(base.length + 1);
+    }
+    const parts = full.split('/').filter(Boolean);
+    return parts.length ? '（范围外）' + parts[parts.length - 1] : '（范围外）';
+}
+
+test('workspace_context 分层：本工作区给相对路径、其它工作区只折叠出文件名', async () => {
+    const mod = createAISystemContext(makeCtx({
+        settings: {aiInjectOpenFiles: true},
+        ctx: {
+            getScopeRoot: () => 'D:/ws',
+            aiDisplayPath: displayPath,
+            aiNormalizePath: (p) => String(p == null ? '' : p).replace(/\\/g, '/'),
+            getWorkspaceContext: () => ({
+                activeFile: null,
+                openFiles: [
+                    'D:/ws/src/a.js',
+                    'd:/WS/src/b.js', // 大小写不敏感：仍算本工作区
+                    'D:/other/repo/x.js',
+                    'D:/other/repo/y.md',
+                    'D:/third/z.txt',
+                    'E:/fourth/w.txt',
+                    'E:/fifth/v.txt',
+                ],
+            }),
+        },
+    }));
+    const turn = mod.turnContextBundle({todos: []}, []);
+    const wc = sectionOf(turn.text, 'workspace_context');
+    assert.ok(wc.includes('已打开文件（本工作区 2 个）：'), wc);
+    assert.ok(wc.includes('- src/a.js'));
+    assert.ok(wc.includes('- src/b.js'), '同根不同大小写仍属本工作区');
+    // 5 个外区文件分属 4 个目录：只给目录数 + 文件名前 4 个 + 「等」
+    assert.ok(wc.includes('其它工作区的已打开文件（4 个目录 / 5 个文件）：'), wc);
+    assert.ok(wc.includes('（范围外）x.js、（范围外）y.md、（范围外）z.txt、（范围外）w.txt 等'), wc);
+    assert.ok(!wc.includes('D:/other') && !wc.includes('E:/fourth'), '外区路径不得可解析（会诱导模型直接 read_file）');
+    assert.equal(turn.meta.workspace.files, 2);
+    assert.equal(turn.meta.workspace.otherFiles, 5);
+});
+
+test('workspace_context 分层：全部在本工作区时不加「本工作区」标签（旧形态逐字保留）', () => {
+    const mod = createAISystemContext(makeCtx({
+        settings: {aiInjectOpenFiles: true},
+        ctx: {
+            getScopeRoot: () => '/w',
+            aiDisplayPath: displayPath,
+            aiNormalizePath: (p) => String(p == null ? '' : p).replace(/\\/g, '/'),
+            getWorkspaceContext: () => ({activeFile: null, openFiles: ['/w/a.js', '/w/b.md']}),
+        },
+    }));
+    const turn = mod.turnContextBundle({todos: []}, []);
+    const wc = sectionOf(turn.text, 'workspace_context');
+    assert.ok(wc.includes('已打开文件（2 个）：'), wc);
+    assert.ok(!wc.includes('本工作区'), '没有外区文件时不引入新标签');
+    assert.ok(!wc.includes('其它工作区'));
+    assert.equal(turn.meta.workspace.otherFiles, undefined);
+});
+
+test('workspace_context：活动文件跨根时追加「属于其它工作区，读取需授权」', () => {
+    const inside = createAISystemContext(makeCtx({
+        settings: {aiInjectActiveFile: true},
+        ctx: {
+            getScopeRoot: () => '/w',
+            aiDisplayPath: displayPath,
+            getWorkspaceContext: () => ({activeFile: {path: '/w/a.md', mode: 'code'}, openFiles: []}),
+        },
+    }));
+    const a = sectionOf(inside.turnContextBundle({todos: []}, []).text, 'workspace_context');
+    assert.ok(a.includes('当前活动文件：a.md（视图：code）'), a);
+    assert.ok(!a.includes('属于其它工作区'), '同根文件不该带跨根提示');
+
+    const outside = createAISystemContext(makeCtx({
+        settings: {aiInjectActiveFile: true},
+        ctx: {
+            getScopeRoot: () => '/w',
+            aiDisplayPath: displayPath,
+            getWorkspaceContext: () => ({activeFile: {path: '/elsewhere/repo/a.md', mode: 'code'}, openFiles: []}),
+        },
+    }));
+    const b = sectionOf(outside.turnContextBundle({todos: []}, []).text, 'workspace_context');
+    // 活动文件始终注入（用户此刻在看的就是它），只多一句授权提示
+    assert.ok(b.includes('当前活动文件：（范围外）a.md（属于其它工作区，读取需授权）（视图：code）'), b);
+});
+
+test('范围根跟会话：ctx.scopeRootOf 存在时优先于 getScopeRoot（守则首行与环境块同源）', async () => {
+    const mod = createAISystemContext(makeCtx({
+        settings: {aiInjectRoot: true, aiInjectActiveFile: true, aiInjectOpenFiles: true},
+        ctx: {
+            getScopeRoot: () => 'D:/window',
+            scopeRootOf: (session) => (session && session.workspace) || '',
+            aiDisplayPath: displayPath,
+            aiNormalizePath: (p) => String(p == null ? '' : p).replace(/\\/g, '/'),
+            getWorkspaceContext: () => ({
+                activeFile: {path: 'D:/sess/src/a.md', mode: 'code'},
+                openFiles: ['D:/sess/src/a.md', 'D:/window/b.md'],
+            }),
+        },
+    }));
+    const {text, turnBlock} = await mod.assembleSystemContext({workspace: 'D:/sess', todos: []}, []);
+    assert.ok(sectionOf(text, 'workspace_rules').includes('范围根：D:/sess（工具路径相对此根）'), '守则首行应取会话根');
+    assert.ok(turnBlock.includes('当前活动文件：src/a.md'));
+    assert.ok(turnBlock.includes('已打开文件（本工作区 1 个）：'), '窗口根下的文件归到「其它工作区」');
+    assert.ok(turnBlock.includes('其它工作区的已打开文件（1 个目录 / 1 个文件）'));
+    // 无会话根的会话（scopeRootOf 返回空）→ **不再回落窗口根**：harness 下未绑定会话
+    // 若回落到活动文件父目录，注入的范围根会指向别的仓库、与工具实际解析不一致
+    // （独立审查 🟡）。空即是空，明确告诉模型「未打开工作区」。
+    const fallback = await mod.assembleSystemContext({todos: []}, []);
+    assert.ok(sectionOf(fallback.text, 'workspace_rules').includes('范围根：（未打开工作区）'),
+        'scopeRootOf 存在时它是唯一权威，返回空不许回落窗口根 / 活动文件目录');
+    assert.ok(!sectionOf(fallback.text, 'workspace_rules').includes('D:/window'),
+        '未绑定会话不得把窗口根注入进来');
 });
 
 test('技能 / 环境变量在系统提示词，任务清单 / 提醒随环境块', async () => {

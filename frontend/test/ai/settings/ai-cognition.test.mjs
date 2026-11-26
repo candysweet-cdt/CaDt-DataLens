@@ -5,6 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     OVERVIEW_BODY_BUDGET,
+    createAICognition,
     renderOverviewBlock,
     resolveNeedsReread,
     shouldInjectCognitionOverview,
@@ -167,3 +168,83 @@ test('cognitionRulesText 两态：启用态讲职责与分工，关闭态给审�
 test('overview 注入正文预算默认值与方案口径一致（4–6K 字符带余量）', () => {
     assert.ok(OVERVIEW_BODY_BUDGET >= 4000 && OVERVIEW_BODY_BUDGET <= 5500);
 });
+
+// ---- 预取缓存分桶（批次 E5）：单槽 → Map<workspaceKey, snapshot> ----
+// 单槽的实测缺陷：两窗口 / 两会话各绑不同工作区、用户在两处交替起轮时，每轮都把对方的
+// 槽冲掉——预取缓存永远 miss，「起轮前刷一次」等于每轮白跑一遍后端读。
+function fakeCognitionBackend(byWs) {
+    const calls = [];
+    return {
+        calls,
+        async CognitionRead(ws) {
+            calls.push(ws);
+            const snapshot = byWs[ws];
+            if (!snapshot) return JSON.stringify({exists: false});
+            return JSON.stringify({exists: true, scene: 'code', entries: snapshot.lines.length, lines: snapshot.lines});
+        },
+    };
+}
+
+test('overview 预取缓存按工作区分桶：两会话交替起轮不互相清空', async () => {
+    const backend = fakeCognitionBackend({
+        'D:/a': {lines: [{path: 'a/only.js', dir: false}]},
+        'D:/b': {lines: [{path: 'b/only.js', dir: false}]},
+    });
+    const mod = createAICognition({
+        settings: {aiCognition: true},
+        backend,
+        getScopeRoot: () => 'D:/window',
+        scopeRootOf: (session) => (session && session.workspace) || '',
+    });
+    const a = {id: 's1', workspace: 'D:/a', messages: []};
+    const b = {id: 's2', workspace: 'D:/b', messages: []};
+    await mod.prefetchTurnCache(a);
+    await mod.prefetchTurnCache(b);
+    // 两个卷同时在缓存里（单槽时代第二个会把第一个冲掉，这里读到的是空 index）
+    assert.match(mod.turnBlocks(a).index, /a\/only\.js/);
+    assert.match(mod.turnBlocks(b).index, /b\/only\.js/);
+    assert.equal(backend.calls.length, 2, '交替消费不该触发重读');
+});
+
+test('overview 缓存键与 Go 分桶同口径：同一目录换个拼写不另开一格', async () => {
+    const backend = fakeCognitionBackend({'D:/repo': {lines: [{path: 'x.js', dir: false}]}});
+    const mod = createAICognition({
+        settings: {aiCognition: true},
+        backend,
+        getScopeRoot: () => '',
+        scopeRootOf: (session) => session.workspace,
+    });
+    await mod.prefetchTurnCache({id: 's', workspace: 'D:/repo', messages: []});
+    // 尾斜杠 + 大小写变化 → workspaceKey 归一后仍是同一桶
+    assert.match(mod.turnBlocks({id: 's', workspace: 'd:/repo/', messages: []}).index, /x\.js/);
+    assert.equal(backend.calls.length, 1);
+});
+
+test('overview 缓存上限 8：第 9 个工作区进来后最旧的桶被淘汰', async () => {
+    const byWs = {};
+    for (let i = 0; i < 9; i += 1) byWs['D:/w' + i] = {lines: [{path: 'f' + i + '.js', dir: false}]};
+    const backend = fakeCognitionBackend(byWs);
+    const mod = createAICognition({
+        settings: {aiCognition: true},
+        backend,
+        getScopeRoot: () => '',
+        scopeRootOf: (session) => session.workspace,
+    });
+    const sessions = [];
+    for (let i = 0; i < 9; i += 1) {
+        const session = {id: 's' + i, workspace: 'D:/w' + i, messages: []};
+        sessions.push(session);
+        await mod.prefetchTurnCache(session);
+    }
+    assert.match(mod.turnBlocks(sessions[8]).index, /f8\.js/);
+    assert.match(mod.turnBlocks(sessions[1]).index, /f1\.js/);
+    assert.equal(mod.turnBlocks(sessions[0]).index, '', '最旧的桶被淘汰，不会无限增长');
+});
+
+test('无 scopeRootOf 注入时回落 getScopeRoot（旧宿主行为不变）', async () => {
+    const backend = fakeCognitionBackend({'D:/win': {lines: [{path: 'w.js', dir: false}]}});
+    const mod = createAICognition({settings: {aiCognition: true}, backend, getScopeRoot: () => 'D:/win'});
+    await mod.prefetchTurnCache({id: 's', messages: []});
+    assert.match(mod.turnBlocks({id: 's', messages: []}).index, /w\.js/);
+});
+

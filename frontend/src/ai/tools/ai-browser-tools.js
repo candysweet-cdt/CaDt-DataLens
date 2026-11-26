@@ -169,12 +169,12 @@ export function buildPressKeyScript(key, modifiers) {
 // about:blank「新标签页」并截到白图——正是「打开网页后标签栏多出空标签、截图为空」的根因。
 //
 // 返回应写入 session.browserTabId 的新值；值与当前相同则调用方无需落盘。
-//   · open_browser_tab 成功返回 {browserTab:{id,...}} → 登记该 id；
+//   · open_browser_tab / adopt_browser_tab 成功返回 {browserTab:{id,...}} → 登记该 id；
 //   · close_browser_tab 关掉当前标签页（params.id === current）→ 清空；
 //   · 其它动作 / 异常返回 → 保持原值。
 export function resolveSessionBrowserTabId(action, params, result, currentId) {
     const current = typeof currentId === 'string' ? currentId : '';
-    if (action === 'open_browser_tab') {
+    if (action === 'open_browser_tab' || action === 'adopt_browser_tab') {
         const id = result && result.browserTab && result.browserTab.id;
         return typeof id === 'string' && id ? id : current;
     }
@@ -182,5 +182,20 @@ export function resolveSessionBrowserTabId(action, params, result, currentId) {
         const closedId = params && params.id;
         return typeof closedId === 'string' && closedId && closedId === current ? '' : current;
     }
+    return current;
+}
+
+// 接管态（session.browserTabAdopted）归一：区分「用户交给 AI 的标签」与「会话自建标签」。
+// 接管态的标签禁止 AI 关闭（browser_close / close_browser_tab 双路径拦截），且随会话落盘。
+//   · adopt_browser_tab 拿到有效 id → true；
+//   · open_browser_tab / close_browser_tab → false（新建 / 关闭后不再是接管标签）；
+//   · 其它动作 / 无 id → 保持原值。
+export function resolveBrowserTabAdoption(action, result, currentAdopted) {
+    const current = currentAdopted === true;
+    if (action === 'adopt_browser_tab') {
+        const id = result && result.browserTab && result.browserTab.id;
+        return typeof id === 'string' && id ? true : current;
+    }
+    if (action === 'open_browser_tab' || action === 'close_browser_tab') return false;
     return current;
 }

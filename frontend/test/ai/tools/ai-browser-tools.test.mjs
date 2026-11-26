@@ -17,6 +17,7 @@ import {
     describeKeyCombo,
     describeWait,
     keyEventInit,
+    resolveBrowserTabAdoption,
     resolveSessionBrowserTabId,
 } from '../../../src/ai/tools/ai-browser-tools.js';
 
@@ -129,4 +130,26 @@ test('resolveSessionBrowserTabId：open_browser_tab 登记 id，close 关当前�
     // 无关动作一律保持
     assert.equal(resolveSessionBrowserTabId('screenshot', {}, {image: 'x'}, 'browser-old'), 'browser-old');
     assert.equal(resolveSessionBrowserTabId('get_state', {}, 'ok', 'browser-old'), 'browser-old');
+    // adopt_browser_tab 与 open 同等对待：登记接管的标签 id
+    assert.equal(
+        resolveSessionBrowserTabId('adopt_browser_tab', {name: 'https://x'}, {adopted: true, browserTab: {id: 'browser-user'}}, ''),
+        'browser-user');
+    // 批准但结果结构异常（没给 id）时不篡改当前值
+    assert.equal(resolveSessionBrowserTabId('adopt_browser_tab', {}, {adopted: true}, 'browser-old'), 'browser-old');
+    // 用户拒绝（adopted:false，无 browserTab）→ 保持原值，不误登记
+    assert.equal(resolveSessionBrowserTabId('adopt_browser_tab', {}, {adopted: false, message: '用户拒绝'}, 'browser-old'), 'browser-old');
+});
+
+test('resolveBrowserTabAdoption：adopt 置接管态，open/close 清除，无关动作保持', () => {
+    // adopt 拿到有效 id → true
+    assert.equal(resolveBrowserTabAdoption('adopt_browser_tab', {browserTab: {id: 'browser-user'}}, false), true);
+    // adopt 结果无 id（拒绝 / 结构异常）→ 保持原值
+    assert.equal(resolveBrowserTabAdoption('adopt_browser_tab', {adopted: false}, false), false);
+    assert.equal(resolveBrowserTabAdoption('adopt_browser_tab', {}, true), true);
+    // open / close 一律清除接管态
+    assert.equal(resolveBrowserTabAdoption('open_browser_tab', {browserTab: {id: 'new'}}, true), false);
+    assert.equal(resolveBrowserTabAdoption('close_browser_tab', {closed: true}, true), false);
+    // 无关动作保持
+    assert.equal(resolveBrowserTabAdoption('screenshot', {}, true), true);
+    assert.equal(resolveBrowserTabAdoption('get_state', {}, false), false);
 });

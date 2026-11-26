@@ -85,10 +85,20 @@ export function userNamedPath(session, path) {
 // 也没有会话正文（ai-sessions/）。上下文里「全文在 xxx」的指针指的就是这里。
 export const ARTIFACT_DIR_NAME = 'ai-artifacts';
 
+// 会话沙盒子目录：与 Go 侧 internal/aibacking.DirName 同值（`<appData>/ai-workspaces/<sessionId>`）。
+// 未绑定工作区的会话（含 harness 窗口里的会话沙盒）以它为作用域根。
+export const BACKING_DIR_NAME = 'ai-workspaces';
+
 // 产物根（appDir/ai-artifacts）；appDir 为空时返回空串。
 export function artifactRootOf(appDir) {
     const dir = normalizeReadRoot(appDir);
     return dir ? dir + '/' + ARTIFACT_DIR_NAME : '';
+}
+
+// 沙盒根（appDir/ai-workspaces）；appDir 为空时返回空串。
+export function backingRootOf(appDir) {
+    const dir = normalizeReadRoot(appDir);
+    return dir ? dir + '/' + BACKING_DIR_NAME : '';
 }
 
 // path 是否落在产物子树里。读它就是「读回自己落盘的工具结果」，不走工作区授权链。
@@ -97,12 +107,23 @@ export function isArtifactPath(path, appDir) {
     return !!artifacts && readRootCovers(artifacts, path);
 }
 
+// path 是否落在会话沙盒子树里。它是**会话自己的沙盒目录**（AI 创建、只含 AI 写的文件），
+// 与 ai-sessions / ai-config.json 那些真正含密钥的子树平级但互不包含，所以对 AI 开放是安全的。
+export function isBackingPath(path, appDir) {
+    const backing = backingRootOf(appDir);
+    return !!backing && readRootCovers(backing, path);
+}
+
 // 应用数据目录硬拒：path 在 appDir 下时返回拒绝文案，否则返回 null。
-// 产物子树例外——那是给模型自己落盘、再自己读回用的区域。
+// 两处例外（都是「AI 自己的落盘区」，不含密钥也不含会话正文）：
+//   · 产物子树 ai-artifacts（工具结果全文 / 子代理转录）；
+//   · 会话沙盒 ai-workspaces（未绑定工作区会话的作用域根）。
+// 缺了后者，harness 下的会话沙盒会被自己这条硬拒规则挡死——AI 连自己沙盒里的文件都读写不了。
 export function sensitiveReadDenyReason(path, appDir) {
     const dir = normalizeReadRoot(appDir);
     if (!dir || !readRootCovers(dir, path)) return null;
     if (isArtifactPath(path, appDir)) return null;
+    if (isBackingPath(path, appDir)) return null;
     return '拒绝读取：该路径位于应用数据目录（含 API 密钥与会话数据），AI 不读取其中的文件；' +
         '如需查看请用主界面直接打开。';
 }
