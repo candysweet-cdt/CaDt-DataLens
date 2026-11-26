@@ -4,6 +4,14 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（输入法候选框在窗口重新激活后飘到屏幕左上角）
+
+- **问题**：微软拼音（系统默认输入法）在 AI 输入框里打中文时，候选框/组词窗画在屏幕左上角（标题栏图标一带），文字仍正确上屏。触发前提是「焦点停在输入框上时窗口失活、随后焦点又被自动还给该输入框」——把别的窗口最小化即可复现，记事本规模就够；与全屏、窗口大小、是否正在组词都无关，也不需要第二个本窗口。此时点输入框无效（焦点本来就在它身上，点击不产生 focus 变化）；必须先点软件其他位置让输入框真正失焦、再点回来才恢复。Esc 取消组词同样无效。
+- **根因**：Wails v3 在 `WM_ACTIVATE(WA_ACTIVE/WA_CLICKACTIVE)` 与 `WM_SETFOCUS` 里**同步**调用 `ICoreWebView2Controller::MoveFocus(PROGRAMMATIC)`，此刻 Windows 仍在激活窗口的过程中，WebView2 的 TSF 输入状态因此被破坏（text store 返回过期布局 / `TS_E_NOLAYOUT`），输入法只能把候选窗画到屏幕原点。上游客服侧同款分析见 [wails#6595](https://github.com/wailsapp/wails/issues/6595) 与 [PR #6596](https://github.com/wailsapp/wails/pulls/6596)；同一缺陷在 [wry#1908](https://github.com/tauri-apps/wry/issues/1908) / [wry#1924](https://github.com/tauri-apps/wry/pull/1924) 有独立复现与修复。第三方输入法（搜狗等）自绘候选窗、不走这条定位链路，所以不复现。
+- **改动**：新增 `window_ime_focus_windows.go`——订阅窗口自身的 `windows:WindowActive` / `WindowClickActive` / `WindowSetFocus` 三个事件，延迟 50ms 后经 `application.InvokeSync` 在 UI 线程**再送一次焦点**（`MoveFocus(PROGRAMMATIC)`），让 TSF 重新登记输入上下文，等价于用户手动的「点别处再点回」。四道守卫：前台已不是本窗口 / `GetFocus()==0` / 焦点在宿主窗口本身（Tab 出页面的交接态）/ 焦点落在内嵌浏览器控件子树（新增 `browser.OwnsWindow`），任一命中就不动作；同窗口 150ms 防抖，且**动作成功后才记账**（失败可被下一事件重试）。非 Windows 由 `window_ime_focus_other.go` 提供空实现。动作用 `InvokeSync` 投递，必然排在触发它的窗口过程之后，因此不存在「抢在激活结束之前」的可能——50ms 只是留给原生焦点消息铺开的余量。
+- **验证**：`window_ime_focus_windows_test.go` 表驱动（坏态动作 / 前台已切走 / 焦点不在本线程 / 焦点在宿主窗口 / 焦点在内嵌浏览器 / 焦点在别窗口 / 无句柄 + 一条专防「把允许条件写成跳过」的回归断言）；真机 A/B（Microsoft 拼音，Win10 22H2）实测：激活后不动作必定复现，动作后候选框跟随光标、头几个字不丢；60ms 有效、250ms 会打断正在进行的组词（候选框闪一下即消失），故取 50ms。
+- **已知代价与边界**：每次激活多一次 `MoveFocus`，输入法内部状态会被重置一次；属**症状级缓解**，不是修掉 WebView2 的缺陷，上游合并 #6596 后本文件可整体删除。读取 controller 需反射 `impl.chromium`（Wails 未导出，仓库 `OpenDevTools` 已有同款先例）。仅实测 Windows 10 22H2 + 微软拼音 + 主窗口；Windows 11、多显示器异 DPI、第三方输入法未逐一验证。
+
 ### 新增（AI 新建会话可指定权限档 / 模型 / 分组，会话检索显示分组）
 
 - `app_control` 的 `ai_new_session` 新增三个可选参数：`scope`（权限档，省略继承调用方当前档位，显式只能更严、更宽会报错）、`model`（模型，省略继承调用方会话模型，显式只能从用户允许的子代理模型候选里选）、`group`（会话分组，≤24 字自由填，与已有分组仅差大小写/空白时自动归一）。focus 复用空会话时只覆盖显式传入的字段，不悄悄改用户既有设置。
