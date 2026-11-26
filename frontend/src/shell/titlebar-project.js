@@ -1,6 +1,7 @@
 // 标题栏项目弹层：当前项目、项目切换、克隆仓库与 reveal 到资源管理器。
 // 从 titlebar-popovers.js 拆出；定位工具与 SVG 常量由宿主经 deps 注入。
 import {overlayStack} from '../core/overlay-stack.js';
+import {legacyPathKey} from '../core/path-key.js';
 
 export function createTitlebarProject(deps) {
 
@@ -106,7 +107,7 @@ function renderProjectPopover() {
         });
         body.appendChild(reveal);
     }
-    const norm = (s) => String(s || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const norm = (s) => legacyPathKey(s || '')
     const currentKey = deps.workspaceFolder ? norm(deps.workspaceFolder) : '';
     const recent = deps.readRecentOpen()
         .filter((entry) => entry && entry.isDir && entry.path && norm(entry.path) !== currentKey)

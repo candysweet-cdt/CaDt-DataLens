@@ -212,3 +212,33 @@ test('过程性空快照仍受保护：无 allowEmpty 时不覆盖非空旧快�
     const kept = JSON.parse(globalThis.localStorage.getItem(SESSION_KEY));
     assert.equal(kept.groups[0].paths[0], WS + '/a.md', '旧快照未被抹成空');
 });
+
+// harness 窗口独立快照槽（agent-host-platform 批次 F3）：cadt.session.v1 是多窗口共享单槽，
+// 空 workspace 的快照在读取侧不做归属校验——harness 的布局写进共享槽就会污染普通窗口的下次启动。
+test('harness 窗口写独立槽：共享槽不被覆盖，读也读自己的槽', () => {
+    globalThis.window = {addEventListener() {}, __harnessWindow: true};
+    globalThis.localStorage = makeStore();
+    const HARNESS_KEY = 'cadt.session.harness.v1';
+    const shared = {workspace: 'D:/other/Repo', groups: [{paths: ['D:/other/Repo/x.md'], active: 'D:/other/Repo/x.md'}], current: 'D:/other/Repo/x.md'};
+    globalThis.localStorage.setItem(SESSION_KEY, JSON.stringify(shared));
+
+    const doc = {id: 'd1', path: WS + '/a.md', mode: 'text'};
+    const restore = createSessionRestore({
+        docs: [doc], workspaceFolder: '',
+        editorGroups: [{id: 'g', activeId: 'd1'}],
+        file: doc, splitRoot: null,
+        groupDocs: (g) => (g.id === 'g' ? [doc] : []),
+        rememberDocView() {},
+        logFrontend() {},
+        activityLog: {log() {}, flush() {}},
+    });
+    assert.equal(restore.saveSessionNow(), true);
+    const own = JSON.parse(globalThis.localStorage.getItem(HARNESS_KEY) || 'null');
+    assert.ok(own, 'harness 的快照写进了自己的槽');
+    assert.equal(own.groups[0].paths[0], WS + '/a.md');
+    assert.deepEqual(JSON.parse(globalThis.localStorage.getItem(SESSION_KEY)), shared, '共享槽一字未动');
+    // 读侧同槽：harness 取自己的快照，不拿共享槽里别的窗口的环境
+    assert.deepEqual(restore.readSession(), own);
+    globalThis.window = {addEventListener() {}};
+    assert.deepEqual(restore.readSession(), shared, '普通窗口仍读共享槽');
+});

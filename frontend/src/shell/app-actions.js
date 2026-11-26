@@ -4,6 +4,7 @@
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {fileIconSpec} from '../core/fileicons.js';
 import {kvGetJson, kvRemove, kvSetJson} from '../core/kv-store.js';
+import {RECENT_FILES_KEY} from '../core/storage-keys.js';
 
 /**
  * 应用级动作域：退出、最近打开记录、外部文件复制进目录。
@@ -32,7 +33,7 @@ function parentDirOf(path) {
     return i > 0 ? s.slice(0, i) : '';
 }
 
-const recentOpenKey = 'datalens-recent';
+const recentOpenKey = RECENT_FILES_KEY;
 const recentOpenLimit = 12;
 
 function readRecentOpen() {

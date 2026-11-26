@@ -19,8 +19,12 @@ import {createDbDropHandler} from './db-drop.js';
 import {isPluginDbKind, openPluginSession, pluginDbDriverOf, savePluginSecrets} from './db-plugin.js';
 import {createDbSessionTree} from './db-session-tree.js';
 import {disconnectSession, getSessionState} from './db-sessions.js';
+// 清单键的唯一来源在 db-registry.js（该模块还提供增删改语义）。
+// 这里曾自己硬编码一份同样的字符串——两处各写一份，改一处漏一处就会读到空清单。
+import {DB_REGISTRY_KEY} from './db-registry.js';
+import {legacyPathKey} from '../core/path-key.js';
 
-const REGISTRY_KEY = 'dbWorkspaceDatabases';
+const REGISTRY_KEY = DB_REGISTRY_KEY;
 
 function formRow(form, label, control) {
     const row = document.createElement('label');
@@ -92,7 +96,7 @@ async function globalConnections() {
 
 // samePathKey 路径比较键：Windows 下大小写不敏感、反斜杠归一。
 function samePathKey(path) {
-    return String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    return legacyPathKey(path || '')
 }
 
 // findSqliteEntry 当前工作区清单里指向同一库文件的 sqlite 条目（拖放去重用）。

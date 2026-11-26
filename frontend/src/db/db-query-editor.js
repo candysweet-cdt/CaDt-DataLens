@@ -5,7 +5,7 @@
 import {iconSvg} from '../core/icons.js';
 import {createTextarea, createSelect} from '../core/form-controls.js';
 import {createDbGrid} from './db-grid-core.js';
-import {formatElapsed, confirmReasonLabel} from './db-model.js';
+import {formatElapsed, confirmReasonLabel, DB_ROW_DEFAULT, DB_ROW_MAX} from './db-model.js';
 import {isSessionMissing} from './db-sessions.js';
 import {normalizeCompletionSettings, isAceCompletionCapable, enableAceCompletion} from '../core/completion.js';
 import {createSqlCompletion} from './db-completion.js';
@@ -42,9 +42,9 @@ cancelBtn.hidden = true;
 const limitSel = createSelect({
     options: [
         {value: '100', label: '100 行'},
-        {value: '500', label: '500 行', selected: true},
+        {value: String(DB_ROW_DEFAULT), label: DB_ROW_DEFAULT + ' 行', selected: true},
         {value: '2000', label: '2000 行'},
-        {value: '5000', label: '5000 行'},
+        {value: String(DB_ROW_MAX), label: DB_ROW_MAX + ' 行'},
     ],
     title: '结果行数上限',
 });

@@ -64,6 +64,8 @@ export const PER_WINDOW_LAYOUT_KEYS = [
     'aiPanelOpen', 'aiPanelWidth', 'aiPanelSide', 'aiFloatMode',
     'splitRatio', 'structureSource',
     'alwaysOnTop', 'writingMode', 'runActiveProfile',
+    // 窗口模式（单 / 多工作区）：一个窗口切模式不该把别的窗口也改掉
+    'windowMode',
 ];
 
 // stripPerWindowLayout：从快照里剥掉布局键（返回浅拷贝，不改入参）。

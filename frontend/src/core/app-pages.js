@@ -22,6 +22,9 @@
  * @property {string} [visibleWhen] 可选：关联的 settings 布尔键名。给出时仅当
  *   settings[key] === true 才进各入口（appPageGroups 的统一漏斗，调用方须传 settings）；
  *   appPageOf 不过滤——已开的标签页在开关关掉后仍要能 resolve 图标与标题。
+ * @property {boolean} [perWorkspace] 可选：数据属于**单个工作区**（如 .cadt/cognition、
+ *   .cadt/patches）。给出时标签页按工作区去重——同一页可以同时开多个，各绑一个仓库，
+ *   标签名带上仓库名。不给出 = 全局数据页，全应用只有一个实例。
  */
 
 /** @type {readonly AppPage[]} */
@@ -31,10 +34,12 @@ export const APP_PAGES = [
     {id: 'usage-stats', label: '使用统计', icon: 'chart', group: '统计', desc: 'Token 用量、热力图、模型分布与请求日志'},
     {id: 'external-tools', label: '外部工具', icon: 'globe', group: 'AI 工具', desc: 'AI 联网能力来源矩阵、服务提供商、MCP 服务器与桌面控制'},
     {id: 'agents', label: '智能体', icon: 'agents', group: 'AI 工具', desc: '群聊（圆桌讨论）成员管理：模型绑定、人设与职责'},
-    {id: 'cognition', label: '认知索引', icon: 'tree', group: 'AI 工具', visibleWhen: 'aiCognition', desc: '浏览工作区认知索引：路径地图、条目 FRAS 详情与治理状态'},
+    // 认知索引 / 补丁库的数据物理上就在各个工作区里（.cadt/cognition、.cadt/patches），
+    // 所以按工作区开多份才有意义——用户能并排看两个仓库的索引，而不是来回切换再点刷新。
+    {id: 'cognition', label: '认知索引', icon: 'tree', group: 'AI 工具', visibleWhen: 'aiCognition', perWorkspace: true, desc: '浏览工作区认知索引：路径地图、条目 FRAS 详情与治理状态'},
     {id: 'schedules', label: '定时任务', icon: 'clock', group: '定时', desc: '按时间自动触发会话，可查看下次运行与最近结果'},
     {id: 'activity', label: '操作记录', icon: 'history', group: '记录', desc: '按月的操作留痕，可按来源与关键词筛选、导出'},
-    {id: 'patches', label: '补丁库', icon: 'git', group: '补丁', desc: '.cadt/patches 的补丁列表、审阅与删除'},
+    {id: 'patches', label: '补丁库', icon: 'git', group: '补丁', perWorkspace: true, desc: '.cadt/patches 的补丁列表、审阅与删除'},
 ];
 
 /**
@@ -45,6 +50,23 @@ export const APP_PAGES = [
 export function appPageOf(id) {
     const key = String(id || '');
     return APP_PAGES.find((page) => page.id === key) || null;
+}
+
+/**
+ * 计算应用页面标签页的标题。
+ *
+ * 全局页恒为页面名；perWorkspace 页在多工作区下带仓库名——同一个「认知索引」可能开着两三份，
+ * 标题不带仓库名就分不清哪个是哪个。单工作区不加后缀（只有一个仓库，加了是噪音）。
+ * @param {AppPage|null} page
+ * @param {string} workspaceRoot 该标签绑定的工作区
+ * @param {boolean} multi 当前是否多工作区窗口
+ * @returns {string}
+ */
+export function appPageTabTitle(page, workspaceRoot, multi) {
+    const label = page ? page.label : '';
+    if (!page || !page.perWorkspace || !multi) return label;
+    const base = String(workspaceRoot || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
+    return base ? label + ' · ' + base : label;
 }
 
 /**

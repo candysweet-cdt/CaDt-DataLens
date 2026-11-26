@@ -2,13 +2,13 @@
 // 从 bridge-ui.js 拆出；依赖仍经 deps 延迟求值，不持有宿主状态。
 import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
 import {kvGet, kvSet} from '../core/kv-store.js';
+import {BGTERM_SPLIT_KEY} from '../core/storage-keys.js';
 export function createBridgeTerminalView(deps) {
 
 // ===== 后台终端标签页（AI background_command 作业在内容区的视图）=====
 // 数据来自 aiPanel 桥接（bridgeBgJob / bridgeOnBgUpdate / bridgeStopBgJob）；
 // 上栏命令信息、下栏实时输出，中间分割线可拖拽（比例存 localStorage）；关闭标签不影响作业。
-
-const BGTERM_SPLIT_KEY = 'datalens-bgterm-split';
+// 分割比例的 localStorage 键名来自 core/storage-keys.js。
 
 function bgTermSplitRatio() {
     const raw = Number(kvGet(BGTERM_SPLIT_KEY));

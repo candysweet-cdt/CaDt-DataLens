@@ -21,6 +21,7 @@ import {createFileIcon, fileIconSpec} from '../core/fileicons.js';
 import {formats, detectFormat, defaultMediaMode, isKnownCodeFileName} from '../core/formats.js';
 import {tabKindOf, tabIconName} from '../core/tab-kinds.js';
 import {showPatchView, disposePatchView} from './patch-view.js';
+import {legacyPathKey} from '../core/path-key.js';
 
 export function createEditorGroups(deps) {
 
@@ -1858,7 +1859,7 @@ const externalDocTimers = new Map();
 
 function handleExternalDocChanges(payload) {
     if (!payload || !deps.backend.GetFileStat) return;
-    const root = String(payload.root || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const root = legacyPathKey(payload.root || '')
     if (!root) return;
     const changed = new Set();
     if (payload.overflow) {

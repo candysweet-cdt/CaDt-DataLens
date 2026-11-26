@@ -16,6 +16,7 @@ import {overlayStack} from '../core/overlay-stack.js';
 import {placePopover} from '../core/popover-position.js';
 import {iconSvg} from '../core/icons.js';
 import {kvGetJson, kvSetJson} from '../core/kv-store.js';
+import {MESSAGE_CENTER_KEY} from '../core/storage-keys.js';
 import {LAYOUT_MOTION_OPTIONS, heightKeyframes, shouldAnimateLayout} from '../ai/chat/ai-layout-motion.js';
 
 export function migrateApprovalKind(m) {
@@ -27,7 +28,7 @@ export function migrateApprovalKind(m) {
 }
 
 export function createMessageCenter(ctx) {
-    const KEY = 'datalens-message-center';
+    const KEY = MESSAGE_CENTER_KEY;
     const MAX_MESSAGES = 100;
     // 消息类型 → 注册表键（圆圈勾/圆圈叉是状态徽标造型，与裸勾/叉区分）
     const KIND_ICONS = {

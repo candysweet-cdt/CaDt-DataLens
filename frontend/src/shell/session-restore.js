@@ -4,15 +4,19 @@
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {defaultMediaMode} from '../core/formats.js';
 import {kvGetJson, kvRemove, kvSetJson} from '../core/kv-store.js';
+import {isMultiWorkspace} from '../core/root-scope.js';
+import {WORKSPACE_SESSIONS_KEY, windowSessionKeyOf} from '../core/storage-keys.js';
 
 
 export function createSessionRestore(deps) {
 
 
 // ---- 会话恢复：标签页/分组/分屏布局持久化，重启后还原 ----
-const sessionKey = 'cadt.session.v1';
+// 快照槽的选择规则在 core/storage-keys.js 的 windowSessionKeyOf：普通窗口用共享单槽，
+// harness 窗口用自己的槽（空工作区的布局写进共享槽会污染普通窗口的下次启动——读取侧
+// 对空 workspace 不做归属校验）。
 // 按工作区保存环境：软切换（新窗口打开另一工作区）时恢复该工作区上次的标签/布局。
-const workspaceSessionsKey = 'cadt.workspace-sessions.v1';
+const workspaceSessionsKey = WORKSPACE_SESSIONS_KEY;
 const WORKSPACE_SESSION_LIMIT = 30;
 let sessionTimer = 0;
 // allowEmpty 是「本次保存由用户主动关标签触发」的粘滞标志：一旦置上就保持到真正
@@ -150,7 +154,15 @@ function serializeSession() {
 }
 
 function auxWindowNoSession() {
+    // 悬浮窗 / 调试控制台与主窗口共享同一 localStorage，读会串台、写会覆盖，整块关掉。
+    // harness 窗口**不在这里**：它改用自己的独立槽位（见 sessionKeyOf），写入必须保留——
+    // 那是它下次启动还能恢复自己标签的唯一来源。
     return !!(window.__aiFloatWindow || window.__consoleWindowMode);
+}
+
+// 本窗口的会话快照槽（harness 窗口用独立槽，其它窗口仍是共享单槽）。
+function sessionKeyOf() {
+    return windowSessionKeyOf(isMultiWorkspace());
 }
 
 function scheduleSessionSave(options) {
@@ -181,12 +193,12 @@ function saveSessionNow(options) {
                 }
             }
             // 写不进（序列化失败 / 配额满）不能静默：旧快照会原地残留成「关掉的标签又回来」
-            if (!kvSetJson(sessionKey, sess)) {
+            if (!kvSetJson(sessionKeyOf(), sess)) {
                 deps.logFrontend('warn', '会话保存失败：快照未能写入 localStorage（序列化失败或配额已满）');
             }
             writeWorkspaceSession(sess);
         } else {
-            kvRemove(sessionKey);
+            kvRemove(sessionKeyOf());
         }
         return true;
     } catch (e) {
@@ -218,7 +230,7 @@ window.addEventListener('pagehide', () => {
 });
 
 function readSession() {
-    const sess = kvGetJson(sessionKey, null);
+    const sess = kvGetJson(sessionKeyOf(), null);
     if (sess && (sess.workspace || (Array.isArray(sess.groups) && sess.groups.length))) return sess;
     return null;
 }

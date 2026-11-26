@@ -89,7 +89,15 @@ export function createMarkdownRenderer(deps) {
         linkify: true,
         breaks: false,
     });
-    markdownRenderer.use(markdownItKatex, {throwOnError: false, errorColor: '#f75464'});
+    // KaTeX 的 strict 默认 'warn'：数学模式里出现非 ASCII 字符（中文）时**逐字符**打一条
+    // console warning。中文 markdown 里 `$` 往往根本不是公式（价格、"$HOME"、两处无关的 $
+    // 被规则配成一对），于是控制台被刷屏、真警告被淹没（实测一次渲染几十行）。
+    // 只对 unicodeTextInMathMode 降级为 ignore，其余（真正的公式语法错误）仍保留 warn。
+    markdownRenderer.use(markdownItKatex, {
+        throwOnError: false,
+        errorColor: '#f75464',
+        strict: (errorCode) => (errorCode === 'unicodeTextInMathMode' ? 'ignore' : 'warn'),
+    });
     // validateLink 默认把 C:/ 开头的本地图片/链接路径当未知协议丢掉 src；
     // 放行后危险协议（javascript:/vbscript:/data:）仍由 DOMPurify 的 URI 白名单兜底过滤。
     // 注意必须走 md.set() 写进 options——直接给实例赋 validateLink 属性不生效。

@@ -3,6 +3,7 @@
 // 从 writing-ui.js 拆出；四个模块级 let（基线/光标 rAF）随本域迁入，deps.flash 由宿主注入。
 import {WRITING_FONTS, formatWritingText, genName, SCENE_SEPARATOR} from '../core/writing.js';
 import {kvGetJson, kvSetJson} from '../core/kv-store.js';
+import {WRITING_DAILY_KEY as WRITING_DAILY_STORAGE_KEY} from '../core/storage-keys.js';
 
 export function createWritingMode(deps) {
 
@@ -200,7 +201,7 @@ function writingFocusParagraph(ace) {
 
 // ---- 码字统计 ----
 
-const WRITING_DAILY_KEY = 'datalens-writing-daily';
+const WRITING_DAILY_KEY = WRITING_DAILY_STORAGE_KEY;
 let writingSpeedSamples = []; // {t, chars} 正增量采样
 
 function writingTodayStr() {

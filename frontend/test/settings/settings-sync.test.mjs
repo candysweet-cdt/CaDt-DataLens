@@ -86,6 +86,7 @@ test('stripPerWindowLayout：剥掉布局键、保留数据键、不改入参', 
         aiPanelOpen: true, aiPanelWidth: 500, aiPanelSide: 'left', aiFloatMode: 'float',
         splitRatio: 0.7, structureSource: 'session',
         alwaysOnTop: true, writingMode: true, runActiveProfile: 'p1',
+        windowMode: 'multi',
         theme: 'light', editorFont: 15, aiCognition: true,
     };
     const out = stripPerWindowLayout(snapshot);

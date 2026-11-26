@@ -12,6 +12,7 @@ import {bindEditableContextMenuFallback} from './shell/edit-menu.js';
 import {copyImageBlobToClipboard} from './core/image-clipboard.js';
 import {copyTextToClipboard} from './core/clipboard.js';
 import {kvGetJson} from './core/kv-store.js';
+import {SETTINGS_KEY} from './core/storage-keys.js';
 import {prepareImagePayload} from './ai/tools/ai-image-encode.js';
 import {normalizeTermText} from './ai/tools/ai-terminal-tools.js';
 import {createAICognitionPage} from './ai/settings/ai-cognition-page.js';
@@ -28,7 +29,7 @@ import {createDbAppActions} from './db/db-app-actions.js';
 import {iconSvg, renderMenuIcon} from './core/icons.js';
 import {createPalette} from './shell/palette.js';
 import {createAIPanel} from './ai/ai-panel.js';
-import {createAIWipeguard, WIPEGUARD_NOTIFY_COOLDOWN_MS} from './ai/security/ai-wipeguard.js';
+import {createAIWipeguard, WIPEGUARD_NOTIFY_COOLDOWN_MS, WIPEGUARD_SNAPSHOT_INTERVAL_MS, normalizeWsKey} from './ai/security/ai-wipeguard.js';
 import {decideAutoCollapse, shouldExpandEditorOnTab} from './ai/chat/ai-auto-collapse.js';
 import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './core/jsonrepair.js';
@@ -124,6 +125,13 @@ import {overlayStack} from './core/overlay-stack.js';
 import {createDialogDrag} from './core/dialog-drag.js';
 import {loadWailsRuntime, createRuntimeAdapter, createBackendProxy} from './core/wails-runtime.js';
 import {createAppEventBridge, setAppEventBridge} from './core/app-events.js';
+import {isMultiWorkspace, configureMultiProbe} from './core/root-scope.js';
+
+// 「当前是否多工作区窗口」的唯一判定注入点（core/root-scope.js 消费）。
+// 全应用只有这里读 window.__harnessWindow 的**值**（其余地方一律 isMultiWorkspace()）。
+// 那个全局变量仍是写入点（bridge-ui 启动恢复 / switchWindowMode 都会置位），
+// 但读取收口到这一行——将来换形态（多根窗口等）只改这里。
+configureMultiProbe(() => !!window.__harnessWindow);
 
 // 全局弹层栈的 Esc 分发监听必须先于一切弹层工厂注册（window 捕获阶段按注册顺序执行，
 // 只有装得最早才能用 stopImmediatePropagation 可靠抢占各域散落的旧 Esc 监听）。
@@ -183,6 +191,16 @@ window.__appEvents = appEvents;
 setAppEventBridge(appEvents);
 // 暴露给插件作者与调试：生产环境插件同样可以直接访问 window.go
 window.__backend = backend;
+
+// ===== 文件地图（组合根，按职责分区）=====
+// 精确行号刻意不写在这里——会随改动漂移。查 main.map.md（由 scripts/gen-file-maps.mjs 生成/刷新）。
+// 分区顺序（自上而下）：
+//   启动期桥与早期钩子 → 日志与开发者模式 → 辅助独立窗 → appAction* 动作分发 → runAppAction
+//   书签 / 便签 / 格式设置 / 新建文件菜单域接线 → 资源管理器 / 右键菜单 / 结构面板域接线
+//   打开路径与文档操作 → 工作区与会话（换根 / watcher / wipeguard）→ 活动栏与 AI 面板
+//   文档生命周期（新建 / 保存 / 重载）→ 应用页面导航 / 窗口切换 → 插件命令 / 命令面板注册表
+//   菜单栏构造 → 查找状态 / 快捷键 → 跨窗口事件接线 → 浏览器标签同步 → 全局收尾
+// 域逻辑优先在 frontend/src/<域>/ 找对应模块，本文件只做组合与少量确实共享闭包的逻辑。
 
 // ===== 快捷便签：启动期事件（focus / workspace-changed / pagehide / initAIPanel）
 // 可能早于 bridgeUI 的解构（约 5100 行）执行，一律先经这些早期 let 间接层，
@@ -637,6 +655,9 @@ const els = {
     abGit: document.getElementById('ab-git'),
     abAi: document.getElementById('ab-ai'),
     abChats: document.getElementById('ab-chats'),
+    wsMode: document.getElementById('ws-mode'),
+    wsModeName: document.getElementById('ws-mode-name'),
+    wsModeIcon: document.getElementById('ws-mode-icon'),
     abAppPages: document.getElementById('ab-app-pages'),
     abDatabase: document.getElementById('ab-database'),
     abMaven: document.getElementById('ab-maven'),
@@ -685,7 +706,44 @@ const structureWorkerPending = new Map();
 const structureCache = new Map();
 const STRUCTURE_CACHE_LIMIT = 12;
 let workspaceFolder = null;
+// 多工作区模式的「视图跟随根」：聚焦会话的工作区（只用于显示与树/监听，**不写 workspaceFolder**）。
+// 声明在这里是因为 renderWorkspaceCrumbs（约 3405 行）在启动早期就会读它，放后面会踩 TDZ。
+let lastFocusedRoot = '';
+let followingSessionWorkspace = false; // 重入闸门：跟随过程内部触发的会话切换回调必须忽略，否则无限递归
+// 当前视图根是「借来的」：多工作区下聚焦会话本身无工作区（沙盒 / 临时会话），
+// 文件树保留上一次的目录。面包屑据此标一句提示，避免误以为会话绑在那个仓库上。
+let viewRootOrphan = false;
+
+// ── 当前根：全应用「我在哪个目录」的唯一来源 ────────────────────────────────
+// 单工作区 = 窗口绑定的工作区；多工作区 = 聚焦会话的工作区。
+//
+// 为什么需要它：多工作区窗口的 workspaceFolder **必须恒为空**（它是
+// activeSessionByWorkspace 的 key / 会话快照槽 / scopeRootOf 兜底的判据，写进去会连环出错），
+// 但绝大多数功能模块（文件树 / 搜索 / git / 便签 / 终端 / Maven / 面包屑 / 标题栏…）
+// 只想知道「当前在哪个目录」。两者的差额就是这个函数。
+//
+// 纪律：
+//   · 需要「我在哪」→ 读 currentRoot()（或注入给模块的 deps.workspaceFolder，那一层已改成本函数）
+//   · 需要「窗口绑定了哪个目录」→ 读裸 workspaceFolder（只有 openFolder/closeFolder、
+//     session-restore 快照槽、explorer-ops 的写回这几处属于此列）
+//   新增消费点别再自己写 `workspaceFolder || (harness ? ...)`，直接用这里。
+function currentRoot() {
+    // 多工作区优先：窗口不绑定工作区，workspaceFolder 按约定恒为空。万一某条旧路径把它
+    // 写脏了（例如 openFolderWorkspace 被误调），也不能让它凌驾于视图根之上——否则
+    // currentRoot 与文件树取到两个不同目录，顶部徽标和树各显示一个仓库（实测过）。
+    if (isMultiWorkspace()) return lastFocusedRoot || '';
+    if (workspaceFolder) return workspaceFolder;
+    return '';
+}
 let watchedWorkspaceRoot = '';
+// 工作区破坏防护控制器（在 4k 行处构造）。这里先声明成 let：syncWorkspaceWatcher 会在
+// init 早期被调用（恢复会话 / 打开文件夹），const 的 TDZ 会让它炸 ReferenceError。
+let wipeguardCtrl = null;
+// 本窗口正在防护的根（多根 watcher，方案 §4.9.7 F6）：切走后旧根**不立即退订**——防护要
+// 覆盖「切走期间还在跑的命令」。退订只发生在 LRU 淘汰或窗口关闭时。
+const wipeguardRoots = new Map();      // wsKey -> root
+// 告警投递冷却按根（原先是全局一份：A 根刚报过警，2 分钟内 B 根的真破坏被一起抑制）
+const wipeguardNotifyAt = new Map();   // wsKey -> 上次向会话投递告警的时间
 let fileClipboard = null;
 let ctxMenu = null;
 // 主窗口全局菜单的惰性入口：ctxMenu 由 editor-menus 稍后创建（set ctxMenu 回填），
@@ -749,7 +807,7 @@ const APP_ACTIONS = [
     'get_settings_tree', 'set_setting_row',
     'ai_new_session', 'ai_switch_session', 'ai_rename_session', 'ai_set_session_group', 'flash', 'refresh_explorer', 'reveal_in_explorer',
     'type_text', 'press_key', 'click',
-    'open_browser_tab', 'close_browser_tab', 'open_memo_panel', 'get_memo', 'add_memo', 'update_memo', 'remove_memo',
+    'open_browser_tab', 'close_browser_tab', 'adopt_browser_tab', 'open_memo_panel', 'get_memo', 'add_memo', 'update_memo', 'remove_memo',
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal', 'get_storage',
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
     'get_gen_models', 'set_gen_model', 'delete_gen_model',
@@ -775,9 +833,34 @@ const APP_SCREENSHOT_AREAS = {
     statusbar: {selector: '#statusbar', label: '状态栏'},
 };
 
+// ===== 应用动作分发（app_control 的文档/点击/键击/快照解析，runAppAction 的执行前置）=====
 function appActionDocInfo(doc) {
     if (!doc) return null;
-    return {name: doc.name, path: doc.path || '', mode: doc.mode || '', dirty: !!doc.dirty, format: (doc.format && doc.format.id) || ''};
+    const info = {name: doc.name, path: doc.path || '', mode: doc.mode || '', dirty: !!doc.dirty, format: (doc.format && doc.format.id) || ''};
+    // 浏览器标签给 AI 一个精确定位线索：name 可能是「新标签页」（无 URL），光靠 name/index
+    // 不足以让模型选对要接管的标签。只读增强，文件标签不带这两个字段。
+    if (doc.browser) {
+        info.browserUrl = doc.browserUrl || '';
+        info.browserTabId = doc.id;
+    }
+    return info;
+}
+
+// 浏览器标签定位：id / name / url / index 四选一（与 close_browser_tab 的匹配口径一致），
+// 命中多个时报错而不是随便选一个——接管是不可逆的能力授予，必须精确。
+function appActionFindBrowserDoc(ref) {
+    const r = ref && typeof ref === 'object' ? ref : {};
+    const matches = docs.filter((d, index) => {
+        if (!d.browser) return false;
+        if (r.id != null && d.id === String(r.id)) return true;
+        if (r.name != null && d.name === String(r.name)) return true;
+        if (r.url != null && d.browserUrl === String(r.url)) return true;
+        if (r.index != null && Number.isFinite(Number(r.index)) && index === Number(r.index)) return true;
+        return false;
+    });
+    if (matches.length === 0) throw new Error('未找到浏览器标签页（用 get_state 的 tabs 看 name / browserUrl / browserTabId / index）');
+    if (matches.length > 1) throw new Error('多个浏览器标签页匹配，请用 id 精确定位');
+    return matches[0];
 }
 
 // 标签页 → 应用内视图描述（AI 的 workspace_context 用）。没有 path 的标签页（内嵌浏览器 /
@@ -1034,8 +1117,9 @@ function appActionWorkspacePath(raw) {
         text.startsWith('\\\\') || text.startsWith('/')) {
         return text;
     }
-    if (!workspaceFolder) return text;
-    return workspaceFolder.replace(/[\\/]+$/, '') + '\\' + text.replace(/^[\\/]+/, '');
+    const cur = currentRoot();
+    if (!cur) return text;
+    return cur.replace(/[\\/]+$/, '') + '\\' + text.replace(/^[\\/]+/, '');
 }
 
 // 群聊摘要（get_groups / send_group_message 共用）：成员名按当前智能体配置解析。
@@ -1357,7 +1441,7 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
             if (paths[0].replace(/\\/g, '/').toLowerCase() === paths[1].replace(/\\/g, '/').toLowerCase()) {
                 throw new Error('两个路径相同');
             }
-            if (!workspaceFolder) throw new Error('没有打开工作区');
+            if (!currentRoot()) throw new Error('没有打开工作区');
             await openPathsHere(paths, {});
             const leftDoc = findDocByPath(paths[0]);
             const rightDoc = findDocByPath(paths[1]);
@@ -1477,7 +1561,41 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
             if (doc && doc.browserOpenPromise) await doc.browserOpenPromise;
             return {browserTab: {id: doc.id, name: doc.name, url: doc.browserUrl}};
         }
+        case 'adopt_browser_tab': {
+            // 把用户手动打开的浏览器标签交给当前 AI 会话：全档必弹高危审批卡（含完全权限），
+            // 一次性授权、不写长期放行规则。批准后只回标签信息，会话身份由 ai-panel 落盘。
+            const doc = appActionFindBrowserDoc(p);
+            if (typeof requestActionApproval !== 'function') {
+                throw new Error('接管浏览器标签需要用户在界面审批；当前调用没有审批通道，拒绝执行');
+            }
+            const url = doc.browserUrl || '';
+            const title = 'AI 请求接管你的浏览器标签页';
+            const warnings = [
+                'AI 将直接读取并操作这张标签的当前页面，包括你已登录的账号内容（邮箱 / 后台 / 网银等）',
+                'AI 的点击与脚本会在你的登录态下执行，可能改变页面数据；请确认页面内容允许 AI 查看和操作',
+                '接管后 AI 不能关闭这张标签，需要你手动关闭；file:// 页面不再重复走工作区外读取审批',
+            ];
+            const reason = typeof p.reason === 'string' ? p.reason.trim().slice(0, 300) : '';
+            const answer = await requestActionApproval({
+                action: 'adopt_browser_tab',
+                title,
+                target: url || doc.name || doc.id,
+                newValue: '本会话的 browser_* 工具将直接操作这张标签页及其登录态',
+                risk: 'high',
+                warnings,
+                source: reason ? 'AI 申请理由：' + reason : 'AI 主动申请（未说明理由）',
+            });
+            if (answer.error) throw new Error('接管浏览器标签审批失败：' + answer.error);
+            if (!answer.approved) {
+                return {adopted: false, message: answer.cancelled ? '用户已停止生成，未接管浏览器标签。' : '用户拒绝了接管请求：未接管浏览器标签。'};
+            }
+            return {adopted: true, browserTab: {id: doc.id, name: doc.name, url}};
+        }
         case 'close_browser_tab': {
+            if (p.protectedId != null && p.protectedId !== '') {
+                const protectedDoc = docs.find((d) => d.browser && d.id === p.protectedId);
+                if (protectedDoc) throw new Error('这是你交给 AI 的浏览器标签页，AI 不能关闭，请手动关闭');
+            }
             const target = docs.find((d) => d.browser && (d.id === p.id || d.name === p.name || d.browserUrl === p.url));
             if (!target) throw new Error('未找到浏览器标签页');
             closeDocNow(target, false);
@@ -2005,7 +2123,7 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
             if (!explorer || typeof explorer.revealPath !== 'function') throw new Error('文件树未初始化');
             const raw = String(p.path || '').trim() || (file && file.path) || '';
             if (!raw) throw new Error('reveal_in_explorer 需要 path（当前没有活动文件）');
-            if (!workspaceFolder) throw new Error('没有打开工作区');
+            if (!currentRoot()) throw new Error('没有打开工作区');
             const target = appActionWorkspacePath(raw);
             if (!settings.showSidebar) toggleSidebar(true);
             switchSidebarView('files');
@@ -2160,7 +2278,7 @@ let currentMode = 'tree';
 let flashTimer = 0;
 let readingMode = null;
 
-const settingsKey = 'datalens-settings';
+const settingsKey = SETTINGS_KEY;
 const uiFonts = [
     {id: 'inter', name: 'Inter', family: '"Inter"'},
     {id: 'system', name: 'Segoe UI', family: '"Segoe UI"'},
@@ -2275,6 +2393,10 @@ const defaultSettings = {
     runConfigs: {},
     runProfiles: [],
     runActiveProfile: '',
+    // 窗口模式（'single' | 'multi'）：关闭时是多工作区，下次启动就恢复成多工作区。
+    // 窗口自身形态（进 PER_WINDOW_LAYOUT_KEYS，不跨窗同步）；命令行 --harness 仍优先
+    // （显式指定的形态不该被上次的记忆覆盖）。
+    windowMode: 'single',
     runConfirmSeen: [],
     mavenFlags: {}, // Maven 工具窗口执行开关（离线 / 跳过测试 / 更新快照 / 精简进度）
     treeExpandDefault: 'expand',
@@ -2486,6 +2608,8 @@ if (!settings.runArgs || typeof settings.runArgs !== 'object') settings.runArgs 
 if (!settings.runConfigs || typeof settings.runConfigs !== 'object') settings.runConfigs = {};
 if (!Array.isArray(settings.runProfiles)) settings.runProfiles = [];
 if (typeof settings.runActiveProfile !== 'string') settings.runActiveProfile = '';
+// 窗口模式只认两个值；历史配置缺字段 / 脏值一律回落单工作区（默认形态）
+if (settings.windowMode !== 'multi') settings.windowMode = 'single';
 if (!Array.isArray(settings.runConfirmSeen)) settings.runConfirmSeen = [];
 if (!settings.mavenFlags || typeof settings.mavenFlags !== 'object' || Array.isArray(settings.mavenFlags)) settings.mavenFlags = {};
 settings.splitRatio = Number(settings.splitRatio);
@@ -2615,7 +2739,8 @@ const settingsUI = createSettingsUI({
     get LANG_DEFS() { return LANG_DEFS; },
     get LOCK_ICON() { return LOCK_ICON; },
     get readingMode() { return readingMode; },
-    get patchesPane() { return settingsPanePatches; },
+    // 补丁库 / 认知索引是 perWorkspace 应用页面：实例由各自的 mounter 按标签创建
+    // （见 makePatchesPane / makeCognitionPage），这里不再暴露单例。
     get newFileMenuPane() { return settingsPaneNewFileMenu; },
     get refreshDeveloperMode() { return refreshDeveloperMode; },
     get refreshLogPath() { return refreshLogPath; },
@@ -2656,7 +2781,7 @@ const settingsUI = createSettingsUI({
     get updateAiWidthWidget() { return updateAiWidthWidget; },
     get updateStatus() { return updateStatus; },
     get updateWritingStats() { return updateWritingStats; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
 });
 const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applyRemoteSettings, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, openSettingsAtRow, persistSettingsLight, reconcileThemes, refreshThemes, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setIconTheme, setTheme, syncIntegrationStatus, setSyncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
 const writingUI = createWritingUI({
@@ -2724,7 +2849,7 @@ const writingUI = createWritingUI({
     get themes() { return themeRegistry.listUiThemes(); },
     get updateStatus() { return updateStatus; },
     get updateWindowTitle() { return updateWindowTitle; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
     // 关窗脏标记把便签的防抖窗口算进去（anyDirty 可能在 bridgeUI 解构前被调用，读早期 flag 防 TDZ）
     get memoHasPending() { return () => memoPendingFlag; },
 });
@@ -2839,7 +2964,7 @@ const editorGroupsMod = createEditorGroups({
     get updateWritingStats() { return updateWritingStats; },
     get viewLabel() { return viewLabel; },
     get viewOptionsFor() { return viewOptionsFor; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
 });
 const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterPluginView, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hidePluginView, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
 // app_control 书签动作执行体（phase4 M2）：编辑器域函数经 getter 活引用注入。
@@ -2989,7 +3114,10 @@ const editorMenus = createEditorMenus({
     get openBookmarkList() { return openBookmarkList; },
     get clearCurrentDocBookmarks() { return clearDocBookmarksCurrent; },
     get textArea() { return textArea; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
+    // 窗口**绑定**的工作区（多工作区恒空）：「关闭文件夹」这类「关掉窗口绑定的目录」的动作
+    // 必须看它，不能看 currentRoot——后者在多工作区下是聚焦会话的仓库，关不掉。
+    get boundWorkspaceFolder() { return () => workspaceFolder || ''; },
 });
 const selectedText = (...a) => editorMenus.selectedText(...a);
 const ctxCopy = (...a) => editorMenus.ctxCopy(...a);
@@ -3046,6 +3174,19 @@ const explorerOps = createExplorerOps({
     get updateWindowTitle() { return updateWindowTitle; },
     get workspaceFolder() { return workspaceFolder; },
     set workspaceFolder(v) { workspaceFolder = v; },
+    // 「当前根」：单工作区=窗口工作区，多工作区=聚焦会话的工作区。
+    // 本模块只有 workspaceFolder 用于**写回窗口绑定**（重命名/移动后改根），
+    // 那必须是真值；「临时文件落哪 / 是否可用 / 复制相对路径」读这个。
+    get currentRootOf() { return () => currentRoot(); },
+    // 重命名/移动把当前根自己也搬走时，视图根要同步（否则 currentRoot 仍指向旧路径）。
+    get setCurrentRoot() {
+        return (next) => {
+            if (!isMultiWorkspace()) return;
+            lastFocusedRoot = next || '';
+            renderWorkspaceCrumbs();
+            updateWindowTitle();
+        };
+    },
 });
 const remapPathValue = (...a) => explorerOps.remapPathValue(...a);
 const parentFolderOf = (...a) => explorerOps.parentFolderOf(...a);
@@ -3146,7 +3287,7 @@ async function openPathsHere(paths, opts = {}) {
             const doc = createDoc(readOnly ? {...data, readOnly: true} : data);
             // 草稿目录里的文件天然是草稿：不管从「新建 → 临时文件」、草稿架还是最近打开进来，
             // 都拿到 doc.draft（静默落盘 / 关闭空草稿自动删只认这个标记）。
-            if (isScratchPath(workspaceFolder, doc.path)) doc.draft = true;
+            if (isScratchPath(currentRoot(), doc.path)) doc.draft = true;
             docs.push(doc);
             addDocToFocusedGroup(doc);
             rememberRecentOpen(doc.path, doc.name, false);
@@ -3380,15 +3521,52 @@ function projectBadgeText(name) {
 }
 
 // 标题栏：有工作区时显示「项目 + 当前分支」替代文件名；分支仅 git 仓库内显示
+// 标题栏「显示根」：直接复用 currentRoot（单工作区=窗口工作区，多工作区=聚焦会话的工作区）。
+// 多工作区下 workspaceFolder 恒为空，若面包屑只认它就会整块隐藏 → 用户看到「未打开文件」。
+function displayRoot() {
+    return currentRoot();
+}
+
+// 面板里当前聚焦会话的 workspace。
+// 返回 null 表示「问不到」（面板未初始化 / 旧宿主）——调用方据此回落到状态位。
+// 返回 '' 表示「确实没有工作区」（沙盒 / 临时 / 未关联）。
+function focusedSessionWorkspace() {
+    try {
+        if (!aiPanel || typeof aiPanel.bridgeListSessions !== 'function') return null;
+        const list = aiPanel.bridgeListSessions() || [];
+        const active = list.find((s) => s && s.active);
+        if (!active) return null;
+        return String(active.workspace || '');
+    } catch (e) {
+        return null;
+    }
+}
+
 function renderWorkspaceCrumbs() {
-    const hasWorkspace = !!workspaceFolder;
+    const root = displayRoot();
+    const hasWorkspace = !!root;
     if (els.filename) els.filename.classList.toggle('hidden', hasWorkspace);
     if (!els.wsCrumbs) return;
     els.wsCrumbs.classList.toggle('hidden', !hasWorkspace);
     if (!hasWorkspace) return;
-    const name = baseNameOf(workspaceFolder) || workspaceFolder;
+    const name = baseNameOf(root) || root;
     els.wsProjectName.textContent = name;
     els.wsProjectBadge.textContent = projectBadgeText(name);
+    // 「借来的根」：多工作区下聚焦会话本身没有工作区（沙盒 / 临时会话），文件树保留了上一次
+    // 的目录（清空更糟，实测像「什么都没了」）。但名字照旧显示会让人以为会话绑在这个仓库上，
+    // 所以标一句提示——树能用，但它不是当前会话的根。
+    //
+    // 判定以**面板当前会话的 workspace** 为准，而不是只看 viewRootOrphan 状态位：
+    // 那个位要在每条 applyViewRoot 路径上维护，漏一处就长期挂错提示（实测：从无工作区会话
+    // 切回同根的普通会话时，同根短路提前返回，标记停在旧值，标题一直显示「会话无工作区」）。
+    // 状态位保留作「面板未就绪时」的兜底。
+    const focused = focusedSessionWorkspace();
+    const orphan = !!isMultiWorkspace()
+        && (focused === null ? viewRootOrphan : !focused);
+    els.wsProject.classList.toggle('is-orphan', orphan);
+    els.wsProject.dataset.tip2 = orphan
+        ? '当前会话没有工作区（会话沙盒 / 临时会话）；文件树保留上次浏览的目录，AI 的工作范围按会话自身解析'
+        : '';
     let branch = '';
     try { branch = (gitStateCache.available && gitStateCache.branch) || ''; } catch (e) {}
     els.wsBranch.classList.toggle('hidden', !branch);
@@ -3417,7 +3595,7 @@ const titlebarPopovers = createTitlebarPopovers({
     get samePathValue() { return samePathValue; },
     get settings() { return settings; },
     get switchSidebarView() { return switchSidebarView; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
 });
 const {closeGitBranchPopover, closeRunConfigPopover, gitPopNewBranch, gitPopOpenCommit, gitPopPush, gitPopUpdateProject, showBranchMenu, showProjectMenu, showRunConfigMenu, syncRunConfigWidget, touchRunProfileRecency} = titlebarPopovers;
 
@@ -3444,9 +3622,14 @@ async function openFolderDialog() {
 // ===== 跨窗口会话复用（方案 docs/finished-plans/multi-window-session-reuse.md）=====
 
 // 本窗口可匹配工作区登记（fire-and-forget；Go 侧浮窗/调试窗静默忽略，失败走日志）。
+// seq 是**自增序号**：Go 侧只接受比已记录值更大的请求（`windowreg.State.SetWorkspaceSeq`），
+// 换手瞬间在途的旧登记不会覆盖新值。seq 从 1 起，只增不减（重载也不回退）。
+let windowRegSeq = 0;
 function syncWindowRegRegistration(dir) {
     if (!backend.WindowRegister) return;
-    Promise.resolve(backend.WindowRegister(dir || ''))
+    windowRegSeq += 1;
+    // 序号必传第二参：Go 侧签名是 WindowRegister(ctx, workspace, seq)，少传会被绑定层拒绝。
+    Promise.resolve(backend.WindowRegister(dir || '', windowRegSeq))
         .catch((e) => console.error('window-register: 工作区登记失败', e));
 }
 
@@ -3480,6 +3663,18 @@ async function handleReuseSessionRequest(req) {
 
 function openFolderWorkspace(dir) {
     if (!dir) return;
+    // 多工作区：窗口**不绑定工作区**（见 currentRoot 的注释）——所有「打开文件夹」入口
+    // 在这里统一退化为「切换视图根」：树 / 面包屑 / 标题 / git / 便签 / AI 列表跟随，
+    // 但不写 workspaceFolder、不跑 open 钩子（与 switchRootLight 同语义：换根不重跑重活）。
+    //
+    // 为什么不逐处补调用点：入口不止一个（标题栏「打开…」、app_control 的 open_folder、
+    // decideSessionOpen 的 current 分支、会话恢复…），实测已经漏了两个；漏掉的那个会把
+    // workspaceFolder 写脏，而 currentRoot 之前优先读它 → 顶部徽标与文件树显示两个不同仓库。
+    if (isMultiWorkspace()) {
+        rememberRecentOpen(dir, baseNameOf(dir) || dir, true);
+        applyViewRoot(dir);
+        return;
+    }
     if (workspaceFolder && sessionPathKey(dir) !== sessionPathKey(workspaceFolder)) {
         // 切换工作区前先落盘旧工作区环境（per-workspace 会话恢复需要）。
         saveSessionNow();
@@ -3514,17 +3709,34 @@ function openFolderWorkspace(dir) {
     activityLog.log('workspace.open', dir, {}, {noRel: true});
     flash('已打开文件夹：' + (baseNameOf(dir) || dir));
     // 预指令：打开（含启动恢复 / 切回）后自动执行该工作区的启用条目；单条失败在
-    // runForWorkspace 内部消化，这里只兜底不让打开流程被预指令中断
-    Promise.resolve(lifecycleHooksCtl.runForWorkspace(dir)).catch((e) => console.error('lifecycle: 执行失败', e));
+    // runForWorkspace 内部消化，这里只兜底不让打开流程被预指令中断。
+    // 进程级去重（§4.6 硬设计 2）：同一工作区在一次运行内 open 钩子只跑一次——
+    // lifecycle-hooks 的 runningByWs 只防并发，不防「先后重复」（关掉再打开、两窗口各开一次）。
+    workspaceMarkOpened(dir)
+        .then((first) => (first ? lifecycleHooksCtl.runForWorkspace(dir) : null))
+        .catch((e) => console.error('lifecycle: 执行失败', e));
 }
 
 // 一目录一窗口：本窗口已有工作区目录时，新目录另开窗口；
 // 当前窗口没有目录时才在本窗口打开。
 async function openFolderSmart(dir) {
     if (!dir) return;
+    // 多工作区：窗口**不绑定工作区**（currentRoot 的注释：写进 workspaceFolder 会连环出错）。
+    // 「打开文件夹」在这里 = 切换视图根（树 / 面包屑 / git / 便签跟随），与本窗口无关。
+    //
+    // 之前没有这个分支，走了下面的 openFolderWorkspace：
+    //   · 它 workspaceFolder = dir      → currentRoot() 第一行命中，顶部徽标显示新目录；
+    //   · 它末尾 refreshSessionList() 触发 adoptWorkspaceSession，把树改回会话所属仓库；
+    // 于是「徽标 = 新目录、树 = 旧仓库」两个值打架（实测 cadt-wipeguard-drill vs CaDt-DataLens）。
+    if (isMultiWorkspaceMode()) {
+        applyViewRoot(dir);
+        flash('已切换到：' + (baseNameOf(dir) || dir));
+        return;
+    }
     if (workspaceFolder) {
-        const norm = (s) => String(s).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-        if (norm(dir) === norm(workspaceFolder)) {
+        // 用全仓唯一的 pathKey 归一，别内联 replace：两套归一口径会让「同一个目录」在
+        // 不同判定点得出不同结论（本轮已踩过）。
+        if (pathKey(dir) === pathKey(workspaceFolder)) {
             flash('该目录已在当前窗口打开');
             return;
         }
@@ -3554,6 +3766,9 @@ function closeFolder() {
     if (wipeguardCtrl) wipeguardCtrl.stopCalibrationLoop();
     if (explorer) explorer.setRoot(null);
     syncWorkspaceWatcher();
+    // 显式关工作区：刚被 syncWorkspaceWatcher 挂上的多根监听一并退订。关闭是「用户不想再
+    // 盯着这个目录」，与切走不同（切走期间可能还在跑命令，那时才需要继续盯）。
+    unwatchWipeguardRoot(closedDir);
     gitStateCache.available = false;
     gitStateCache.branch = '';
     renderWorkspaceCrumbs();
@@ -3662,16 +3877,277 @@ function syncExplorerActive(opts) {
     syncWorkspaceWatcher();
 }
 
-// 文件监听跟随当前树根/工作区；失败时静默降级到轮询
+// 当前会话根（可选调用：ai-panel 侧的会话根透出由并发改造新增，未就绪时为空）。
+// 面板未初始化 / 方法不存在一律回落旧行为——监听同步发生在启动早期，不能因缺 API 而断。
+function currentSessionScopeRoot() {
+    if (!aiPanel || typeof aiPanel.currentSessionScopeRoot !== 'function') return '';
+    try {
+        const root = aiPanel.currentSessionScopeRoot();
+        return root ? String(root) : '';
+    } catch (e) {
+        console.debug('[workspace] 会话根读取失败，按窗口根处理', e);
+        return '';
+    }
+}
+
+// 本窗口「当前根」：会话根优先（harness / 会话换手后），否则树根，否则当前根。
+// 树、监听、防护三处必须同源，否则会出现「树在 B、watcher 在 A」的静默失明。
+// 兜底用 currentRoot() 而不是裸 workspaceFolder——多工作区下后者恒空，会让
+// 前两级都没命中时（例如面板未初始化）退化成「无根」，监听静默失效。
+function currentWatchRoot() {
+    return currentSessionScopeRoot() || (explorer && explorer.getRoot ? explorer.getRoot() : '') || currentRoot();
+}
+
+function watchWipeguardRoot(root) {
+    const key = normalizeWsKey(root);
+    if (!key || wipeguardRoots.has(key)) return;
+    wipeguardRoots.set(key, root);
+    if (wipeguardCtrl) wipeguardCtrl.trackRoot(root); // 条目 = 防护范围（LRU 与事件分流的依据）
+    if (!backend) return;
+    try {
+        // 兼容：后端多根绑定由并发改造提供（WatchWipeguardRoot）；未就绪时退回既有的
+        // WatchWorkspaceFor（同一内核 watcher，owner 独立，事件同样是 workspace-changed
+        // 且带 removed / present 分组——破坏判定依赖这两个分组，不能换成只有 paths 的通道）。
+        if (typeof backend.WatchWipeguardRoot === 'function') {
+            Promise.resolve(backend.WatchWipeguardRoot(root)).catch(() => {});
+        } else if (typeof backend.WatchWorkspaceFor === 'function') {
+            Promise.resolve(backend.WatchWorkspaceFor('wipeguard|' + key, root)).catch(() => {});
+        }
+    } catch (e) {
+        console.warn('[wipeguard] 多根监听注册失败（该根切走后将失去删除事件）', e);
+    }
+}
+
+// releaseWipeguardWatch：摘登记表 + 后端退订，**不回调控制器**（控制器淘汰条目时也走这里）。
+function releaseWipeguardWatch(root) {
+    const key = normalizeWsKey(root);
+    if (!key || !wipeguardRoots.has(key)) return;
+    wipeguardRoots.delete(key);
+    // 投递冷却表同源清理：它按根 set、此前只增不减，根被 LRU 淘汰 / 显式退订后键仍留着，
+    // 随历史工作区单调增长（独立审查 🟡）。这里与监听槽一起回收。
+    try { wipeguardNotifyAt.delete(key); } catch (e) { /* 尽力而为 */ }
+    if (!backend) return;
+    try {
+        if (typeof backend.UnwatchWipeguardRoot === 'function') {
+            Promise.resolve(backend.UnwatchWipeguardRoot(root)).catch(() => {});
+        } else if (typeof backend.UnwatchWorkspaceFor === 'function') {
+            Promise.resolve(backend.UnwatchWorkspaceFor('wipeguard|' + key)).catch(() => {});
+        }
+    } catch (e) {
+        console.warn('[wipeguard] 多根监听退订失败（残留到窗口关闭）', e);
+    }
+}
+
+// unwatchWipeguardRoot：显式退订（控制器条目一起摘，摘条目会回调 onRootEvicted → releaseWipeguardWatch）。
+function unwatchWipeguardRoot(root) {
+    if (wipeguardCtrl && typeof wipeguardCtrl.untrackRoot === 'function') wipeguardCtrl.untrackRoot(root);
+    else releaseWipeguardWatch(root);
+}
+
+// 文件监听跟随当前根；失败时静默降级到轮询。
+// 根优先取会话根（方案 §4.9.7 F2）：防护不能因为「这个窗口没登记工作区」就关掉，
+// harness 下会话根与本窗口树根可以不同，主信号必须跟着会话走。
 function syncWorkspaceWatcher() {
     if (!backend) return;
-    const root = (explorer && explorer.getRoot ? explorer.getRoot() : workspaceFolder) || '';
-    if (root === watchedWorkspaceRoot) return;
-    watchedWorkspaceRoot = root;
+    const root = currentWatchRoot();
+    const prev = watchedWorkspaceRoot;
+    if (root !== prev) {
+        watchedWorkspaceRoot = root;
+        try {
+            if (root && typeof backend.WatchWorkspace === 'function') backend.WatchWorkspace(root).catch(() => {});
+            else if (!root && typeof backend.UnwatchWorkspace === 'function') backend.UnwatchWorkspace().catch(() => {});
+        } catch (e) {}
+        // 旧根**不立刻退订**：切走期间那里可能还在跑命令（长任务 / 后台子代理），
+        // 失明就正好丢掉最该报的事件。交给多根 watcher 继续盯，退订只发生在 LRU
+        // 淘汰或窗口关闭时（方案 §4.9.7 F6）。
+        if (prev) watchWipeguardRoot(prev);
+    }
+    // 当前根交给窗口自己的 WatchWorkspace（同一棵树不开第二路监听，否则每个事件来两遍），
+    // 但仍要登记进控制器：有条目才不会被 LRU 淘汰，事件分流也认它。
+    if (root) {
+        if (wipeguardCtrl) wipeguardCtrl.trackRoot(root);
+        releaseWipeguardWatch(root);
+    }
+}
+
+// 窗口关闭：本窗口挂的多根监听一并退订。后端按窗口名收口只摘窗口自己的槽位，
+// wipeguard 用的是独立 owner 名（wipeguard|key），需要前端显式收。
+window.addEventListener('pagehide', () => {
+    for (const root of Array.from(wipeguardRoots.values())) releaseWipeguardWatch(root);
+}, {once: true});
+
+// ===== 轻量换根（方案 §4.6 / §4.9.7 F6）=====
+// 会话切换引起的根变更只做「切根 + 轻刷」：树、面包屑、标题、监听换根、AI 面板当前根。
+// **不做**重活——不跑 lifecycle 钩子、不强制刷 git / 指纹、不做全量 applySettings 重绘
+// （§4.6 的「重」档正是这些）。真正「打开工作区」仍走 openFolderWorkspace。
+// 返回 true = 确实换了根，false = 同根 / 空根（调用方可据此决定要不要刷面板）。
+function switchRootLight(dir) {
+    if (!dir) return false;
+    // 多工作区窗口**不能**换「窗口绑定」：workspaceFolder 必须恒为空（它是
+    // activeSessionByWorkspace 的 key / 快照槽 / scopeRootOf 兜底的判据，写进去会连环出错）。
+    // 这里改走视图跟随，行为上等价于「树切到该目录」，但不碰窗口状态。
+    // 当前唯一的调用方是 openWorkspaceFolder 的 switchInPlace 分支（跨工作区会话换手）。
+    if (isMultiWorkspace()) return applyViewRoot(dir);
+    if (workspaceFolder && sessionPathKey(dir) === sessionPathKey(workspaceFolder)) return false;
+    // 旧工作区的会话快照先落盘：per-workspace 恢复靠它，延后到切换之后就会把旧根的
+    // 打开文件记到新根名下。
+    if (workspaceFolder) saveSessionNow();
+    workspaceFolder = dir;
+    // 窗口注册表 / Maven 图标 / 便签作用域都是「跟着根走」的轻活（同步、无 IO 扫描）
+    syncWindowRegRegistration(dir);
+    if (mavenUi) mavenUi.syncTrigger();
+    if (memoWorkspaceChanged) memoWorkspaceChanged();
+    rememberRecentOpen(dir, baseNameOf(dir) || dir, true);
+    scheduleSessionSave();
+    if (explorer) {
+        explorer.setMode('tree', false);
+        explorer.setRoot(dir);
+    }
+    syncWorkspaceWatcher();
+    applySidebarUI();
+    // git 是「中档」项（大仓库 status 能到秒级）：轻量换根**不主动跑** git status，只把
+    // 缓存标脏。否则面包屑会把上一个仓库的分支名挂在新根上，回滚还会拿旧仓库的
+    // untracked 清单；下一次真实刷新（git 面板轮询 / 用户手动刷新）会重新取数。
+    gitStateCache.available = false;
+    gitStateCache.branch = '';
+    gitStateCache.map.clear();
+    gitStateCache.untrackedSet.clear();
+    gitStateCache.ignoredSet.clear();
+    renderWorkspaceCrumbs();
+    updateWindowTitle();
+    // 通知 AI 面板：当前根变了（refreshSessionList 内部会按新工作区对齐当前会话，
+    // 只刷列表会把旧对话留在主区）
+    if (aiPanel && aiPanel.refreshSessionList) aiPanel.refreshSessionList();
+    if (aiPanel && aiPanel.refreshSessionBadge) aiPanel.refreshSessionBadge();
+    activityLog.log('workspace.switch-root', dir, {}, {noRel: true});
+    return true;
+}
+
+// 多工作区模式：面板聚焦会话变化时，把文件树 / 监听 / 面包屑跟到该会话的工作区。
+// 视图跟随：把「树 / 面包屑 / 标题 / 监听 / git / 便签」切到 root，**不写 workspaceFolder**。
+// 多工作区下所有「根变了」的路径最终都汇到这里，是「当前根」的唯一写入点：
+//   · 切 AI 会话          → followSessionWorkspace(id) 取会话 workspace 后调用
+//   · switchRootLight(dir) → 多工作区分支直接调用（不再写窗口绑定）
+//   · 重命名/移动仓库目录  → explorerOps 经 setCurrentRoot 调用
+// 单工作区不经过这里（那边 workspaceFolder 就是真相，走 openFolderWorkspace / switchRootLight）。
+function applyViewRoot(root, opts) {
+    const next = String(root || '');
+    if (sessionPathKey(next) === sessionPathKey(lastFocusedRoot)) {
+        // 同根短路：树不用换。但 orphan 必须按这次调用重置——从「无工作区会话」切回
+        // **同根**的普通会话时，next 与 lastFocusedRoot 相同会在这里提前返回，orphan
+        // 停在 true，标题栏就一直挂着「当前会话没有工作区」的提示（实测：树 / git 都对，
+        // 只有这个标记错）。
+        if (next && viewRootOrphan) {
+            viewRootOrphan = false;
+            renderWorkspaceCrumbs();
+        }
+        return false;
+    }
+    if (followingSessionWorkspace) return false;
+    // 空根：**保持现在的树不动**（会话沙盒 / 临时会话 / 未关联工作区）。
+    // 之前会 setRoot(null) 把树清空、标题栏退成「未打开文件」，用户点几个会话后整个界面
+    // 像「什么都没了」（实测反馈）。树的用途是浏览文件，无根会话本来就没有对应目录。
+    // AI 的工具根不受影响：它按 sessionScopeRoot(session) 解析，沙盒会话用会话沙盒目录。
+    if (!next) {
+        if (opts && opts.logEmpty) logFrontend('info', '[视图跟随] 会话无工作区，保留当前视图');
+        // 树保持不动，但面包屑要标出「这是借来的根」，否则用户会以为会话绑在旧仓库上。
+        viewRootOrphan = !!lastFocusedRoot;
+        renderWorkspaceCrumbs();
+        return false;
+    }
+    lastFocusedRoot = next;
+    viewRootOrphan = false;
+    followingSessionWorkspace = true;
     try {
-        if (root && typeof backend.WatchWorkspace === 'function') backend.WatchWorkspace(root).catch(() => {});
-        else if (!root && typeof backend.UnwatchWorkspace === 'function') backend.UnwatchWorkspace().catch(() => {});
-    } catch (e) {}
+        logFrontend('info', '[视图跟随] 切到 ' + next);
+        if (explorer) {
+            explorer.setMode('tree', false);
+            explorer.setRoot(next);
+        }
+        syncWorkspaceWatcher();
+        renderWorkspaceCrumbs();
+        updateWindowTitle();
+        // git 分支跟着换：gitRootDir 读 currentRoot()，这里主动刷一次，别等 3 秒轮询。
+        // try 包一层：refreshGitStatus 由 bridgeUI 解构（文件靠后），极端早期调用会踩 TDZ。
+        try {
+            if (typeof refreshGitStatus === 'function') {
+                Promise.resolve(refreshGitStatus()).catch(() => {});
+            }
+        } catch (e) { /* 接线尚未完成：定时器会在下一轮补上 */ }
+        // 快捷便签：作用域根跟着换，丢弃旧仓库的缓存并重载打开中的「工作区」页签。
+        try {
+            if (typeof memoWorkspaceChanged === 'function') memoWorkspaceChanged();
+        } catch (e) { /* 接线尚未完成 */ }
+        // 不调 refreshSessionBadge：它会重绘会话列表、可能再触发会话切换回调 → 递归。
+    } finally {
+        followingSessionWorkspace = false;
+    }
+    return true;
+}
+
+// 与 switchRootLight 的区别：**不写 workspaceFolder**——多工作区窗口的窗口级工作区必须
+// 恒为空（否则模式 chip / session-restore 快照槽 / scopeRootOf 第 4 步都会跟着错）。
+// 只更新「视图跟随根」，AI 的工具根另由 sessionScopeRoot(session) 决定，两者本来就解耦。
+function followSessionWorkspace(id) {
+    if (!isMultiWorkspace() || !aiPanel) return;
+    if (followingSessionWorkspace) return;
+    const sess = aiPanel.bridgeListSessions ? aiPanel.bridgeListSessions().find((s) => s.id === id) : null;
+    const root = sess && sess.workspace ? String(sess.workspace) : '';
+    applyViewRoot(root, {logEmpty: true});
+}
+
+// 面板会话切换订阅：只在多工作区模式下让视图跟随；单工作区保持既有语义（树不随会话动，
+// 对齐 JetBrains）。**用模块级标记而不是挂在 aiPanel 上**——面板返回对象若被 seal/freeze，
+// 往它身上写标记会静默失败，守卫失效后又因为「重复注册无害」不影响功能，但会让排查更迷惑。
+// 把视图跟到**当前**会话（启动恢复、模式切换、面板就绪后用）。
+// followSessionWorkspace 只挂在「会话切换」回调上，而启动恢复是直接设 current、不经过通知，
+// 所以必须有一个主动入口，否则多工作区窗口重启后树是空的。
+function followActiveSession() {
+    if (!isMultiWorkspace() || !aiPanel || typeof aiPanel.bridgeListSessions !== 'function') return false;
+    try {
+        const active = aiPanel.bridgeListSessions().find((s) => s.active);
+        if (!active) return false;
+        followSessionWorkspace(active.id);
+        return !!lastFocusedRoot;
+    } catch (e) {
+        console.debug('[视图跟随] 读取当前会话失败：' + ((e && e.message) || e));
+        return false;
+    }
+}
+
+let sessionFollowInstalled = false;
+function installSessionFollow() {
+    if (sessionFollowInstalled) return true;
+    if (!aiPanel || typeof aiPanel.bridgeOnSessionSwitch !== 'function') {
+        logFrontend('warn', '[视图跟随] 面板未就绪或缺少 bridgeOnSessionSwitch，会话跟随未安装');
+        return false;
+    }
+    sessionFollowInstalled = true;
+    aiPanel.bridgeOnSessionSwitch((id) => followSessionWorkspace(id));
+    return true;
+}
+
+// 重活去重（§4.6 硬设计 2）：同一工作区在一次**进程**运行内，open 钩子只跑一次。
+// 权威表在 Go 侧（WorkspaceMarkOpened，多窗口共享）；绑定尚未就绪时退回本窗口集合——
+// 多窗口下各算各的会重复跑钩子，属**临时兜底**（见 STATUS.md 与 TASKS.md 批次 F6）。
+const openedWorkspaces = new Set(); // wsKey（前端兜底表）
+let workspaceMarkWarned = false;
+async function workspaceMarkOpened(dir) {
+    const key = normalizeWsKey(dir);
+    if (!key) return false;
+    if (typeof backend.WorkspaceMarkOpened === 'function') {
+        try {
+            return !!(await backend.WorkspaceMarkOpened(dir));
+        } catch (e) {
+            console.warn('[workspace] WorkspaceMarkOpened 调用失败，退回本窗口去重表', e);
+        }
+    } else if (!workspaceMarkWarned) {
+        workspaceMarkWarned = true;
+        console.info('[workspace] 后端暂无 WorkspaceMarkOpened：重活去重回退为本窗口集合（多窗口下可能重复跑钩子）');
+    }
+    if (openedWorkspaces.has(key)) return false;
+    openedWorkspaces.add(key);
+    return true;
 }
 
 // 标题栏 ▶ 与工具菜单保持一致的可用状态（菜单是在打开时算的，按钮要随文件切换实时同步）。
@@ -4011,28 +4487,35 @@ storageAutoClean.start();
 // 两信号检测（watcher 滚动净消失计数为主 + 指纹兜底）→ critical 时**不停会话**，只出
 // 状态栏红条并向活跃会话插队投递应用消息（2026-11-19 作者裁定）。写前备份与恢复出口
 // 不在本处（ai-panel 写路径 + 设置页）。
-let wipeguardNotifyAt = 0; // 上次向会话投递告警的时间（2 分钟冷却，见 onCritical）
-const wipeguardCtrl = createAIWipeguard({
+// 状态一律按根分组（方案 §4.9.7 F1/F5）：窗口在同一进程里可能先后服务多个工作区，
+// 单值状态机换根就清零会把「切走期间的破坏」整批漏掉。
+wipeguardCtrl = createAIWipeguard({
     getBackend: () => backend,
-    getWsRoot: () => workspaceFolder || '',
+    getWsRoot: () => currentWatchRoot(),
     getSettings: () => settings,
     // L3 快照失败 / 跳过文件升级进消息中心（snapshotTick 内部 30 分钟节流，见 ai-wipeguard.js）
     notify: (msg, opts) => messageCenter.add(msg, opts),
-    isAIActive: (root) => !!(aiPanel && typeof aiPanel.wipeguardIsAIActive === 'function' && aiPanel.wipeguardIsAIActive(root || workspaceFolder || '')),
+    isAIActive: (root) => !!(aiPanel && typeof aiPanel.wipeguardIsAIActive === 'function' && aiPanel.wipeguardIsAIActive(root || currentWatchRoot())),
+    // LRU 淘汰 / 显式退订一个根：后端 watcher 跟着一起收（条目没了还开着监听，事件会立刻把
+    // 条目建回来，淘汰永远压不下去）
+    onRootEvicted: (root) => releaseWipeguardWatch(root),
     onCritical: (info) => {
         // 不停会话、不熔断写命令（2026-11-19 作者裁定）：合法批量删除（插件更新、切分支、
         // 装依赖）与真破坏在 watcher 眼里同形，误判一次就把正在干活的会话打断。改为把
         // 告警**插队投递**给挂在本工作区、正在运行的会话，由模型自己判断「跟我有没有关系」；
         // 用户侧只留状态栏红条 + 消息中心，中止与否由用户决定。
-        // 投递与红条共用 2 分钟冷却：真事故里删除会持续十几秒、fireAlarm 每 3 秒就能报
-        // 一次，不节流会把几十条告警堆进会话上下文、把消息中心刷满（每次告警的运行
-        // 日志仍由 Go 侧 WipeGuardAlarm 逐条写，留痕不受影响）。
+        // 投递与红条共用 2 分钟冷却**按根计**：真事故里删除会持续十几秒、fireAlarm 每 3 秒
+        // 就能报一次，不节流会把几十条告警堆进会话上下文、把消息中心刷满（每次告警的运行
+        // 日志仍由 Go 侧 WipeGuardAlarm 逐条写，留痕不受影响）。按根计是本轮修正：A 根报过警
+        // 不该让 B 根的真破坏在冷却期里静默（方案 §4.9.7 F5）。
+        const root = info.root || currentWatchRoot();
+        const key = normalizeWsKey(root);
         const now = Date.now();
-        if (now - wipeguardNotifyAt < WIPEGUARD_NOTIFY_COOLDOWN_MS) return;
-        wipeguardNotifyAt = now;
+        if (now - (wipeguardNotifyAt.get(key) || 0) < WIPEGUARD_NOTIFY_COOLDOWN_MS) return;
+        wipeguardNotifyAt.set(key, now);
         if (info.aiActive && aiPanel && typeof aiPanel.wipeguardNotifyForWorkspace === 'function') {
             try {
-                const pending = aiPanel.wipeguardNotifyForWorkspace(info.root || workspaceFolder || '', info);
+                const pending = aiPanel.wipeguardNotifyForWorkspace(root || '', info);
                 if (pending && typeof pending.catch === 'function') pending.catch(() => {});
             } catch (e) { /* 投递尽力而为，不影响红条 */ }
         }
@@ -4049,8 +4532,13 @@ const wipeguardCtrl = createAIWipeguard({
     },
 });
 wipeguardCtrl.syncConfig();
-// L3 定期状态快照：10 分钟一拍（开关关闭时 tick 内部直接返回）
-const wipeguardSnapshotTimer = setInterval(() => wipeguardCtrl.snapshotTick(), 10 * 60 * 1000);
+// 控制器就绪后补一次监听同步：启动期（恢复上次工作区）的 syncWorkspaceWatcher 早于这里，
+// 那时 wipeguardCtrl 还没构造，当前根漏了 trackRoot——根不在防护表里，LRU 与事件分流
+// 都少一层保护。此刻 watchedWorkspaceRoot 已与当前根一致，这次调用只补登记，不重订阅。
+syncWorkspaceWatcher();
+// L3 定期状态快照：10 分钟一拍（开关关闭时 tick 内部直接返回）。节拍常量在 ai-wipeguard.js，
+// 与 Go 侧 internal/wipeguard 的 snapshotInterval 同值（护栏 test/core/backend-constants-parity）。
+const wipeguardSnapshotTimer = setInterval(() => wipeguardCtrl.snapshotTick(), WIPEGUARD_SNAPSHOT_INTERVAL_MS);
 window.__lens.wipeguard = wipeguardCtrl;
 void wipeguardSnapshotTimer;
 
@@ -4093,8 +4581,13 @@ function initAIPanel() {
         notifyFailure: (...args) => failureNotifier.notifyFailure(...args),
         // 头部放大镜：开全局搜索并只勾选「AI 会话」分类（会话搜索框已并入这里）
         onHeadSearch: () => openGlobalSearch({aiOnly: true}),
-        // 汇总卡「撤销」：回滚本轮编辑的文件到 HEAD（Git checkout / 删除新建文件）
-        rollbackGitPaths: (paths, untracked) => gitRollbackPaths(paths, untracked),
+        // 汇总卡「撤销」：回滚本轮编辑的文件到 HEAD（Git checkout / 删除新建文件）。
+        // root 是可选的第三参（会话根）：harness 下会话根可能与窗口 Git 根不同，
+        // 撤销必须落到会话自己的仓库上，否则会 checkout 错仓库的文件。
+        rollbackGitPaths: (paths, untracked, root) => gitRollbackPaths(paths, untracked, root),
+        // 会话换手引起的根变更（批次 F 的 switchRootLight）：只切根 + 轻刷，不跑 lifecycle
+        // 钩子、不刷 git / 指纹。ai-panel 侧决定换根时调它（未接线 = 旧行为，换手不切树根）。
+        switchRootLight: (dir) => switchRootLight(dir),
         // AI 工具卡超链接：打开文件并跳到指定行（read_file 卡用）
         openTargets,
         fonts: {latin: uiFonts, cjk: cjkFonts, mono: editorFonts},
@@ -4274,14 +4767,26 @@ function initAIPanel() {
                 return null;
             }
         },
-        getScopeRoot: () => workspaceFolder || (file && file.path ? parentDirOf(file.path) : ''),
+        // 视图跟随根（多工作区）：面板新建会话 / 复用空会话时用它决定「这条新会话属于谁」。
+        // 单工作区下是窗口工作区，面板内部会自己用 currentWorkspacePath，不会读这个。
+        getViewRoot: () => lastFocusedRoot || '',
+        // getScopeRoot 是「没有会话上下文时」的兜底根（composer 超长粘贴落盘 / 可视化卡片
+        // 另存为 / 子代理沙箱授权 / 隔离 worktree）。多工作区下 workspaceFolder 恒空，必须走
+        // currentRoot()：否则这些功能报「没有打开的工作区」；有活动文件时还会退化成那个文件
+        // 所在目录（可能是别的仓库）→ 直接写到错的地方。activeFile 兜底留给「连视图根都没有」。
+        getScopeRoot: () => currentRoot() || (file && file.path ? parentDirOf(file.path) : ''),
         // 「点别的 AI 会话 → 怎么开」的接线（方案 docs/finished-plans/multi-window-session-reuse.md）：
         // 分支决策单一来源在 ai-session-scope.decideSessionOpen（纯函数，测试锁各分支），这里只做探测与执行。
         // 复用探测快路径无感：目标工作区无存活窗口时 WindowReuseForSession 立即返回空，不等待。
         openWorkspaceFolder: async (dir, sessionId) => {
             if (!dir || window.__aiFloatWindow) return false;
             const targetKey = sessionPathKey(dir);
-            const currentKey = workspaceFolder ? sessionPathKey(workspaceFolder) : '';
+            // 「当前在哪」以**会话根优先**：harness 窗口没有窗口工作区（workspaceFolder 恒空），
+            // 若只看它，currentKey 永远为空 ⇒ decideSessionOpen 在 `!currentKey` 处先返回 'current'，
+            // 原地换手分支（switchInPlace）永远命中不了，每次都退化成全量 openFolderWorkspace
+            // （独立审查 🟡）。普通窗口下会话根 == 窗口根，行为逐字不变。
+            const currentRoot = currentSessionScopeRoot() || workspaceFolder;
+            const currentKey = currentRoot ? sessionPathKey(currentRoot) : '';
             let reuseHit = false;
             if (currentKey && currentKey !== targetKey && backend.WindowReuseForSession) {
                 try {
@@ -4298,12 +4803,19 @@ function initAIPanel() {
                 reuseHit,
                 canSoftSwitch: typeof backend.OpenWorkspaceForConversation === 'function',
                 canNewWindow: typeof backend.OpenDirInNewWindow === 'function',
+                // harness 窗口不带工作区：切到别的工作区的会话时原地换手（switchRootLight），
+                // 不再弹一个新窗口（方案 §4.5 的 switchInPlace）。普通窗口保持 'new-window'。
+                openMode: isMultiWorkspace() ? 'in-place' : 'new-window',
             });
             switch (decision.action) {
                 case 'same':
                     return 'same';
                 case 'current':
                     openFolderWorkspace(dir);
+                    return 'current';
+                case 'switchInPlace':
+                    // 只切根 + 轻刷（不跑 lifecycle 钩子、不刷 git / 指纹）：换手要快，重活按工作区去重。
+                    switchRootLight(dir);
                     return 'current';
                 case 'reused':
                     logFrontend('info', '跨窗口会话复用：目标工作区已开在别的存活窗口，已投递');
@@ -4339,6 +4851,24 @@ function initAIPanel() {
             },
             openFolder: () => openFolderDialog(),
             openFolderSmart: (path) => openFolderSmart(path),
+            // 「切换到此工作区」：多工作区下把视图（树 / 面包屑 / git / 便签）切到该仓库，
+            // 不新建会话、不开新窗口。单工作区下没有这个菜单项（那里换工作区＝开窗口）。
+            switchToWorkspace: (path) => {
+                if (!isMultiWorkspace()) {
+                    openFolderWorkspace(path);
+                    return;
+                }
+                applyViewRoot(path);
+                // 面板会话跟着切到该工作区（视图根与会话不一致会让人以为切错了地方）。
+                // 该工作区还没有会话时只提示，不擅自新建。
+                let switched = false;
+                try {
+                    if (aiPanel && typeof aiPanel.bridgeSwitchToWorkspaceSession === 'function') {
+                        switched = !!aiPanel.bridgeSwitchToWorkspaceSession(path);
+                    }
+                } catch (e) { /* 切会话失败不影响视图已切换 */ }
+                flash('已切换到：' + (baseNameOf(path) || path) + (switched ? '' : '（该工作区还没有会话）'));
+            },
             closeFolder: () => closeFolder(),
             baseName: (path) => baseNameOf(path),
             recent: () => readRecentOpen().filter((entry) => entry && entry.isDir && entry.path),
@@ -4393,6 +4923,9 @@ function initAIPanel() {
     });
     // 播种一次：面板刚建好时会话可能已读完盘，别等下一次列表刷新才出点
     if (aiPanel && aiPanel.refreshSessionBadge) aiPanel.refreshSessionBadge();
+    // 多工作区模式：订阅会话切换，让文件树 / 监听跟随聚焦会话的工作区
+    // （视图跟随，不写 workspaceFolder——窗口级工作区在多工作区模式恒为空）。
+    installSessionFollow();
     window.__lens.aiPanel = aiPanel;
     // AI 群聊域：运行时 + 侧栏（面板薄 API aiGroupApi 提供配置/渲染链/弹窗三件套；
     // ai-* 流事件经下方 EventsOn 循环同时转发给面板与本运行时）
@@ -4413,7 +4946,7 @@ function initAIPanel() {
         openGroupView: (spec) => {
             if (aiPanel && aiPanel.bridgeShowGroupView) aiPanel.bridgeShowGroupView(spec);
         },
-        getWorkspace: () => (workspaceFolder || ''),
+        getWorkspace: () => (currentRoot() || ''),
         // G4 纪要带回会话：走面板信箱（deliverToSessions）；会话 id 取面板当前会话
         deliverToSessions: aiPanel.aiGroupApi
             ? (...args) => aiPanel.aiGroupApi.deliverToSessions(...args)
@@ -4611,7 +5144,7 @@ function initExplorer() {
         dirMtime: (path) => (typeof backend.DirMtime === 'function' ? backend.DirMtime(path) : Promise.resolve(0)),
         // 文件树的「临时草稿」固定节点（JetBrains Scratches 同款）：.cadt 从树里隐藏，
         // 草稿单独挂一个根级节点，路径就是 <ws>/.cadt/scratch
-        scratchRoot: () => scratchDir(workspaceFolder),
+        scratchRoot: () => scratchDir(currentRoot()),
         openPath: (path) => openPath(path),
         openFolder: () => openFolderDialog(),
         openFileDialog: () => openDialog(),
@@ -4736,6 +5269,204 @@ async function openNewWindow() {
     } catch (e) {
         flash('新建窗口失败：' + e, true);
     }
+}
+
+// 新建 harness 窗口：不绑定工作区、不恢复上次环境，AI 面板里的会话各自带着自己的根。
+// 唯一的其它入口是命令行 `--harness`（`launchargs.ParseHarness`），菜单/命令面板走这里。
+async function openHarnessWindow() {
+    try {
+        if (typeof backend.OpenHarnessWindow !== 'function') {
+            flash('当前版本不支持多工作区窗口', true);
+            return;
+        }
+        await backend.OpenHarnessWindow();
+    } catch (e) {
+        flash('新建多工作区窗口失败：' + e, true);
+    }
+}
+
+// ---- 窗口模式（工作区 / 多工作区）----
+// 单一真相是 isMultiWorkspace()（bridge-ui 启动时按 --harness 置位，这里运行时改写）。
+// 它同时决定：scopeRootOf 第 3 步（无根）、session-restore 的快照槽（cadt.session.harness.v1）、
+// decideSessionOpen 的 openMode（in-place 换手而不是开新窗）。所以切换必须集中在这里。
+//
+// 语义（面向用户的两个名字）：
+//   工作区   —— 本窗口绑定一个目录：树 / 搜索 / Git / AI 工具都用它。
+//   多工作区 —— 不绑目录：AI 面板里每个会话各自带着自己的工作区（未绑定的用会话沙盒）。
+//
+// 取舍：切换不迁移标签页、不重建窗口（编辑器按路径寻址，跨目录标签本来就能留）。
+// 只切「标记 + 工作区绑定 + 快照槽」。重启后回到命令行参数决定的形态（不在设置里持久化）。
+const WINDOW_MODE_NODE = () => els.wsMode;
+const WINDOW_MODE_NAME = () => els.wsModeName;
+const WINDOW_MODE_ICON = () => els.wsModeIcon;
+
+function isMultiWorkspaceMode() {
+    return !!isMultiWorkspace();
+}
+
+function renderWindowMode() {
+    const chip = WINDOW_MODE_NODE();
+    if (!chip) return;
+    const multi = isMultiWorkspaceMode();
+    // 自愈：多工作区下 workspaceFolder 必须为空（见 currentRoot 的注释——它是
+    // activeSessionByWorkspace 的 key / 会话快照槽 / scopeRootOf 兜底的判据）。
+    // 万一被某条旧路径写脏（例如「打开…」误走 openFolderWorkspace），这里清掉，
+    // 否则脏值会一直污染上面那三处，表现为「徽标与文件树显示两个不同仓库」。
+    if (multi && workspaceFolder) {
+        workspaceFolder = null;
+        syncWindowRegRegistration('');
+    }
+    const nameEl = WINDOW_MODE_NAME();
+    const iconEl = WINDOW_MODE_ICON();
+    if (nameEl) nameEl.textContent = multi ? '多工作区' : '单工作区';
+    if (iconEl) iconEl.innerHTML = iconSvg(multi ? 'layers' : 'folder', 14);
+    chip.classList.toggle('is-multi', multi);
+    // 不挂 tooltip：模式名与图标本身就说明了状态，鼠标划过再弹一层说明是噪音
+    // （标题栏这三枚 chip 统一不给 tip）。差异在点开的菜单里有逐项 description。
+    chip.setAttribute('aria-label', '窗口模式：' + (multi ? '多工作区' : '单工作区'));
+}
+
+function showWindowModeMenu(anchor) {
+    if (!ctxMenu) return;
+    const multi = isMultiWorkspaceMode();
+    ctxMenu.open([
+        {
+            label: '单工作区',
+            icon: 'folder',
+            description: '绑定一个目录：树、搜索、Git 与 AI 工具都用它',
+            checked: !multi,
+            action: () => switchWindowMode(false),
+        },
+        {
+            label: '多工作区',
+            icon: 'layers',
+            description: '不绑目录：每个 AI 会话带着自己的工作区，未绑定的用会话沙盒',
+            checked: multi,
+            action: () => switchWindowMode(true),
+        },
+    ], anchor.getBoundingClientRect().left, anchor.getBoundingClientRect().bottom + 4);
+}
+
+// 切到多工作区：先关掉当前工作区（closeFolder 内部 saveSessionNow 会把布局存进**当前**槽，
+// 顺序必须是「存旧槽 → 切标记」，反过来会把普通布局写进 harness 槽）。
+// 切回工作区：先切标记再打开目录，openFolderWorkspace 的防抖保存自然写进普通槽。
+async function switchWindowMode(multi) {
+    if (multi === isMultiWorkspaceMode()) return;
+    // 切换会换 activeSession 的 key，先把当前会话记下来，切完再搬过去
+    const keepId = activeSessionIdNow();
+    if (multi) {
+        // 顺序不能反：closeFolder 内部的 saveSessionNow 要把布局存进**当前（普通）槽**，
+        // 先切标记的话这份布局会被写进 harness 槽。
+        if (workspaceFolder) closeFolder();
+        window.__harnessWindow = true;
+        viewRootOrphan = false;
+        // 记住形态：下次启动恢复成多工作区（命令行 --harness 仍优先）
+        settings.windowMode = 'multi';
+        persistSettingsLight();
+        renderWindowMode();
+        try {
+            const list = aiPanel && aiPanel.bridgeListSessions ? aiPanel.bridgeListSessions() : [];
+            const active = list.find((s) => s.active);
+            if (active) followSessionWorkspace(active.id);
+            else { lastFocusedRoot = ''; renderWorkspaceCrumbs(); updateWindowTitle(); }
+        } catch (e) { /* 跟随失败不影响切换本身 */ }
+        syncWorkspaceWatcher();
+        if (aiPanel && aiPanel.refreshSessionList) aiPanel.refreshSessionList();
+        // 排序规则变了（单：当前工作区置顶；多：按名称固定序），当前会话可能被挤出滚动区。
+        // 主动定位一次，保证「我一直在看的那个会话」还在眼前。
+        // 同时把切换前的会话搬到多工作区的槽（全局回退值），否则会读回多工作区那条历史值。
+        restoreActiveSessionAfterModeSwitch(keepId);
+        updateWindowTitle();
+        flash('已切换到多工作区：AI 会话各自带着自己的工作区');
+        return;
+    }
+    // 切回单工作区：优先**复用当前聚焦会话的工作区**（lastFocusedRoot），别再弹框让用户
+    // 重选一遍——用户刚在多工作区里看的就是这个仓库，让他再点一次是多余动作。
+    // 只有「当前会话没有工作区」（会话沙盒 / 未绑定 / 面板还没聚焦任何会话）时才弹框。
+    const reuse = lastFocusedRoot || '';
+    if (reuse) {
+        // 先把多工作区布局存进 harness 槽：openFolderWorkspace 内部只在
+        // `workspaceFolder` 非空时 saveSessionNow()，而这里恒空 → 不存就丢。
+        // 槽的选择取决于 __harnessWindow，所以必须在切标记**之前**存。
+        try { saveSessionNow(); } catch (e) { /* 快照失败不拦切换 */ }
+        window.__harnessWindow = false;
+        lastFocusedRoot = '';
+        viewRootOrphan = false;
+        // 记住形态：下次启动恢复成单工作区
+        settings.windowMode = 'single';
+        persistSettingsLight();
+        renderWindowMode();
+        // openFolderWorkspace 会跑完整打开流程（树 / 监听 / Git / 便签 / lifecycle 钩子）——
+        // 从多工作区切回单工作区就是「真的打开这个目录」，用它是对的。
+        // 它内部会 refreshSessionList（可能还顺带对齐会话），所以定位要等它跑完：
+        // 否则会话列表还没按新排序重画，reveal 定位到的是旧 DOM 位置。
+        Promise.resolve(openFolderWorkspace(reuse))
+            .catch(() => {})
+            .then(() => restoreActiveSessionAfterModeSwitch(keepId));
+        syncWorkspaceWatcher();
+        updateWindowTitle();
+        flash('已切换到单工作区：' + (baseNameOf(reuse) || reuse));
+        return;
+    }
+    let dir = '';
+    try {
+        dir = await backend.OpenFolderDialog(defaultFolderDir());
+    } catch (e) {
+        flash('打开文件夹失败：' + e, true);
+        return;
+    }
+    if (!dir) {
+        // 取消：留在多工作区（不留一个「既非此也非彼」的窗口）
+        flash('未选择目录，保持多工作区模式');
+        return;
+    }
+    // 同上：弹框期间仍是多工作区，布局先存进 harness 槽再切。
+    try { saveSessionNow(); } catch (e) { /* 快照失败不拦切换 */ }
+    window.__harnessWindow = false;
+    lastFocusedRoot = '';
+    viewRootOrphan = false;
+    // 记住形态：下次启动恢复成单工作区
+    settings.windowMode = 'single';
+    persistSettingsLight();
+    renderWindowMode();
+    // 同上一分支：等 openFolderWorkspace 跑完再定位（它会重画会话列表）
+    Promise.resolve(openFolderWorkspace(dir))
+        .catch(() => {})
+        .then(() => restoreActiveSessionAfterModeSwitch(keepId));
+    syncWorkspaceWatcher();
+    updateWindowTitle();
+    flash('已切换到单工作区：' + (baseNameOf(dir) || dir));
+}
+
+// 让当前会话在会话列表里可见。切模式后排序规则变了（单工作区当前组置顶 / 多工作区名称序），
+// 当前会话可能被挤出滚动区——用户会觉得「我一直在看的那个会话不见了」。
+// 面板未初始化 / 未打开时是安全空操作。
+function revealActiveSessionInList() {
+    try {
+        if (aiPanel && typeof aiPanel.bridgeRevealActiveSession === 'function') {
+            aiPanel.bridgeRevealActiveSession();
+        }
+    } catch (e) { /* 定位失败不影响模式切换本身 */ }
+}
+
+// 切换模式会换 activeSession 的 key（多工作区=全局回退值，单工作区=工作区槽），
+// 不搬运就会两边各读各的旧值。切前记下当前会话，切后写进新槽。
+function activeSessionIdNow() {
+    try {
+        if (!aiPanel || typeof aiPanel.bridgeListSessions !== 'function') return '';
+        const hit = aiPanel.bridgeListSessions().find((s) => s.active);
+        return hit ? hit.id : '';
+    } catch (e) { return ''; }
+}
+
+// 把切换前的当前会话恢复到切换后的槽位，并定位到它在列表里的位置。
+function restoreActiveSessionAfterModeSwitch(keepId) {
+    try {
+        if (keepId && aiPanel && typeof aiPanel.bridgeRestoreActiveSession === 'function') {
+            aiPanel.bridgeRestoreActiveSession(keepId);
+        }
+    } catch (e) { /* 恢复失败不影响模式切换本身 */ }
+    revealActiveSessionInList();
 }
 
 async function showInFolder() {
@@ -4981,7 +5712,7 @@ async function saveDoc(doc, opts = {}) {
         doc.untitled = false;
         // 落点决定草稿身份：另存为到草稿目录 → 变成草稿；存到别处 → 不再是草稿
         // （关标签时的「空草稿自动删」只认这个标记，普通文件绝不能被误删）
-        doc.draft = isScratchPath(workspaceFolder, path);
+        doc.draft = isScratchPath(currentRoot(), path);
         doc.mode = savedMode;
         // 操作留痕：另存为 / 首次落盘（新建）/ 普通保存三类；自动保存不记。
         if (opts.saveAs) {
@@ -5210,21 +5941,29 @@ const activityPane = createActivityPane({
     },
 });
 const {renderActivityPane} = activityPane;
-// 补丁库（设置 → 开发者）：最近补丁列表 + 删除（Go 侧 PatchDelete 负责回收文件与摘索引）
-const settingsPanePatches = createSettingsPanePatches({
-    get backend() { return backend; },
-    get flash() { return flash; },
-    get openConfirmDialog() { return openConfirmDialog; },
-    get root() { return workspaceFolder || ''; },
-    // 点补丁行「打开视图」：.patch 文件走 openPath 会由 patch-view 接管（含预检/应用/撤销）
-    get openPatchFile() { return (path) => openPath(path); },
-});
+// 补丁库（应用页面，perWorkspace）：最近补丁列表 + 删除（Go 侧 PatchDelete 负责回收文件与摘索引）。
+//
+// 工厂函数而不是实例：应用页面按工作区**可以开多份**（一个标签一个仓库），而页面模块内部
+// 有一批模块级状态（els / allPatches / patchFilter / mountedRoot）。共用一个实例的话，
+// 第二个标签 mount 会把第一个的 els 覆盖掉——两个标签互相踩，A 标签显示 B 的仓库内容。
+// 所以每个标签 mount 时新建一个实例，mounter 里调用。
+function makePatchesPane(workspaceRoot) {
+    return createSettingsPanePatches({
+        get backend() { return backend; },
+        get flash() { return flash; },
+        get openConfirmDialog() { return openConfirmDialog; },
+        // 绑定的根优先：该标签页看哪个仓库由它决定，不随「当前根」漂移
+        get root() { return String(workspaceRoot || '') || currentRoot() || ''; },
+        // 点补丁行「打开视图」：.patch 文件走 openPath 会由 patch-view 接管（含预检/应用/撤销）
+        get openPatchFile() { return (path) => openPath(path); },
+    });
+}
 // 设置 → 存储与清理：条目与删除都在 Go 侧，这里给的是位置（工作区根）与确认/回执通道。
 const settingsPaneStorage = createSettingsPaneStorage({
     get backend() { return backend; },
     get flash() { return flash; },
     get openConfirmDialog() { return openConfirmDialog; },
-    get root() { return workspaceFolder || ''; },
+    get root() { return currentRoot() || ''; },
     get settings() { return settings; },
     get applySettings() { return applySettings; },
     get enhanceSetSelects() { return settingsUI.enhanceSetSelects; },
@@ -5238,17 +5977,24 @@ const settingsPaneUsageStats = createSettingsPaneUsageStats({
     get enhanceSelect() { return settingsUI.enhanceSelect; },
 });
 
-// 应用页面「认知索引」：.cadt/cognition/ 卷的只读浏览（APP_PAGES 第一个条件可见页，
-// visibleWhen=aiCognition）。数据按本窗口工作区现取；「去设置开启」定位到 AI 页的开关行。
-const cognitionPage = createAICognitionPage({
-    get settings() { return settings; },
-    get backend() { return backend; },
-    get flash() { return flash; },
-    get getWorkspace() { return () => workspaceFolder || ''; },
-    get openCognitionSettings() {
-        return () => openSettingsAtRow('ai', document.getElementById('ai-opt-cognition'));
-    },
-});
+// 应用页面「认知索引」：.cadt/cognition/ 卷的只读浏览（APP_PAGES 里条件可见 + perWorkspace 页，
+// visibleWhen=aiCognition）。和补丁库同理——工厂而不是实例，每个标签页一个独立实例
+// （模块内部有 hostEl / snapshot / els 等模块级状态，共用实例会让两个标签互相覆盖）。
+// 「去设置开启」定位到 AI 页的开关行。
+function makeCognitionPage(workspaceRoot) {
+    return createAICognitionPage({
+        get settings() { return settings; },
+        get backend() { return backend; },
+        get flash() { return flash; },
+        // 绑定的根优先：该标签页看哪个仓库由它决定
+        get getWorkspace() { return () => String(workspaceRoot || '') || currentRoot() || ''; },
+        get openCognitionSettings() {
+            return () => openSettingsAtRow('ai', document.getElementById('ai-opt-cognition'));
+        },
+    });
+}
+// 已挂载的认知索引实例（root 元素 → 实例）：refreshCognitionPageIfVisible 要按标签逐个刷。
+const cognitionPageInstances = new WeakMap();
 
 // 应用页面标签页的挂载器（键 = core/app-pages.js 的 id，值 = mount(root) → 卸载函数）。
 // 经 deps 注入 bridge 域：bridge/ 不 import settings/ 与 ai/（同级域互相不 import）。
@@ -5258,7 +6004,9 @@ const cognitionPage = createAICognitionPage({
 // 标签页空白且再激活不自愈（doc.pane 守卫挡住重挂）——兜底与设置页 AI 子页、外部工具页同款。
 const appPageMounters = {
     'usage-stats': (root) => settingsPaneUsageStats.mount(root),
-    'patches': (root) => settingsPanePatches.mount(root),
+    // perWorkspace 页：第二个参数是标签页绑定的固定根（认知索引 / 补丁库）。
+    // 每个标签页新建独立实例——页面模块有模块级状态，共用会让两个标签互相覆盖。
+    'patches': (root, ws) => makePatchesPane(ws).mount(root, ws),
     'activity': (root) => activityPane.mount(root),
     'schedules': (root) => {
         if (!aiPanel) initAIPanel();
@@ -5272,7 +6020,12 @@ const appPageMounters = {
     // 外部工具的 DOM 停靠在 #extcap-park，mount 搬进 / 卸载搬出（settings-pane-external-tools.js）
     'external-tools': (root) => settingsPaneExternalTools.mount(root),
     // 认知索引：纯组件重建型（不依赖 aiPanel 闭包，无需兜底初始化）；入口条件可见（visibleWhen=aiCognition）
-    'cognition': (root) => cognitionPage.mount(root),
+    // 每个标签页一个独立实例，交给 WeakMap 记录以便按标签刷新。
+    'cognition': (root, ws) => {
+        const inst = makeCognitionPage(ws);
+        if (root && typeof root === 'object') cognitionPageInstances.set(root, inst);
+        return inst.mount(root, ws);
+    },
 };
 
 // 设置 → 页面 → 应用页面：目录页，一行一个页面，点开在内容区打开对应标签页（顺带关设置弹层）
@@ -5348,7 +6101,7 @@ function toggleAppPagesPanel() {
 //（ai-wipeguard.js 的恢复出口；storage pane 渲染完后由 renderStoragePane 包装追加渲染）
 const settingsPaneWipeguard = createSettingsPaneWipeguard({
     get backend() { return backend; },
-    get root() { return workspaceFolder || ''; },
+    get root() { return currentRoot() || ''; },
     get settings() { return settings; },
     get applySettings() { return applySettings; },
     get flash() { return flash; },
@@ -5363,7 +6116,7 @@ const lifecycleHooksCtl = createLifecycleHooks({
     get applySettings() { return applySettings; },
     get backend() { return backend; },
     get sessionPathKey() { return sessionPathKey; },
-    get getWorkspace() { return () => workspaceFolder || ''; },
+    get getWorkspace() { return () => currentRoot() || ''; },
     get addMessage() { return (...args) => messageCenter.add(...args); },
     get activityLog() { return activityLog; },
 });
@@ -5377,9 +6130,9 @@ const settingsPaneLifecycle = createSettingsPaneLifecycle({
     },
     get analyzeDangerousCommand() { return analyzeDangerousCommand; },
     get sessionPathKey() { return sessionPathKey; },
-    get getWorkspace() { return () => workspaceFolder || ''; },
-    get runOnce() { return () => lifecycleHooksCtl.runForWorkspace(workspaceFolder || ''); },
-    get runOnceEntry() { return (entryId) => lifecycleHooksCtl.runOnceForEntry(entryId, workspaceFolder || ''); },
+    get getWorkspace() { return () => currentRoot() || ''; },
+    get runOnce() { return () => lifecycleHooksCtl.runForWorkspace(currentRoot() || ''); },
+    get runOnceEntry() { return (entryId) => lifecycleHooksCtl.runOnceForEntry(entryId, currentRoot() || ''); },
     // 弹窗挂在 body（不在 .settings-pane 里），enhanceSetSelects 扫不到——打开后手动增强
     get enhanceSelect() { return settingsUI.enhanceSelect; },
 });
@@ -5431,9 +6184,17 @@ let lastCog = null;
 function refreshAppPagesNavIfVisible() {
     if (els.sidebar && els.sidebar.dataset.sidebarView === 'app-pages') renderAppPagesNav();
 }
+// 认知索引页刷新：多工作区下同一个页面可能开着好几份（各绑一个仓库），要逐份刷。
+// 以前是 `docs.find(...)` 只找第一个 + 调模块单例的 refresh()——开两份时第二份永远不刷。
 function refreshCognitionPageIfVisible() {
-    const doc = docs.find((d) => d.appPage === 'cognition');
-    if (doc && doc.appPageRoot && doc.appPageRoot.isConnected) cognitionPage.refresh();
+    for (const doc of docs) {
+        if (!doc || doc.appPage !== 'cognition') continue;
+        if (!doc.appPageRoot || !doc.appPageRoot.isConnected) continue;
+        const inst = cognitionPageInstances.get(doc.appPageRoot);
+        if (inst && typeof inst.refresh === 'function') {
+            try { inst.refresh(); } catch (e) { /* 单份刷新失败不影响其它标签 */ }
+        }
+    }
 }
 const debugConsoleBtn = document.getElementById('opt-debug-console');
 if (debugConsoleBtn) debugConsoleBtn.addEventListener('click', () => toggleDockView('debug'));
@@ -5679,7 +6440,7 @@ const globalSearch = createGlobalSearch({
     get openAISessionHit() { return openAISessionHit; },
     get switchMode() { return switchMode; },
     get waitUntil() { return waitUntil; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
 });
 const {isGlobalSearchOpen, openGlobalSearch} = globalSearch;
 
@@ -5765,7 +6526,7 @@ function windowSwitchEntries() {
 let scratchSwitchRows = [];
 async function refreshScratchEntries() {
     scratchSwitchRows = await listScratchDrafts(
-        {readDir: (path, limit) => backend.ReadDir(path, limit)}, workspaceFolder);
+        {readDir: (path, limit) => backend.ReadDir(path, limit)}, currentRoot());
     return scratchSwitchRows;
 }
 function scratchMtimeText(ms) {
@@ -5780,9 +6541,9 @@ function scratchMtimeText(ms) {
     }
 }
 function scratchSwitchEntries() {
-    if (!workspaceFolder) return [{label: '（未打开工作区）', disabled: true}];
+    if (!currentRoot()) return [{label: '（未打开工作区）', disabled: true}];
     // 缓存是上一次刷新时的列表：换过工作区后只认当前草稿目录里的条目
-    const rows = scratchSwitchRows.filter((row) => isScratchPath(workspaceFolder, row.path));
+    const rows = scratchSwitchRows.filter((row) => isScratchPath(currentRoot(), row.path));
     if (!rows.length) return [{label: '（还没有临时文件）', disabled: true}];
     return rows.map((row) => ({
         label: row.name,
@@ -5828,7 +6589,7 @@ const quickSwitchMod = createQuickSwitch({
     get viewDisabled() { return viewDisabled; },
     get viewLabel() { return viewLabel; },
     get viewOptionsFor() { return viewOptionsFor; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
     // 书签总览（quick-switch bookmarks 层级）：聚合打开中的文档，删除/跳转回调见上方书签桥
     get bookmarkOverview() { return bookmarkOverviewForUI; },
     get removeBookmarkEntry() { return removeBookmarkEntry; },
@@ -5897,7 +6658,7 @@ const propertiesUI = createPropertiesUI({
     get scratchMenuItems() { return scratchMenuItems; },
     get settings() { return settings; },
     get structureTextForDoc() { return structureTextForDoc; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
 });
 const {newDocumentMenuItems, propsTimeText, reloadAllFromDisk, showFileProperties} = propertiesUI;
 const appLinks = createAppLinks({
@@ -6052,6 +6813,7 @@ function paletteActions() {
     return actions;
 }
 
+// ===== 菜单栏构造（menuItems 各分类 + renderDropdown + 下拉浮层开关）=====
 function menuItems(kind) {
     const tree = currentMode === 'tree' && !!file && !(file.format && file.format.rawOnly);
     const canSave = !!file && !file.large && !file.binary;
@@ -6065,6 +6827,7 @@ function menuItems(kind) {
             return [
                 {label: '新建', shortcut: 'Ctrl+N', icon: 'plus', submenu: newDocumentMenuItems()},
                 {label: '新建窗口', shortcut: 'Ctrl+Shift+N', icon: 'new-window', action: openNewWindow},
+                {label: '新建 harness 窗口', icon: 'sparkles', action: openHarnessWindow},
                 {label: '新建浏览器标签页', shortcut: 'Ctrl+Alt+B', icon: 'browser', action: () => openBrowserTab('about:blank')},
                 {label: '打开我的浏览器（保留登录）', icon: 'browser', action: () => openBrowserTab('about:blank', '', {personal: true})},
                 {label: '快捷便签面板', shortcut: 'Ctrl+Alt+T', icon: 'memo', action: () => openMemoTab()},
@@ -6481,6 +7244,7 @@ document.addEventListener('click', (e) => {
     hideMenuBar();
 }, true);
 
+// ===== 查找状态 / 输入目标判定 / 关闭浮层（快捷键分发的前置判定）=====
 function updateSearchState() {
     if (!findState.open) return;
     if (!findTarget()) {
@@ -6548,6 +7312,7 @@ function treeShortcutSelection() {
     return selected;
 }
 
+// ===== 资源管理器快捷键（复制 / 剪切 / 粘贴 / 撤销 / 全局 keydown）=====
 document.addEventListener('copy', (e) => {
     const selected = treeShortcutSelection();
     if (!selected) return;
@@ -6903,6 +7668,7 @@ for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
     }, true);
 }
 
+// ===== 跨窗口事件接线（appEvents.onWindow：设置 / 打开目标 / 通知 / 便签 / 会话 / 文件投递 / 关窗 / 退出）=====
 if (rt) {
     appEvents.onWindow('app-open-settings', (pane) => {
         openSettings(String(pane || 'models'));
@@ -6910,19 +7676,43 @@ if (rt) {
     appEvents.onWindow('open-targets', (targets) => openTargets(targets));
     // 系统通知被点击：Go 侧已把窗口拉回前台，这里按激活参数跳到对应 AI 会话
     appEvents.onWindow('ai-notify-activate', (payload) => handleNotifyActivation(payload));
-    appEvents.onWorkspace('workspace-changed', () => workspaceFolder, (payload) => {
+    // 事件按「当前根」过滤：多工作区下窗口没有绑定，用裸 workspaceFolder 会永远不匹配，
+    // 文件被外部修改后文件树 / 文档 / 便签完全无感知。
+    appEvents.onWorkspace('workspace-changed', () => currentRoot(), (payload) => {
         if (explorer && typeof explorer.handleExternalChanges === 'function') explorer.handleExternalChanges(payload);
         handleExternalDocChanges(payload);
         // 快捷便签：其他窗口/外部改了 .cadt/memo/memo.json 时重读（面板开着才生效）
         if (memoWorkspaceEventHook) memoWorkspaceEventHook(payload);
-        // 工作区破坏防护（ai-wipeguard.js）：watcher 是检测主信号——内核级，AI 工具 /
-        // run_command 子进程 / 工具返回后存活的进程 / 用户的删除全部可见
-        if (wipeguardCtrl) wipeguardCtrl.handleWorkspaceEvent(payload);
+    });
+    // 工作区破坏防护的事件入口：**不能走 onWorkspace**——那按「payload.root === 本窗口
+    // 工作区」过滤，多根 watcher 里旧根（切走后仍在防护）的事件会被桥直接丢掉，正好是
+    // §4.9.7 F6 的失明场景。改走 app 级订阅 + 自己的「已防护根」白名单：本窗口挂过的根
+    // （当前根 + 切走后还在跑的旧根）全收，别的窗口的根不收。
+    appEvents.onApp('workspace-changed', (payload) => {
+        if (!wipeguardCtrl || !payload || !payload.root) return;
+        const key = normalizeWsKey(payload.root);
+        if (!key) return;
+        if (key !== normalizeWsKey(currentWatchRoot()) && !wipeguardRoots.has(key)) return;
+        // watcher 是检测主信号——内核级：AI 工具 / run_command 子进程 / 工具返回后存活的
+        // 进程 / 用户的删除全部可见
+        wipeguardCtrl.handleWorkspaceEvent(payload);
     });
     // 多实例资源目录监听（全局便签 / 当前 AI 会话）：只做重读，不做合并。
     appEvents.onApp('resource-changed', (payload) => {
         if (memoResourceEventHook) memoResourceEventHook(payload);
         if (aiPanel && typeof aiPanel.handleResourceChange === 'function') aiPanel.handleResourceChange(payload);
+        // 破坏防护多根监听若由 Go 侧实现成 ResourceWatcher（kind='wipeguard'），事件走这条。
+        // 兼容两种形状：带 removed / present 分组就照用，只带 paths 时主信号（删除计数）
+        // 拿不到——`paths` 无法区分删除与新增，所以首选通道仍是 workspace-changed。
+        if (wipeguardCtrl && payload && payload.kind === 'wipeguard' && payload.key) {
+            wipeguardCtrl.handleWorkspaceEvent({
+                root: payload.key,
+                paths: payload.paths,
+                removed: payload.removed,
+                present: payload.present,
+                overflow: payload.overflow,
+            });
+        }
     });
     // 快捷便签定位点跳转：CLI --memo（已在运行时 secondInstance 转发到这里）
     appEvents.onWindow('app-open-memo', (locator) => {
@@ -6951,7 +7741,7 @@ if (rt) {
         get flash() { return flash; },
         get openPaths() { return openPaths; },
         get copyIntoDir() { return copyExternalIntoDir; },
-        get workspaceFolder() { return workspaceFolder; },
+        get workspaceFolder() { return currentRoot(); },
         get dbDrop() { return (dbPaths) => (dbUi && typeof dbUi.handleDropPaths === 'function' ? dbUi.handleDropPaths(dbPaths) : Promise.resolve()); },
         get aiAttach() { return attachPathsToAI; },
     });
@@ -6976,6 +7766,7 @@ if (rt) {
     });
     // 关窗/退出确认文案（Go 侧 beforeClose 与显式退出共用同一份理由）。
     // 来源分组：AI 回合 / 后台命令作业 / 终端；terms 只数 shell 里有活命令进程的终端。
+    // ===== 关窗 / 退出确认（confirm-close / app-quit-request）=====
     function closeReasonsText(r, actionWord) {
         const bgJobs = Number(r.bgJobs) || 0;
         const terms = Number(r.terms) || 0;
@@ -7058,6 +7849,11 @@ if (rt) {
         if (doc.browserFwdBtn && data.canGoForward !== undefined) doc.browserFwdBtn.disabled = !data.canGoForward;
         if (data.title) updateBrowserTitle(doc, data.title);
     });
+    // browser-title：**Go 侧目前不发射这个事件**。WebView2 的 DocumentTitleChanged 尚未接，
+    // 标题当前由 `browser-nav` 的 title 字段承载（见上面那段 onWindowOrBroadcast 的
+    // `if (data.title) updateBrowserTitle(...)`）。保留这个订阅是为了将来接
+    // DocumentTitleChanged（SPA 内改 document.title 不触发导航事件，只能走独立通道）。
+    // 不要因为「看着像死代码」就删——删了将来要重新找。也别把它当成标题的常规来源。
     appEvents.onWindowOrBroadcast('browser-title', (data) => {
         const doc = docs.find((d) => d.id === (data && data.id));
         if (doc && data && data.title) updateBrowserTitle(doc, data.title);
@@ -7066,6 +7862,7 @@ if (rt) {
         const doc = docs.find((d) => d.id === (data && data.id));
         if (doc) flash('浏览器进程异常，标签页可能需要重新打开', true);
     });
+    // ===== 浏览器标签显隐同步（resize + 定时兜底，防 WebView2 HWND 永久盖住其他视图）=====
     window.addEventListener('resize', syncAllBrowserTabs);
     // 菜单/命令面板/AI 面板全屏等浮层没有统一的开关事件：定时兜底同步内嵌浏览器的显隐。
     // 必须同步「所有」浏览器标签而非仅当前 file：切走后非活动浏览器标签靠 browserVisibleFor
@@ -7137,6 +7934,7 @@ els.editor.addEventListener('wheel', (e) => {
     strip.scrollLeft += delta * unit;
 }, {passive: false});
 
+// ===== Ctrl+Z 捕获拦截（ace 空栈静默时回退已保存状态）+ 全局收尾 =====
 // Ctrl+Z 捕获拦截：代码模式下 ace 聚焦时会吞掉 Ctrl+Z（空栈静默），这里在捕获阶段先判空栈+脏 → 直接回退已保存状态
 window.addEventListener('keydown', (e) => {
     if (!e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -7160,6 +7958,14 @@ els.wsBranch.addEventListener('click', (e) => {
     e.stopPropagation();
     showBranchMenu(els.wsBranch);
 });
+if (els.wsMode) {
+    els.wsMode.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showWindowModeMenu(els.wsMode);
+    });
+    // 初始渲染：启动时 __harnessWindow 由 bridge-ui 按 --harness 置位（那一步早于这里）
+    renderWindowMode();
+}
 
 const cursorThemes = createCursorThemes({
     get backend() { return backend; },
@@ -7214,7 +8020,7 @@ const terminalMod = createTerminalUI({
     get structurePanel() { return structurePanel; },
     get textArea() { return textArea; },
     get toolEnvFor() { return toolEnvFor; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
 });
 const {applyDockView, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSidebarView, fitActiveTerm, runArgsText, runController, switchSidebarView, syncTerminalTheme, termCwd, terminalHostApi, terminalUI, toggleDockView, toggleSidebarView, toggleTerminalPanel, getDockView, setDockView, nextCmdSeq, nextMockBgSeq, nextMockSchedSeq, startRunProject} = terminalMod;
 // —— 启动初始化：必须在 terminalMod 解构之后（applySettings 经 deps 触达
@@ -7232,6 +8038,24 @@ initStructurePanel();
 initActivityBar();
 
 const bridgeUI = createBridgeUI({
+    // 应用页面标签页按工作区开多份（认知索引 / 补丁库）要用到当前根（getter：根会随会话切换变化）。
+    // 「是否多工作区」不再单独注入：bridge 域直接用 core/root-scope 的唯一实现。
+    get currentRoot() { return currentRoot; },
+    // 标题栏窗口模式 chip：bridge-ui 置位 __harnessWindow 之后回调一次（顶层那次早于置位）
+    get renderWindowMode() { return renderWindowMode; },
+    // 启动恢复 / 模式切换后：把文件树跟到当前会话（切换回调只覆盖「换会话」，测不到这条）
+    get followActiveSession() { return followActiveSession; },
+    // 启动时恢复上次的窗口模式（命令行 --harness 优先，那里会先置位）
+    get restoreWindowMode() {
+        return () => {
+            if (isMultiWorkspace()) return false;
+            if (settings.windowMode !== 'multi') return false;
+            window.__harnessWindow = true;
+            return true;
+        };
+    },
+    // 窗口**绑定**的工作区（多工作区恒空）：会话归属判据一类「本窗口绑了哪个目录」要用它。
+    get boundWorkspaceFolder() { return () => workspaceFolder || ''; },
     // 应用页面标签页：pageId → mount(root)，各页内容渲染仍归原域
     get appPageMounters() { return appPageMounters; },
     // 数据库虚拟标签页（数据表 / 查询控制台 / Redis 键查看器）：doc → db 域视图根元素（bridge 挂载 pane 与卸载契约）
@@ -7331,7 +8155,7 @@ const bridgeUI = createBridgeUI({
     get switchSidebarView() { return switchSidebarView; },
     get syncBrowserTab() { return syncBrowserTab; },
     get updateBrowserTitle() { return updateBrowserTitle; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
 });
 const {createAgentView, createAgentTeamView, createSideChatView, createGroupMemberView, openGroupMemberTab, createBgTermView, createAppPageView, openAppPageTab, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openAgentTeamTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths,
     openMemoTab, createMemoView, memoApi, memoHasPending, memoOnWorkspaceEvent, memoOnWindowFocus, memoOnResourceEvent, memoWorkspaceChanged,
@@ -7354,7 +8178,7 @@ const dbUi = createDbUi({
     get settings() { return settings; },
     get persistSettingsLight() { return persistSettingsLight; },
     get logActivity() { return activityLog.log; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
     get ctxMenu() { return ctxMenu; },
     get openConfirmDialog() { return openConfirmDialog; },
     get enhanceSelect() { return settingsUI.enhanceSelect; },
@@ -7376,7 +8200,7 @@ mavenUi = createMavenPanel({
     get ensureToolchainForRun() { return terminalMod.ensureToolchainForRun; },
     get runCommand() { return terminalMod.runController.runCommand; },
     get flash() { return flash; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
     get currentSidebarView() { return terminalMod.currentSidebarView; },
     get exitMavenView() { return () => { if (terminalMod.currentSidebarView() === 'maven') terminalMod.switchSidebarView('files'); }; },
     get openPath() { return openPath; },
@@ -7395,7 +8219,7 @@ const dbAppActions = createDbAppActions({
     get backend() { return backend; },
     get settings() { return settings; },
     get persistSettingsLight() { return persistSettingsLight; },
-    get workspaceFolder() { return workspaceFolder; },
+    get workspaceFolder() { return currentRoot(); },
 });
 
 // 绑定便签真钩子（顶部早期 let 间接层的落点）：启动期事件先到也只摸到 null，不摸未初始化的 const

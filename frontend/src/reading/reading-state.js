@@ -5,8 +5,10 @@
 import {normalizeBookKey} from './reading-model.js';
 import {newId} from '../core/id.js';
 import {parseJson} from '../core/json-safe.js';
+import {READING_STATE_KEY} from '../core/storage-keys.js';
 
-export const READING_STATE_KEY = 'datalens-reading-state';
+// 键名定义在 core/storage-keys.js（这里转出，保持既有 import 面不变）。
+export {READING_STATE_KEY};
 const STATE_VERSION = 1;
 const RECENT_MAX = 10;
 const DAILY_KEEP_DAYS = 365;

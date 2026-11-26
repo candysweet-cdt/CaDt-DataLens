@@ -1,6 +1,12 @@
 // db-model.js：数据库连接页的纯函数——行键编解码、筛选算子、状态文案、修改摘要。
 // 无 DOM、无依赖（core 层纯函数模块），测试在 frontend/test/db/db-model.test.mjs。
 
+// 结果行数的默认值与硬上限：与 Go 侧 internal/dbclient 的 rowDefault / rowMax 以及
+// internal/sqlview 的 sqlQueryRowDefault / sqlQueryRowMax 同值。前端只用它做档位与输入钳制，
+// **真上限在 Go**（超了会被截断），所以两处必须同时改；护栏 test/core/backend-constants-parity。
+export const DB_ROW_DEFAULT = 500;
+export const DB_ROW_MAX = 5000;
+
 /** 会话类型的展示名（插件 kind 由 db-plugin.js 按注册表解析，不走这里）。 */
 export function kindLabel(kind) {
     switch (kind) {

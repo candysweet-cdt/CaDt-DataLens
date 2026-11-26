@@ -2,6 +2,8 @@
 // 模拟 Wails 桥（window.go.main.App）、窗口运行时（mockRt）与全部后端接口；
 // mock 场景由 URL 参数驱动（?jsonl ?csv ?text ?image ?large ?invalid ?multi ?empty ?gbk ?ai* …）。
 // 由 main.js 在 !hasWails 时动态加载；生产环境永不触碰本模块。
+import {MOCK_DB_CONNECTIONS_KEY, MOCK_SAVE_KEY} from '../core/storage-keys.js';
+
 const mockScenario = new URLSearchParams(location.search);
 
 const sampleJson = `{
@@ -208,6 +210,7 @@ export const LEVEL_COMP_CACHE = new Map();
 const sampleGo = `package main
 
 import (
+import {legacyPathKey} from '../core/path-key.js';
 \t"strings"
 \t"testing"
 \t"time"
@@ -457,10 +460,10 @@ const mockDbSession = {tables: []}; // 演示会话内存状态：editable（DBO
 // （演示键覆盖五类型 + 中文前缀组，方案 §5.4 的键空间树/键查看器/控制台全流程浏览器实测用；
 //  连接经 localStorage 持久化——模拟 Go 侧 db-connections.json，页面刷新后连接仍在）
 function loadMockConnections() {
-    try { return JSON.parse(localStorage.getItem('datalens-mock-db-connections') || '[]'); } catch (e) { return []; }
+    try { return JSON.parse(localStorage.getItem(MOCK_DB_CONNECTIONS_KEY) || '[]'); } catch (e) { return []; }
 }
 function persistMockConnections(list) {
-    try { localStorage.setItem('datalens-mock-db-connections', JSON.stringify(list)); } catch (e) { /* 尽力而为：mock 存储失败不影响演示 */ }
+    try { localStorage.setItem(MOCK_DB_CONNECTIONS_KEY, JSON.stringify(list)); } catch (e) { /* 尽力而为：mock 存储失败不影响演示 */ }
 }
 const mockDbConnections = loadMockConnections();
 const mockRedis = {
@@ -1744,6 +1747,28 @@ const mockBackend = {
         return all.slice(Number(offset) || 0);
     },
     async WatchWorkspace() { return null; },
+    // wipe-guard 多根监听（真实后端用合成工作区槽，事件仍是 workspace-changed 带
+    // removed/present）。mock 只记订阅表，供 dev 下核对前端有没有多订/漏退。
+    async WatchWipeguardRoot(root) {
+        const list = window.__mockWipeguardRoots || (window.__mockWipeguardRoots = []);
+        const key = legacyPathKey(root || '')
+        if (key && !list.includes(key)) list.push(key);
+        return null;
+    },
+    async UnwatchWipeguardRoot(root) {
+        const key = legacyPathKey(root || '')
+        window.__mockWipeguardRoots = (window.__mockWipeguardRoots || []).filter((item) => item !== key);
+        return null;
+    },
+    // 「本进程已打开过」账本：mock 用同一个 Map 复现首次/重复语义（归一化同真实后端）。
+    async WorkspaceMarkOpened(dir) {
+        const map = window.__mockOpenedWorkspaces || (window.__mockOpenedWorkspaces = {});
+        const key = legacyPathKey(dir || '')
+        if (!key) return false;
+        if (map[key]) return false;
+        map[key] = true;
+        return true;
+    },
     async UnwatchWorkspace() { return null; },
     async GetConvertRequest() { return null; },
     async FinishConvert() { return null; },
@@ -2254,8 +2279,14 @@ const mockBackend = {
                 mockTree[dir].push({name, path, isDir: false});
             }
         } catch (e) {}
-        localStorage.setItem('datalens-mock-save', content);
+        localStorage.setItem(MOCK_SAVE_KEY, content);
         console.info('[mock] SaveFile', path, content.length, 'chars', enc);
+    },
+    // .cadt/** 内务文件的原子落盘（真实后端走临时文件 + fsync + 替换）；
+    // mock 复用 SaveFile 的记录语义，另记一条原子写清单供测试断言。
+    async SaveFileAtomic(path, content, eol, hasBom, enc) {
+        await this.SaveFile(path, content, eol, hasBom, enc);
+        window.__mockAtomicSaves = (window.__mockAtomicSaves || []).concat([{path, content, eol, hasBom, enc}]);
     },
     async SetDirty(flag) { console.info('[mock] SetDirty', flag); },
     async SetWindowBg(r, g, b) { window.__mockWindowBg = [r, g, b]; },
@@ -3179,6 +3210,7 @@ const mockBackend = {
         return mockImageDataUrl;
     },
     async OpenNewWindow() { window.__mockNewWindow = (window.__mockNewWindow || 0) + 1; },
+    async OpenHarnessWindow() { window.__mockHarnessWindow = (window.__mockHarnessWindow || 0) + 1; },
     async UpdatePluginFromUrl(id, url) {
         window.__mockUpdated = (window.__mockUpdated || []).concat([[id, url]]);
         return {id, name: 'JSON 备份查看', version: '1.0.0'};
@@ -3190,7 +3222,9 @@ const mockBackend = {
         window.__mockNewWindows = (window.__mockNewWindows || []).concat([[dir]]);
     },
     // 窗口注册表 / 跨窗口会话复用（window_app.go）：浏览器 dev 无跨窗口概念，全部空实现
-    async WindowRegister(workspace) { window.__mockWindowReg = workspace || ''; },
+    async WindowRegister(workspace, seq) { window.__mockWindowReg = workspace || ''; window.__mockWindowRegSeq = Number(seq) || 0; },
+    // --harness 窗口探测（不恢复工作区、独立会话快照槽）：mock 下默认关，dev 可置位验证
+    async GetWindowHarness() { return !!window.__mockHarnessWindow; },
     async WindowReuseForSession(workspace, sessionId) {
         window.__mockWindowReuse = {workspace, sessionId: sessionId || ''};
         return ''; // mock 永远没有可用窗口：走软切换行为
@@ -4469,9 +4503,33 @@ const mockBackend = {
         return {text, fetchedAt: window.__mockModelCatalogAt};
     },
     async AIAppDir() { return 'mock://appdata/CandySweet/CaDt-DataLens'; },
+    // 未绑定工作区会话的沙盒目录：mock 没有真实磁盘，返回空串表示「无 backing」，
+    // 前端按 scopeRootOf 第 2 步落空（与真实后端「会话不存在/无根」同一退路）。
+    async AIBackingWorkspace(sessionId) { return ''; },
     async AIHomeDir() { return window.__mockHomeDir || 'mock://home'; },
     async AIBuiltinSkillsDir() { return window.__mockBuiltinSkillsDir || ''; },
     async AIExePath() { return window.__mockExePath || 'mock://bin/datalens.exe'; },
+    // 记忆 / 权限规则的后端写通道（真实后端：跨窗口锁 + 原子替换）。mock 只记内容；
+    // 权限规则的「必须是 JSON 对象」校验照做，免得 dev 下把坏 JSON 当成功。
+    async AIMemoryWrite(dir, name, content) {
+        const path = String(dir || '').replace(/\/+$/, '') + '/' + name;
+        window.__mockWrites = window.__mockWrites || {};
+        window.__mockWrites[path] = String(content == null ? '' : content);
+        window.__mockMemoryWrites = (window.__mockMemoryWrites || []).concat([{path, name, content}]);
+        return path;
+    },
+    async AIProjectRulesWrite(root, jsonText) {
+        if (String(jsonText || '').trim() === '') throw new Error('权限规则为空');
+        const parsed = JSON.parse(jsonText);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw new Error('权限规则不是合法 JSON 对象：顶层必须是对象');
+        }
+        const path = String(root || '').replace(/\/+$/, '') + '/.cadt/permissions.json';
+        window.__mockWrites = window.__mockWrites || {};
+        window.__mockWrites[path] = String(jsonText);
+        window.__mockPermissionsWrites = (window.__mockPermissionsWrites || []).concat([{path, jsonText}]);
+        return path;
+    },
     async OpenAIFloatWindow(root) { window.__mockAIFloatRoot = root; return null; },
     async OpenSettingsInMainWindow(pane) { window.__mockOpenSettingsInMain = pane; return null; },
     async ConsumeStartupSettings() { const pane = window.__mockStartupSettings || ''; window.__mockStartupSettings = ''; return pane; },

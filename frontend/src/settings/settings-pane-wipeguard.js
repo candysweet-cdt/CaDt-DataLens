@@ -9,6 +9,7 @@
 import {createSwitch, createInput} from '../core/form-controls.js';
 import {formatBytes} from '../core/humanize.js';
 import {el} from '../core/dom.js';
+import {legacyPathKey} from '../core/path-key.js';
 
 // ---- 纯函数（测试见 test/settings/settings-pane-wipeguard.test.mjs）----
 
@@ -46,7 +47,7 @@ export function groupBackupEntries(rows) {
 
 // normalizePathKey：路径归一化（与后端 WorkspaceKey 归一化语义一致）。
 export function normalizePathKey(p) {
-    return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    return legacyPathKey(p || '')
 }
 
 // validateBackupRoot：备份根校验（方案 §4.1）。

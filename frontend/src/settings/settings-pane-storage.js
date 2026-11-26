@@ -5,6 +5,7 @@
 import {createSelect, createSwitch} from '../core/form-controls.js';
 import {formatBytes} from '../core/humanize.js';
 import {kvGet} from '../core/kv-store.js';
+import {AUTO_CLEAN_LAST_KEY} from '../core/storage-keys.js';
 
 // ---- 纯函数（测试见 settings-pane-storage.test.mjs）----
 
@@ -31,8 +32,9 @@ export function cacheIDs(items) {
 // 用户登出网站；手动「清除缓存」有确认文案兜底所以不受限，自动清理永远不碰它。
 export const AUTO_CLEAN_EXCLUDED = ['browser-profiles'];
 
-// 自动清理「上次执行」时间戳的 localStorage 键（跨窗口共享；驱动器与设置页共同读写）
-export const AUTO_CLEAN_LAST_KEY = 'datalens-storage-autoclean-last';
+// 自动清理「上次执行」时间戳的 localStorage 键（跨窗口共享；驱动器与设置页共同读写）。
+// 键名定义在 core/storage-keys.js（这里转出，保持既有 import 面不变）。
+export {AUTO_CLEAN_LAST_KEY};
 
 // autoCleanScope：自动清理范围 = 后端 inCache 条目的安全子集。
 // data/danger 条目永不进入——显式传 id 列表，不依赖 Go 侧兜底。

@@ -9,6 +9,8 @@ const gitGroupCollapsed = {changes: false, untracked: false};
 const gitUncheckedFiles = new Set();
 let gitTimer = null;
 
+// git 状态的根：读 deps.workspaceFolder——main.js 注入的这一层已经是「当前根」
+// （单工作区=窗口工作区，多工作区=聚焦会话的仓库），所以这里不需要再分辨窗口模式。
 function gitRootDir() {
     return deps.workspaceFolder || (deps.file && deps.file.path ? deps.file.path.replace(/[\\/][^\\/]*$/, '') : '') || '';
 }
@@ -141,18 +143,23 @@ async function showGitFileHistory(path) {
     }
 }
 
-async function gitRollbackPaths(paths, untracked) {
+// 回滚到 HEAD（tracked → git checkout，未跟踪 → 删文件）。
+// root 可选（批次 B）：传了就是**会话根**（AI 会话可能属于别的仓库），为空时回落
+// gitStateCache.repoRoot ‖ dir ‖ gitRootDir()（旧行为）。放在尾部而非首参是刻意的：
+// 首参变 root 会让仍在用旧签名 (paths, untracked) 的包装箭头（main.js，批次 D 才会改）
+// 把 root 当 paths、把 untracked 丢掉，撤销新建文件会静默退化成 checkout 而报错。
+async function gitRollbackPaths(paths, untracked, root) {
     if (!deps.backend.GitRollbackFor) {
         deps.flash('当前版本不支持回滚', true);
         return;
     }
     // paths / untracked 来自 git status，相对仓库根；必须配仓库根作为 dir，
     // 否则工作区是仓库子目录时 git checkout 的 pathspec 会解析错位。
-    const root = gitStateCache.repoRoot || gitStateCache.dir || gitRootDir();
+    const rootDir = root || gitStateCache.repoRoot || gitStateCache.dir || gitRootDir();
     const tracked = paths.filter((p) => !untracked.includes(p));
     const realUntracked = untracked.filter((p) => untracked.includes(p));
     try {
-        await deps.backend.GitRollbackFor(root, tracked, realUntracked);
+        await deps.backend.GitRollbackFor(rootDir, tracked, realUntracked);
         deps.flash('已回滚 ' + (tracked.length + realUntracked.length) + ' 个文件');
     } catch (e) {
         deps.flash('回滚失败：' + e, true);

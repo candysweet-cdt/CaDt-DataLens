@@ -197,6 +197,35 @@ function openBrowserTab(url, profileKey, opts) {
         floatWindow = false;
     }
     if (!floatWindow && !deps.hasWails && deps.mockScenario.has('aifloat')) floatWindow = true;
+    // harness 窗口（--harness）：不恢复上次工作区，AI 面板就是它的主界面。
+    // 探测失败一律按普通窗口处理（老宿主没有这条绑定）。
+    let harnessWindow = false;
+    if (!floatWindow) {
+        try {
+            harnessWindow = deps.backend.GetWindowHarness ? !!(await deps.backend.GetWindowHarness()) : false;
+        } catch (e) {
+            harnessWindow = false;
+        }
+        // 命令行没给 --harness 时，恢复上次关闭时的窗口模式（关闭时是多工作区 → 这次还是）。
+        // 显式 --harness 优先：用户明确指定的形态不该被上次的记忆覆盖。
+        if (!harnessWindow && typeof deps.restoreWindowMode === 'function') {
+            try {
+                harnessWindow = !!deps.restoreWindowMode();
+            } catch (e) {
+                harnessWindow = false;
+            }
+        }
+    }
+    if (harnessWindow) {
+        // 供 ai-session-scope.js 的 scopeRootOf 第 3 步判断（harness 下未绑定会话 = 无根），
+        // 也供 session-restore.js 选独立快照槽。
+        window.__harnessWindow = true;
+        // 标题栏的模式 chip 要跟着变：main.js 顶层的初始渲染早于这里（那时标记还没置位），
+        // 所以置位后必须再刷一次，否则多工作区窗口会显示成「单工作区」。
+        try {
+            if (typeof deps.renderWindowMode === 'function') deps.renderWindowMode();
+        } catch (e) { /* 渲染失败不影响启动 */ }
+    }
     if (floatWindow) {
         window.__aiFloatWindow = true;
         document.documentElement.classList.remove('app-booting');
@@ -263,8 +292,9 @@ function openBrowserTab(url, profileKey, opts) {
     if (targets && targets.length) {
         // 先读取目标目录上次的工作区环境，再打开目标：打开目录会触发一次防抖保存，
         // 若先打开再读，空环境可能把旧环境覆盖掉。
+        // harness 窗口不读这份环境（目标目录照常打开，但不去拉该目录上次的标签/布局）。
         let workspaceSession = null;
-        if (!floatWindow && deps.backend.GetPathInfo) {
+        if (!floatWindow && !harnessWindow && deps.backend.GetPathInfo) {
             for (const target of targets) {
                 if (!target || !target.path) continue;
                 let info = null;
@@ -283,6 +313,9 @@ function openBrowserTab(url, profileKey, opts) {
         const files = await deps.backend.GetStartupFiles();
         if (files && files.length) await deps.openPaths(files);
         else {
+            // harness 窗口恢复**自己的**快照槽（cadt.session.harness.v1，session-restore 的
+            // sessionKeyOf 按 __harnessWindow 选槽）。跳过的是「窗口工作区 / 目标目录」的
+            // 环境（上面那一段），不是「任何标签」——否则每次开 harness 都是空窗。
             const sess = deps.readSession();
             if (sess) await deps.restoreSession(sess);
         }
@@ -303,18 +336,43 @@ function openBrowserTab(url, profileKey, opts) {
         if (deps.aiPanel) deps.aiPanel.open(true);
     } else {
         setTimeout(() => deps.autoCheckUpdateOnStart(), 2000);
+        // harness 窗口没有工作区、标签页是空的：AI 面板就是它的主界面，直接打开
+        //（与浮窗同款 initAIPanel + open(true)，但保留主窗口的其余行为）。
+        if (harnessWindow) {
+            if (!deps.aiPanel) deps.initAIPanel();
+            if (deps.aiPanel) deps.aiPanel.open(true);
+        }
         // 软切换新窗口：打开 AI 面板并选中目标会话（工作区已在上一步恢复）。
         if (startupAISession && deps.aiPanel && deps.aiPanel.bridgeListSessions) {
             try {
                 if (deps.aiPanel.whenReady) await deps.aiPanel.whenReady();
             } catch (e) {}
             const session = deps.aiPanel.bridgeListSessions().find((item) => item.id === startupAISession);
-            if (session && (!session.workspace || deps.sessionPathKey(session.workspace) === deps.sessionPathKey(deps.workspaceFolder))) {
+            // 判据是「会话归属本窗口」＝**窗口绑定**的工作区语义，必须用真值
+            // （deps.workspaceFolder 已注入为 currentRoot()，多工作区下是聚焦会话的仓库，
+            // 用它会让 --ai-session 在多工作区窗口里永远匹配不上）。多工作区窗口没有绑定，
+            // 只要能找到该会话就直接切过去——视图跟随会由 followSessionWorkspace 处理。
+            const bound = typeof deps.boundWorkspaceFolder === 'function'
+                ? deps.boundWorkspaceFolder()
+                : deps.workspaceFolder;
+            const owned = !bound || !session || !session.workspace ||
+                deps.sessionPathKey(session.workspace) === deps.sessionPathKey(bound);
+            if (session && owned) {
                 deps.aiPanel.open(true);
                 try {
                     await deps.aiPanel.bridgeSwitchSession(startupAISession);
                 } catch (e) {}
             }
+        }
+        // 多工作区窗口：把视图跟到**恢复出来的当前会话**。
+        // 缺这一步的后果（实测）：重启后模式是多工作区、会话也恢复了，但文件树是空的、
+        // 面包屑「未打开文件」——因为 followSessionWorkspace 只挂在会话切换回调上，
+        // 而启动恢复是直接设 current、不经过切换通知。
+        if (harnessWindow && typeof deps.followActiveSession === 'function') {
+            try {
+                if (deps.aiPanel && deps.aiPanel.whenReady) await deps.aiPanel.whenReady();
+                deps.followActiveSession();
+            } catch (e) { /* 跟随失败不影响启动 */ }
         }
         // 快捷便签定位点：CLI --memo 启动直达（工作区已恢复，memoApi 自己处理作用域切换）
         if (startupMemoLocator && memoMod.memoApi && memoMod.memoApi.jumpToLocator) {

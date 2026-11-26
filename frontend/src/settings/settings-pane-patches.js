@@ -80,8 +80,12 @@ export function createSettingsPanePatches(deps) {
     let patchPage = 1;
     const PAGE_SIZE = 30;
     let openDrawer = null;          // 当前详情抽屉句柄
+    let mountedRoot = '';           // 本标签页绑定的工作区（perWorkspace：一个标签一个仓库）
 
     function root() {
+        // 应用页面标签页在 mount 时给了固定根：一律用它，不再随「当前根」漂移
+        //（否则切走工作区后，开着的那份补丁库会去列别的仓库的补丁）。
+        if (mountedRoot) return mountedRoot;
         return typeof deps.root === 'function' ? deps.root() : (deps.root || '');
     }
 
@@ -297,9 +301,14 @@ export function createSettingsPanePatches(deps) {
 
     // 挂到宿主容器（应用页面标签页调用）：建骨架 → 按 id 取元素 → 绑定 → 首次加载。
     // 返回卸载函数（关标签时由 doc.tabUnmount 调用）。
-    function mount(host) {
+    //
+    // workspaceRoot：该标签页绑定的固定根。补丁库的数据在 <ws>/.cadt/patches，是**工作区级**的，
+    // 所以应用页面按工作区开多份，每份各看各的仓库。传了就一直用它（不随「当前根」漂移），
+    // 这也让页头的「存储目录」稳定显示所属工作区；不传则回落 deps.root()（旧调用/单测）。
+    function mount(host, workspaceRoot) {
         if (!host) return null;
         host.textContent = '';
+        mountedRoot = String(workspaceRoot || '');
 
         const refreshBtn = document.createElement('button');
         refreshBtn.type = 'button';
@@ -314,6 +323,12 @@ export function createSettingsPanePatches(deps) {
             desc: 'AI 提交过的补丁（.cadt/patches）。点行查看详情，可打开补丁视图应用/撤销；删除会送回收站。',
             actions: [refreshBtn],
         }));
+        // 页头显示所属工作区：同一个「补丁库」现在可能开着两三份，不标出来分不清是哪个仓库。
+        // 多工作区下只显示仓库名会重名（两个仓库同叫 src），所以给完整路径，用 title 兜住长路径。
+        if (mountedRoot) {
+            pathEl.textContent = '工作区：' + mountedRoot;
+            pathEl.title = mountedRoot;
+        }
         host.appendChild(pathEl);
 
         const chips = filterChips({

@@ -8,6 +8,7 @@ import {createInput, createTextarea} from '../core/form-controls.js';
 import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
 import {escapeHtml} from '../core/escape.js';
 import {kvGet, kvSet} from '../core/kv-store.js';
+import {MEMO_SCOPE_KEY} from '../core/storage-keys.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
 import {getPluginDocConverters} from '../shell/plugins.js';
 import {memoDocxBase64} from './memo-docx.js';
@@ -30,14 +31,21 @@ import {createMemoTerm, formatTermStatus} from './memo-term.js';
 
 export function createBridgeMemoView(deps) {
 
-const SCOPE_STORAGE_KEY = 'cadt-memo-scope';
+const SCOPE_STORAGE_KEY = MEMO_SCOPE_KEY;
+
+// 便签的「工作区」作用域根：直接读 deps.workspaceFolder——main.js 注入的这一层已经是
+// 「当前根」（单工作区=窗口工作区，多工作区=聚焦会话的仓库），模块内不需要再分辨窗口模式。
+// 全局作用域不受影响（它本来就不依赖工作区）。
+function workspaceRootOf() {
+    return deps.workspaceFolder || '';
+}
 
 const store = createMemoStore({
     // deps.backend / deps.flash 是组合根的 getter 属性（每次访问求值，不拍快照）
     backend: deps.backend,
     flash: deps.flash,
     notifyFailure: (...args) => (typeof deps.notifyFailure === 'function' ? deps.notifyFailure(...args) : undefined),
-    workspaceRoot: () => deps.workspaceFolder || '',
+    workspaceRoot: () => workspaceRootOf(),
     // pending 翻转 → 组合根更新应用关窗脏标记（防抖窗口内关窗走确认流程，不静默丢）
     onPendingChange: deps.onPendingChange,
     // 贴图 GC 定位：用缓存捕获的 workspace 解析作用域根（换过工作区也删对文件）
@@ -223,7 +231,7 @@ function render(view) {
     root.appendChild(buildTopBar(view));
     if (lease.readOnly) root.appendChild(readOnlyBanner(lease.owner));
 
-    if (view.scope === 'workspace' && !(deps.workspaceFolder || '')) {
+    if (view.scope === 'workspace' && !workspaceRootOf()) {
         root.appendChild(hintBox('没有打开的工作区——工作区快捷便签 需要先打开一个文件夹；全局快捷便签 可直接使用。'));
         return;
     }
@@ -397,7 +405,7 @@ function buildTopBar(view) {
         popBtn.setAttribute('data-tip', '弹出为独立便签窗');
         onButton(popBtn, () => {
             commitActive(view);
-            deps.popOutMemo(view.scope, view.scope === 'workspace' ? (deps.workspaceFolder || '') : '');
+            deps.popOutMemo(view.scope, view.scope === 'workspace' ? workspaceRootOf() : '');
         });
         bar.appendChild(popBtn);
     }
@@ -763,7 +771,7 @@ function buildRunButton(view, item) {
     btn.type = 'button';
     btn.className = 'memo-run-btn' + (entry && entry.state === 'running' ? ' running' : '');
     btn.innerHTML = iconSvg(entry && entry.state === 'running' ? 'stop' : 'play', 12);
-    const cwdTip = deps.workspaceFolder ? '运行于工作区根目录' : '运行于应用进程目录';
+    const cwdTip = workspaceRootOf() ? '运行于工作区根目录' : '运行于应用进程目录';
     btn.dataset.cwdTip = cwdTip; // paintLive 翻转提示时用（工作区可切换，整渲染才重算）
     btn.setAttribute('data-tip', entry && entry.state === 'running' ? '停止运行' : cwdTip);
     onButton(btn, () => {
@@ -783,7 +791,7 @@ function buildRunButton(view, item) {
             return;
         }
         if (editor) commitActive(view);
-        term.run(item.id, text, deps.workspaceFolder || '');
+        term.run(item.id, text, workspaceRootOf());
     });
     return btn;
 }
@@ -882,7 +890,7 @@ function loadInlineImages(view, scopeEl, attr) {
 // memoRootDir 作用域根目录（贴图绝对路径 = 根 + 相对引用）：
 // 工作区 = <ws>/.cadt/memo；全局 = <应用数据>/memo（AIAppDir 绑定取应用数据根）。
 async function memoRootDir(scope) {
-    return memoRootDirFor(scope, deps.workspaceFolder || '');
+    return memoRootDirFor(scope, workspaceRootOf());
 }
 
 // memoRootDirFor 用显式 workspace（贴图 GC 必须用缓存捕获的旧根，换过工作区才不会删错地方）。

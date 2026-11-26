@@ -268,7 +268,13 @@ function showBlankMenu(x, y) {
         {label: '打开文件…', shortcut: 'Ctrl+O', icon: 'open-folder', action: deps.openDialog},
         {label: '打开文件夹…', icon: 'folder', action: deps.openFolderDialog},
     ];
-    if (deps.workspaceFolder) items.push({label: '关闭文件夹', icon: 'close', action: deps.closeFolder});
+    // 「关闭文件夹」只对**窗口绑定的**工作区有意义：多工作区窗口没有绑定目录
+    // （deps.workspaceFolder 在那里是 currentRoot()，非空但没有可关的窗口文件夹），
+    // 显示出来点了只会清掉视图根，故隐藏。
+    const boundFolder = typeof deps.boundWorkspaceFolder === 'function'
+        ? deps.boundWorkspaceFolder()
+        : deps.workspaceFolder;
+    if (boundFolder) items.push({label: '关闭文件夹', icon: 'close', action: deps.closeFolder});
     items.push({sep: true}, {label: '设置…', shortcut: 'Ctrl+,', icon: 'gear', action: () => deps.openSettings('general')});
     deps.ctxMenu.open(items, x, y);
 }

@@ -8,8 +8,18 @@ import {createExplorerHistory} from './explorer-history.js';
 import {BUILTIN_FILE_TYPES, fileTypeMenuItem, resolveNewFileMenu} from './new-file-menu.js';
 import {normalizeScratchExt, scratchDraftName, scratchDir} from '../core/scratch.js';
 import {iconSvg} from '../core/icons.js';
+import {legacyPathKey} from '../core/path-key.js';
 
 export function createExplorerOps(deps) {
+
+// 「当前根」：单工作区 = 窗口工作区；多工作区 = 聚焦会话的工作区（main.js 注入 currentRootOf）。
+// 与 deps.workspaceFolder 的区别：那个是**窗口绑定**（多工作区恒空，且本模块会写回它），
+// 这个只读来表达「我在哪个目录」（临时文件落点 / 是否可用 / 复制相对路径）。
+// 缺 currentRootOf 时（旧 mock / 单测）回落到 workspaceFolder，行为与改前一致。
+function rootOf() {
+    if (typeof deps.currentRootOf === 'function') return deps.currentRootOf() || '';
+    return deps.workspaceFolder || '';
+}
 
 // 文件树操作历史（会话内）：删除 / 重命名 / 移动 / 新建各自记录可逆动作。
 const history = createExplorerHistory();
@@ -44,14 +54,14 @@ function parentFolderOf(path) {
 }
 
 function samePathValue(a, b) {
-    const left = String(a || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    const right = String(b || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const left = legacyPathKey(a || '')
+    const right = legacyPathKey(b || '')
     return !!left && left === right;
 }
 
 function pathWithinValue(root, target) {
-    const base = String(root || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    const child = String(target || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const base = legacyPathKey(root || '')
+    const child = legacyPathKey(target || '')
     return !!base && (child === base || child.startsWith(base + '/'));
 }
 
@@ -88,7 +98,6 @@ function setFileClipboard(targets, cut) {
 
 function applyMovedPath(oldPath, newPath) {
     let activeChanged = false;
-    let rootChanged = false;
     for (const doc of deps.docs) {
         if (!doc.path) continue;
         const next = remapPathValue(doc.path, oldPath, newPath);
@@ -97,13 +106,7 @@ function applyMovedPath(oldPath, newPath) {
         doc.name = deps.baseNameOf(next);
         if (doc === deps.file) activeChanged = true;
     }
-    if (deps.workspaceFolder) {
-        const next = remapPathValue(deps.workspaceFolder, oldPath, newPath);
-        if (next !== deps.workspaceFolder) {
-            deps.workspaceFolder = next;
-            rootChanged = true;
-        }
-    }
+    const rootChanged = remapRoots(oldPath, newPath);
     for (const entry of deps.closedTabs) {
         if (entry.path) entry.path = remapPathValue(entry.path, oldPath, newPath);
     }
@@ -190,7 +193,7 @@ async function runPasteItems(clip, destDir, names) {
         }
         recordMove(results, destDir);
     }
-    if (rootChanged && deps.explorer) deps.explorer.setRoot(deps.workspaceFolder);
+    if (rootChanged && deps.explorer) deps.explorer.setRoot(rootOf());
     if (rootChanged) deps.renderWorkspaceCrumbs();
     if (deps.explorer && results.length) {
         await deps.explorer.refreshDir(destDir);
@@ -249,7 +252,7 @@ async function moveEntriesByDrag(items, destDir) {
         rootChanged = rootChanged || flags.rootChanged;
         if (deps.explorer) deps.explorer.removePath(result.path);
     }
-    if (rootChanged && deps.explorer) deps.explorer.setRoot(deps.workspaceFolder);
+    if (rootChanged && deps.explorer) deps.explorer.setRoot(rootOf());
     recordMove(results, destDir);
     if (deps.explorer && results.length) {
         await deps.explorer.refreshDir(destDir);
@@ -446,7 +449,7 @@ function scratchMenuItems(dirPath) {
 // 落盘链路：AIEnsureDir（MkdirAll 幂等）→ CreateEntry（O_EXCL）→ SaveFile（有初始内容时）→ openPath。
 // 不刷文件树：.cadt 在文件树里本来就被跳过，刷了也看不见，改为一句话 flash。
 async function createScratchFile(dirPath, ext, opts = {}) {
-    const ws = deps.workspaceFolder;
+    const ws = rootOf();
     if (!ws) {
         deps.flash('临时文件需要先打开工作区文件夹', true);
         return '';
@@ -561,7 +564,7 @@ function newFileMenuItems(dirPath) {
             } else if (entry.id === 'scratch') {
                 // 临时草稿：有工作区且非只读才可用；不可用时保留灰占位（不给点了没反应的条目）。
                 // 子菜单首行是「上次用过的扩展名」一键建，其余是语言清单（方案 §6）。
-                const available = !!deps.workspaceFolder && !readOnly;
+                const available = !!rootOf() && !readOnly;
                 items.push({
                     label: entry.label,
                     icon: 'doc',
@@ -587,6 +590,32 @@ function newFileMenuItems(dirPath) {
     return items;
 }
 
+// 窗口根被重命名/移动后同步所有「当前根」：
+//   · 窗口绑定（单工作区）→ 写回 deps.workspaceFolder（真值）
+//   · 视图根（多工作区）  → 经 setCurrentRoot 写 lastFocusedRoot
+// 只改窗口绑定是不够的：多工作区下 deps.workspaceFolder 恒空、分支根本不进来，
+// 而 currentRoot() 仍返回旧路径 → 面包屑 / git / 便签 / 草稿目录全部指向已不存在的目录。
+// 返回是否真的改了（调用方据此决定要不要 setRoot / 重画）。
+function remapRoots(oldPath, newPath) {
+    let changed = false;
+    if (deps.workspaceFolder) {
+        const next = remapPathValue(deps.workspaceFolder, oldPath, newPath);
+        if (next !== deps.workspaceFolder) {
+            deps.workspaceFolder = next;
+            changed = true;
+        }
+    }
+    if (typeof deps.setCurrentRoot === 'function') {
+        const cur = typeof deps.currentRootOf === 'function' ? deps.currentRootOf() : '';
+        const next = cur ? remapPathValue(cur, oldPath, newPath) : '';
+        if (next && next !== cur) {
+            deps.setCurrentRoot(next);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 function applyRenamedPath(oldPath, newPath) {
     let activeChanged = false;
     for (const doc of deps.docs) {
@@ -597,13 +626,7 @@ function applyRenamedPath(oldPath, newPath) {
         doc.name = deps.baseNameOf(next);
         if (doc === deps.file) activeChanged = true;
     }
-    if (deps.workspaceFolder) {
-        const next = remapPathValue(deps.workspaceFolder, oldPath, newPath);
-        if (next !== deps.workspaceFolder) {
-            deps.workspaceFolder = next;
-            deps.renderWorkspaceCrumbs();
-        }
-    }
+    if (remapRoots(oldPath, newPath)) deps.renderWorkspaceCrumbs();
     for (const entry of deps.closedTabs) {
         if (entry.path) entry.path = remapPathValue(entry.path, oldPath, newPath);
     }
@@ -790,7 +813,7 @@ function relativePathFrom(path, root) {
 
 function copyPathMenuItems(targets) {
     const list = clipboardItems(targets);
-    const root = deps.workspaceFolder || (deps.explorer && deps.explorer.getRoot ? deps.explorer.getRoot() : '');
+    const root = rootOf() || (deps.explorer && deps.explorer.getRoot ? deps.explorer.getRoot() : '');
     const absolute = list.map((item) => item.path).join('\r\n');
     const relativeParts = list.map((item) => relativePathFrom(item.path, root));
     const relative = relativeParts.every(Boolean) ? relativeParts.join('\r\n') : '';

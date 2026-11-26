@@ -14,10 +14,11 @@ import {isSessionMissing} from './db-sessions.js';
 import {
     rowKeyOf, rowKeysMap, FILTER_OPS, filterOpNeedsValue,
     rowEstimateLabel, dirtySummary, tableEditable, formatElapsed, buildDDL,
+    DB_ROW_DEFAULT, DB_ROW_MAX,
 } from './db-model.js';
 
-const PAGE_SIZES = [10, 100, 250, 500, 1000, 5000]; // 档位；5000 = 服务端 rowMax 上限（「所有」）
-const DEFAULT_PAGE_SIZE = 500;
+const PAGE_SIZES = [10, 100, 250, DB_ROW_DEFAULT, 1000, DB_ROW_MAX]; // 档位；末档 = 服务端 rowMax 上限（「所有」）
+const DEFAULT_PAGE_SIZE = DB_ROW_DEFAULT;
 
 export function createDbTablePane(deps, session, db, table) {
 
@@ -299,15 +300,15 @@ rowHeightSel.control.addEventListener('change', () => {
     if (step) grid.setRowHeight(step.h);
 });
 
-// 分页档位（图7）：10/100/250/500/1000/所有（5000 = 服务端上限）/自定义
+// 分页档位（图7）：10/100/250/500/1000/所有（末档 = 服务端上限）/自定义
 const pageSizeSel = createSelect({
     options: [
         {value: '10', label: '10 行'},
         {value: '100', label: '100 行'},
         {value: '250', label: '250 行'},
-        {value: '500', label: '500 行', selected: true},
+        {value: String(DB_ROW_DEFAULT), label: DB_ROW_DEFAULT + ' 行', selected: true},
         {value: '1000', label: '1000 行'},
-        {value: '5000', label: '所有（5000 上限）'},
+        {value: String(DB_ROW_MAX), label: '所有（' + DB_ROW_MAX + ' 上限）'},
         {value: 'custom', label: '自定义…'},
     ],
     title: '每页行数',
@@ -315,11 +316,11 @@ const pageSizeSel = createSelect({
 pageSizeSel.element.addEventListener('change', () => {
     let v = pageSizeSel.control.value;
     if (v === 'custom') {
-        const input = window.prompt('每页行数（10–5000）：', String(pageSize));
+        const input = window.prompt('每页行数（10–' + DB_ROW_MAX + '）：', String(pageSize));
         if (!input) { pageSizeSel.control.value = String(pageSize); return; }
         v = String(Number(input) || 0);
-        if (Number(v) < 10 || Number(v) > 5000) {
-            deps.flash('行数需在 10–5000 之间', true);
+        if (Number(v) < 10 || Number(v) > DB_ROW_MAX) {
+            deps.flash('行数需在 10–' + DB_ROW_MAX + ' 之间', true);
             pageSizeSel.control.value = String(pageSize);
             return;
         }

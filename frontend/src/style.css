@@ -935,6 +935,19 @@ select,
     cursor: default;
 }
 .ws-project:hover { background: var(--tree-hover); }
+/* 「借来的根」：多工作区下聚焦会话无工作区，树保留上次目录。名字仍显示（树能用），
+   但用虚线与灰化标明「这不是当前会话的根」，避免误以为会话绑在这个仓库上。 */
+.ws-project.is-orphan { opacity: .62; }
+.ws-project.is-orphan .ws-project-badge {
+    background: transparent;
+    border: 1px dashed var(--muted);
+    color: var(--muted);
+}
+.ws-project.is-orphan .ws-project-name::after {
+    content: ' · 会话无工作区';
+    color: var(--muted);
+    font-size: 11px;
+}
 .ws-project-badge {
     flex: none;
     width: 20px;
@@ -967,6 +980,35 @@ select,
 }
 .ws-branch:hover { background: var(--tree-hover); }
 .ws-branch.hidden { display: none; }
+
+/* 窗口模式 chip：与 ws-branch 同款外形，但独立于 ws-crumbs（多工作区模式下 crumbs 整块隐藏）。
+   多工作区态用强调色描边区分——它是「不绑定单个目录」的窗口，视觉上要能一眼看出。 */
+.ws-mode {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 26px;
+    flex: 0 0 auto;
+    padding: 0 7px;
+    margin-left: 2px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: default;
+}
+.ws-mode:hover { background: var(--tree-hover); color: var(--text); }
+.ws-mode-icon { display: inline-flex; width: 14px; height: 14px; }
+.ws-mode-icon svg { width: 14px; height: 14px; }
+/* 多工作区态：强调色 + 细描边，与单工作区态（纯灰）拉开差别 */
+.ws-mode.is-multi {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.ws-mode.is-multi:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .ws-branch-icon { flex: none; color: var(--muted); }
 .ws-branch-name { min-width: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -2526,6 +2568,9 @@ aside[data-sidebar-view="app-pages"] #app-pages-panel { display: flex; flex: 1; 
 .ai-session-item {
     /* .ai-session-stop 以行为定位上下文（right:22px/top:…）；缺了这条它会逃到 #sidebar 顶部 */
     position: relative;
+    /* 新建会话后 scrollIntoView({block:'start'}) 会把它顶到最上：留一点空隙，
+       免得贴着分组头/滚动区边缘看不清是新加的那条。 */
+    scroll-margin-top: 6px;
     display: flex;
     align-items: flex-start;
     gap: 4px;
@@ -2558,6 +2603,24 @@ aside[data-sidebar-view="app-pages"] #app-pages-panel { display: flex; flex: 1; 
 /* 新建会话是分体按钮：主体占满剩余宽度，右侧「⋯」只开更多新建方式的菜单 */
 .ai-session-action-split { display: flex; gap: 4px; }
 .ai-session-action-split .ai-session-action-btn { flex: 1; min-width: 0; }
+/* 按钮内部的「选择工作区」箭头：不是独立胶囊（那是右侧「⋯」的形态），
+   只用一条细分隔线与文字分开，点击区域窄、靠近右边缘。 */
+.ai-session-action-chev {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    margin-left: auto;
+    margin-right: -3px;
+    padding-left: 5px;
+    box-sizing: content-box;
+    border-left: 1px solid var(--border);
+    color: var(--muted);
+    cursor: pointer;
+}
+.ai-session-action-chev:hover { color: var(--accent); }
+.ai-session-action-chev svg { display: block; width: 11px; height: 11px; }
 .ai-session-action-more {
     flex: none;
     display: grid;
@@ -2765,24 +2828,59 @@ aside[data-sidebar-view="app-pages"] #app-pages-panel { display: flex; flex: 1; 
 }
 .ai-session-group-more svg { width: 14px; height: 14px; display: block; }
 .ai-session-group-more:hover { background: var(--hover); color: var(--text); }
-/* 工作区内的自定义子分组头：比工作区头更弱、缩进更深（tag 图标 + 名称 + 条数） */
+/* 工作区内的自定义子分组头：比工作区头更弱、缩进更深（折叠箭头 + tag 图标 + 名称 + 条数 + ⋯） */
 .ai-session-subgroup-head {
     display: flex;
     align-items: center;
     gap: 5px;
     width: 100%;
     margin-top: 2px;
-    padding: 3px 10px 2px 18px;
+    padding: 3px 10px 2px 14px;
     color: var(--muted);
     font: inherit;
     font-size: 10px;
     font-weight: 500;
     text-align: left;
+    cursor: pointer;
 }
+.ai-session-subgroup-head:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 4px; }
+.ai-session-subgroup-chev {
+    flex: none;
+    width: 11px;
+    height: 11px;
+    display: grid;
+    place-items: center;
+    transition: transform 0.12s;
+}
+.ai-session-subgroup-head.expanded .ai-session-subgroup-chev { transform: rotate(90deg); }
 .ai-session-subgroup-icon { flex: none; width: 11px; height: 11px; display: grid; place-items: center; color: var(--muted); }
 .ai-session-subgroup-icon svg { width: 11px; height: 11px; display: block; }
 .ai-session-subgroup-name { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .ai-session-subgroup-count { flex: none; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+/* 子分组头「⋯」：悬浮才出现（对齐工作区分组头的动作显隐） */
+.ai-session-subgroup-actions {
+    flex: none;
+    display: flex;
+    align-items: center;
+    opacity: 0;
+    transition: opacity 0.12s;
+}
+.ai-session-subgroup-head:hover .ai-session-subgroup-actions,
+.ai-session-subgroup-head:focus-within .ai-session-subgroup-actions { opacity: 1; }
+.ai-session-subgroup-action {
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+.ai-session-subgroup-action svg { width: 12px; height: 12px; }
+.ai-session-subgroup-action:hover { background: var(--hover); color: var(--text); }
 /* 会话条目右侧：未悬浮显示状态（运行中 / 待确认 / 已完成未查看），悬浮换成「⋯」会话操作 */
 .ai-session-side {
     flex: none;
@@ -10773,6 +10871,42 @@ body.terminal-only #terminal-panel > #terminal-resize { display: none !important
 .ai-model-card-menu-item:hover { background: var(--hover); }
 .ai-model-card-menu-item.danger { color: var(--danger, #e5484d); }
 .ai-model-card-menu-item.danger svg { color: var(--danger, #e5484d); }
+/* harness 窗口「新建会话」选择器（ai/session/ai-new-session-picker.js；body 浮层，
+   z-index 由 overlayStack 的 popover 档分配——这里不要写死 z-index） */
+.ai-new-session-pop {
+    position: fixed;
+    min-width: 168px;
+    max-width: 340px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+}
+.ai-new-session-pop-title {
+    padding: 4px 9px 6px;
+    color: var(--muted);
+    font-size: 11px;
+}
+.ai-new-session-pop-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 9px;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+.ai-new-session-pop-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-new-session-pop-item svg { width: 13px; height: 13px; flex: none; color: var(--muted); }
+.ai-new-session-pop-item:hover { background: var(--hover); }
+.ai-new-session-pop-sep { height: 1px; margin: 4px 2px; background: var(--border); }
 /* 账号手动排序：手柄 + 上移/下移 + 拖拽让位插槽（JetBrains 式） */
 .ai-model-grip {
     flex: none;
@@ -11656,6 +11790,8 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .ps-summary { flex: 1 1 auto; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-actions { flex: none; display: flex; gap: 2px; }
 .ap-patch-path { font-size: 11px; color: var(--muted); margin: -4px 0 10px; }
+/* 认知索引页头的工作区位置（与 .ap-patch-path 同款：perWorkspace 页要标出绑的是哪个仓库） */
+.cog-workspace { font-size: 11px; color: var(--muted); margin: -4px 0 10px; }
 .ap-patch-foot { display: flex; align-items: center; gap: 4px; justify-content: center; padding: 8px; font-size: 11px; color: var(--muted); }
 /* 补丁详情抽屉 */
 .ap-patch-detail { display: flex; flex-direction: column; gap: 8px; }

@@ -8,6 +8,7 @@
 import {iconSvg} from '../core/icons.js';
 import {createInput, createSelect} from '../core/form-controls.js';
 import {createFileIcon} from '../core/fileicons.js';
+import {GITGRAPH_PANE_WIDTHS_KEY, GITGRAPH_INFO_HEIGHT_KEY} from '../core/storage-keys.js';
 import {kvGet, kvGetJson, kvSet, kvSetJson} from '../core/kv-store.js';
 import {createGitGraphDialogs} from './git-graph-dialogs.js';
 
@@ -258,7 +259,7 @@ const REFS_MIN = 120;       // ref 树最小宽
 const DETAIL_MIN = 180;     // 详情最小宽
 const COMMITS_MIN = 200;    // 中间提交列表最小宽（两条分割条各占 4px，共 8px）
 const SPLITTERS_W = 8;
-const PANE_W_KEY = 'cadt.gitgraph.paneWidths';
+const PANE_W_KEY = GITGRAPH_PANE_WIDTHS_KEY;
 
 // clampPaneWidth 把拖动请求的宽度限制在 [min, max] 内（纯函数，可单测）。
 // 非有限值回落到 min；max < min 时也回落到 min（窗口太窄的退化情形）。
@@ -1138,7 +1139,7 @@ export function createGitGraph(ctx) {
     }
 
     // 详情信息区高度持久化：null = 未拖过（自适应内容）。存比例（相对详情高），窗口变化不失真。
-    const INFO_H_KEY = 'cadt.gitgraph.infoH';
+    const INFO_H_KEY = GITGRAPH_INFO_HEIGHT_KEY;
     function loadInfoH() {
         const raw = kvGet(INFO_H_KEY);
         if (!raw) return null;

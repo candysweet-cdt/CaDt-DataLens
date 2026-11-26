@@ -13,7 +13,7 @@ const ICONS = {
     reveal: iconSvg('locate'),
 };
 function normalizePath(path) {
-    return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    return legacyPathKey(path || '')
 }
 
 function samePath(a, b) {
@@ -66,6 +66,7 @@ export function isMissingDirError(message) {
 
 import {createFileIcon} from '../core/fileicons.js';
 import {createExplorerList} from './explorer-list.js';
+import {legacyPathKey} from '../core/path-key.js';
 
 function compareEntries(a, b) {
     if (!!a.isDir !== !!b.isDir) return a.isDir ? -1 : 1;
@@ -194,6 +195,99 @@ export function createExplorer(options) {
     // 「临时草稿」固定节点（JetBrains 的 Scratches and Consoles 同款）：不在 tree.children 里，
     // 由 renderTree 单独追加在根节点之后；路径是真实的 <ws>/.cadt/scratch，loadNode 照常读盘。
     let scratchNode = null;
+
+    // ── 每根展开态快照（切换工作区时「跟离开时一样」）────────────────────────────
+    // 树本身是懒加载（只有展开的层级才 readDir），所以切根的 IPC 成本只有根目录一层；
+    // 真正丢的是**展开态与滚动位置**——切走再切回来，用户得重新一层层点开。
+    // 这里按根记住展开过的目录路径，切回来时逐层恢复（每层仍是 readDir，不缓存目录内容：
+    // 缓存条目要靠 mtime 校验，校验本身又是一次 IPC，省不下来；不校验则可能显示陈旧数据）。
+    // 上限 16 个根（LRU）：够覆盖「常在几个工作区之间跳」，也不至于吃内存。
+    const ROOT_SNAPSHOT_LIMIT = 16;
+    const rootSnapshots = new Map(); // key(小写正斜杠) → {expanded: Set<string>, scrollTop: number}
+
+    function rootKeyOf(path) {
+        return legacyPathKey(path || '')
+    }
+
+    // 收集当前树里所有已展开目录的路径（含根）。scratch 固定节点不记：
+    // 它是常驻节点，展开与否由草稿区自身逻辑决定。
+    // 注意命名：本文件后面已有 `collectExpanded(node, out)`（按节点收集到数组，
+    // refreshTreeSilently 用）。同作用域内同名 function 声明会**后者覆盖前者**，
+    // 这次就踩了：saveRootSnapshot 调到的是那个两参版本 → 传 undefined → 返回 undefined
+    // → `expanded.size` 抛 TypeError。所以这里叫 *Paths 以示区别。
+    function collectExpandedPaths() {
+        const out = new Set();
+        if (!tree) return out;
+        const walk = (node) => {
+            if (!node || !node.isDir) return;
+            if (node.expanded) out.add(node.path);
+            for (const child of node.children || []) {
+                if (child.isDir && child.expanded) walk(child);
+            }
+        };
+        walk(tree);
+        return out;
+    }
+
+    // 存下当前根的展开态 + 滚动位置。切根 / 刷新 / 关闭文件夹前调用。
+    function saveRootSnapshot() {
+        if (!tree || !tree.path) return;
+        const key = rootKeyOf(tree.path);
+        if (!key) return;
+        const expanded = collectExpandedPaths();
+        // 只有根展开、没有子目录：没什么可记的，删掉旧条目即可（避免积累无意义快照）
+        const onlyRoot = expanded.size <= 1;
+        if (onlyRoot) {
+            rootSnapshots.delete(key);
+            return;
+        }
+        rootSnapshots.delete(key); // 重新插入以刷新 LRU 顺序
+        rootSnapshots.set(key, {
+            expanded,
+            scrollTop: body ? body.scrollTop : 0,
+        });
+        while (rootSnapshots.size > ROOT_SNAPSHOT_LIMIT) {
+            const oldest = rootSnapshots.keys().next().value;
+            rootSnapshots.delete(oldest);
+        }
+    }
+
+    // 逐层恢复展开态：只走「快照里出现过的目录」这一条链，不为每个子目录都 readDir。
+    // seq 与树代数绑定，中途换根就整体作废（同 revealActive 的守卫）。
+    async function restoreRootSnapshot(paths, seq) {
+        if (!tree || !paths || !paths.size) return;
+        const rootKey = rootKeyOf(tree.path);
+        // 把「待展开路径」按层剥：先展开根，再逐层向下；每层只展开本层命中前缀的节点。
+        let frontier = [tree];
+        let guard = 0;
+        while (frontier.length && guard++ < 64) {
+            const next = [];
+            for (const node of frontier) {
+                if (!node || !node.isDir) continue;
+                await loadNode(node, seq);
+                if (seq !== treeSeq) return; // 换根了：丢掉这次恢复
+                node.expanded = true;
+                for (const child of node.children || []) {
+                    if (!child.isDir) continue;
+                    const childKey = rootKeyOf(child.path);
+                    // 有任一待展开路径以它为前缀（含自身）就继续往下
+                    for (const p of paths) {
+                        const pk = rootKeyOf(p);
+                        if (pk === childKey || pk.startsWith(childKey + '/')) {
+                            next.push(child);
+                            break;
+                        }
+                    }
+                }
+            }
+            frontier = next;
+            if (frontier.length) renderTree();
+        }
+        if (seq !== treeSeq) return;
+        renderTree();
+        const snap = rootSnapshots.get(rootKey);
+        if (snap && body && Number.isFinite(snap.scrollTop)) body.scrollTop = snap.scrollTop;
+    }
 
     const canList = (name) => (typeof isSupported === 'function' ? isSupported(name) : true);
 
@@ -889,7 +983,18 @@ export function createExplorer(options) {
     }
 
     function setRoot(path) {
-        explicitRoot = path || null;
+        // 同根短路：树已经是这个根就直接返回。以前无条件 tree = null 会把整棵树丢掉重建
+        // （展开态、滚动位置全没），切会话时同一仓库反复 setRoot 就是白扔一次。
+        const nextRoot = path || null;
+        if (tree && tree.path && nextRoot && samePath(tree.path, nextRoot)) {
+            explicitRoot = nextRoot;
+            if (visible && mode === 'tree') { ensureTree(); renderTree(); revealActive(); }
+            else updateTitle();
+            return;
+        }
+        // 切走前存下旧根的展开态（切回来时还原）
+        saveRootSnapshot();
+        explicitRoot = nextRoot;
         tree = null;
         selection = [];
         anchorPath = null;
@@ -900,6 +1005,12 @@ export function createExplorer(options) {
             ensureTree();
             renderTree();
             revealActive();
+            // 切到曾经展开过的根：逐层还原它的展开态（不阻塞调用方，失败就当没快照）
+            const snap = nextRoot ? rootSnapshots.get(rootKeyOf(nextRoot)) : null;
+            if (snap && snap.expanded.size > 1) {
+                const seq = treeSeq;
+                Promise.resolve(restoreRootSnapshot(snap.expanded, seq)).catch(() => {});
+            }
         } else {
             updateTitle();
         }
@@ -956,6 +1067,9 @@ export function createExplorer(options) {
         if (mode === 'list') {
             loadList(true);
         } else {
+            // 用户显式刷新：记住展开态再重建，刷完还原（否则点一下刷新，展开的目录全收起来）
+            saveRootSnapshot();
+            const keepRoot = tree && tree.path ? tree.path : '';
             tree = null;
             treeSeq++;
             revealSeq++;
@@ -967,6 +1081,11 @@ export function createExplorer(options) {
                 else scratchNode.loaded = false;
             }
             revealActive();
+            const snap = keepRoot ? rootSnapshots.get(rootKeyOf(keepRoot)) : null;
+            if (snap && snap.expanded.size > 1) {
+                const seq = treeSeq;
+                Promise.resolve(restoreRootSnapshot(snap.expanded, seq)).catch(() => {});
+            }
         }
         scheduleAutoRefresh();
     }
@@ -1120,8 +1239,8 @@ export function createExplorer(options) {
         if (!payload) return;
         const current = tree ? tree.path : listRootPath();
         if (!current) return;
-        const root = String(payload.root || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-        const currentRoot = String(current).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        const root = legacyPathKey(payload.root || '')
+        const currentRoot = legacyPathKey(current)
         if (!root) return;
         if (currentRoot !== root && !currentRoot.startsWith(root + '/')) return;
         if (payload.overflow) {

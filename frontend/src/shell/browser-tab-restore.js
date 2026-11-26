@@ -19,10 +19,11 @@
 
 import {parseJson} from '../core/json-safe.js';
 import {kvGet, kvGetJson, kvRemove, kvSet, kvSetJson} from '../core/kv-store.js';
+import {BROWSER_TABS_KEY, BROWSER_TABS_OWNER_KEY} from '../core/storage-keys.js';
 
 // ---- 纯函数与常量（导出供单测）----
-export const BROWSER_TABS_KEY = 'cadt.browser-tabs.v1';
-export const BROWSER_TABS_OWNER_KEY = 'cadt.browser-tabs.owner';
+// 键名定义在 core/storage-keys.js（这里转出，保持既有 import 面不变）。
+export {BROWSER_TABS_KEY, BROWSER_TABS_OWNER_KEY};
 export const BROWSER_TABS_LIMIT = 20;
 export const BROWSER_TABS_LEASE_TTL = 15000;
 export const BROWSER_TABS_HEARTBEAT_MS = 5000;

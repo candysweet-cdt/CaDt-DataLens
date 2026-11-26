@@ -138,17 +138,24 @@
         </nav>
         <div id="filename" class="filename"><span id="filename-icon" class="title-icon"></span><span id="filename-text" class="filename-text">未打开文件</span></div>
         <div id="ws-crumbs" class="ws-crumbs hidden">
-            <button type="button" id="ws-project" class="ws-project" data-tip="工作区" aria-label="工作区">
+            <button type="button" id="ws-project" class="ws-project" aria-label="工作区">
                 <span id="ws-project-badge" class="ws-project-badge">C</span>
                 <span id="ws-project-name" class="ws-project-name"></span>
                 <svg class="ws-chev" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4.4 6.2 8 9.8l3.6-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
-            <button type="button" id="ws-branch" class="ws-branch hidden" data-tip="当前 Git 分支" aria-label="当前 Git 分支">
+            <button type="button" id="ws-branch" class="ws-branch hidden" aria-label="当前 Git 分支">
                 <svg class="ws-branch-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="4.6" cy="3.7" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="4.6" cy="12.3" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="11.4" cy="5.4" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4.6 5.4v5.2M11.4 7.1c0 2.1-2.2 2.9-4.3 3.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
                 <span id="ws-branch-name" class="ws-branch-name"></span>
                 <svg class="ws-chev" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4.4 6.2 8 9.8l3.6-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
         </div>
+        <!-- 窗口模式：在 ws-crumbs 之外——多工作区模式下没有单个工作区，crumbs 整块隐藏，模式仍要可见。
+             点击切换「工作区 ↔ 多工作区」；状态由 window.__harnessWindow 单一决定。 -->
+        <button type="button" id="ws-mode" class="ws-mode" aria-label="窗口模式" aria-haspopup="true" aria-expanded="false">
+            <span id="ws-mode-icon" class="ws-mode-icon"></span>
+            <span id="ws-mode-name" class="ws-mode-name">工作区</span>
+            <svg class="ws-chev" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4.4 6.2 8 9.8l3.6-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
         <div class="spacer"></div>
         <div id="tb-run-widget" class="tb-run-widget">
             <button type="button" id="tb-run-config" class="tb-run-config" data-tip="选择运行配置" aria-label="运行配置" aria-haspopup="true" aria-expanded="false">
@@ -1121,8 +1128,8 @@
                                     <select id="ai-opt-idle-timeout" class="opt-select">
                                         <option value="30">30 秒</option>
                                         <option value="60">1 分钟</option>
-                                        <option value="120">2 分钟（默认）</option>
-                                        <option value="300">5 分钟</option>
+                                        <option value="120">2 分钟</option>
+                                        <option value="300">5 分钟（默认）</option>
                                         <option value="600">10 分钟</option>
                                         <option value="1800">30 分钟</option>
                                         <option value="3600">60 分钟</option>
@@ -2618,12 +2625,18 @@
                     <input id="ai-session-filter" type="text" class="sb-filter-input" placeholder="输入 ID 或标题过滤…" spellcheck="false" autocomplete="off">
                 </div>
                 <div id="ai-session-actions" class="ai-session-actions">
-                    <!-- 分体按钮：主体新建常规会话（绑定当前工作区），右侧「⋯」列出其他新建方式（临时会话…） -->
+                    <!-- 主体新建常规会话：始终建在**当前根**（单工作区=窗口工作区；多工作区=聚焦会话
+                         的工作区），没有当前根就建成会话沙盒。
+                         内部的 ⌄（不是独立胶囊）：点它列出「最近工作区 / 打开文件夹 / 会话沙盒」。
+                         右侧「⋯」是另一个入口：临时会话等其它新建方式。 -->
                     <div class="ai-session-action-split">
                         <button type="button" id="ai-session-action-new" class="ai-session-action-btn" aria-label="新建会话（当前工作区）">
                             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span>新建会话</span>
+                            <span id="ai-session-action-chev" class="ai-session-action-chev" role="button" tabindex="-1" aria-label="选择工作区新建会话" aria-haspopup="menu">
+                                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 6.2 8 9.8l3.6-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
                         </button>
-                        <button type="button" id="ai-session-action-new-more" class="ai-session-action-more" aria-label="新建会话的更多方式">
+                        <button type="button" id="ai-session-action-more" class="ai-session-action-more" aria-label="其它新建方式" aria-haspopup="menu">
                             <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1" fill="currentColor"/><circle cx="8" cy="8" r="1" fill="currentColor"/><circle cx="12.5" cy="8" r="1" fill="currentColor"/></svg>
                         </button>
                     </div>
