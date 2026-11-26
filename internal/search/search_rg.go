@@ -31,15 +31,16 @@ type rgMessage struct {
 	} `json:"data"`
 }
 
-func rgGlobalArgs(spec *searchSpec, artifactOnly bool) []string {
+func rgGlobalArgs(spec *searchSpec, artifactOnly, negatedPass bool) []string {
 	args := []string{
 		"--json", "--no-config", "--no-messages", "--color", "never",
 		"--max-filesize", "4M",
 		"--max-count", strconv.Itoa(searchMaxPerFile),
 		"--hidden",
 		// 默认软忽略目录（.git / node_modules / .venv 等）与用户 search-ignore 统一由
-		// spec.ignore.globArgs() 生成（见下方），用户 ! 前缀可覆盖默认；真正口径由
-		// skipRgHit 按 spec.ignore 二次过滤保底（Windows 上 rg 路径型 glob 不可靠）。
+		// spec.ignore.globArgs() 生成（见下方），真正口径由 skipRgHit 二次过滤保底。
+		// 取反规则走独立补扫，不能把正向 glob 混进本趟——否则 rg 会进入白名单模式，
+		// 把未被取反的普通文件也排除掉。
 		// AI 隔离 worktree：目录与子树双保险（尽力剪枝；Windows 上路径型 glob 不可靠，
 		// runRgPass 里另有 skipRgHit 按 SkipPath 二次过滤保底）。口径与 search.go 的
 		// SkipPath 一致（含 .cadt/tmp 不受影响）。
@@ -58,14 +59,15 @@ func rgGlobalArgs(spec *searchSpec, artifactOnly bool) []string {
 	if spec.context > 0 {
 		args = append(args, "-C", strconv.Itoa(spec.context))
 	}
-	// 文件名/路径通配下推给 rg（-g 的语义与 globMatchPath 基本一致：含 / 按路径、否则按文件名）
-	if spec.pattern != "" {
+	// 文件名/路径通配下推给 rg（-g 的语义与 globMatchPath 基本一致：含 / 按路径、否则按文件名）。
+	// 取反补扫只把取反目标作为正向 glob，其余条件在 Go 侧过滤，避免两个白名单取并集。
+	if !negatedPass && spec.pattern != "" {
 		args = append(args, "--glob", spec.pattern)
 	}
 	// 产物档拆两趟：源码趟按组件名排除产物目录/后缀，产物趟用 `**/` 前缀包含任意层级。
 	// 表与 search.go 的 searchArtifactDirs / searchArtifactSuffixes 单一来源，改表即两边同步。
 	// FileOnly（用户点名单个文件）不分档：不管它在不在 dist/build 下都当源码扫。
-	if !spec.fileOnly {
+	if !spec.fileOnly && !negatedPass {
 		for _, dir := range searchArtifactDirs {
 			if artifactOnly {
 				args = append(args, "--glob", "**/"+dir+"/**")
@@ -82,11 +84,15 @@ func rgGlobalArgs(spec *searchSpec, artifactOnly bool) []string {
 		}
 	}
 	// 排除通配放在最后：rg 的 glob 后者覆盖前者，确保产物档的「包含」不会盖掉用户排除。
-	if spec.exclude != "" {
+	// 取反补扫里改由 Go 侧同时校验 pattern/exclude，避免正向取反 glob 反客为主。
+	if !negatedPass && spec.exclude != "" {
 		args = append(args, "--glob", "!"+spec.exclude)
 	}
-	// 用户 search-ignore 表：转成 rg glob 尽力剪枝（真正口径由 skipRgHit 二次过滤保底）
-	args = append(args, spec.ignore.globArgs()...)
+	if negatedPass {
+		args = append(args, spec.ignore.negatedGlobArgs()...)
+	} else {
+		args = append(args, spec.ignore.globArgs()...)
+	}
 	return append(args, "--", spec.query)
 }
 
@@ -95,6 +101,13 @@ type rgPass struct {
 	files     map[string]bool
 	truncated bool
 	usable    bool
+}
+
+type rgPassOptions struct {
+	artifactOnly bool
+	negatedPass  bool
+	hitCap       int
+	deadline     time.Time
 }
 
 // skipRgHit 过滤 rg 命中路径里的 AI 隔离 worktree 副本与用户排除表命中的文件。
@@ -116,18 +129,19 @@ func skipRgHit(root, path string, ignore *IgnoreRules, cache map[string]bool) bo
 
 // runRgPass 跑一趟 rg 并把命中收齐。artifactOnly 时只收产物档命中——glob 已做包含，
 // Go 侧再按分类器过滤一次，避免用户 filePattern 与包含 glob 取并集时混进源码命中。
-func runRgPass(rgPath, root string, spec *searchSpec, artifactOnly bool, hitCap int, deadline time.Time) rgPass {
+func runRgPass(rgPath, root string, spec *searchSpec, opts rgPassOptions) rgPass {
+	artifactOnly, negatedPass := opts.artifactOnly, opts.negatedPass
 	pass := rgPass{files: map[string]bool{}}
 	worktreeCache := map[string]bool{}
 	contextLines := map[string]map[int]string{}
-	remaining := time.Until(deadline)
-	if remaining <= 0 || hitCap <= 0 {
+	remaining := time.Until(opts.deadline)
+	if remaining <= 0 || opts.hitCap <= 0 {
 		pass.truncated = true
 		return pass
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), remaining)
 	defer cancel()
-	args := append(rgGlobalArgs(spec, artifactOnly), root)
+	args := append(rgGlobalArgs(spec, artifactOnly, negatedPass), root)
 	cmd := exec.CommandContext(ctx, rgPath, args...)
 	executil.HideCommandWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
@@ -152,6 +166,25 @@ loop:
 		if skipRgHit(root, path, spec.ignore, worktreeCache) {
 			continue
 		}
+		if negatedPass {
+			// 补扫只把取反目标交给 rg 白名单；文件名/排除通配与产物分档在 Go 侧
+			// 同时生效，避免多个正向 glob 取并集把无关文件带进来。
+			rel := path
+			if r, err := filepath.Rel(root, path); err == nil {
+				rel = r
+			}
+			rel = filepath.ToSlash(rel)
+			name := filepath.Base(path)
+			if spec.pattern != "" && !globMatchPath(spec.pattern, rel, name) {
+				continue
+			}
+			if spec.exclude != "" && globMatchPath(spec.exclude, rel, name) {
+				continue
+			}
+			if artifactOnly != searchIsArtifactPath(rel) {
+				continue
+			}
+		}
 		if msg.Type == "context" {
 			if spec.context > 0 && msg.Data.LineNumber > 0 {
 				if contextLines[path] == nil {
@@ -164,7 +197,7 @@ loop:
 		if msg.Type != "match" {
 			continue
 		}
-		if artifactOnly {
+		if artifactOnly && !negatedPass {
 			isArtifact, cached := tierCache[path]
 			if !cached {
 				rel := path
@@ -200,7 +233,7 @@ loop:
 			if hitsPerFile[path] >= searchMaxPerFile {
 				continue
 			}
-			if len(pass.hits) >= hitCap {
+			if len(pass.hits) >= opts.hitCap {
 				pass.truncated = true
 				capped = true
 				break loop
@@ -251,21 +284,63 @@ loop:
 	return pass
 }
 
+// mergeRgPasses 合并正常趟与取反补扫，按命中位置去重；截断标记取并集。
+func mergeRgPasses(base, extra rgPass) rgPass {
+	if !extra.usable {
+		return base
+	}
+	out := base
+	out.truncated = out.truncated || extra.truncated
+	if out.files == nil {
+		out.files = map[string]bool{}
+	}
+	for path := range extra.files {
+		out.files[path] = true
+	}
+	seen := make(map[string]bool, len(out.hits)+len(extra.hits))
+	for _, hit := range out.hits {
+		seen[rgHitKey(hit)] = true
+	}
+	for _, hit := range extra.hits {
+		key := rgHitKey(hit)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out.hits = append(out.hits, hit)
+	}
+	return out
+}
+
+func rgHitKey(hit SearchHit) string {
+	return hit.Path + "\x00" + strconv.Itoa(hit.Line) + "\x00" + strconv.Itoa(hit.Column) + "\x00" + strconv.Itoa(hit.Length)
+}
+
 // searchWithRipgrep 用用户自带的 rg 做搜索；第二个返回值表示是否可用，
 // 不可用（未安装/无法启动/歧义失败）时应退回内置扫描。
 // 两趟扫描：先源码档，结果没占满预算再补产物档，两档各自排序后拼接。
+// 有 ! 取反规则时额外跑一趟正向白名单补扫，避免把取反 glob 混进正常趟导致 rg
+// 进入白名单模式、误排除普通文件。
 func searchWithRipgrep(root string, spec *searchSpec) (*SearchResult, bool) {
 	rgPath, err := exec.LookPath("rg")
 	if err != nil {
 		return nil, false
 	}
 	deadline := time.Now().Add(searchBudget)
-	src := runRgPass(rgPath, root, spec, false, spec.maxResults, deadline)
+	src := runRgPass(rgPath, root, spec, rgPassOptions{hitCap: spec.maxResults, deadline: deadline})
 	if !src.usable {
 		return nil, false
 	}
+	if spec.ignore.hasNegated() {
+		extra := runRgPass(rgPath, root, spec, rgPassOptions{negatedPass: true, hitCap: spec.maxResults, deadline: deadline})
+		src = mergeRgPasses(src, extra)
+	}
 	needle := spec.needle
 	sortSearchTier(src.hits, needle, spec.caseSensitive, false)
+	if len(src.hits) > spec.maxResults {
+		src.hits = src.hits[:spec.maxResults]
+		src.truncated = true
+	}
 	result := &SearchResult{
 		Hits:      src.hits,
 		Files:     len(src.files),
@@ -276,9 +351,22 @@ func searchWithRipgrep(root string, spec *searchSpec) (*SearchResult, bool) {
 		return result, true
 	}
 	if len(result.Hits) < spec.maxResults {
-		art := runRgPass(rgPath, root, spec, true, spec.maxResults-len(result.Hits), deadline)
+		remaining := spec.maxResults - len(result.Hits)
+		art := runRgPass(rgPath, root, spec, rgPassOptions{artifactOnly: true, hitCap: remaining, deadline: deadline})
+		if spec.ignore.hasNegated() {
+			extra := runRgPass(rgPath, root, spec, rgPassOptions{artifactOnly: true, negatedPass: true, hitCap: remaining, deadline: deadline})
+			if art.usable {
+				art = mergeRgPasses(art, extra)
+			} else {
+				art = extra
+			}
+		}
 		if art.usable {
 			sortSearchTier(art.hits, needle, spec.caseSensitive, false)
+			if len(art.hits) > remaining {
+				art.hits = art.hits[:remaining]
+				art.truncated = true
+			}
 			result.Hits = append(result.Hits, art.hits...)
 			result.Files += len(art.files)
 			result.Truncated = result.Truncated || art.truncated

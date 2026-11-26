@@ -162,22 +162,60 @@ func (rs *IgnoreRules) shouldSkip(name, rel string) bool {
 func (rs *IgnoreRules) ShouldSkipDir(name, rel string) bool  { return rs.shouldSkip(name, rel) }
 func (rs *IgnoreRules) ShouldSkipFile(name, rel string) bool { return rs.shouldSkip(name, rel) }
 
-// globArgs 把规则转成 rg 的 --glob 参数（尽力剪枝；真正口径由 skipRgHit 按规则二次过滤保底，
-// 因为 Windows 上 rg 的路径型 glob 分隔符语义不可靠）。
+// globArgs 把排除规则转成 rg 的 --glob 参数（尽力剪枝；真正口径由 skipRgHit 按规则二次过滤保底，
+// 因为 Windows 上 rg 的路径型 glob 分隔符语义不可靠）。取反规则不在这里转成正向 glob：
+// rg 的正向 glob 会切换成白名单模式，误把未被取反的普通文件也排除掉。
 func (rs *IgnoreRules) globArgs() []string {
 	if rs == nil || len(rs.rules) == 0 {
 		return nil
 	}
 	var args []string
 	for _, r := range rs.rules {
-		prefix := "!"
 		if r.negate {
-			prefix = ""
+			continue
 		}
 		if r.byName {
-			args = append(args, "--glob", prefix+r.pattern, "--glob", prefix+"**/"+r.pattern)
+			args = append(args, "--glob", "!"+r.pattern, "--glob", "!**/"+r.pattern)
 		} else {
-			args = append(args, "--glob", prefix+r.pattern)
+			args = append(args, "--glob", "!"+r.pattern)
+		}
+	}
+	return args
+}
+
+// hasNegated 是否存在重新包含规则；有则 rg 需额外跑一趟只扫描被重新包含的路径。
+func (rs *IgnoreRules) hasNegated() bool {
+	if rs == nil {
+		return false
+	}
+	for _, r := range rs.rules {
+		if r.negate {
+			return true
+		}
+	}
+	return false
+}
+
+// negatedGlobArgs 把取反规则转成 rg 正向 glob，供独立补扫使用。目录必须同时给出
+// 子树 glob：rg 的 foo 只匹配目录本身，foo/bar 不会命中，必须显式写 foo/**。
+func (rs *IgnoreRules) negatedGlobArgs() []string {
+	if rs == nil || len(rs.rules) == 0 {
+		return nil
+	}
+	var args []string
+	for _, r := range rs.rules {
+		if !r.negate {
+			continue
+		}
+		patterns := []string{r.pattern}
+		if r.byName {
+			patterns = append(patterns, "**/"+r.pattern)
+		}
+		for _, pattern := range patterns {
+			args = append(args, "--glob", pattern)
+			if !strings.HasSuffix(pattern, "/**") {
+				args = append(args, "--glob", pattern+"/**")
+			}
 		}
 	}
 	return args

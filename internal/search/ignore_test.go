@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,9 +16,9 @@ func writeIgnore(t *testing.T, root, content string) {
 
 func TestIgnoreRulesParseAndMatch(t *testing.T) {
 	rules := &IgnoreRules{rules: []ignoreRule{
-		{pattern: ".aoci", byName: true},              // 任意层级同名目录/文件
-		{pattern: "*.bak", byName: true},              // 按名字通配
-		{pattern: ".cadt/tmp", byName: false},         // 相对根路径
+		{pattern: ".aoci", byName: true},                  // 任意层级同名目录/文件
+		{pattern: "*.bak", byName: true},                  // 按名字通配
+		{pattern: ".cadt/tmp", byName: false},             // 相对根路径
 		{negate: true, pattern: "keep.bak", byName: true}, // 取反：重新包含
 	}}
 	cases := []struct {
@@ -25,15 +26,15 @@ func TestIgnoreRulesParseAndMatch(t *testing.T) {
 		want      bool
 	}{
 		{".aoci", ".aoci", true},
-		{"x", ".aoci/baseline.json", true},            // 名字规则命中任意层级路径段
+		{"x", ".aoci/baseline.json", true}, // 名字规则命中任意层级路径段
 		{"x", "docs/.aoci/x.json", true},
 		{"a.bak", "src/a.bak", true},
-		{"keep.bak", "src/keep.bak", false},           // 取反覆盖 *.bak
-		{"x", ".cadt/tmp/note.md", true},              // 路径规则
+		{"keep.bak", "src/keep.bak", false}, // 取反覆盖 *.bak
+		{"x", ".cadt/tmp/note.md", true},    // 路径规则
 		{"x", ".cadt/tmp", true},
-		{"x", "other/.cadt/tmp/x", false},             // 路径规则不匹配别处
+		{"x", "other/.cadt/tmp/x", false}, // 路径规则不匹配别处
 		{"x", "src/main.go", false},
-		{"x", "", false},                              // 根自身永不跳过
+		{"x", "", false}, // 根自身永不跳过
 		{"x", ".", false},
 	}
 	for _, c := range cases {
@@ -184,6 +185,33 @@ func TestLoadIgnoreRulesInjectsDefaultsAndUserOverride(t *testing.T) {
 	}
 }
 
+func TestIgnoreGlobArgsSeparateNegatedRules(t *testing.T) {
+	rules := &IgnoreRules{rules: []ignoreRule{
+		{pattern: "node_modules", byName: true},
+		{negate: true, pattern: "node_modules", byName: true},
+		{pattern: "docs/generated"},
+		{negate: true, pattern: "docs/generated"},
+	}}
+	wantExclude := []string{
+		"--glob", "!node_modules", "--glob", "!**/node_modules",
+		"--glob", "!docs/generated",
+	}
+	wantReinclude := []string{
+		"--glob", "node_modules", "--glob", "node_modules/**",
+		"--glob", "**/node_modules", "--glob", "**/node_modules/**",
+		"--glob", "docs/generated", "--glob", "docs/generated/**",
+	}
+	if got := rules.globArgs(); !slices.Equal(got, wantExclude) {
+		t.Fatalf("排除 glob 不符：got %q want %q", got, wantExclude)
+	}
+	if got := rules.negatedGlobArgs(); !slices.Equal(got, wantReinclude) {
+		t.Fatalf("重新包含 glob 不符：got %q want %q", got, wantReinclude)
+	}
+	if !rules.hasNegated() {
+		t.Fatal("取反规则应触发 rg 独立补扫")
+	}
+}
+
 // 默认软规则 + ! 覆盖在两条扫描路径同语义；IncludeIgnored 本次全放行。
 func TestDefaultIgnoreAndIncludeIgnoredDualPath(t *testing.T) {
 	dir := t.TempDir()
@@ -226,6 +254,85 @@ func TestDefaultIgnoreAndIncludeIgnoredDualPath(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestRgNegatedPathRuleIncludesSubtree(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("未安装 rg")
+	}
+	t.Setenv("DATALENS_NO_RG", "")
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "src", "keep.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "docs", "generated", "deep", "a.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "docs", "generated-other", "b.txt"), "other\n")
+	writeIgnore(t, dir, "docs/generated\n!docs/generated\n")
+
+	res, err := (&Searcher{}).SearchWorkspaceAdvanced(dir, "needle", SearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("路径取反应补扫整个子树：got %d %+v", len(res.Hits), res.Hits)
+	}
+	for _, hit := range res.Hits {
+		if strings.Contains(hit.Path, "generated-other") {
+			t.Fatalf("路径取反误包含了前缀相近目录：%+v", hit)
+		}
+	}
+}
+
+func TestRgNegatedFileRuleDoesNotWhitelistEverything(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("未安装 rg")
+	}
+	t.Setenv("DATALENS_NO_RG", "")
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "src", "main.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "src", "keep.bak"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "src", "drop.bak"), "needle\n")
+	writeIgnore(t, dir, "*.bak\n!keep.bak\n")
+
+	res, err := (&Searcher{}).SearchWorkspaceAdvanced(dir, "needle", SearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("文件取反不得把普通文件挤掉：got %d %+v", len(res.Hits), res.Hits)
+	}
+	for _, hit := range res.Hits {
+		if strings.HasSuffix(hit.Path, "drop.bak") {
+			t.Fatalf("未被取反的排除文件仍应过滤：%+v", hit)
+		}
+	}
+}
+
+func TestRgNegatedPassHonorsFilePatternAndExclude(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("未安装 rg")
+	}
+	t.Setenv("DATALENS_NO_RG", "")
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "src", "keep.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "src", "drop.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "node_modules", "dep", "keep.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "node_modules", "dep", "drop.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "node_modules", "dep", "other.js"), "needle\n")
+	writeIgnore(t, dir, "!node_modules\n")
+
+	res, err := (&Searcher{}).SearchWorkspaceAdvanced(dir, "needle", SearchOptions{
+		Pattern: "*.txt", ExcludePattern: "drop.txt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("取反补扫应同时遵守包含/排除通配：got %d %+v", len(res.Hits), res.Hits)
+	}
+	for _, hit := range res.Hits {
+		if !strings.HasSuffix(hit.Path, "keep.txt") {
+			t.Fatalf("取反补扫漏过滤了 pattern/exclude：%+v", hit)
+		}
 	}
 }
 
