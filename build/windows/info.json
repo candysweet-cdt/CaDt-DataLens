@@ -11,7 +11,7 @@
 			"FileDescription": "CaDt-DataLens",
 			"LegalCopyright": "Copyright © 2026 CandySweet",
 			"ProductName": "CaDt-DataLens",
-			"Comments": "JSON / YAML / XML / CSV 等本地数据文件查看与编辑工具"
+			"Comments": "多格式数据查看与编辑器，内置 AI 助手、代码运行与数据库等开发工具"
 		}
 	}
 }

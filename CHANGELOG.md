@@ -4,11 +4,36 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 功能（AI 可显式接管用户手动打开的浏览器标签页）
+
+- 新增 `app_control adopt_browser_tab {id|name|url|index, reason?}`：把用户手动打开的浏览器标签交给当前 AI 会话，之后该会话的 `browser_*` 工具直接操作这张标签及其登录态，不再另开 `about:blank`。先用 `get_state` 看 tabs 的 `name / browserUrl / browserTabId / index` 定位；多个标签匹配时报错要求用 id 精确定位。
+- **全档必弹高危审批卡**（含完全权限）：卡片展示目标 URL 与三条警告（读取已登录页面 / 点击脚本在你的登录态下执行 / 接管后 AI 不能关闭）。一次性授权、不写长期放行规则；拒绝或取消不写会话。计划模式下拒绝申请。
+- **禁止 AI 关闭接管的标签**：`browser_close` 工具与 `app_control close_browser_tab` 双路径拒绝，需用户手动关闭；AI 自建的标签不受影响。接管态随会话落盘，重启后仍守住；标签被手动关闭后下次工具调用惰性重建为自建标签。
+- `get_state` 的浏览器标签条目补 `browserUrl` / `browserTabId` 字段（只读定位线索）；接管后读取 `file://` 页面不再重复走工作区外读取审批（接管卡即一次性覆盖授权）。
+- 新增接线护栏 `ai-browser-adopt.test.mjs`、扩展 `ai-browser-tools.test.mjs` / `ai-browser-tab-identity.test.mjs`；`npm test`（含 typecheck 前置门）通过。
+
+### 调整（AI 响应空闲超时默认值由 120 秒改为 300 秒）
+
+- 「设置 → AI 助手 → 超时与重试 → 响应空闲超时」默认值从 120 秒（2 分钟）改为 300 秒（5 分钟），慢模型或长思考更不容易被误判卡死；下拉选项里的「默认」标记同步移到「5 分钟」。此前已手动设置过该值的用户不受影响，仍沿用自己保存的值。可配置范围不变（30~3600 秒）。
+- 默认值在前端（`IDLE_TIMEOUT_DEFAULT_SEC` 与设置页钳制）和 Go 侧（`aitransport.DefaultIdleTimeoutSec` / `IdleTimeout`）同步更新，两端测试期望一并调整；`npm test` 相关用例与 `go test ./internal/aitransport/` 通过。
+
+### 改进（AI 轮次完成后自动补查当前账号用量）
+
+- 正在查看的会话自然完成一轮（非停止/报错）后，自动补查该会话绑定账号的额度，走 `autoIntervalMin` 节流、fire-and-forget：不等待、不闪提示、不弹用量层，失败静默落 error 缓存，补查完成只刷新当前会话的额度胶囊。后台会话与用户停止的轮次不触发。
+- 此前只有打开「设置 → AI → 模型」页的 sweep 与手动点胶囊/查询图标才会触发查询，面板一直开着时胶囊会停在旧快照；现在轮末自动刷新。新增源码接线护栏 `ai-usage-turn-refresh.test.mjs`，`npm test`（含 typecheck 前置门）通过。
+
+### 改进（AI 会话列表的自定义分组可折叠，分组头新增操作菜单）
+
+- 工作区内的自定义分组（`session.group`，tag 图标那层）头现在可点击折叠/展开，状态仅存渲染层、不动会话数据；会话搜索命中时命中分组强制展开，避免收起的分组吞掉匹配结果。
+- 分组头悬浮出现「⋯」：命名分组给「重命名分组… / 在此分组新建会话 / 解散分组（N 条移入未分组）」，未分组只给「在此分组新建会话」，归档区不给新建入口。
+- 重命名/解散按工作区 key + 归档标志双重限定范围（同名分组可存在于不同工作区、也可同时存在于归档区与进行中区，避免跨区误伤）；重命名拒绝空名与同工作区近似重名；解散只把会话移入未分组、不删会话，确认按钮标红并显示「解散分组」；在此分组新建的会话落在分组所属工作区并直接归入该分组（跨工作区走软切换，落盘前不写 active），与新建会话同款先存草稿、清理空会话、接回工作区草稿，避免草稿丢失与空会话堆积；未关联工作区的桶不给新建（否则会错绑当前工作区）。
+- 菜单结构与折叠判定均为纯函数（配 `ai-session-list.test.mjs` 单测）；`npm test`（含 typecheck 前置门）、`npm run build` 通过。
+
 ### 修复（输入法候选框在窗口重新激活后飘到屏幕左上角）
 
 - **问题**：微软拼音（系统默认输入法）在 AI 输入框里打中文时，候选框/组词窗画在屏幕左上角（标题栏图标一带），文字仍正确上屏。触发前提是「焦点停在输入框上时窗口失活、随后焦点又被自动还给该输入框」——把别的窗口最小化即可复现，记事本规模就够；与全屏、窗口大小、是否正在组词都无关，也不需要第二个本窗口。此时点输入框无效（焦点本来就在它身上，点击不产生 focus 变化）；必须先点软件其他位置让输入框真正失焦、再点回来才恢复。Esc 取消组词同样无效。
 - **根因**：Wails v3 在 `WM_ACTIVATE(WA_ACTIVE/WA_CLICKACTIVE)` 与 `WM_SETFOCUS` 里**同步**调用 `ICoreWebView2Controller::MoveFocus(PROGRAMMATIC)`，此刻 Windows 仍在激活窗口的过程中，WebView2 的 TSF 输入状态因此被破坏（text store 返回过期布局 / `TS_E_NOLAYOUT`），输入法只能把候选窗画到屏幕原点。上游客服侧同款分析见 [wails#6595](https://github.com/wailsapp/wails/issues/6595) 与 [PR #6596](https://github.com/wailsapp/wails/pulls/6596)；同一缺陷在 [wry#1908](https://github.com/tauri-apps/wry/issues/1908) / [wry#1924](https://github.com/tauri-apps/wry/pull/1924) 有独立复现与修复。第三方输入法（搜狗等）自绘候选窗、不走这条定位链路，所以不复现。
-- **改动**：新增 `window_ime_focus_windows.go`——订阅窗口自身的 `windows:WindowActive` / `WindowClickActive` / `WindowSetFocus` 三个事件，延迟 50ms 后经 `application.InvokeSync` 在 UI 线程**再送一次焦点**（`MoveFocus(PROGRAMMATIC)`），让 TSF 重新登记输入上下文，等价于用户手动的「点别处再点回」。四道守卫：前台已不是本窗口 / `GetFocus()==0` / 焦点在宿主窗口本身（Tab 出页面的交接态）/ 焦点落在内嵌浏览器控件子树（新增 `browser.OwnsWindow`），任一命中就不动作；同窗口 150ms 防抖，且**动作成功后才记账**（失败可被下一事件重试）。非 Windows 由 `window_ime_focus_other.go` 提供空实现。动作用 `InvokeSync` 投递，必然排在触发它的窗口过程之后，因此不存在「抢在激活结束之前」的可能——50ms 只是留给原生焦点消息铺开的余量。
+- **改动**：新增 `window_ime_focus_windows.go`——订阅窗口自身的 `windows:WindowActive` / `WindowClickActive` / `WindowSetFocus` 三个事件，延迟 50ms 后经 `application.InvokeAsync` 在 UI 线程**再送一次焦点**（`MoveFocus(PROGRAMMATIC)`），让 TSF 重新登记输入上下文，等价于用户手动的「点别处再点回」。四道守卫：前台已不是本窗口 / `GetFocus()==0` / 焦点在宿主窗口本身（Tab 出页面的交接态）/ 焦点窗口属于本进程（内嵌浏览器控件，按 `FocusPid == SelfPid` 判断），任一命中就不动作；同窗口 150ms 防抖，且**动作成功后才记账**（失败可被下一事件重试）。非 Windows 由 `window_ime_focus_other.go` 提供空实现。动作用 `InvokeAsync` 投递，必然排在触发它的窗口过程之后，因此不存在「抢在激活结束之前」的可能——50ms 只是留给原生焦点消息铺开的余量。
 - **验证**：`window_ime_focus_windows_test.go` 表驱动（坏态动作 / 前台已切走 / 焦点不在本线程 / 焦点在宿主窗口 / 焦点在内嵌浏览器 / 焦点在别窗口 / 无句柄 + 一条专防「把允许条件写成跳过」的回归断言）；真机 A/B（Microsoft 拼音，Win10 22H2）实测：激活后不动作必定复现，动作后候选框跟随光标、头几个字不丢；60ms 有效、250ms 会打断正在进行的组词（候选框闪一下即消失），故取 50ms。
 - **已知代价与边界**：每次激活多一次 `MoveFocus`，输入法内部状态会被重置一次；属**症状级缓解**，不是修掉 WebView2 的缺陷，上游合并 #6596 后本文件可整体删除。读取 controller 需反射 `impl.chromium`（Wails 未导出，仓库 `OpenDevTools` 已有同款先例）。仅实测 Windows 10 22H2 + 微软拼音 + 主窗口；Windows 11、多显示器异 DPI、第三方输入法未逐一验证。
 
@@ -33,6 +58,14 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **正交维度互跳**：编程语言 ↔ 运行（命令模板）、插件 ↔ AI 工具权限各加跳转按钮，避免只靠文字指路；经核实这四处是正交维度（环境检测 vs 执行方式、生命周期管理 vs 权限策略），**不合并**（L0 检验：写不同数据、用途不可替代、无一致性问题）。
 - **搜索**：纳入 7 个应用页面（此前搜「定时任务」落空），命中后开内容区标签页；结果带 section 路径消歧（两个「环境变量」分别显示所属区）。
 - **验证**：`npm test`（typecheck + 1594 + 692 + 533 + 21 全绿）、`npm run build` 成功；所有被移动控件 id 唯一性逐个核对，AI 工具设置树/审批相关测试通过。
+
+### 改进（「无工作区会话」更名为「会话沙盒」，并给它一个可读写的沙盒根）
+
+- 会话列表头部「⋯」与侧栏「新建会话」右侧「⋯」的入口统一改名「新建会话沙盒」：这类会话仍然不绑定工作区、不注入 AGENTS.md / 记忆 / 认知索引，但**不再是无根会话**——根改为应用数据目录下的 `<应用数据>/ai-workspaces/<会话 id>`（首次创建时落一份礼仪 `AGENTS.md`：这是会话沙盒，需要改真实仓库请先绑定工作区）。工具的相对路径因此正常可用，读写都落在沙盒里，不会碰到用户的仓库。
+- 沙盒目录按会话 id 缓存，会话切换 / 新建时预取，避免首条消息撞上「根还没解析完」；后端取不到时按无根降级（只读 + 绝对路径），不打断对话。
+- 系统提示词里的 `<no_workspace_session>` 定性块同步改写：说明根是沙盒目录、真实仓库路径需先问清或先绑定工作区。
+- 新增 `--harness` 启动参数的窗口侧骨架（不恢复上次工作区、独立会话快照槽、新建会话前先选根），尚未对外启用。
+- 验证：`npm test`（typecheck + 4 组测试）与 `npm run build` 全绿；新增接线守卫 `test/ai/ai-harness-wiring.test.mjs`。
 
 ### 新增（新建无工作区会话：不绑工作区但持久保留的第三类会话）
 

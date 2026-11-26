@@ -19,7 +19,12 @@
 | 短 id | `core/id.js` `newId` / `randomIdSuffix` | 会话/书签/抽屉等短 id | `Date.now().toString(36) + Math.random()...` 手拼 |
 | JSON 容错解析 | `core/json-safe.js` `parseJson` | 读 localStorage/磁盘 JSON，失败回 fallback | `try { JSON.parse(x \|\| '[]') } catch {}` 内联 |
 | localStorage 读写 | `core/kv-store.js` `kvGet/kvSet/kvGetJson/kvSetJson/kvRemove` | 键值持久化（不认识业务 key） | 散落的 try/catch 读写（settings 三条同步通道除外） |
+| 持久化键名 | `core/storage-keys.js` 键名常量 + `draftLSKey/wsDraftLSKey/windowSessionKeyOf/schedFireKey` | 任何 localStorage / 快照键的**定义**与拼接 | 业务模块里写字面量键或自己拼前缀（护栏 `storage-key-guard` 拦）；camelCase 的**设置字段**不是键，不进这里 |
 | 文本剪贴板 | `core/clipboard.js` `copyTextToClipboard` | 复制文本（先 Go 绑定后 Web API） | 局部 `copyText` / 裸 `navigator.clipboard.writeText` |
+| 路径归一 / 比较 | `core/path-key.js` `legacyPathKey` / `fsPathEquals` / `fsPathContains` / `relativeToFsRoot` | 文件系统路径的 key 生成、相等判断、目录段包含、求相对路径 | 内联 `replace(/\\/g,'/').replace(/\/+$/,'').toLowerCase()`；手写 `startsWith(root + '/')`（护栏 `path-key-guard` 拦） |
+| 窗口模式 / 会话根判定 | `core/root-scope.js` `isMultiWorkspace` / `sessionHasWorkspace` | 判断单/多工作区窗口、会话是否有工作区归属（三态） | 直接读 `window.__harnessWindow`（护栏 `root-scope-guard` 拦） |
+| 会话状态判定 | `ai/session/ai-session-scope.js` `isArchived/isSideChat/isUnboundSession/isWorkspaceEligibleSession` | 单个维度的会话谓词（归档 / 支线 / 不绑工作区 / 可作候选） | 手写 `isTransientSession(x) \|\| isNoWorkspaceSession(x)`、裸真值判 `archivedAt` / `sideOf` |
+| 会话忙 / 起轮门禁 | `ai/session/ai-session-scope.js` `createSessionBusyProbe` / `canStartTurn` / `canSendMessage` | 任何「这个会话忙不忙 / 现在能不能起一轮 / 发送按钮该不该禁用」 | 手写 `streamOf(id) \|\| compactOf(id)`；四处各写一套发送门禁（UI / 内核 / 编辑重发 / 队列冲刷口径必须同源） |
 
 ## 语义相近但**不算**重复（别误合并）
 
@@ -28,6 +33,12 @@
 - `core/layout-render.js` / `core/wordcloud-render.js` 的 SVG 文本转义：图表产物
 - `core/markdown.js` 用的 `markdownRenderer.utils.escapeHtml`：markdown-it 自带，安全链的一部分
 - `editor/structure.js` 的 `parseJson`：JSON 语法高亮 tokenizer，不是容错解析
+- **路径归一的「同形不同义」（2026-11-26 普查确认，不要合并）**：
+  - `ai/session/ai-session-scope.js` 的 `normalizePath` / `workspaceKey`：解析 `.`/`..`、保留 scheme 与盘符；输出是 Go `WorkspaceBucketKey` 的 sha256 输入，改一字符就换磁盘分桶（有跨语言测试锁死）
+  - `ai/security/ai-wipeguard.js` 的 `normalizeWsKey`：UNC `//` 与 scheme 口径与上面**故意不同**，是 wipeguard per-root 状态表的 key
+  - `ai/tools/ai-file-tools.js` 的 `normalizeLocalFilePath` / `resolveWithinRoot`：安全边界，越界必须**拒绝**而非静默归一（`..` 语义与 `legacyPathKey` 相反）
+  - `core/jsonpath.js` 的 `jsonPathKey`：JSONPath 段转义（`['a\\b']`），与文件系统无关，只是形态像
+  - `ai/settings/ai-cognition.js` 的 `normalizeRelKey`、`ai/security/ai-permissions.js` 的 `writeRuleSubject`：相对 key / glob subject，套绝对路径 key 会改变 `**` 匹配语义
 - `shell/message-center.js` 的局部 `relativeTime`：面板专用 `MM-DD HH:mm` 紧凑格式，与 core 口径不同（已加注释）
 
 ## 护栏测试（新代码违反即红）
@@ -40,5 +51,8 @@
 | `test/core/icon-guard.test.mjs` | 图标走 iconSvg |
 | `test/core/form-controls-factory.test.mjs` | 控件走 form-controls 工厂 |
 | `test/core/test-manifest.test.mjs` | 新测试必须登记进 `npm test` |
+| `test/core/storage-key-guard.test.mjs` | 持久化键名只在 `core/storage-keys.js` 定义（同前缀但非键的字面量逐条登记原因，只减不增） |
+| `test/core/backend-constants-parity.test.mjs` | 前后端同一件事的阈值逐项相等（run_command 超时 / MCP 超时 / 补丁上限 / 会话读取 / DB 行数 / 快照节拍 / 视频 / search 分页） |
+| `test/core/event-contract-guard.test.mjs` | 事件契约双向对账：前端订阅的必须有发射方、Go 发射的必须有消费者（预留项逐条登记原因，有发射方后自动红） |
 
 **基线规则**：存量豁免按文件计数，只允许调小、不许调大；新文件出现命中直接失败。想让护栏变绿的正确做法是**用对的 core 能力**，不是加豁免。

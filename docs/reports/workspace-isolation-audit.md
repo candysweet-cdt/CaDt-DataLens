@@ -1,11 +1,12 @@
 # 工作区隔离机制全局评估
 
-> 用途：`docs/unfinished-plans/workspace-seamless-switch.md`（窗口内换手 + 无工作区 harness）开工前的
+> 用途：`docs/unfinished-plans/agent-host-platform.md`（多工作区换手 + harness + Agent 平台化整合方案）开工前的
 > 前置评估——**现有隔离到底靠什么成立、改动会碰到哪一层、哪些约束是硬的**。
 > 只读盘点，未改任何源码。行号基于当前工作区状态（注意 `frontend/src/ai/*` 有未提交改动，
 > 与 HEAD 存在位移；按符号名检索更可靠）。
 > **v6 修订**：参考六个开源 harness（opencode / pi / ZCode / codex / cline / deepseek-harness）后，
 > 本报告的 I5（工作区级写者占位）已被撤销——改为路径级写边界 + 越界升权审批。详见方案 §4.6 / §9。
+> **v7 修订**：新增 §5.4 并发模型（三件套、三个漏洞、wipe-guard 六个失效模式）与不变量 I14–I16。
 
 ## 1. 核心结论
 
@@ -141,6 +142,74 @@
 注入上下文」在 auto 档等于**静默跨仓库读**。这也是 §4.3 采用「其它工作区只给无路径摘要」的根本原因——
 不是为了省 token，而是为了不把 auto 档的静默读扩大成跨仓库。
 
+## 5.4 并发模型（v7 新增）
+
+### 5.4.1 三件套
+
+| 机制 | 粒度 | 跨进程 | 进程内重入 | 防丢更新 |
+|---|---|---|---|---|
+| `sessionlock`（`sessionlock/lock.go`） | 文件 | ✅ LockFileEx / flock | ❌ 无 refcount | ✅ |
+| `resourcelease` | 文件 | ✅（底层 sessionlock） | ✅ refcount + Shared/NoShare/Wait | ✅ |
+| `atomfile` | 文件 | — | — | ❌ **只防半截** |
+
+`atomfile.WriteFileAtomic` 的注释明确：「只保证目标要么是旧内容、要么是完整新内容」——
+两个并发写谁最后 rename 谁赢，**不能替代锁**。
+
+### 5.4.2 漏洞 A：`resourcelease` 的 refcount 在多窗口下失效
+
+```go
+// resourcelease.go（Acquire 内）
+case st.exclusive > 0:
+    st.exclusive++       // 不区分是谁，同进程直接放行
+    return &Lease{...}, nil
+```
+
+`st` 是进程级全局状态。v2「一窗口一进程」没问题；**v3 一进程多窗口后，同进程两窗口
+获取同一把独占锁会互相放行**。
+
+已按窗口名分桶修补：
+- `sessionLeases[id].holders[ownerKey]`（`lease_service.go:92-102`）
+- `memoLeases[path].holders[ownerKey]`（`memo/memo.go:161-173`）
+
+**未修补**：`cognition.Service.acquireLease`（`cognition/service.go:366-368`）直接
+`resourcelease.Acquire`，无窗口分桶 → 同工作区两会话可同时写认知卷（CAS 只能挡住
+「基于旧基线的写」，挡不住「各自读到最新后并发写」）。
+
+### 5.4.3 漏洞 B：`SaveFile` 是裸 `os.WriteFile`
+
+```go
+// internal/fileio/fileio.go:365-374
+return os.WriteFile(path, raw, 0644)   // 无锁、非原子
+```
+
+**机械判据**：搜 `backend.SaveFile(` 即全部无保护写点（24 处）。会丢用户内容的：
+`MEMORY.md`（整份覆盖）、`permissions.json`（读改写）。其余是半截文件风险
+（计划落盘、导出、群纪要、粘贴临时文件）。
+
+### 5.4.4 漏洞 C：跨窗口共享的 localStorage 无锁
+
+Wails 多窗口共享同一 WebView2 user data 目录 → localStorage 共享且无锁。
+`cadt.session.v1` 是单槽（harness 会污染普通窗口）；settings 靠 `settings-changed` 广播 +
+`applyRemoteSettings` 合并缓解；`cadt.workspace-sessions.v1` 是按工作区 key 的 Map，同键并发丢一个。
+
+### 5.4.5 wipe-guard 专项（最不能失效的一处）
+
+现状是**单实例单根状态机**（`ai-wipeguard.js:276-284`）：`watchWindow` / `wsKey` /
+`lastFingerprint` / `fingerprintTimer` / `settleTimer` / `lastAlarmAt` 全是单值，且
+`handleWorkspaceEvent` 在 `key !== wsKey` 时**清零**（`:401-407`）。
+
+| 失效 | 触发 | 后果 |
+|---|---|---|
+| F1 换根清零基线 | A→B→A 频繁切换 | 阈值攒不够 → **漏报** |
+| F2 监听根不跟会话（`main.js:3652` 用 explorer 根） | harness 下树根与登记根脱钩 | 主信号收不到 |
+| F3 pre/post 跨根比较（签名带 root 但调用点传现取窗口根） | 换手瞬间 | **误报「整仓清空」** |
+| F4 `snapshotTick` / 周期校准取空根直接 return（`:451`、`:365`） | harness 无窗口根 | 防护静默失效、无日志 |
+| F5 `lastAlarmAt` 全局 | A 刚报警 | B 的真破坏被抑制 2 分钟 |
+| F6 watcher 单根 | 切到 B 后 A 无监听 | A 完全失明 |
+
+修法见方案 §4.9.7：pre/post 同根 + watcher 跟会话根（S1）；per-root 状态表 + 多根 watcher
+（用 `ResourceWatcher.Watch(owner, kind, key, dir)`，`resource.go:53`）+ 冷却按根 + 快照按根轮转（S3）。
+
 ## 6. 隔离不变量清单
 
 | # | 不变量 | 强度 | 依据 | 换手 | harness |
@@ -158,6 +227,9 @@
 | I11 | 崩溃自愈不误删他人在用的临时文件 | 软 | 按根去重 + 仅崩溃后首轮 | 保持 | 需确认 harness 不登记导致的反向暴露 |
 | I12 | CLI / 文件投递按工作区路由到正确窗口 | 软 | `window_route.go` 最深命中 + 复用投递 | 换手瞬间有短窗口期 | harness 需补「会话→工作区」弱映射 |
 | I13 | 切根的开销只随「进入新工作区」增长，不随「切会话次数」增长 | 软（体验） | 见 §7.1 | 换手需轻量路径 | **harness 必须做轻量换根 + 重活去重** |
+| I14 | 破坏防护的基线不因切换会话而清零 | **硬**（安全） | 现状会清零（`ai-wipeguard.js:401-407`） | **必须修**（§5.4.5 F1） | 同左 |
+| I15 | 命令前后指纹必须同一根比较 | **硬**（安全） | 签名带 root 但调用点现取窗口根（F3） | **必须修** | 同左 |
+| I16 | 并发写同一文件不丢更新 | 软→硬（视文件） | 走专用服务的有锁；走 `SaveFile` 的没有（§5.4.3） | 保持现状 | `MEMORY.md` / `permissions.json` 必须补锁 |
 
 ## 7. 改动影响的整体判断
 
@@ -186,17 +258,30 @@
 
 **默认实现会重复**：每次换根都重跑中/重档；`lifecycle-hooks.js` 的 `runningByWs` 只防并发、不防先后重复，
 所以切来切去会反复执行同一工作区的 open 钩子。落地方案见
-`docs/unfinished-plans/workspace-seamless-switch.md` §4.7（轻量换根 `switchRootLight` + 重活按工作区去重 +
+`docs/unfinished-plans/agent-host-platform.md` §4.6（轻量换根 `switchRootLight` + 重活按工作区去重 +
 换手序列化）。对应不变量 I13。
 
 ## 8. 两条最容易被低估的结论
 
 **8.1 「写效应清单」比「路径类工具」大得多（v6 措辞调整）。** 写效应不只有
 `write_file` / `edit_file` / `run_command`：
-`memory_write`（无锁整份覆盖 `MEMORY.md`，`ai-panel.js:10681-10692`）、`write_worklog`（追加
-`.cadt/logs/INDEX.md`，`:10693`）、`cognition_edit`（有锁，安全）、`propose_patch` /
-补丁应用、`worktree_manage`、计划落盘、便签写入、`generate_image/video` 产物、`text_to_speech`。
-其中**记忆与工作日志是无锁的「最后写者赢」**——同仓库两会话并发写会丢更新。
+`memory_write`（**无锁整份覆盖** `MEMORY.md`，`ai-panel.js:10681-10692`）、
+`write_worklog`（**有跨进程锁**：`sessionlock.LockFile` + 进程内 `worklogMu`，连根 INDEX 的读改写也在锁内，
+`aiworklog.go:104-148`）、`cognition_edit`（resourcelease + CAS，安全）、`propose_patch` /
+补丁应用（库存 root）、`worktree_manage`、计划落盘、便签写入（resourcelease）、
+`generate_image/video` 产物、`text_to_speech`。
+
+**并发安全性逐个不同，不能一概而论**：
+
+| 写点 | 并发保护 | 同工作区两会话并发写会怎样 |
+|---|---|---|
+| `.cadt/logs/*`（worklog） | `sessionlock` 文件锁 + 进程内 mutex | **安全**（后写等待，不丢条目） |
+| `.cadt/cognition/*` | resourcelease + CAS + 单写者 | 安全（CAS 冲突会拒绝） |
+| `.cadt/memo` | resourcelease | 安全 |
+| `.cadt/patches/*` | 补丁记录自带 root | 安全（互不干扰） |
+| `.cadt/memory/MEMORY.md` | **无** | **丢更新**（整份覆盖，最后写者赢）→ S2 必须加锁 |
+| `.cadt/permissions.json` | 仅窗口内串行（`enqueueProjectRulesMutation`） | **丢更新**（跨窗口/跨会话读改写）→ S2 提升为文件锁 |
+| `.cadt/worktree` 孤儿清理 | 按**会话 meta 的 `worktree.path`** 判定 + fail-safe（`storage_app.go:56`、`storage.go:156`） | **安全**（多会话各持 worktree 都算登记，不会被当孤儿删） |
 
 v6 不再用「窗口级写权」挡这个（六家参考实现无一先例），改为**路径级写边界 + 越界升权审批**：
 写根 = 会话根 + 显式附加可写根。因此这批工具的路径**都必须按会话根解析并落在写边界内**，

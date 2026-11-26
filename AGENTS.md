@@ -22,6 +22,13 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 ### 通用
 - 回答使用中文；代码注明语言。
 - 修改文件前先读取确认；不要改动与任务无关的内容。
+- **维护者专属文件的软约定**：以下文件只有仓库维护者能改，其他人（含 AI 助手在非维护者身份下）不要动，改动前先交给维护者拍板：
+  - **身份判断**：`git config user.name` 为 `OraSkyC` 即视为维护者。这是软约定不是安全边界——`user.name` 可随手伪造，本地无法可靠判断 GitHub 身份；真正的权限强制靠 GitHub 服务端的分支保护 / CODEOWNERS。
+  - **文档**：`CHANGELOG.md` / `README.md` / `docs/`（含方案归档、报告、技能文档）。
+  - **版本号**：`app_core.go` 的 `appVersion`、`wails.json`、`build/windows/info.json`、`build/windows/installer/wails_tools.nsh`、`build/config.yml`（版本号真源与同步产物，见「文档与提交」）。
+  - **内置技能**：`docs/skills/**/SKILL.md` 及随仓库分发的技能资源。
+  - **AI 工具与 MCP 定义**：`frontend/src/ai/tools/ai-tool-defs.js`、`ai-mcp-config.js`、`ai-mcp-settings.js`、`ai-mcp.js` 等工具 / MCP 配置定义文件。
+  - 边界：这是**软约定**，靠自觉遵守，不拦有意修改；维护者本人（当前 `OraSkyC`）不受限，正常改这些文件即可。与「文档与提交」的 PR 红线互补：那条管「PR 不带文档」，这条管「谁能改这些文件」。
 - 新增依赖或改变目录结构时说明原因。
 - **体积是第一约束**：任何新依赖先问「能否不引入」，体积预算为 0 的改动优先。
   - 不打包 Chromium / Node / ripgrep / SQLite / LSP。
@@ -168,6 +175,11 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 ### 文档与提交
 - 用户可见的改动同步更新 `CHANGELOG.md` 与 `README.md` 对应小节。
+- **红线：作为 PR 提交出去的改动不带 `CHANGELOG.md` / `README.md` / `docs/` 等文档**（2026-11-26 定；起因：PR #5 在 CHANGELOG 里写「`InvokeSync`」实为 `InvokeAsync`、提到并不存在的 `browser.OwnsWindow`，且与本地未提交改动撞车，得先备份 + stash/pop + 自动合并才落地）。
+  - **约束对象**：准备提交成 PR 的分支——里面只放代码与测试，不带共享文档的改动；外部贡献者尤其要遵守。
+  - **不拦本地合入方（含 AI 助手）**：本仓库本地工作不受此限——PR 合并后在本地补写 CHANGELOG / README 的用户可见变更条目、归档方案文档，恰恰是本红线要求合入方做的事，**别把这条读成「本地也不能改文档」**。
+  - 理由：① 这类文档是全局共享文件，PR 改动几乎必然与并行本地改动冲突，而「未提交的改动不是可丢的东西」；② 文档风格 / 版本号 / 措辞由作者按发布节奏统一把控，外部贡献者不了解约定容易出笔误。
+  - 例外：PR 本身就是纯文档改动（勘误或补充）时不在此列。
 - 方案文档放 `docs/unfinished-plans/`，全部实施后移入 `docs/finished-plans/`。
 - 版本号只有一个真源：`app_core.go` 的 `appVersion`；改完跑 `node scripts/sync-version.mjs` 同步 `wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）、`build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION` 与 `build/config.yml` 的 `version`（单测 `TestVersionFilesInSync` 校验全部 7 个字段）。
 
