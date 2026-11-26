@@ -127,6 +127,50 @@ test('applyCompactToSession：保留段的 usage 打 preCompact 标，归档段�
     assert.equal(session.messages[0].usage.preCompact, true);
 });
 
+test('applyCompactToSession：被裁剪段的用量折进只增累加器（统计行不回退）', () => {
+    const withUsage = (role, p, c) => msg(role, {ts: role === 'user' ? 1 : 2,
+        usage: {promptTokens: p, completionTokens: c, totalTokens: p + c, cachedTokens: 5}});
+    const session = {messages: [
+        withUsage('user', 0, 0),
+        withUsage('assistant', 100, 10),
+        withUsage('user', 0, 0),
+        withUsage('assistant', 200, 20),
+    ], summary: null};
+    const summary = buildCompactSummary('s', 2, null, 4);
+    applyCompactToSession(session, summary, 2);
+    // 归档段（第 1 条 user + 第 2 条 assistant）用量进累加器
+    assert.equal(session.archivedUsage.prompt, 100);
+    assert.equal(session.archivedUsage.completion, 10);
+    assert.equal(session.archivedUsage.total, 110);
+    assert.equal(session.archivedUsage.cached, 5);
+    assert.equal(session.archivedUsage.steps, 1);
+    assert.equal(session.archivedUsage.rounds, 1);
+    // 二次压缩再累加，不覆盖
+    const s2 = Object.assign({}, session, {messages: [
+        withUsage('user', 0, 0), withUsage('assistant', 300, 30),
+    ]});
+    applyCompactToSession(s2, summary, 2);
+    assert.equal(s2.archivedUsage.total, 110 + 330, '累加器只增不减');
+    assert.equal(s2.archivedUsage.rounds, 2);
+});
+
+test('applyCompactToSession：旧会话首次压缩把已有 archived 一并折入累加器（审查 S1）', () => {
+    // 升级前的旧会话：已有归档但没有 archivedUsage。若首次压缩只折本次裁剪段，
+    // 统计行（有累加器后忽略 archived）会丢掉历史归档用量。
+    const oldArchived = [{role: 'user', ts: 1},
+        {role: 'assistant', usage: {promptTokens: 600, completionTokens: 0, totalTokens: 600}}];
+    const session = {archived: oldArchived.slice(), messages: [
+        {role: 'user', ts: 2},
+        {role: 'assistant', usage: {promptTokens: 120, completionTokens: 0, totalTokens: 120}},
+    ], summary: null};
+    const summary = buildCompactSummary('s', 2, null, 4);
+    applyCompactToSession(session, summary, 2);
+    assert.equal(session.archivedUsage.total, 720, '历史归档 600 + 本次裁剪 120，不能只剩 120');
+    // 已有累加器时不重复折入旧 archived（幂等）
+    const again = applyCompactToSession(session, summary, 0);
+    assert.equal(session.archivedUsage.total, 720);
+});
+
 test('isAnchorUsage：新鲜 usage 可信，打标 / 缺失不可信', () => {
     assert.equal(isAnchorUsage({role: 'assistant', usage: {promptTokens: 5}}), true, '压缩后的新响应');
     assert.equal(isAnchorUsage({role: 'assistant', usage: {promptTokens: 5, preCompact: true}}), false);

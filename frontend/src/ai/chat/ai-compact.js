@@ -6,6 +6,7 @@
 //     所以详情视图全程可看（展示与上下文分离）。
 // 压缩请求的组装（system prompt + 转录）也在本模块，避免两处各写一份提示词。
 import {aiTextOf} from '../core/ai-constants.js';
+import {addArchivedUsage} from '../session/ai-session-store.js';
 
 // 摘要里保留的尾部条数下限（压缩后至少留这么多条，保证「当前正在做什么」还在上下文里）
 export const COMPACT_KEEP_TAIL = 6;
@@ -87,10 +88,15 @@ export function isAnchorUsage(message) {
 
 // 应用：裁剪 messages 并写回 summary，返回被归档的那段（调用方决定是否落盘 / 推送归档列表）。
 // 保留段里的 usage 一并打 preCompact 标记：它们是在裁剪**之前**计量、包含已归档内容的。
+// 被裁剪段的用量折进 session.archivedUsage（只增），保证压缩后统计行总量不下降。
+// 首次建累加器时把 session.archived 里的历史归档一并折入——升级前的旧会话已有归档但没有
+// 累加器，若只折本次裁剪段，统计行会在升级后第一次压缩时丢掉那部分历史（审查 S1）。
 export function applyCompactToSession(session, summary, cutoff) {
     if (!session) return {archived: [], kept: 0};
     const limit = Math.max(0, Math.min(Number(cutoff) || 0, session.messages.length));
     const archived = session.messages.slice(0, limit);
+    const prior = session.archivedUsage ? [] : ((session.archived || []).slice());
+    session.archivedUsage = addArchivedUsage(session.archivedUsage, prior.concat(archived));
     session.messages = session.messages.slice(limit);
     stampPreCompactUsage(session.messages);
     session.summary = summary;

@@ -95,6 +95,55 @@ test('sessionUsageTotals：短窗口退化端到端吞吐；无 usage 不计速�
     assert.equal(sessionUsageTotals(null).rounds, 0);
 });
 
+test('sessionUsageTotals：压缩归档用量走累加器，归档出栈后总量不回退、不重复计数', () => {
+    // 压缩后归档消息被 vacuum 搬进 sidecar，session.archived 清空；累加器保留历史用量。
+    const acc = {prompt: 100, completion: 50, total: 150, cached: 40, steps: 1, rounds: 1};
+    const afterCompact = {archivedUsage: acc, messages: [
+        {role: 'user', ts: 2},
+        {role: 'assistant', usage: {promptTokens: 20, completionTokens: 10, cachedTokens: 5}, modelMs: 500},
+    ]};
+    const totals = sessionUsageTotals(afterCompact);
+    assert.equal(totals.total, 180, '历史 150 + 本轮 30，归档不在内存也不回退');
+    assert.equal(totals.prompt, 120);
+    assert.equal(totals.completion, 60);
+    assert.equal(totals.cached, 45);
+    assert.equal(totals.rounds, 2, '归档轮也计入');
+    assert.equal(totals.steps, 2);
+    // 累加器与内存归档同时存在时只认累加器，避免重复计数
+    const withArchived = Object.assign({}, afterCompact, {archived: [
+        {role: 'assistant', usage: {promptTokens: 100, completionTokens: 50, totalTokens: 150}},
+    ]});
+    assert.equal(sessionUsageTotals(withArchived).total, 180, '累加器优先，归档不重复计入');
+    // 旧会话没有累加器：维持归档 + 当前消息原口径
+    const legacy = {archived: [
+        {role: 'assistant', usage: {promptTokens: 100, completionTokens: 50, totalTokens: 150}},
+    ], messages: afterCompact.messages};
+    assert.equal(sessionUsageTotals(legacy).total, 180);
+});
+
+test('sessionUsageTotals：累加器保留耗时 / 工具 / TPS，压缩后不缩水（审查 M2）', () => {
+    // 归档段带耗时、工具消息；压缩后归档出栈，这些字段必须从累加器快照恢复。
+    const acc = {rounds: 1, steps: 1, prompt: 100, completion: 50, total: 150, cached: 40,
+        turnMs: 3000, modelMs: 3500, toolMs: 1200, hasTools: true,
+        genMs: 3400, genCompletion: 50, e2eMs: 0, e2eCompletion: 0,
+        ttftMs: 200, ttftCount: 1};
+    const totals = sessionUsageTotals({archivedUsage: acc, messages: [
+        {role: 'assistant', usage: {completionTokens: 10}, modelMs: 500, firstTokenMs: 100},
+    ]});
+    assert.equal(totals.modelMs, 4000, '3500 + 500，不是只剩尾部 500');
+    assert.equal(totals.toolMs, 1200);
+    assert.equal(totals.hasTools, true);
+    assert.ok(Math.abs(totals.ttftAvg - 150) < 1e-6, '(200 + 100) / 2');
+    assert.ok(totals.speed > 0, 'TPS 采样从累加器恢复');
+});
+
+test('sessionUsageTotals：空壳累加器不吞掉内存归档（审查 m2）', () => {
+    const session = {archivedUsage: {}, archived: [
+        {role: 'assistant', usage: {totalTokens: 500}},
+    ], messages: []};
+    assert.equal(sessionUsageTotals(session).total, 500, '脏 meta 的空累加器应回落原口径');
+});
+
 test('createAIUsageUI：返回对象暴露 sessionUsageTotals（面板别名依赖它）', () => {
     // ai-panel.js 用 usageMod.sessionUsageTotals 转发；工厂漏返会启动即
     // TypeError: usageMod.sessionUsageTotals is not a function（2026-11-17 实际事故）

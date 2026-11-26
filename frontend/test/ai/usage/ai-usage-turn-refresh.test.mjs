@@ -14,6 +14,14 @@ function sliceFunction(source, marker) {
     return source.slice(start, end < 0 ? undefined : end);
 }
 
+test('清空会话也抹掉压缩累计用量（审查 M1：否则统计行残留旧 token）', () => {
+    const clear = sliceFunction(panel, 'const doClear = () => {');
+    assert.match(clear, /session\.messages = \[\]/);
+    assert.match(clear, /session\.archived = \[\]/);
+    assert.match(clear, /session\.archivedUsage = null/, '清空必须清累加器');
+    assert.match(clear, /persistSessions\(\)/, '清完要落盘');
+});
+
 test('finishStream：轮次完成后自动补查当前会话账号用量，静默且走节流', () => {
     const finish = sliceFunction(panel, 'function finishStream(target) {');
     const start = finish.indexOf('// 轮次完成后自动补查');

@@ -31,7 +31,7 @@ import {
     AI_MASCOT_PHRASES, mascotPhraseIndex, phrasesForPhase, randomMascotSalt,
 } from './core/ai-mascot-phrases.js';
 import {createModelCatalogStore} from './core/model-catalog.js';
-import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs, normalizeSessionGroup, resolveSessionGroupName, buildSessionMeta} from './session/ai-session-store.js';
+import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs, normalizeSessionGroup, resolveSessionGroupName, buildSessionMeta, normalizeArchivedUsage} from './session/ai-session-store.js';
 import {mergeLoadedSessions} from './session/ai-session-merge.js';
 import {buildGuardNotice} from './security/ai-wipeguard.js';
 import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, isNoWorkspaceSession, isUnboundSession, isWorkspaceEligibleSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey, scopeRootOf, createSessionBusyProbe, canStartTurn, canSendMessage} from './session/ai-session-scope.js';
@@ -2075,6 +2075,8 @@ export function createAIPanel(options) {
             messages,
             summary: raw.summary && typeof raw.summary === 'object' ? raw.summary : null,
             archived: Array.isArray(raw.archived) ? raw.archived : [],
+            // 压缩归档的累计用量（只增不减）：统计行读它，归档出栈 / 重启后总量不回退。
+            archivedUsage: normalizeArchivedUsage(raw.archivedUsage),
             archivedAt: Number(raw.archivedAt) || 0,
             pinned: raw.pinned === true,
             // 会话自定义分组（工作区内归类）：随 meta 持久化，脏值归一成空串（= 未分组）
@@ -3679,7 +3681,9 @@ export function createAIPanel(options) {
         onUsageQuotaUpdated: () => renderStats(),
         // 额度查询管线（hoisted 函数声明，弹窗/卡片惰性调用）
         usageQuota,
-        showNameDialog, setAIChatFont, applyPanelSettings, createSessionData,
+        // makeSessionWithRoot 与 createSessionData 一起给：新建会话的地方要用前者补根
+        // （多工作区下 createSessionData 刻意不猜根，裸用会落到「未关联工作区」分组）。
+        showNameDialog, setAIChatFont, applyPanelSettings, createSessionData, makeSessionWithRoot,
         sessionStore, sessionUseDisk,
         // 队列所有权在 ai-message-queue.js：这里只给「清空」这一个动作（惰性转发，
         // 队列模块构造于本模块之后，取数组本体会在构造期触发 TDZ）
@@ -3799,9 +3803,11 @@ export function createAIPanel(options) {
         dialogButton,
         dialogEl: el.dialog,
         chip: el.chipWorktree,
-        // 输入区常驻开关（对齐 ZCode）：勾上=创建隔离区，取消=确认丢弃；运行中不许切换
+        // 输入区常驻开关（对齐 ZCode）：勾上=创建隔离区，取消=确认丢弃；运行中不许切换。
+        // 口径与 UI 锁 syncModeTogglesRunning 一致用 isSessionBusy（stream + compact）——
+        // 压缩期间 streamOf 为空但写效应仍在，旧口径会让键盘触发绕过守卫建/弃隔离区。
         toggle: el.worktreeToggle,
-        isRunning: (sessionId) => !!streamOf(sessionId),
+        isRunning: (sessionId) => isSessionBusy(sessionId),
     });
     worktreeMod.mountChip();
     worktreeMod.pruneStartup();
@@ -5025,7 +5031,11 @@ export function createAIPanel(options) {
             if (!result.ok && result.reason !== 'no_profile') {
                 flashTurnStartFailure(result);
             }
-        } catch (e) {}
+        } catch (e) {
+            // 不能吞：用户点的是「恢复生成」，失败必须让他知道，否则红条已收、界面无变化，
+            // 看起来像"点了没反应"。
+            flash('恢复生成失败：' + ((e && e.message) || e), true);
+        }
     }
 
     // 优雅退出（--quit）的窗口侧结算：停掉本窗口全部在飞回合与压缩（走既有 stopGeneration
@@ -5783,6 +5793,49 @@ export function createAIPanel(options) {
         }
     }
 
+    // 纯文本附件占位：startSessionTurn 在「只有附件、没有输入」时用它保证 API 收到非空 content，
+    // 但它是发给模型的提示，不该在用户气泡里显示（用户 2026-11-27 反馈：消息显示成这句占位）。
+    const AI_ATTACH_PLACEHOLDER = '（已附加引用/文件，见 <attachments>）';
+
+    // 用户消息里的文本类附件（文件 / 引用 / 技能 / 选区）渲染成文件卡片：
+    // 📄 图标 + 文件名 + 类型·说明。图片/视频走各自的 strip/chip，引用块走 quote，这里只处理
+    // message.attachments（快照结构见 ai-inline-edit.js，只有 label/path/content，没有 bytes/mime）。
+    function appendUserAttachmentCards(bubble, message) {
+        const items = normalizeMessageAttachments(message && message.attachments);
+        if (!items.length) return;
+        const list = document.createElement('div');
+        list.className = 'ai-user-attach-list';
+        for (const item of items) {
+            const card = document.createElement('div');
+            card.className = 'ai-user-attach-card';
+            const name = item.label || (String(item.path || '').split(/[\\/]/).pop() || '附件');
+            const ext = (String(item.path || name).split('.').pop() || '').toUpperCase();
+            const type = ext && ext.length <= 6 ? ext : '文件';
+            // 快照的 content 是「发给模型的文本」（上限 64KB），不是文件真实大小；UTF-16 字符数
+            // 也不等于 UTF-8 字节数。按 kind 显示准确说明：引用/选区无 content，只显示类型；
+            // 有 content 的显示「文本 N 字符」，不冒充文件大小（审查 Bug6 中等项）。
+            const chars = (item.content || '').length;
+            const detail = item.kind === 'reference' || item.kind === 'selection_reference'
+                ? '引用'
+                : (item.kind === 'skill' ? '技能'
+                    : (chars > 0 ? '文本 ' + chars + ' 字符' : '文件'));
+            const icon = createFileIcon(name, 'ai-user-attach-icon');
+            const meta = document.createElement('div');
+            meta.className = 'ai-user-attach-meta';
+            const nameEl = document.createElement('div');
+            nameEl.className = 'ai-user-attach-name';
+            nameEl.textContent = name;
+            const subEl = document.createElement('div');
+            subEl.className = 'ai-user-attach-sub';
+            subEl.textContent = type + ' · ' + detail;
+            meta.append(nameEl, subEl);
+            card.append(icon, meta);
+            card.dataset.tip = item.path || name;
+            list.appendChild(card);
+        }
+        bubble.appendChild(list);
+    }
+
     // 对话内模型切换记录：分隔线 + 文案。原先末尾挂了个 info 图标想显示账号/推理等级/
     // 切换时间，但悬停 tooltip 实际不弹出、图标成了摆设，按用户反馈去掉，只留文案。
     function renderModelSwitchNote(wrap, message) {
@@ -5898,6 +5951,7 @@ export function createAIPanel(options) {
             bubble.className = 'ai-user-bubble';
             appendUserImages(bubble, message.images);
             appendUserVideos(bubble, message.videos);
+            appendUserAttachmentCards(bubble, message);
             // 环境块（<system-reminder>）是宿主注入的每轮状态，不展示；引用块拆出来单独渲染。
             const parsedReminder = splitTurnReminderPrefix(message.content || '');
             const parsedQuote = splitQuotePrefix(parsedReminder.body);
@@ -5929,7 +5983,10 @@ export function createAIPanel(options) {
                 bubble.appendChild(quoteBox);
             }
             const shownText = parsedQuote.quotes.length ? parsedQuote.body : parsedReminder.body;
-            if (shownText) {
+            // 纯附件消息的占位是发给模型的提示，不是给用户看的正文：有附件卡片时不再显示它。
+            const isAttachPlaceholder = shownText === AI_ATTACH_PLACEHOLDER &&
+                normalizeMessageAttachments(message && message.attachments).length > 0;
+            if (shownText && !isAttachPlaceholder) {
                 const text = document.createElement('div');
                 text.className = 'ai-user-text';
                 text.textContent = shownText;
@@ -10608,7 +10665,7 @@ async function requestApproval(session, toolMessage, info) {
                     ctx.toolMessage.targetPath = path;
                     ctx.toolMessage.targetLine = view.targetLine;
                 }
-                let head = '文件：' + redactToolText(input.path || path, ctx && ctx.session) + '（' + read.data.size + ' 字节';
+                let head = '文件：' + redactToolText(input.path || path, ctx && ctx.session) + '（' + (read.data && read.data.size) + ' 字节';
                 if (view.startLine != null) head += '，行 ' + view.startLine + '-' + view.endLine + '，共 ' + view.totalLines + ' 行';
                 head += '）\n\n';
                 return head + view.text + (view.hint ? '\n' + view.hint : '');
@@ -12660,6 +12717,9 @@ async function requestApproval(session, toolMessage, info) {
     function syncModeTogglesRunning() {
         const session = currentSession();
         const running = !!(session && isSessionBusy(session.id));
+        // 用 disabled 完整禁用（鼠标 / 键盘 Tab+Enter / 读屏都拦），外观由 CSS 覆盖成不灰显——
+        // 用户 2026-11-27 反馈的是「灰显难看」，不是要放开键盘。只用 pointer-events:none 的
+        // mode-locked 会让键盘绕过，且丢失 disabled 语义，故不采用。
         if (el.plan) el.plan.disabled = running;
         if (el.worktreeToggle) el.worktreeToggle.disabled = running;
     }
@@ -18378,6 +18438,8 @@ async function requestApproval(session, toolMessage, info) {
                 pendingModelSwitches.delete(session.id);
                 session.summary = null;
                 session.archived = [];
+                // 清空会话也要抹掉压缩累计用量，否则统计行残留旧 token（审查 M1）
+                session.archivedUsage = null;
                 archivedFlowOpen.delete(session.id);
                 // 清空要真正抹掉磁盘上的历史，而不是追加 reset 事件继续留着明文。
                 if (sessionUseDisk()) sessionStore.resetSession(session);
@@ -20198,7 +20260,7 @@ async function requestApproval(session, toolMessage, info) {
                     return hint || ('文件读取失败：' + ((err && err.message) || err));
                 }
                 const view = readWindowOf(read.text, normalizeReadWindow(input));
-                let head = '文件：' + input.path + '（' + read.data.size + ' 字节';
+                let head = '文件：' + input.path + '（' + (read.data && read.data.size) + ' 字节';
                 if (view.startLine != null) head += '，行 ' + view.startLine + '-' + view.endLine + '，共 ' + view.totalLines + ' 行';
                 head += '）\n\n';
                 return head + view.text + (view.hint ? '\n' + view.hint : '');

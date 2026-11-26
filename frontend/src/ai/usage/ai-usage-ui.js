@@ -6,7 +6,7 @@
 // sessionUsageTotals 是纯数据核：面板统计行、两个弹层、支线标签页统计行共用同一份口径。
 // 格式化三件套（K/M tok、千分位、时长）原本是面板本地函数，这里收编为唯一来源。
 
-import {isTurnBoundaryMessage} from '../session/ai-session-store.js';
+import {accumulateUsage, emptyUsageAcc, normalizeArchivedUsage} from '../session/ai-session-store.js';
 import {overlayStack} from '../../core/overlay-stack.js';
 import {iconSvg} from '../../core/icons.js';
 
@@ -45,90 +45,37 @@ export function turnUsageTotal(message) {
     return Math.max(0, Number(usage.totalTokens) || (prompt + completion));
 }
 
-// TPS 采样下限：单轮生成窗口过短（<200ms）时除法的量化误差太大，改走端到端兜底。
-const MIN_TPS_WINDOW_MS = 200;
-
 export function sessionUsageTotals(session) {
-    const all = ((session && session.archived) || []).concat((session && session.messages) || []);
-    let rounds = 0;
-    let steps = 0;
-    let prompt = 0;
-    let completion = 0;
-    let total = 0;
-    let cached = 0;
-    let turnMs = 0;
-    let modelMs = 0;
-    let toolMs = 0;
-    let genMs = 0;
-    let genCompletion = 0;
-    let e2eMs = 0;
-    let e2eCompletion = 0;
-    let ttftMs = 0;
-    let ttftCount = 0;
-    let hasTools = false;
-    for (const message of all) {
-        if (!message) continue;
-        // 轮次口径与 turnStartAt / 会话分组同源：steer 是本轮补充指示，systemNote 与信箱
-        // notice 是机器注入，都不计入「N 轮」（isTurnBoundaryMessage 单一判据）。
-        if (isTurnBoundaryMessage(message)) rounds++;
-        if (message.role === 'tool') {
-            hasTools = true;
-            continue;
+    // 逐条累加与归档累加器共用同一个 accumulateUsage 核（口径不会漂移）。
+    const acc = emptyUsageAcc();
+    const archivedUsage = normalizeArchivedUsage(session && session.archivedUsage);
+    if (archivedUsage) {
+        // 已有累加器：归档用量（含耗时 / TPS 采样）从快照恢复，只累加当前 messages，
+        // 避免与仍在内存的归档重复计数；归档出栈 / 跨重启后也不回退。
+        for (const key of Object.keys(acc)) {
+            if (key in archivedUsage) acc[key] = archivedUsage[key];
         }
-        if (message.role !== 'assistant') continue;
-        steps++;
-        let messageCompletion = 0;
-        const usage = message.usage;
-        if (usage) {
-            const p = Number(usage.promptTokens) || 0;
-            const c = Number(usage.completionTokens) || 0;
-            prompt += p;
-            completion += c;
-            messageCompletion = c;
-            total += Number(usage.totalTokens) || (p + c);
-            cached += Number(usage.cachedTokens) || 0;
-        }
-        const messageModelMs = Number(message.modelMs) || 0;
-        const messageTurnMs = Number(message.turnMs) || 0;
-        modelMs += messageModelMs;
-        toolMs += Number(message.toolMs) || 0;
-        turnMs += messageTurnMs;
-        const firstTokenMs = Number(message.firstTokenMs) || 0;
-        if (firstTokenMs > 0) {
-            ttftMs += firstTokenMs;
-            ttftCount++;
-        }
-        // TPS 的分子分母必须同源，否则多步任务会把速度算到极低：
-        //  · 分母只用 modelMs（本轮模型往返），绝不回退 turnMs —— turnMs 从用户发消息算起，
-        //    包含本轮之前所有步骤与工具调用耗时，几十步的任务会得到几十秒的分母；
-        //  · 分母扣掉 TTFT：排队 + 预填充 + 首 token 延迟不属于「生成速度」；
-        //  · 没有 usage 的轮次直接跳过，避免「分母涨、分子不涨」稀释均值。
-        if (usage && messageCompletion > 0 && messageModelMs > 0) {
-            const windowMs = Math.max(0, messageModelMs - firstTokenMs);
-            if (windowMs >= MIN_TPS_WINDOW_MS) {
-                genMs += windowMs;
-                genCompletion += messageCompletion;
-            } else {
-                // 非流式一次性返回（TTFT ≈ 总耗时）或仅吐了几个 token：
-                // 用它算生成速度会得到天文数字，退化为端到端吞吐计权。
-                e2eMs += messageModelMs;
-                e2eCompletion += messageCompletion;
-            }
+        for (const message of (session && session.messages) || []) accumulateUsage(acc, message);
+    } else {
+        // 旧会话（无累加器）：维持原口径，归档 + 当前消息全量累加，兼容历史数据。
+        for (const message of ((session && session.archived) || []).concat((session && session.messages) || [])) {
+            accumulateUsage(acc, message);
         }
     }
     // 有真实生成窗口就优先用它；否则退化为端到端吞吐（含 TTFT），仍远好过混入 turnMs。
     let speed = 0;
-    if (genCompletion > 0 && genMs > 0) {
-        speed = Math.round(genCompletion / (genMs / 1000));
-    } else if (e2eCompletion > 0 && e2eMs > 0) {
-        speed = Math.round(e2eCompletion / (e2eMs / 1000));
+    if (acc.genCompletion > 0 && acc.genMs > 0) {
+        speed = Math.round(acc.genCompletion / (acc.genMs / 1000));
+    } else if (acc.e2eCompletion > 0 && acc.e2eMs > 0) {
+        speed = Math.round(acc.e2eCompletion / (acc.e2eMs / 1000));
     }
     return {
-        rounds, steps, prompt, completion, total, cached, turnMs,
-        modelMs, toolMs, hasTools,
-        ttftAvg: ttftCount ? ttftMs / ttftCount : 0,
+        rounds: acc.rounds, steps: acc.steps, prompt: acc.prompt, completion: acc.completion,
+        total: acc.total, cached: acc.cached, turnMs: acc.turnMs,
+        modelMs: acc.modelMs, toolMs: acc.toolMs, hasTools: acc.hasTools,
+        ttftAvg: acc.ttftCount ? acc.ttftMs / acc.ttftCount : 0,
         speed,
-        speedKind: genCompletion > 0 && genMs > 0 ? 'gen' : (speed > 0 ? 'e2e' : ''),
+        speedKind: acc.genCompletion > 0 && acc.genMs > 0 ? 'gen' : (speed > 0 ? 'e2e' : ''),
     };
 }
 

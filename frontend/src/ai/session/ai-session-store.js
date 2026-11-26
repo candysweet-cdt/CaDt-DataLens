@@ -110,6 +110,95 @@ export function isTurnBoundaryMessage(message) {
     return true;
 }
 
+// 用量统计的单一累加核（纯函数，无 DOM / 无后端）：sessionUsageTotals 逐条累加当前消息、
+// 归档累加器逐条累加被裁剪消息，两边共用同一口径，避免「统计行一套、累加器一套」漂移。
+// 放在本模块（isTurnBoundaryMessage 的所在地）以避免与 ai-usage-ui.js / ai-compact.js 循环依赖。
+// acc 是裸累加对象（含 TPS 采样的中间量），原地累加并返回；MIN_TPS_WINDOW_MS 与 ai-usage-ui.js
+// 的同名常量必须一致（有接线测试锁定）。
+export const USAGE_TPS_MIN_WINDOW_MS = 200;
+
+export function emptyUsageAcc() {
+    return {
+        rounds: 0, steps: 0, prompt: 0, completion: 0, total: 0, cached: 0,
+        turnMs: 0, modelMs: 0, toolMs: 0, hasTools: false,
+        genMs: 0, genCompletion: 0, e2eMs: 0, e2eCompletion: 0,
+        ttftMs: 0, ttftCount: 0,
+    };
+}
+
+export function accumulateUsage(acc, message) {
+    if (!message) return acc;
+    if (isTurnBoundaryMessage(message)) acc.rounds += 1;
+    if (message.role === 'tool') {
+        acc.hasTools = true;
+        return acc;
+    }
+    if (message.role !== 'assistant') return acc;
+    acc.steps += 1;
+    let messageCompletion = 0;
+    const usage = message.usage;
+    if (usage) {
+        const p = Number(usage.promptTokens) || 0;
+        const c = Number(usage.completionTokens) || 0;
+        acc.prompt += p;
+        acc.completion += c;
+        messageCompletion = c;
+        acc.total += Number(usage.totalTokens) || (p + c);
+        acc.cached += Number(usage.cachedTokens) || 0;
+    }
+    const messageModelMs = Number(message.modelMs) || 0;
+    acc.modelMs += messageModelMs;
+    acc.toolMs += Number(message.toolMs) || 0;
+    acc.turnMs += Number(message.turnMs) || 0;
+    const firstTokenMs = Number(message.firstTokenMs) || 0;
+    if (firstTokenMs > 0) {
+        acc.ttftMs += firstTokenMs;
+        acc.ttftCount += 1;
+    }
+    // TPS 分子分母同源：分母只用 modelMs − TTFT；短窗口退化为端到端吞吐计权。
+    if (usage && messageCompletion > 0 && messageModelMs > 0) {
+        const windowMs = Math.max(0, messageModelMs - firstTokenMs);
+        if (windowMs >= USAGE_TPS_MIN_WINDOW_MS) {
+            acc.genMs += windowMs;
+            acc.genCompletion += messageCompletion;
+        } else {
+            acc.e2eMs += messageModelMs;
+            acc.e2eCompletion += messageCompletion;
+        }
+    }
+    return acc;
+}
+
+// 归档用量累加器：压缩后归档消息会被 vacuum 搬进 sidecar、离开内存，统计行若只累加
+// session.archived + session.messages 就会「压缩一次总量掉一截」（用户 2026-11-27 反馈）。
+// 累加器存完整累加快照（含耗时 / TPS 采样），随会话 meta 持久化；统计行把它与当前消息的
+// 累加结果合并，于是无论归档是否还在内存、是否跨重启，总量与耗时都不回退。
+export function addArchivedUsage(acc, messages) {
+    const out = normalizeArchivedUsage(acc) || emptyUsageAcc();
+    for (const message of Array.isArray(messages) ? messages : []) accumulateUsage(out, message);
+    return out;
+}
+
+// 读回归一：meta 里的累加器字段逐项钳到非负有限数；全空对象视为无累加器（兼容半写入脏 meta，
+// 否则 {} 会被当成「有效累加器」吞掉仍在内存的归档，历史静默归零）。
+export function normalizeArchivedUsage(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const num = (v) => {
+        const n = Number(v);
+        return Number.isFinite(n) && n >= 0 ? n : 0;
+    };
+    const out = emptyUsageAcc();
+    const keys = ['rounds', 'steps', 'prompt', 'completion', 'total', 'cached',
+        'turnMs', 'modelMs', 'toolMs', 'genMs', 'genCompletion', 'e2eMs', 'e2eCompletion', 'ttftMs', 'ttftCount'];
+    out.hasTools = raw.hasTools === true;
+    let any = out.hasTools;
+    for (const key of keys) {
+        out[key] = num(raw[key]);
+        if (out[key] > 0) any = true;
+    }
+    return any ? out : null;
+}
+
 // 轮次起点：最后一条边界消息的时间（0 = 正文里没有用户发起的回合）。
 export function sessionTurnStartTs(session) {
     const messages = (session && session.messages) || [];
@@ -438,6 +527,8 @@ export function buildSessionMeta(session) {
         archivedCount: session && session._stub
             ? Math.max(0, Number(session._archivedCount) || 0)
             : (Array.isArray(session && session.archived) ? session.archived.length : 0),
+        // 压缩归档的累计用量（只增不减）：统计行读它，归档出栈 / 重启后总量不回退。
+        archivedUsage: normalizeArchivedUsage(session && session.archivedUsage),
         logFile: textOf(session && session.logFile),
         logSavedAt: Number(session && session.logSavedAt) || 0,
         todos: Array.isArray(session && session.todos) ? session.todos : [],

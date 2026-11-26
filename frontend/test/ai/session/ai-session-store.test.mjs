@@ -19,10 +19,65 @@ import {
     buildSessionMeta,
     metaSignature,
     messageFingerprint,
+    addArchivedUsage,
+    normalizeArchivedUsage,
     normalizeSessionGroup,
     resolveSessionGroupName,
     AI_SESSION_GROUP_MAX,
 } from '../../../src/ai/session/ai-session-store.js';
+
+test('archivedUsage 累加器：只增、轮/步同源，归一钳掉脏值', () => {
+    const messages = [
+        {role: 'user', ts: 1},
+        {role: 'assistant', usage: {promptTokens: 100, completionTokens: 10, totalTokens: 110, cachedTokens: 5}},
+        {role: 'tool'},
+        {role: 'assistant', usage: {promptTokens: 50, completionTokens: 5}}, // totalTokens 缺失走 p+c
+    ];
+    const acc = addArchivedUsage(null, messages);
+    assert.equal(acc.prompt, 150);
+    assert.equal(acc.completion, 15);
+    assert.equal(acc.total, 165);
+    assert.equal(acc.cached, 5);
+    assert.equal(acc.steps, 2);
+    assert.equal(acc.rounds, 1, 'tool 与第二条 assistant 不新增轮');
+    assert.equal(acc.hasTools, true, '工具消息标记要进累加器（审查 M2）');
+    // 耗时 / TPS 采样也要进累加器，否则压缩后会话耗时统计缩水（审查 M2）
+    const timed = addArchivedUsage(null, [
+        {role: 'tool'},
+        {role: 'assistant', usage: {completionTokens: 50}, modelMs: 1000, turnMs: 2500, firstTokenMs: 100, toolMs: 1200},
+    ]);
+    assert.equal(timed.toolMs, 1200);
+    assert.equal(timed.modelMs, 1000);
+    assert.equal(timed.turnMs, 2500);
+    assert.equal(timed.ttftCount, 1);
+    assert.equal(timed.genMs, 900, 'TPS 窗口 = modelMs − TTFT');
+    assert.equal(timed.genCompletion, 50);
+    // 再累加一段只增不覆盖
+    const acc2 = addArchivedUsage(acc, [{role: 'assistant', usage: {totalTokens: 20}}]);
+    assert.equal(acc2.total, 185);
+    // 脏累加器入口先归一，不会产生字符串拼接（审查 m1）
+    const dirty = addArchivedUsage({total: 'x'}, [{role: 'assistant', usage: {totalTokens: 100}}]);
+    assert.equal(dirty.total, 100);
+    // 归一：脏值钳零，合法值保留
+    const clean = normalizeArchivedUsage({total: 185, cached: -3, steps: 'x', rounds: 2});
+    assert.equal(clean.total, 185);
+    assert.equal(clean.cached, 0);
+    assert.equal(clean.steps, 0);
+    assert.equal(clean.rounds, 2);
+    assert.equal(normalizeArchivedUsage(null), null);
+    // 全空对象视为无累加器，否则会吞掉仍在内存的归档（审查 m2）
+    assert.equal(normalizeArchivedUsage({}), null);
+    assert.equal(normalizeArchivedUsage({rounds: 0, total: 0}), null);
+    assert.ok(normalizeArchivedUsage({total: 1}), '有用量就是有效累加器');
+});
+
+test('buildSessionMeta：archivedUsage 随 meta 持久化', () => {
+    const meta = buildSessionMeta({id: 's1', archivedUsage: {total: 500, prompt: 400, completion: 100, cached: 80, steps: 4, rounds: 2}});
+    assert.equal(meta.archivedUsage.total, 500);
+    assert.equal(meta.archivedUsage.rounds, 2);
+    // 无累加器不写空壳
+    assert.equal(buildSessionMeta({id: 's2'}).archivedUsage, null);
+});
 import {createSessionDiskStore} from '../../../src/ai/session/ai-session-disk.js';
 
 function logOf(...events) {
