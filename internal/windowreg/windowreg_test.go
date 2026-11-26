@@ -180,6 +180,45 @@ func TestFindByWorkspace(t *testing.T) {
 	}
 }
 
+// TestSetWorkspaceSeq 换手瞬间的旧登记不能覆盖新值：序号单调递增才生效。
+func TestSetWorkspaceSeq(t *testing.T) {
+	st := New[struct{}]().Add(Spec{Name: "main", Mode: ModeMain})
+
+	if !st.SetWorkspaceSeq(`D:\a`, 1) {
+		t.Fatal("首个序号应被接受")
+	}
+	if got := st.Workspace(); got != `D:\a` {
+		t.Fatalf("Workspace = %q，want D:\\a", got)
+	}
+	// 旧序号（含相等）丢弃
+	if st.SetWorkspaceSeq(`D:\stale`, 1) {
+		t.Fatal("相同序号应被丢弃")
+	}
+	if !st.SetWorkspaceSeq(`D:\stale`, 0) {
+		t.Fatal("seq=0 是旧前端语义，应无条件接受")
+	}
+	if got := st.Workspace(); got != `D:\stale` {
+		t.Fatalf("seq=0 应直接写入，实际 %q", got)
+	}
+	// seq=0 不推进 lastSeq：随后更大的序号仍生效
+	if !st.SetWorkspaceSeq(`D:\b`, 2) {
+		t.Fatal("更大的序号应被接受")
+	}
+	if st.SetWorkspaceSeq(`D:\stale2`, 1) {
+		t.Fatal("小于已记录值的序号应被丢弃")
+	}
+	if got := st.Workspace(); got != `D:\b` {
+		t.Fatalf("旧序号不该覆盖新值，实际 %q", got)
+	}
+	// 关闭工作区（空串）也走同一条序号校验
+	if !st.SetWorkspaceSeq("", 3) {
+		t.Fatal("更大序号的清空请求应被接受")
+	}
+	if got := st.Workspace(); got != "" {
+		t.Fatalf("清空后 Workspace = %q", got)
+	}
+}
+
 func TestPathKey(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{`D:\Work\Repo`, "d:/work/repo"},

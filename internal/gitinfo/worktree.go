@@ -533,7 +533,7 @@ func WorktreeList(dir string) (*GitWorktreeListResult, error) {
 		if err == nil {
 			result.Reason = "git worktree list 失败"
 		} else {
-			result.Reason = "未安装 git"
+			result.Reason = gitProbeReason(dir, err)
 		}
 		result.Available = false
 		return result, nil

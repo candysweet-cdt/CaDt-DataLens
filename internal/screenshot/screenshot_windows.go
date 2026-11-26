@@ -22,7 +22,7 @@ const (
 	shotRenderFullContent = 2
 	shotSrcCopy           = 0x00CC0020
 	shotHalftone          = 4
-	shotMaxBase64         = 2800 * 1024 // 前端 AI_IMAGE_MAX_BASE64 = 3MB，留余量
+	shotMaxBase64         = 2800 * 1024 // 保守上限：前端单图编码后上限 AI_IMAGE_MAX_BASE64 = 4 MiB（ai-constants.js），留余量后取 2.73 MiB
 	// shotMaxPixels 单张截图的像素面积上限（8192×8192）。w/h 来自 GetWindowRect 或
 	// 缩放计算，显示器拔插、DPI 切换瞬间、窗口被挪到 -32000 之外都可能算出上亿像素；
 	// readBGRA 里 make([]byte, w*h*4) 照单全收就是 runtime fatal error（OOM 救不回来，

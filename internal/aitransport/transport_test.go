@@ -1608,15 +1608,15 @@ func TestAIStreamNoDropForUnrelated400(t *testing.T) {
 	}
 }
 
-// 空闲超时可配置：resolveIdleTimeout 把秒数钳到 [30, 3600]，缺省取 120 秒。
+// 空闲超时可配置：resolveIdleTimeout 把秒数钳到 [30, 3600]，缺省取 300 秒。
 func TestResolveIdleTimeout(t *testing.T) {
 	tests := []struct {
 		name string
 		sec  int
 		want time.Duration
 	}{
-		{"缺省取 120 秒", 0, 120 * time.Second},
-		{"负数取默认", -5, 120 * time.Second},
+		{"缺省取 300 秒", 0, 300 * time.Second},
+		{"负数取默认", -5, 300 * time.Second},
 		{"低于下限钳到 30 秒", 10, 30 * time.Second},
 		{"正常值原样", 300, 300 * time.Second},
 		{"超过上限钳到 3600 秒", 7200, 3600 * time.Second},

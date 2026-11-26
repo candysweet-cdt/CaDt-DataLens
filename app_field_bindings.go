@@ -13,7 +13,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 
 	"datalens/internal/appservices"
 	"datalens/internal/memo"
@@ -140,6 +142,92 @@ func (a *App) AISessionUnwatch(ctx context.Context, id string) error {
 	return nil
 }
 
+// ==================== wipe-guard 多根监听 ====================
+// 一窗口只监听一个「工作区槽」原本只够单根场景；harness / 换手之后切走的根会完全
+// 失明（A 会话还在删文件，防护却收不到事件）。这里用**合成 owner**（wipeguard|<key>）
+// 给调用方窗口追加若干根：每个根占一个独立槽，互不干扰，关窗时按窗口名整体摘掉。
+//
+// 为什么走工作区槽而不是 watch.Resources 的 resource-changed：wipe-guard 的删除计数
+// 只认 removed 分组（原子写/补丁回灌产生的是 added/modified，不能算破坏），而
+// resource-changed 只有扁平 paths；workspace-changed 才带 {root, paths, removed,
+// present, overflow}（internal/watch/watch.go:103 起）。合成 owner 与前端回退路径
+// 用的 `wipeguard|<wsKey>` 完全同形，两条路径不会各订一份。
+
+const wipeguardOwnerPrefix = "wipeguard|"
+
+var (
+	wipeguardMu sync.Mutex
+	// wipeguardSlots 窗口名 → 它订过的合成槽名。合成槽不归窗口 owner 直系，
+	// UnwatchWorkspaceFor(窗口名) 摘不到，必须自己记账。
+	wipeguardSlots = map[string]map[string]bool{}
+)
+
+// wipeguardSlot 合成槽名：按归一化路径 key 分，同一目录不同拼写只订一份。
+func wipeguardSlot(root string) string {
+	return wipeguardOwnerPrefix + pathKeyForCompare(strings.TrimSpace(root))
+}
+
+// WatchWipeguardRoot 给调用方窗口追加一个 wipe-guard 监听根（多根并存）。
+// 事件仍是 workspace-changed，前端按 payload.root 区分（root 是绝对路径原文）。
+func (a *App) WatchWipeguardRoot(ctx context.Context, root string) error {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return fmt.Errorf("监听根为空")
+	}
+	slot := wipeguardSlot(root)
+	window := watchOwnerName(ctx)
+	if err := a.Watcher.WatchWorkspaceFor(slot, root); err != nil {
+		return err
+	}
+	if window == "" {
+		// 无窗口上下文（测试 / 非绑定路径）：不登记，由调用方显式 Unwatch 收口。
+		return nil
+	}
+	wipeguardMu.Lock()
+	set := wipeguardSlots[window]
+	if set == nil {
+		set = map[string]bool{}
+		wipeguardSlots[window] = set
+	}
+	set[slot] = true
+	wipeguardMu.Unlock()
+	return nil
+}
+
+// UnwatchWipeguardRoot 停掉调用方窗口对某个根的 wipe-guard 监听（只退自己那份）。
+func (a *App) UnwatchWipeguardRoot(ctx context.Context, root string) error {
+	slot := wipeguardSlot(strings.TrimSpace(root))
+	if slot == wipeguardOwnerPrefix {
+		return nil
+	}
+	a.Watcher.UnwatchWorkspaceFor(slot)
+	window := watchOwnerName(ctx)
+	wipeguardMu.Lock()
+	if set := wipeguardSlots[window]; set != nil {
+		delete(set, slot)
+		if len(set) == 0 {
+			delete(wipeguardSlots, window)
+		}
+	}
+	wipeguardMu.Unlock()
+	return nil
+}
+
+// releaseWipeguardSlots 摘掉某窗口订过的全部 wipe-guard 槽（窗口关闭时调用），返回条数。
+func releaseWipeguardSlots(w *watch.Watcher, owner string) int {
+	if owner == "" || w == nil {
+		return 0
+	}
+	wipeguardMu.Lock()
+	set := wipeguardSlots[owner]
+	delete(wipeguardSlots, owner)
+	wipeguardMu.Unlock()
+	for slot := range set {
+		w.UnwatchWorkspaceFor(slot)
+	}
+	return len(set)
+}
+
 // releaseWindowOwnedState 窗口关闭时摘掉该窗口名下的一切监听与租约（工作区监听
 // 槽 / 资源监听 / memo 写权租约）。浏览器实例的回收单独走 BrowserCloseByOwner
 // （见 window_factory.go 的 WindowClosing 钩子）。
@@ -148,6 +236,9 @@ func (a *App) releaseWindowOwnedState(owner string) {
 		return
 	}
 	a.Watcher.UnwatchWorkspaceFor(owner)
+	if n := releaseWipeguardSlots(a.Watcher, owner); n > 0 {
+		writeAppLog("info", "窗口关闭摘除 wipe-guard 多根监听：%s ×%d", owner, n)
+	}
 	if n := watch.Resources.UnwatchByOwner(owner); n > 0 {
 		writeAppLog("info", "窗口关闭摘除资源监听：%s ×%d", owner, n)
 	}

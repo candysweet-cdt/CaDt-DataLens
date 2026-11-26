@@ -149,11 +149,13 @@ func (s *imeRepairState) claim(now time.Time) bool {
 }
 
 // settle 在一次尝试后落定：成功则记账，失败只释放占位。
-func (s *imeRepairState) settle(ok bool) {
+// at 由调用方给，与 claim **同一时间源**——否则测试里 claim 用注入时间、settle 用真实时钟，
+// 两边差几微秒就会让 `claim(now+minGap)` 卡在边界上（实测必红：差值 = minGap-δ < minGap）。
+func (s *imeRepairState) settle(ok bool, at time.Time) {
 	s.mu.Lock()
 	s.pending = false
 	if ok {
-		s.last = time.Now()
+		s.last = at
 	}
 	s.mu.Unlock()
 }
@@ -175,11 +177,12 @@ func attachIMEFocusRepair(w *application.WebviewWindow) func() {
 			application.InvokeAsync(func() {
 				defer func() {
 					if r := recover(); r != nil {
-						state.settle(false)
+						state.settle(false, time.Now())
 						writeAppLog("warn", "ime-focus: 修复过程 panic：%v", r)
 					}
 				}()
-				state.settle(repairIMEFocus(w, source))
+				ok := repairIMEFocus(w, source)
+				state.settle(ok, time.Now())
 			})
 		})
 	}

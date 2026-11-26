@@ -99,11 +99,13 @@ func TestImeRepairStateClaimAndSettle(t *testing.T) {
 	if st.claim(now) {
 		t.Fatal("已有一个待执行动作时不该重复占位")
 	}
-	st.settle(false) // 失败：只释放占位，不记账
+	st.settle(false, now) // 失败：只释放占位，不记账
 	if !st.claim(now) {
 		t.Fatal("失败后应当可以立即重试")
 	}
-	st.settle(true) // 成功：记账
+	// 记账时间由调用方给（与 claim 同源）：以前 settle 内部取 time.Now()，比这里的 now
+	// 晚几微秒，导致下面「间隔刚好够」那条卡在边界上必红。
+	st.settle(true, now) // 成功：记账
 	if st.claim(now.Add(imeRepairMinGap - 1)) {
 		t.Fatal("成功记账后间隔不足应被拦住")
 	}

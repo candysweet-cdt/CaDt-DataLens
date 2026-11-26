@@ -5,6 +5,7 @@ package fileio
 
 import (
 	"bytes"
+	"datalens/internal/atomfile"
 	"datalens/internal/chardec"
 	"encoding/base64"
 	"fmt"
@@ -371,6 +372,20 @@ func (f *Files) SaveFile(path, content, eol string, hasBom bool, enc string) err
 		return err
 	}
 	return os.WriteFile(path, raw, 0644)
+}
+
+// SaveFileAtomic 与 SaveFile 相同，但用原子替换落盘（同目录临时文件 + fsync + Replace）。
+// 只用于应用内务文件（.cadt/**）：用户文档的保存仍走 SaveFile——目标被其它编辑器打开时
+// Windows 的 ReplaceFile 可能失败，改变既有保存语义是不必要的风险。
+func (f *Files) SaveFileAtomic(path, content, eol string, hasBom bool, enc string) error {
+	if path == "" {
+		return fmt.Errorf("没有目标文件")
+	}
+	raw, err := chardec.BuildSaveBytes(content, eol, hasBom, enc)
+	if err != nil {
+		return err
+	}
+	return atomfile.WriteFileAtomicMode(path, raw, 0644)
 }
 
 // formatFileMtime 把修改时间格式化为纳秒字符串：JS 的 Number 存不下 1e18 级整数，

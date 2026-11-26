@@ -15,12 +15,12 @@ import (
 // AI 面板的 Go 侧只做两件事：双协议 HTTP + SSE 流式转发（事件归一化），
 // 以及记忆/技能目录解析。Agent 编排、审批、diff 全在前端。
 const (
-	// IdleTimeout 是默认空闲超时（120 秒）；用户可在设置里覆盖（Config.IdleTimeoutSec）。
-	IdleTimeout = 120 * time.Second
+	// IdleTimeout 是默认空闲超时（300 秒）；用户可在设置里覆盖（Config.IdleTimeoutSec）。
+	IdleTimeout = 300 * time.Second
 	// 空闲超时的可配置范围（秒）：最短 30 秒，最长 60 分钟。
 	IdleTimeoutMinSec     = 30
 	IdleTimeoutMaxSec     = 3600
-	DefaultIdleTimeoutSec = 120
+	DefaultIdleTimeoutSec = 300
 	aiDialTimeout         = 10 * time.Second
 	aiErrorBodyLimit      = 64 << 10
 	aiErrorTextLimit      = 500
@@ -92,7 +92,7 @@ func (e *idleTimeoutError) Error() string {
 
 func (e *idleTimeoutError) Is(target error) bool { return target == ErrIdleTimeout }
 
-// resolveIdleTimeout 把配置里的秒数钳到 [30, 3600]；缺省（<=0）取默认 120 秒。
+// resolveIdleTimeout 把配置里的秒数钳到 [30, 3600]；缺省（<=0）取默认 300 秒。
 func resolveIdleTimeout(sec int) time.Duration {
 	if sec <= 0 {
 		sec = DefaultIdleTimeoutSec
@@ -127,7 +127,7 @@ type Config struct {
 	// RPMLimit 是手动设置的每分钟请求数上限（0 = 不限）。按 baseURL+model 统计，
 	// 超出就在客户端排队，避免并发把接口打到 429。见 ratelimit.go。
 	RPMLimit int `json:"rpmLimit,omitempty"`
-	// IdleTimeoutSec 是空闲超时秒数（连续这么久无数据即中断），0 = 用默认 120 秒。
+	// IdleTimeoutSec 是空闲超时秒数（连续这么久无数据即中断），0 = 用默认 300 秒。
 	// 实际生效值在 resolveIdleTimeout 里钳到 [30, 3600]。
 	IdleTimeoutSec int `json:"idleTimeoutSec,omitempty"`
 	// noStreamUsage 只在本次请求内由重试逻辑置位：网关 400 拒收 stream_options

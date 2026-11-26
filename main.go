@@ -162,6 +162,7 @@ func main() {
 		SessionID:    launchargs.ParseAISessionArg(os.Args[1:]),
 		SettingsPane: launchargs.ParseOpenSettingsArg(os.Args[1:]),
 		MemoLocator:  launchargs.ParseMemoLocatorArg(os.Args[1:]),
+		Harness:      launchargs.ParseHarness(os.Args[1:]),
 	}
 	if hasArg("--ai-float") {
 		primary.Name = "float"

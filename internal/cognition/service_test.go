@@ -4,6 +4,7 @@
 package cognition
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -394,7 +395,7 @@ func TestLeaseAndClearGate(t *testing.T) {
 	}
 
 	// 写持有时清理门闩拒绝（NoShare：同进程 refcount 也算忙）
-	lease, err := s.acquireLease(p, "test-edit")
+	lease, err := s.acquireLease(context.Background(), p, "test-edit")
 	if err != nil {
 		t.Fatal(err)
 	}

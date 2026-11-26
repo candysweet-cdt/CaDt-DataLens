@@ -69,7 +69,7 @@ func GraphCommits(dir string, ref string, limit int, skip int) (*GitGraphPage, e
 	}
 	out, code, err := gitRun(dir, []string{"rev-parse", "--is-inside-work-tree"}, 5000)
 	if err != nil {
-		page.Reason = "未安装 git"
+		page.Reason = gitProbeReason(dir, err)
 		return page, nil
 	}
 	if code != 0 || strings.TrimSpace(out) != "true" {
@@ -312,7 +312,7 @@ func GraphRefs(dir string) (*GitGraphRefsResult, error) {
 	}
 	out, code, err := gitRun(dir, []string{"rev-parse", "--is-inside-work-tree"}, 5000)
 	if err != nil {
-		res.Reason = "未安装 git"
+		res.Reason = gitProbeReason(dir, err)
 		return res, nil
 	}
 	if code != 0 || strings.TrimSpace(out) != "true" {

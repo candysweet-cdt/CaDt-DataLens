@@ -36,6 +36,7 @@ const TopLevelUsage = `CaDt-DataLens —— 轻量级多格式数据查看与编
 窗口形态：
   --ai-float               只开 AI 浮窗
   --debug-console          只开调试控制台
+  --harness                主窗口按 harness 形态启动（不恢复上次工作区，工作区由会话各自绑定）
   --quit                   优雅退出已运行的实例（无实例时静默退出，不闪窗）
 
 其他：
@@ -210,4 +211,11 @@ func HasFlag(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+// ParseHarness 判定 --harness（无值布尔开关，与 --ai-float / --debug-console 同款）。
+// harness 形态：主窗口不恢复上次工作区，工作区由各会话自己绑定（见
+// docs/unfinished-plans/agent-host-platform.md §S3）。前端消费它的入口在批次 F。
+func ParseHarness(args []string) bool {
+	return HasFlag(args, "--harness")
 }

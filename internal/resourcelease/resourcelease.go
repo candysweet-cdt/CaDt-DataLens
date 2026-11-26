@@ -68,6 +68,14 @@ func IsBusy(err error) bool {
 	return errors.As(err, &busy)
 }
 
+// CanonicalKey 返回锁路径的进程内规范 key（绝对路径 + Clean，Windows 再小写）。
+//
+// 供上层按锁分桶时复用锁本身的键口径：同一个目录用不同拼写（D:\ws / d:\ws\）时，
+// 上层 map 若拿原始路径当键会分成两格，跨窗口互斥就被这层放过去了。
+func CanonicalKey(lockPath string) (string, error) {
+	return canonicalKey(lockPath)
+}
+
 // BusyOwner 从错误里提取 owner（非 busy 返回零值）。
 func BusyOwner(err error) Owner {
 	var busy *BusyError

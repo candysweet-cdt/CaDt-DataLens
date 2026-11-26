@@ -4,7 +4,9 @@ package gitinfo
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,41 @@ import (
 	"datalens/internal/chardec"
 	"datalens/internal/executil"
 )
+
+// gitProbeReason 把「探测仓库失败」翻译成用户能据此行动的原因。
+//
+// gitRun 的约定是：退出码非 0 走 code（err=nil），只有**进程没跑起来**才返回 err。
+// 而「进程没跑起来」至少有三种原因，用户要做的事完全不同：
+//
+//	找不到可执行文件 → 去装 git          （exec.ErrNotFound）
+//	工作目录已被删/改名 → 重新打开目录     （进程创建失败）
+//	超时 / 其它启动失败 → 看具体错误
+//
+// 以前调用点一律写「未安装 git」：用户对着一个已被删除的目录（或别的启动失败）
+// 被指去装 git，装完照样不行。实测反馈就是「非 git 目录显示未安装 git」。
+//
+// 为什么还要 stat 兜底：Windows 的进程创建失败只给一句
+// `fork/exec C:\...\git.exe: The directory name is invalid.`
+// —— 既不是 fs.ErrNotExist 也不含 chdir，纯文本匹配靠不住（实测这个用例就是红的）。
+// 所以先按 errno 判，判不出来再看**目录本身还在不在**。
+func gitProbeReason(dir string, err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return "未安装 git"
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return "当前目录不存在"
+	}
+	// 环境类失败（cwd 无效 / 权限）：stat 一眼看出目录还在不在
+	if dir != "" {
+		if _, statErr := os.Stat(dir); statErr != nil {
+			return "当前目录不存在"
+		}
+	}
+	return "git 无法启动：" + err.Error()
+}
 
 // git 浅集成：调系统 git（VS Code 同款做法），只读查询。
 // git 未安装或目录不在仓库内时优雅降级（Available=false）。
@@ -174,7 +211,7 @@ func StatusFor(dir string) (*GitTreeStatus, error) {
 	}
 	out, code, err := gitRun(dir, []string{"rev-parse", "--is-inside-work-tree"}, 5000)
 	if err != nil {
-		status.Reason = "未安装 git"
+		status.Reason = gitProbeReason(dir, err)
 		return status, nil
 	}
 	if code != 0 || strings.TrimSpace(out) != "true" {
@@ -360,7 +397,7 @@ func BranchesFor(dir string, includeRemote bool) (*GitBranchesResult, error) {
 	}
 	out, code, err := gitRun(dir, []string{"rev-parse", "--is-inside-work-tree"}, 5000)
 	if err != nil {
-		result.Reason = "未安装 git"
+		result.Reason = gitProbeReason(dir, err)
 		return result, nil
 	}
 	if code != 0 || strings.TrimSpace(out) != "true" {

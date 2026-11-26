@@ -26,14 +26,15 @@ import (
 )
 
 // Plan 是转发决策结果；窗口操作语义由根的 secondInstance 执行。
-type Plan struct {
-	Kind      string                  // quit | float | debug | settings | memo | sessionOpen | newWindow | deliver | show
+	type Plan struct {
+	Kind      string                  // quit | float | debug | settings | memo | sessionOpen | newWindow | harnessWindow | deliver | show
 	Targets   []launchargs.OpenTarget // float：浮窗打开目标；settings/memo：随事件投递的打开目标
 	Groups    []Group                 // deliver：按路由窗口分组的打开目标（缺陷 E）
 	SessionID string                  // sessionOpen/deliver/newWindow：目标 AI 会话
 	Workspace string                  // sessionOpen：会话归属工作区；deliver：与目标窗口一致时补投
 	Pane      string                  // settings：目标设置 pane
 	Locator   string                  // memo：便签定位点
+	Harness   bool                    // harnessWindow：新窗口是 harness 形态（不恢复工作区、根跟会话）
 }
 
 // Group 是 deliver 的一组同窗口打开目标（缺陷 E：按文件所属工作区路由）。
@@ -66,6 +67,11 @@ func Decide(args []string, deps Deps) Plan {
 		return Plan{Kind: "float", Targets: launchargs.ParseOpenTargets(args)}
 	case launchargs.HasFlag(args, "--debug-console"):
 		return Plan{Kind: "debug"}
+	case launchargs.HasFlag(args, "--harness"):
+		// harness 是一个**新窗口形态**，不是「投递给现有窗口」：已有实例时若不特判，
+		// 会落到下面的 deliver 分支——把启动目录投给主窗口，harness 窗口根本不开。
+		// 与 --new-window 一样必须自己开一个，区别只是窗口形态（不恢复工作区、根跟会话）。
+		return Plan{Kind: "harnessWindow", Harness: true, Targets: launchargs.ParseOpenTargets(args)}
 	}
 	targets := launchargs.ParseOpenTargets(args)
 	sessionID := launchargs.ParseAISessionArg(args)

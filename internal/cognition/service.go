@@ -4,6 +4,7 @@
 package cognition
 
 import (
+	"context"
 	"crypto/sha256"
 	"datalens/internal/atomfile"
 	"datalens/internal/resourcelease"
@@ -363,11 +364,14 @@ const (
 	maxLabelLen = 40
 )
 
-func (s *Service) acquireLease(p paths, label string) (*resourcelease.Lease, error) {
-	return resourcelease.Acquire(p.lock, resourcelease.Owner{PID: os.Getpid(), Label: label})
+// Edit 是 EditWithContext 的兼容入口（无 ctx → 归属窗口名空串，单桶语义，行为与旧 refcount 一致）。
+func (s *Service) Edit(ws string, req EditReq) (EditResult, error) {
+	return s.EditWithContext(context.Background(), ws, req)
 }
 
-func (s *Service) Edit(ws string, req EditReq) (EditResult, error) {
+// EditWithContext 增删改条目 / 整卷替换元卷 / 维护作用域排除文件。
+// ctx 只用于取归属窗口名（v3 同进程多窗口：同窗口重入、跨窗口 Busy，见 lease.go）。
+func (s *Service) EditWithContext(ctx context.Context, ws string, req EditReq) (EditResult, error) {
 	p := resolvePaths(ws)
 	if req.Op != "add" && req.Op != "update" && req.Op != "remove" {
 		return EditResult{}, fmt.Errorf("op 只认 add / update / remove，收到 %q", req.Op)
@@ -378,7 +382,7 @@ func (s *Service) Edit(ws string, req EditReq) (EditResult, error) {
 	if len(req.Entries) > MaxEntriesPerCall {
 		return EditResult{}, fmt.Errorf("单次 edit 最多 %d 条（按目录分批：一批一写，§7 P1-4）", MaxEntriesPerCall)
 	}
-	lease, err := s.acquireLease(p, "cognition-edit")
+	lease, err := s.acquireLease(ctx, p, "cognition-edit")
 	if err != nil {
 		return EditResult{}, leaseBusy(err)
 	}
@@ -613,9 +617,14 @@ func (s *Service) bookkeep(p paths, ws string, entries, touched []Entry, fp stri
 
 func leaseBusy(err error) error {
 	if resourcelease.IsBusy(err) {
+		owner := resourcelease.BusyOwner(err)
 		msg := "认知索引正被另一个窗口持有（Busy）"
-		if owner := resourcelease.BusyOwner(err); owner.PID > 0 {
+		if owner.PID > 0 {
 			msg = fmt.Sprintf("%s：PID %d", msg, owner.PID)
+		}
+		// 同进程多窗口时 PID 相同，只有 label 里的窗口名能说明是谁在写。
+		if label := strings.TrimSpace(owner.Label); label != "" {
+			msg = fmt.Sprintf("%s（%s）", msg, label)
 		}
 		return fmt.Errorf("%s；稍后重试或等另一窗口完成维护", msg)
 	}
@@ -624,7 +633,14 @@ func leaseBusy(err error) error {
 
 // ---------- Status ----------
 
+// Status 是 StatusWithContext 的兼容入口（无 ctx → 单桶语义）。
 func (s *Service) Status(ws string, verbose bool) (StatusResult, error) {
+	return s.StatusWithContext(context.Background(), ws, verbose)
+}
+
+// StatusWithContext 治理报告；baseline 缺失时的兜底全量生成在同一把独占租约内
+// （ctx 只用于取归属窗口名，见 lease.go）。
+func (s *Service) StatusWithContext(ctx context.Context, ws string, verbose bool) (StatusResult, error) {
 	p := resolvePaths(ws)
 	codeBytes, err := os.ReadFile(p.code)
 	if err != nil {
@@ -653,7 +669,7 @@ func (s *Service) Status(ws string, verbose bool) (StatusResult, error) {
 	// 唯一副作用：baseline 缺失（首建末批 / .state 被清后的恢复）时全量生成——
 	// 正常维护的簿记在 edit 侧（§4.1），这里只是兜底；写路径在同一把独占租约内。
 	if !hasBase {
-		lease, lerr := s.acquireLease(p, "cognition-baseline")
+		lease, lerr := s.acquireLease(ctx, p, "cognition-baseline")
 		if lerr != nil {
 			return res, leaseBusy(lerr)
 		}

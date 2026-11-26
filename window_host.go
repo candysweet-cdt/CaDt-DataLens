@@ -101,12 +101,17 @@ var (
 
 // WindowRegister 登记调用方窗口当前工作区（关闭工作区传空串，退出可匹配集合）。
 // 浮窗/调试控制台不参与工作区复用，静默忽略。
-func (a *App) WindowRegister(ctx context.Context, workspace string) error {
+// seq 是前端自增序号（缺省 0 时不做新旧校验）：换手瞬间在途的旧登记（seq 小于等于
+// 已记录值）会被丢弃，避免旧工作区覆盖新值。
+func (a *App) WindowRegister(ctx context.Context, workspace string, seq int) error {
 	st := stateForCaller(ctx)
 	if st == nil || st.Startup().Mode != windowModeMain {
 		return nil
 	}
-	st.SetWorkspace(workspace)
+	if !st.SetWorkspaceSeq(workspace, seq) {
+		writeAppLog("debug", "窗口登记被丢弃（旧序号 seq=%d）：workspace=%q caller=%s", seq, workspace, st.Name())
+		return nil
+	}
 	// 崩溃自愈的工作区段：上次异常退出后，本会话登记的每个工作区清一遍
 	// .cadt/tmp 与 .cadt/logs（幂等去重，见 crashrecovery_app.go）。
 	runCrashWorkspaceRecovery(workspace)

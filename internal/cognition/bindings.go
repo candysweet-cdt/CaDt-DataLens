@@ -11,6 +11,7 @@ package cognition
 // 时经 NewBindings 注入日志钩子构造。
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -61,7 +62,8 @@ func (b *Bindings) CognitionRead(workspace, reqJSON string) (string, error) {
 }
 
 // CognitionEdit 增删改条目 / 整卷替换元卷 / 维护作用域排除文件。
-func (b *Bindings) CognitionEdit(workspace, reqJSON string) (string, error) {
+// ctx 由 Wails 注入（前端调用签名不变），用于取归属窗口名做写租约分桶。
+func (b *Bindings) CognitionEdit(ctx context.Context, workspace, reqJSON string) (string, error) {
 	if err := validateRoot(workspace); err != nil {
 		return "", err
 	}
@@ -69,7 +71,7 @@ func (b *Bindings) CognitionEdit(workspace, reqJSON string) (string, error) {
 	if err := json.Unmarshal([]byte(reqJSON), &req); err != nil {
 		return "", fmt.Errorf("req 解析失败：%w", err)
 	}
-	res, err := b.engine.Edit(workspace, req)
+	res, err := b.engine.EditWithContext(ctx, workspace, req)
 	if err != nil {
 		return "", err
 	}
@@ -80,12 +82,12 @@ func (b *Bindings) CognitionEdit(workspace, reqJSON string) (string, error) {
 	return string(out), nil
 }
 
-// CognitionStatus 治理报告（drift 四态、预算余量、卷指纹）。
-func (b *Bindings) CognitionStatus(workspace string, verbose bool) (string, error) {
+// CognitionStatus 治理报告（drift 四态、预算余量、卷指纹）。ctx 同上，只用于租约分桶。
+func (b *Bindings) CognitionStatus(ctx context.Context, workspace string, verbose bool) (string, error) {
 	if err := validateRoot(workspace); err != nil {
 		return "", err
 	}
-	res, err := b.engine.Status(workspace, verbose)
+	res, err := b.engine.StatusWithContext(ctx, workspace, verbose)
 	if err != nil {
 		return "", err
 	}

@@ -63,6 +63,10 @@ type Spec struct {
 	// PreviewPath：实时预览窗（ModePreview）的源文件路径；Origin 是
 	// 持有该文档的窗口名（预览窗只读，轮询磁盘 mtime 跟随变化）。
 	PreviewPath string
+	// Harness：由 --harness 启动的窗口（不恢复上次工作区、工作区由会话自己绑定）。
+	// 只对主窗口有意义；批次 F 的前端据此置 window.__harnessWindow，供 scopeRootOf
+	// 的第 3 步判断（harness 下未绑定会话 = 无根）。
+	Harness bool
 }
 
 // State 是单个窗口的可变状态。W 是宿主的窗口句柄类型（根注入
@@ -75,6 +79,9 @@ type State[W any] struct {
 	dirty      bool
 	aiRunning  bool
 	forceClose bool
+	// lastSeq：前端 WindowRegister 带的自增序号（换手瞬间的旧值丢弃）。
+	// 0 = 前端还没传序号（旧宿主），此时不做新旧判定，保持旧行为。
+	lastSeq int
 	// collapsed：浮窗「收起」形态（只留标题栏）。收起期间的尺寸变化是 UI 程序化
 	// 调整，不参与窗口几何记忆，避免把 44px 的标题栏高度存成用户偏好。
 	collapsed bool
@@ -103,6 +110,22 @@ func (s *State[W]) SetWorkspace(ws string) {
 	s.mu.Lock()
 	s.spec.Workspace = ws
 	s.mu.Unlock()
+}
+
+// SetWorkspaceSeq 带序号地更新工作区：seq > 0 时只接受比已记录值更大的请求，
+// 小于等于的记录直接丢弃（换手瞬间在途的旧登记不能覆盖新值）并返回 false。
+// seq <= 0 表示调用方没带序号（旧前端），照旧无条件写入。
+func (s *State[W]) SetWorkspaceSeq(ws string, seq int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if seq > 0 {
+		if seq <= s.lastSeq {
+			return false
+		}
+		s.lastSeq = seq
+	}
+	s.spec.Workspace = ws
+	return true
 }
 
 // SetWindow 登记宿主窗口句柄。

@@ -24,6 +24,7 @@ import (
 	"datalens/internal/aiworklog"
 	"datalens/internal/applog"
 	"datalens/internal/browser"
+	"datalens/internal/cognition"
 	"datalens/internal/dbclient"
 	"datalens/internal/envvars"
 	"datalens/internal/fileio"
@@ -67,6 +68,11 @@ func init() {
 	// 事件推送在 startup 拿到 ctx 后接线（见 app_core.go）。
 	reading.Logf = writeAppLog
 	reading.DebugEnabled = func() bool { return applog.DevMode() }
+
+	// ---- 工作区认知索引（internal/cognition）----
+	// 写租约的归属窗口名：同进程多窗口下 refcount 会互相放行，按窗口分桶才拦得住
+	// 两个窗口同时写同一条卷（sessionstore / memo 同款，见 internal/cognition/lease.go）。
+	cognition.OwnerForCall = callerWindowName
 
 	// ---- AI 会话磁盘存储（internal/sessionstore）----
 	// 绑定方法随 Service 移入包内，这里只登记应用数据目录与派生索引的标脏钩子。

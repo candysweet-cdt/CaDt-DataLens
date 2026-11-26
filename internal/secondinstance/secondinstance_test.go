@@ -113,6 +113,13 @@ func TestDecide(t *testing.T) {
 				Groups: []Group{
 					{WindowName: "main-2", Targets: []launchargs.OpenTarget{{Path: subFile}}},
 				}}},
+		// --harness 是「新开一个 harness 形态窗口」，不是「投递给现有窗口」。
+		// 不特判的话会落到 deliver 分支：把启动目录投给主窗口，harness 窗口根本不开。
+		{"harness-opens-window", []string{"--harness"}, nil,
+			Plan{Kind: "harnessWindow", Harness: true, Targets: []launchargs.OpenTarget{}}},
+		{"harness-with-target", []string{"--harness", projFile}, nil,
+			Plan{Kind: "harnessWindow", Harness: true,
+				Targets: []launchargs.OpenTarget{{Path: projFile}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

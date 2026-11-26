@@ -6,6 +6,7 @@ AIArtifactClear
 AIArtifactClearAll
 AIArtifactRead
 AIArtifactWrite
+AIBackingWorkspace
 AIBuiltinSkillsDir
 AICommandStart
 AICommandStartConfined
@@ -32,6 +33,7 @@ AIGroupWriteMeta
 AIHomeDir
 AIImageLimits
 AIListModels
+AIMemoryWrite
 AIModelCatalogCached
 AIModelCatalogSync
 AIOAuthQuotaFetch
@@ -39,6 +41,7 @@ AIOAuthQuotaLogin
 AIOAuthQuotaLogout
 AIOAuthQuotaProviders
 AIOAuthQuotaStatus
+AIProjectRulesWrite
 AIRunShellCommand
 AIRunShellCommandConfined
 AIScheduleCreate
@@ -209,6 +212,7 @@ GetStartupPreview
 GetStartupTargets
 GetStartupTermID
 GetSystemCursors
+GetWindowHarness
 GitBranchesFor
 GitCheckoutBranch
 GitCheckoutRefFor
@@ -296,6 +300,7 @@ OpenDirInNewWindow
 OpenFile
 OpenFilesDialog
 OpenFolderDialog
+OpenHarnessWindow
 OpenInNewWindows
 OpenLightView
 OpenLivePreview
@@ -349,6 +354,7 @@ SandboxRevoke
 SandboxScan
 SaveDataURL
 SaveFile
+SaveFileAtomic
 SaveFileChecked
 SaveFileDialog
 ScanReadingRoot
@@ -394,9 +400,11 @@ TermShells
 TermWrite
 UnregisterEventOwner
 UnwatchAll
+UnwatchWipeguardRoot
 UnwatchWorkspace
 UnwatchWorkspaceFor
 UpdatePluginFromUrl
+WatchWipeguardRoot
 WatchWorkspace
 WatchWorkspaceFor
 WebFetch
@@ -423,3 +431,4 @@ WipeGuardSnapshot
 WipeGuardSnapshotList
 WipeGuardSnapshotRestore
 WipeGuardStatus
+WorkspaceMarkOpened

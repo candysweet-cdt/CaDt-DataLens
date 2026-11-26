@@ -294,6 +294,6 @@ func aiToolSchema(tool ToolDef) (json.RawMessage, error) {
 }
 
 // StreamResponse 执行一次流式请求，事件经 emit 归一化输出。
-// 空闲 120 秒会取消 ctx，调用方通过 context.Cause 区分超时与用户停止。
+// 空闲 300 秒会取消 ctx，调用方通过 context.Cause 区分超时与用户停止。
 // retryMax > 0 时，对 429/5xx/网络错误做指数退避重试（优先遵循 Retry-After）；
 // 仅在尚未输出任何流内容前重试，进入 SSE 解析后不再重试。

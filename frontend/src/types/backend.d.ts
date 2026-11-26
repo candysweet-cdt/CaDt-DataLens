@@ -1,10 +1,10 @@
 // backend.d.ts：Wails 绑定面类型——**自动生成，不要手改**。
 //
-// 生成：node scripts/gen-backend-types.mjs（名单来自 testdata/app_bindings_baseline.txt，422 个方法）
+// 生成：node scripts/gen-backend-types.mjs（名单来自 testdata/app_bindings_baseline.txt，431 个方法）
 // 名单由 app_bindings_guard_test.go 校验，前端 FQN 是 main.App.<Method>；
 // 运行时经 Call.ByName 动态解析（frontend/src/core/wails-runtime.js 的 createBackendProxy）。
 //
-// 本次签名覆盖：精确 265 / 含 unknown 157 / 签名冲突 0 / 未找到 0
+// 本次签名覆盖：精确 274 / 含 unknown 157 / 签名冲突 0 / 未找到 0
 // 含 unknown 的行上方有 @go 注释，写明 Go 原始签名与待补的结构体名。
 //
 // 用法（阶梯 1 之后，jsconfig 仍保持 checkJs:false）：
@@ -60,6 +60,7 @@ export interface Backend {
     AIArtifactClearAll(): Promise<void>;
     AIArtifactRead(sessionID: string, name: string): Promise<string>;
     AIArtifactWrite(sessionID: string, name: string, content: string): Promise<string>;
+    AIBackingWorkspace(sessionID: string): Promise<string>;
     AIBuiltinSkillsDir(): Promise<string>;
     /** @go AICommandStart(command string, cwd string, shell string) → (*AICommandJobStart, error) // 待补: AICommandJobStart */
     AICommandStart(command: string, cwd: string, shell: string): Promise<unknown>;
@@ -95,6 +96,7 @@ export interface Backend {
     AIImageLimits(): Promise<unknown>;
     /** @go AIListModels(cfg aitransport.Config) → ([]string, error) // 待补: Config */
     AIListModels(cfg: unknown): Promise<string[]>;
+    AIMemoryWrite(dir: string, name: string, content: string): Promise<string>;
     /** @go AIModelCatalogCached() → (*Blob, error) // 待补: Blob */
     AIModelCatalogCached(): Promise<unknown>;
     /** @go AIModelCatalogSync(rawURL string) → (*Blob, error) // 待补: Blob */
@@ -108,6 +110,7 @@ export interface Backend {
     AIOAuthQuotaProviders(): Promise<unknown[]>;
     /** @go AIOAuthQuotaStatus(providerID string) → (oauthquota.StatusResult) // 待补: StatusResult */
     AIOAuthQuotaStatus(providerID: string): Promise<unknown>;
+    AIProjectRulesWrite(root: string, jsonText: string): Promise<string>;
     /** @go AIRunShellCommand(command string, cwd string, timeoutMs int, runId string, shell string) → (*AIShellCommandResult, error) // 待补: AIShellCommandResult */
     AIRunShellCommand(command: string, cwd: string, timeoutMs: number, runId: string, shell: string): Promise<unknown>;
     /** @go AIRunShellCommandConfined(command string, cwd string, timeoutMs int, runId string, mode string, workspaceRoot string, shell string) → (*AIShellCommandResult, error) // 待补: AIShellCommandResult */
@@ -336,6 +339,7 @@ export interface Backend {
     GetStartupTargets(): Promise<unknown[]>;
     GetStartupTermID(): Promise<string>;
     GetSystemCursors(): Promise<Record<string, string>>;
+    GetWindowHarness(): Promise<boolean>;
     /** @go GitBranchesFor(dir string, includeRemote bool) → (*GitBranchesResult, error) // 待补: GitBranchesResult */
     GitBranchesFor(dir: string, includeRemote: boolean): Promise<unknown>;
     GitCheckoutBranch(dir: string, name: string, remote: boolean): Promise<GitOperationResult | null>;
@@ -459,6 +463,7 @@ export interface Backend {
     OpenFile(path: string, enc: string): Promise<unknown>;
     OpenFilesDialog(): Promise<string[]>;
     OpenFolderDialog(defaultDir: string): Promise<string>;
+    OpenHarnessWindow(): Promise<void>;
     OpenInNewWindows(paths: string[]): Promise<void>;
     OpenLightView(path: string): Promise<void>;
     OpenLivePreview(path: string): Promise<void>;
@@ -532,6 +537,7 @@ export interface Backend {
     SandboxScan(root: string): Promise<unknown>;
     SaveDataURL(path: string, dataURL: string): Promise<void>;
     SaveFile(path: string, content: string, eol: string, hasBom: boolean, enc: string): Promise<void>;
+    SaveFileAtomic(path: string, content: string, eol: string, hasBom: boolean, enc: string): Promise<void>;
     /** @go SaveFileChecked(path string, content string, eol string, hasBom bool, enc string, expectMtime string) → (*SaveFileResult, error) // 待补: SaveFileResult */
     SaveFileChecked(path: string, content: string, eol: string, hasBom: boolean, enc: string, expectMtime: string): Promise<unknown>;
     SaveFileDialog(defaultName: string): Promise<string>;
@@ -592,9 +598,11 @@ export interface Backend {
     TermWrite(id: string, data: string): Promise<void>;
     UnregisterEventOwner(kind: string, id: string): Promise<void>;
     UnwatchAll(): Promise<void>;
+    UnwatchWipeguardRoot(root: string): Promise<void>;
     UnwatchWorkspace(): Promise<void>;
     UnwatchWorkspaceFor(owner: string): Promise<void>;
     UpdatePluginFromUrl(id: string, rawUrl: string): Promise<PluginInfo | null>;
+    WatchWipeguardRoot(root: string): Promise<void>;
     WatchWorkspace(root: string): Promise<void>;
     WatchWorkspaceFor(owner: string, root: string): Promise<void>;
     /** @go WebFetch(rawURL string, maxChars int) → (map[string]interface{}, error) */
@@ -611,7 +619,7 @@ export interface Backend {
     WindowActivate(): Promise<void>;
     WindowFocusByName(name: string): Promise<boolean>;
     WindowList(): Promise<Record<string, string>[]>;
-    WindowRegister(workspace: string): Promise<void>;
+    WindowRegister(workspace: string, seq: number): Promise<void>;
     WindowReuseForSession(workspace: string, sessionID: string): Promise<string>;
     WindowReuseResult(reqID: string, status: string): Promise<void>;
     WipeGuardAlarm(level: string, reason: string, detail: string): Promise<void>;
@@ -634,6 +642,7 @@ export interface Backend {
     WipeGuardSnapshotRestore(ws: string, name: string): Promise<string>;
     /** @go WipeGuardStatus(ws string) → (wipeguard.ModeInfo) // 待补: ModeInfo */
     WipeGuardStatus(ws: string): Promise<unknown>;
+    WorkspaceMarkOpened(dir: string): Promise<boolean>;
 }
 
 export type BackendMethod = keyof Backend;

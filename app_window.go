@@ -108,6 +108,15 @@ func (a *App) OpenNewWindow() error {
 	return nil
 }
 
+// OpenHarnessWindow 新建一个 harness 窗口：不绑定工作区、不恢复上次环境，
+// AI 面板里的每个会话各自带着自己的作用域根（未绑定的用会话沙盒）。
+// 与命令行 `--harness` 等价——菜单 / 命令面板走这里（那条路只有启动期可用，
+// 且需要绕开单实例转发，对普通用户不友好）。
+func (a *App) OpenHarnessWindow() error {
+	a.openMainWindow(windowSpec{Harness: true})
+	return nil
+}
+
 // OpenDirInNewWindow 在独立新窗口打开目录（一目录一窗口）。
 func (a *App) OpenDirInNewWindow(dir string) error {
 	dir, err := validateWindowDir(dir)

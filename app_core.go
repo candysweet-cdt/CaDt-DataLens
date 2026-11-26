@@ -9,12 +9,15 @@ import (
 
 	"datalens/internal/activity"
 	"datalens/internal/aiartifact"
+	"datalens/internal/aibacking"
 	"datalens/internal/aicatalog"
 	"datalens/internal/aichat"
 	"datalens/internal/aiconfig"
 	"datalens/internal/aigen"
 	"datalens/internal/aigroups"
 	"datalens/internal/aiimagepolicy"
+	"datalens/internal/aimemory"
+	"datalens/internal/aipermissions"
 	"datalens/internal/aischedule"
 	"datalens/internal/aitimer"
 	"datalens/internal/aiusage"
@@ -63,6 +66,7 @@ import (
 	"datalens/internal/watch"
 	"datalens/internal/webtools"
 	"datalens/internal/winutil"
+	"datalens/internal/workspacemark"
 )
 
 const appVersion = "v1.3.0"
@@ -81,11 +85,15 @@ type (
 	previewassetsService = previewassets.Service
 
 	aiArtifactService    = aiartifact.Service
+	aiBackingService     = aibacking.Service
 	aiCatalogService     = aicatalog.Service
 	aiGenService         = aigen.Service
 	aiImagePolicyService = aiimagepolicy.Service
 	aiUsageService       = aiusage.Service
 	aiWorklogService     = aiworklog.Service
+	aiMemoryService      = aimemory.Service
+	aiPermissionsService = aipermissions.Service
+	workspaceMarkService = workspacemark.Service
 	cognitionBindings    = cognition.Bindings
 
 	mavenService        = mavenproject.Service
@@ -134,11 +142,15 @@ type App struct {
 	*usagestatsService                           // AI 使用统计（internal/usagestats）
 	*previewassetsService                        // 预览资源注册表（internal/previewassets）
 	*aiArtifactService                           // AI 工具结果大对象落盘区（internal/aiartifact）
+	*aiBackingService                            // 会话沙盒工作区（internal/aibacking）
 	*aiCatalogService                            // 模型配置表（internal/aicatalog）
 	*aiGenService                                // 生图/视频执行通道（internal/aigen）
 	*aiImagePolicyService                        // AI 图片三层限制（internal/aiimagepolicy）
 	*aiUsageService                              // 余额/用量查询（internal/aiusage）
 	*aiWorklogService                            // AI 工作日志（internal/aiworklog）
+	*aiMemoryService                             // AI 记忆文件写通道（internal/aimemory）
+	*aiPermissionsService                        // 工作区权限规则写通道（internal/aipermissions）
+	*workspaceMarkService                        // 工作区「已打开过」账本（internal/workspacemark）
 	*cognitionBindings                           // 工作区认知索引（internal/cognition）
 	*mavenService                                // Maven 项目结构（internal/mavenproject）
 	*sandboxService                              // 子代理沙箱授权痕迹（internal/sandbox）
@@ -177,7 +189,7 @@ type App struct {
 type FileData = fileio.FileData
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, AppServices: appservices.New(), Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}, Service: &sessionstore.Service{}, GroupStore: &aigroups.GroupStore{}, Client: &mcp.Client{}, memoService: &memo.Service{}, sessionindexService: &sessionindex.Service{}, activityService: &activity.Service{}, usagestatsService: &usagestats.Service{}, previewassetsService: &previewassets.Service{}, aiArtifactService: &aiartifact.Service{}, aiCatalogService: &aicatalog.Service{}, aiGenService: &aigen.Service{}, aiImagePolicyService: &aiimagepolicy.Service{}, aiUsageService: &aiusage.Service{}, aiWorklogService: &aiworklog.Service{}, cognitionBindings: cognition.NewBindings(func(format string, args ...any) {
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, AppServices: appservices.New(), Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}, Service: &sessionstore.Service{}, GroupStore: &aigroups.GroupStore{}, Client: &mcp.Client{}, memoService: &memo.Service{}, sessionindexService: &sessionindex.Service{}, activityService: &activity.Service{}, usagestatsService: &usagestats.Service{}, previewassetsService: &previewassets.Service{}, aiArtifactService: &aiartifact.Service{}, aiBackingService: &aibacking.Service{}, aiCatalogService: &aicatalog.Service{}, aiGenService: &aigen.Service{}, aiImagePolicyService: &aiimagepolicy.Service{}, aiUsageService: &aiusage.Service{}, aiWorklogService: &aiworklog.Service{}, aiMemoryService: &aimemory.Service{}, aiPermissionsService: &aipermissions.Service{}, workspaceMarkService: &workspacemark.Service{}, cognitionBindings: cognition.NewBindings(func(format string, args ...any) {
 		applog.Write("info", "cognition: "+format, args...)
 	}), mavenService: &mavenproject.Service{}, sandboxService: &sandbox.Service{}, runProjectService: &runproject.Service{}, sqlviewService: &sqlview.Service{}, updateService: &update.Service{}, envvarsService: &envvars.Service{}, patchService: &patch.Service{}, webtoolsService: &webtools.Service{}, structuredirService: &structuredir.Service{}, dbclientService: &dbclient.Service{}, gitinfoService: &gitinfo.Service{}, desktopmcpService: &desktopmcp.Service{}, winutilService: &winutil.Service{}}
 }
@@ -318,6 +330,10 @@ func (a *App) secondInstance(args []string) {
 		a.openMainWindow(windowSpec{Workspace: plan.Workspace, SessionID: plan.SessionID})
 	case "newWindow":
 		a.openMainWindow(windowSpec{Targets: plan.Targets, SessionID: plan.SessionID})
+	case "harnessWindow":
+		// harness 形态的新窗口：Harness=true 会一路传到 windowreg.Spec，
+		// 前端 GetWindowHarness() 据此置 window.__harnessWindow（不恢复工作区、根跟会话）。
+		a.openMainWindow(windowSpec{Harness: true, Targets: plan.Targets, SessionID: plan.SessionID})
 	case "deliver":
 		if len(plan.Groups) == 0 {
 			a.secondInstanceShow()
@@ -423,6 +439,15 @@ func (a *App) GetStartupMemoLocator(ctx context.Context) string {
 		return st.Startup().MemoLocator
 	}
 	return ""
+}
+
+// GetWindowHarness 报告调用方窗口是否由 --harness 启动（不恢复上次工作区、根由会话自己绑定）。
+// 前端据此置 window.__harnessWindow（scopeRootOf 的第 3 步），无窗口上下文回 false。
+func (a *App) GetWindowHarness(ctx context.Context) bool {
+	if st := stateForCaller(ctx); st != nil {
+		return st.Startup().Harness
+	}
+	return false
 }
 
 func (a *App) GetStartupTargets(ctx context.Context) []launchargs.OpenTarget {

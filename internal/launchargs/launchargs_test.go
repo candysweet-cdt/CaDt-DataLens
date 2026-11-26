@@ -140,3 +140,30 @@ func TestParseMemoLocatorArg(t *testing.T) {
 		t.Fatalf("无 --memo 应返回空串，got %q", got)
 	}
 }
+
+// --harness 是无值布尔开关，与 --ai-float / --debug-console 同款：只认独立参数，
+// 不做前缀匹配（--harness=x 不算），也不吃后面的路径。
+func TestParseHarness(t *testing.T) {
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"--harness"}, true},
+		{[]string{"--new-window", "--harness", "D:\\data\\a.json"}, true},
+		{[]string{"--harness=false"}, false},
+		{[]string{"--harnessx"}, false},
+		{[]string{"D:\\data\\a.json"}, false},
+		{nil, false},
+	}
+	for _, c := range cases {
+		if got := ParseHarness(c.args); got != c.want {
+			t.Fatalf("ParseHarness(%q) = %v, want %v", c.args, got, c.want)
+		}
+	}
+	// 开关本身不能被当成打开目标
+	for _, target := range ParseOpenTargets([]string{"--harness", "--new-window"}) {
+		if strings.Contains(target.Path, "harness") {
+			t.Fatalf("--harness 被当成了打开目标：%+v", target)
+		}
+	}
+}

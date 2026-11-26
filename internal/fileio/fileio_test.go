@@ -215,3 +215,48 @@ func TestOpenFileAudioClassification(t *testing.T) {
 		t.Fatalf("mp4 应判成视频：video=%v audio=%v image=%v", data.Video, data.Audio, data.Image)
 	}
 }
+
+// SaveFileAtomic 只给应用内务文件（.cadt/**）用：内容编码/换行与 SaveFile 完全一致，
+// 差别只在落盘方式（临时文件 + fsync + 原子替换），且要能自己建父目录、
+// 覆盖旧文件后不留临时文件残渣。
+func TestSaveFileAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nested", "deep", "MEMORY.md")
+	if err := (&Files{}).SaveFileAtomic(path, "第一行\n第二行", "crlf", false, "utf-8"); err != nil {
+		t.Fatalf("首次写入失败：%v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取落盘文件失败：%v", err)
+	}
+	if want := "第一行\r\n第二行"; string(raw) != want {
+		t.Fatalf("crlf 落盘 = %q, want %q", string(raw), want)
+	}
+
+	// 覆盖：内容整体替换，不残留旧尾部
+	if err := (&Files{}).SaveFileAtomic(path, "替换后", "lf", false, "utf-8"); err != nil {
+		t.Fatalf("覆盖写入失败：%v", err)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "替换后" {
+		t.Fatalf("覆盖后内容 = %q", string(raw))
+	}
+
+	// 原子写不得留临时文件（临时文件与目标同目录）
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Fatalf("残留临时文件：%s", entry.Name())
+		}
+	}
+
+	if err := (&Files{}).SaveFileAtomic("", "x", "lf", false, "utf-8"); err == nil {
+		t.Fatal("空路径应报错")
+	}
+}
