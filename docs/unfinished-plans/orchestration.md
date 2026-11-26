@@ -1629,7 +1629,7 @@ C1（文件越界）的风险会低得多。
 
 | 能力 | 复用方式 | 改动量 |
 |---|---|---|
-| 会话创建 | `ai_new_session` 已有（分组 / 权限 / **模型**）；group 用 `groupSnapshot`（§5.9）、model 按批校验（§5.15） | 中（group 继承是新增；还需一个「注册 stream 后即返回」的起轮入口，§5.3.3） |
+| 会话创建 | `ai_new_session` 已有（分组 / 权限 / **模型**）；group 用 `groupSnapshot`（§5.9）、model 按批校验（§5.15）；起轮复用 `startSessionTurn`，按 §5.3.3 拆成建会话、StartBatch 签发票据、起轮三步 | 中（group 继承是新增；两阶段派发握手需接线） |
 | 投递 | `session_send` 只作旁路与 L2 唤醒；**派单走首轮用户消息**、回收走 `orchestration_report`（§5.1.1）；L2 事件本体持久化在编排状态 | 小–中 |
 | 子代理（审查用） | 不用 `spawn_agent`；审查是独立会话（§5.5.1）。看板只复用它的树渲染 | — |
 | 子代理树渲染 | `buildAgentTree` / `flattenAgentTree` 纯函数，看板直接复用 | 无 |

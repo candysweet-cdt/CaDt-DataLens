@@ -1,6 +1,7 @@
 # Agent 宿主平台与多工作区 Harness（整合方案）
 
-> 状态：**方案定稿，未开工**。本文整合并取代两份前序文档：
+> 状态：**线 A（S0–S3）已实施并合入**；**线 B（S4–S7）未开工，已完成代码级复核**（§2.6，2026-11-27）。
+> 本文整合并取代两份前序文档：
 > `docs/unfinished-plans/workspace-seamless-switch.md`（多工作区换手 + harness，v6）与
 > `docs/unfinished-plans/agent-platform-for-writing-plugins.md`（Agent 宿主平台化评估）；
 > 隔离现状的代码依据来自 `docs/reports/workspace-isolation-audit.md`。
@@ -11,7 +12,8 @@
 >    （全部单 cwd / 单 environment），这是 CaDt 的差异化空间；DSH 则作为单工作台执行引擎，两者互补而非替代。
 > 2. **两条线共享同一地基**：线 A（多工作区）要「根是会话属性」，线 B（平台化）要「事件溯源会话」——
 >    改的是同一层（session 模型 + `ai-panel.js`），所以必须统一排期，不能并行抢同一批文件。
-> 3. **最小可交付切片 ≈ 4 人日**（S0 + S1），能拿到「点会话不再满屏新窗口、且不写错仓库」的收益。
+> 3. **最小可交付切片 ≈ 4 人日**（S0 + S1）——**已交付**：拿到的收益是「点会话不再满屏新窗口、
+>    且不写错仓库」。剩余线 B（S4–S7）复核后合计 **9.5–12 人日**，不含 Go 侧 agent loop（S6′）。
 > 4. **不追求**原样运行 DSH 插件 npm 包（等于移植整个 DSH）；平台化只做「契约思想对齐」。
 >
 > **本版关键修订（v7）**：新增 §4.9 并发专项——锁能力三件套、三个关键漏洞
@@ -21,16 +23,35 @@
 > **§6.1 端到端演练**（四个场景，必须真跑，单测不能替代）。
 > S1 / S2 / S3 相应扩项，§6 新增并发与 wipe-guard 验收。
 >
+> **本版关键修订（v8，2026-11-27，线 B 复核）**：线 A 已合入后逐条核对线 B 的缺口断言，
+> 结论见新增的 **§2.6**。三处原判断需要更正，它们直接改变工程量与落点：
+> 1. **S5 不是从零**：会话日志已是 append-only JSONL（六种事件 + replay + 崩尾修复 + 分桶 + 锁 + fsync，
+>    Go 侧 `vacuum` 带 parity 测试）。**不再新建 `internal/sessionlog/`**，改为扩事件词表 + 追加式闭合事件。
+> 2. **S4 的落点不能叫 `plugin-services.js`**：该文件名已被「插件后台子进程服务」占用（`registerService` →
+>    `internal/appservices`），DI 容器改用 `shell/plugin-container.js`；五模式总线走独立命名空间，
+>    **不得登记进 `EVENT_SCOPES`**（那张表被 Go↔前端双向契约守卫约束）。
+> 3. **S6 的「重启即丢」只说对一半**：子代理运行态在内存 Map，但 `raw.agent` 元数据随消息落盘、载入时
+>    running→stopped；缺的是**可续跑**。同时 Go 侧 agent loop 单独立项，不并入 S6。
+> 另：上下文去重（原 P1）基本已由 `assembleSystemContext` 的 stable / `turnBlock` 分区达成，只差 digest。
+> S4/S5 人日下调，S6 拆分，S7 略降。
+>
 > 前序版本演进见 `docs/unfinished-plans/workspace-seamless-switch.md`（v2 评审 → v6 对齐六个开源 harness）。
 
 ---
 
 ## 0. 行号基准
 
-- 核对基准 commit：`e64884d`（合入 PR #4 后的 master）。`frontend/src/ai/*` 曾有未提交改动，
-  行号可能漂移——**按符号名检索优先于行号**。
+- **v8 核对基准 commit：`1a59adf`**（线 A 合入后的 master）。线 A 之前的一版基准是 `e64884d`，
+  本文线 A 章节（§2.1 / §2.2 / §3 / §4.1–§4.6）里的行号仍是那一版的，线 A 实施后已漂移——
+  **按符号名检索优先于行号**。线 B 章节（§2.3 / §2.4 / §4.7 / §5）已按 `1a59adf` 重新核对。
+- 实测规模（`1a59adf`）：`frontend/src/ai/ai-panel.js` **21045 行**（原记 20171，只增不减的既有超线文件）、
+  `ai-subagents.js` **2364 行**（原记 2361）、`testdata/app_bindings_baseline.txt` **434 条**
+  （原记 420，线 A 新增 14 条绑定）。
 - 本仓库工作区在 2026-11-25 有一次 `git stash`（PR #4 合并），`stash@{0}` 仍保留；
   若发现文件异常先与相关会话确认，不要覆盖。
+- **2026-11-27 复核时工作区非干净**：`main.js` 正在拆出 `shell/view-root.js` 与 `shell/wipeguard-roots.js`
+  （超线治理第 1/2 批），另有 5 个测试文件随之改动。这批改动与线 B 不重叠，但会改变任何全量测试的基线——
+  **线 B 开工前先确认这批改动的归属**（提交或明确保留），不要在脏树上叠加新失败。
 
 ---
 
@@ -68,7 +89,7 @@ DSH 的宿主契约（Cordis 模型，源码级核实）：
 |---|---|---|---|
 | 会话状态 | 根是会话属性（`session.workspace`）+ 根变更可回放 | 事件溯源日志（一切 append、可 replay） | **同一件事的两半**：根要可回放，就得先进日志 |
 | 多作用域共存 | 一窗口跑多个工作区会话 | Agent Scope 隔离（`agent.ctx`） | `scopeRootOf(session)` 就是 `agent.ctx` 的雏形 |
-| 上下文注入 | 动态块不进系统提示词 | durable / 动态分区 + 去重 | 线 A 只做到「不进系统提示词」，线 B 补齐分区与去重 |
+| 上下文注入 | 动态块不进系统提示词 | durable / 动态分区 + 去重 | 线 A 做到了「不进系统提示词」；分区（stable / `turnBlock`）在 `assembleSystemContext` 已成立，线 B 只补 digest 去重（v8 更正：比原判断轻） |
 | 角色化 | 未涉及 | Agent Preset（决定根 + 工具集 + persona） | **preset 是两条线的共同落点** |
 | 回合钩子 | 回合根冻结 | `agent/pre-step` waterfall | 根冻结应收口到 `onPreStep(session)`，将来零改动接入事件总线 |
 
@@ -129,51 +150,118 @@ DSH 的宿主契约（Cordis 模型，源码级核实）：
 
 ### 2.3 AI 核心（线 B 的现状）
 
+> v8 复核（2026-11-27）：本节按 `1a59adf` 重写。原版把会话日志与作用域都算作「缺失」，
+> 实测两者都已有可复用底座，缺口的实际形状不同——详见 §2.6。
+
 **已有可复用底座**：
 
-- **Agent 循环**（前端）：`ai-panel.js:13011` `startRound` → `:13560` `handleToolRound` →
-  `:10240` `executeTool` → 结果 push 进 `session.messages` → 续轮；无硬轮次上限。
+- **Agent 循环**（前端）：`ai-panel.js` 的 `startRound`（`:13423`）→ `handleToolRound`（`:13988`）→
+  `executeTool`（`:10579`）→ 结果 push 进 `session.messages` → 续轮；无硬轮次上限。
 - **子代理系统**：`ai-subagents.js` 的 `spawn_agent / wait_agent / agent_send / agent_stop /
   agent_compact / agent_tree` 齐全；嵌套、并发、任务树、收件箱、worktree 隔离、沙箱档、轮次预算都有。
 - **工具链**：`ai-tool-defs.js` + `executeToolInner`；MCP / 插件工具前缀路由；结果超阈值落盘 `ai-artifacts/`。
+  工具集**已按会话裁剪**：`toolsForScope(scope, planMode, session)`（`ai-tool-defs.js`）——preset 的天然接缝。
 - **三协议 LLM + SSE**：`internal/aitransport/`（openai / anthropic / responses）。
 - **文件监听 / 技能 / 配置 / 调度**：`internal/watch`、`internal/skills`、`internal/aiconfig`、`internal/aischedule`。
+- **会话日志（v8 新增认定）**：已经是 append-only JSONL，六种事件 `header / msg / meta / archive /
+  truncate / reset`（`ai/session/ai-session-store.js` 的 `encode*`），配 `replaySessionLog` 完整回放、
+  `atomfile.RepairTornTail` 修尾、按工作区分桶、`internal/sessionlock` 互斥、O_APPEND + 每批 fsync，
+  Go 侧 `internal/sessionstore`（含 `vacuum.go` 1017 行与 parity 测试）。**这就是事件溯源的地基。**
+- **会话级作用域（v8 新增认定）**：`scopeRootOf(session)` 四步（`ai/session/ai-session-scope.js`）已是
+  唯一的根解析入口，`<workspace_rules>` / `<workspace_context>` / 工具路径三处已同源——`agent.ctx` 的雏形。
+- **上下文分区（v8 新增认定）**：`ai-system-context.js` 的 `assembleSystemContext` 已把「稳定块」与
+  `turnBlock`（每轮动态块，随用户消息以 `<system-reminder>` 落盘）拆开，文件头注释明确
+  「系统提示词保持每轮一致，前缀缓存可整段命中」。
+- **角色定义（v8 新增认定）**：`session.agents`（`ai/agent/ai-agent-model.js` 的 `normalizeAgent`）已有
+  `personaText / role / group / modelRef / temperature / replyStyle`，是 preset 的一半。
 
-**关键缺口**：
+**关键缺口**（v8 按代码事实重写）：
 
-- 子代理状态全在前端内存 Map（`ai-subagents.js:459-466` 的 4 个 Map），**重启即丢**；终态记录仅 LRU 20。
+- **子代理运行态不可续跑**：4 个内存 Map（`ai-subagents.js` 的 `subAgents` / `subAgentTranscripts` /
+  `subAgentRecords` / `subCompacts`），终态记录 LRU 20。但**不是全丢**——`raw.agent` 小元数据随消息落盘，
+  载入时 running 态收敛成 `stopped`（`ai-panel.js` 载入归一）。缺的是「跨进程续跑」，不是「保住记录」。
+- **事件粒度只到消息**：工具调用 / 审批裁定 / 子代理生命周期都塞在 message payload 的字段里，
+  不是一等事件——查询、审计、外部插件读状态都得先解消息结构。
+- **日志写者在前端**：`ai-session-disk.js` 驱动 append，Go 只提供 append/rewrite 原语与 vacuum。
+  平台化要求「状态由日志派生」，写者位置会成为约束。
+- **崩溃闭合是改写而非追加**：载入时把 `running/pending` 消息改写为 `error + interrupted + _recovered`、
+  `ask/envAsk` 收敛为 cancelled。语义等价于 DSH 的 `interruptedTurnClosers`，但**不是日志里的闭合事件**——
+  回放视角看不到「这里曾经崩过」。
 - 编排逻辑与 UI 渲染 / 会话持久化 / 审批链 / 沙箱 / worktree / 压缩深度耦合，无独立「编排引擎」抽象；
-  `ai-panel.js` 20171 行、`ai-subagents.js` 2361 行，代码里有大量「实测缺陷」注释。
-- Go 侧**无 agent loop**（`internal/aichat/chat.go:69` 单轮流式即返回），循环全在前端闭包。
-- 无事件溯源日志、无服务容器 / inject、无五模式事件总线、无 agent scope / preset、无配置 schema。
+  `ai-panel.js` **21045 行**、`ai-subagents.js` **2364 行**，代码里有大量「实测缺陷」注释。
+- Go 侧**无 agent loop**（`internal/aichat/chat.go` 的 `AISendChat` 单轮流式即返回），循环全在前端闭包。
+- **确实没有**：DI 服务容器 / inject、五模式事件总线、配置 schema、`aiComplete` 桥。
 
 ### 2.4 插件与扩展能力（线 B 的现状）
 
-- **已有**：`frontend/src/shell/plugins.js:82` `apiFor()` 单点定义 `registerFormat / addCommand /
-  registerViewer / registerTool / registerService / registerAIProvider / registerAIContext /
-  registerImporter / registerDbDriver / registerDocConverter / registerSettingsPanel /
-  registerCommandClassifier`；经 `new Function('cadt', code)(api)` 注入（`:318`）。
-- **缺口**：注册式但**无服务查找 / 替换 / inject 声明 / 就绪等待**；事件只有 `appEvents.on` 简单订阅；
-  插件分发是「文件夹 + plugin.json」，无依赖声明 / 组合配置 / 版本兼容层。
-- **编辑器内联 AI**：`registerViewer` 的 ctx 已有 `getSelection / setSelection / requestSave`，
-  但**无 `aiComplete` 桥、无 Ctrl+K 行内润色 widget**。
+- **已有注册面**：`frontend/src/shell/plugins.js` 的 `apiFor()` 单点定义 13 个 `cadt.*` 方法
+  （`registerFormat / addCommand / registerViewer / registerTool / registerService / registerAIProvider /
+  registerAIContext / registerImporter / registerDbDriver / registerDocConverter / registerSettingsPanel /
+  registerCommandClassifier / registerIconTheme` 等），经 `new Function('cadt', code)(api)` 注入。
+  各域注册表已拆成兄弟模块（`plugin-tools / plugin-viewers / plugin-context / plugin-importers /
+  plugin-db-drivers / plugin-ai-providers / plugin-settings-panels / plugin-commands-model` …），
+  **统一形状是「模块级 `Map` + `register*` + `clear*`」** —— 这正是 DI 容器要收编的那 10 个域。
+- **命名冲突（v8 新增）**：`frontend/src/shell/plugin-services.js` **已存在且已占用**，但它是
+  「插件后台子进程服务」注册表（`registerService` → `buildServiceSpecs` → Go `internal/appservices`），
+  不是依赖注入容器。**S4 的容器必须另起名**，否则同一目录下两套「服务」无法区分。
+- **缺口**：注册式但**无服务查找 / 替换 / inject 声明 / 就绪等待 / disposer**；注册不可逆
+  （`clear*` 只能整轮重放时全量清空，插件无法只撤自己的注册）。
+- **事件**：`app-events.js` 是**订阅桥**而非总线，只有五种过滤器
+  （`onApp / onWindow / onWorkspace / onOwned / onResource`），没有 `emit / waterfall / parallel / serial / bail`，
+  也没有任何 JS 侧发起能力。⚠️ 它同时被 `event-scope.js` 的 `EVENT_SCOPES` 与两个守卫测试约束
+  （`event-bridge-guard`：`EventsOn` 只许出现在桥里；`event-contract-guard`：Go 发射名 ↔ 前端订阅名**双向差集**）。
+- **分发与版本**：插件是「文件夹 + `plugin.json`」，清单 13 字段
+  （`id / name / version / author / description / entry / extensions / homepage / repository / license /
+  keywords / minAppVersion / icon`），**无 `dependencies` / `inject` / 配置 schema**；
+  但**版本兼容层已有一半**——`minAppVersion` 校验 + `internal/vercmp` 可用。
+- **编辑器内联 AI**：`registerViewer` 的 ctx 只有 `getSelection / requestSave`（`editor-plugin-view.js`），
+  **无 `aiComplete` 桥、无 Ctrl+K 行内 widget**（全仓无该快捷键接线）。
 
 ### 2.5 缺口汇总
 
-| # | 缺口 | 归属 | 严重度 |
-|---|---|---|---|
-| 1 | 根从窗口取（71 处）而非会话 | 线 A | 🔴 阻断 A2 |
-| 2 | `aiRelPath` 与 `aiResolveScopePath` 双基准 | 线 A | 🔴 会写错相对路径 |
-| 3 | 单槽缓存 4 处（技能 / 认知 / 规则 / wipe-guard） | 线 A | 🟡 串味 |
-| 4 | 一个窗口只监听一个根 | 线 A | 🟡 结构性 |
-| 5 | `cadt.session.v1` 单槽 | 线 A | 🟡 harness 布局污染 |
-| 6 | 事件溯源会话缺失 | 线 B（P0） | 🔴 平台化硬门槛 |
-| 7 | 编排状态不落盘 | 线 B（P0） | 🔴 平台化硬门槛 |
-| 8 | DI 服务容器缺失 | 线 B（P0） | 🔴 平台化硬门槛 |
-| 9 | 五模式事件总线缺失 | 线 B（P0） | 🔴 平台化硬门槛 |
-| 10 | agent scope / preset / schema / 上下文去重 | 线 B（P1） | 🟡 |
-| 11 | 插件依赖声明 / 组合配置 / 版本兼容 | 线 B（P2） | 🟢 |
-| 12 | 编辑器内联 AI 闭环 | 线 B（P2） | 🟢 |
+| # | 缺口 | 归属 | 严重度 | v8 复核（2026-11-27） |
+|---|---|---|---|---|
+| 1 | 根从窗口取（71 处）而非会话 | 线 A | 🔴 阻断 A2 | 已实施；本轮只做存在性核对（`scopeRootOf` 四步 + `core/root-scope.js` 唯一判定），未逐条回归 |
+| 2 | `aiRelPath` 与 `aiResolveScopePath` 双基准 | 线 A | 🔴 会写错相对路径 | 同上（`aiResolveScopePath` 已按 `sessionScopeRoot`） |
+| 3 | 单槽缓存 4 处（技能 / 认知 / 规则 / wipe-guard） | 线 A | 🟡 串味 | wipe-guard 已 Map 化（`shell/wipeguard-roots.js`），其余同上 |
+| 4 | 一个窗口只监听一个根 | 线 A | 🟡 结构性 | 已实施（多根 watcher + 按根冷却） |
+| 5 | `cadt.session.v1` 单槽 | 线 A | 🟡 harness 布局污染 | 已实施（独立槽 `cadt.session.harness.v1`） |
+| 6 | 事件溯源会话缺失 | 线 B（P0） | 🔴 | **降级**：JSONL 日志底座已在（六事件 + replay + 崩尾修复 + 分桶 + 锁 + vacuum），缺的是**事件粒度**与**追加式闭合** |
+| 7 | 编排状态不落盘 | 线 B（P0） | 🔴 | **降级**：`raw.agent` 元数据随消息落盘、载入 running→stopped；缺的是**跨进程续跑** |
+| 8 | DI 服务容器缺失 | 线 B（P0） | 🔴 | 成立（10 个域注册表待收编；落点名见 §2.6 约束 1） |
+| 9 | 五模式事件总线缺失 | 线 B（P0） | 🔴 | 成立（现有是订阅桥 + 五种过滤器，命名空间约束见 §2.6 约束 2） |
+| 10 | agent scope / preset / schema / 上下文去重 | 线 B（P1） | 🟡 | **拆分**：scope 雏形已有（`scopeRootOf` + `toolsForScope`）；preset 半个（`session.agents`）；去重已基本达成（stable / `turnBlock` 分区，只差 digest）；**schema 确实缺** |
+| 11 | 插件依赖声明 / 组合配置 / 版本兼容 | 线 B（P2） | 🟢 | **部分**：版本兼容半成（`minAppVersion` + `internal/vercmp`）；依赖声明与组合配置缺 |
+| 12 | 编辑器内联 AI 闭环 | 线 B（P2） | 🟢 | 成立（ctx 无 `aiComplete`，全仓无 Ctrl+K） |
+
+### 2.6 线 B 复核明细（2026-11-27，代码级）
+
+> 基准 `1a59adf`，逐条读源码核对 §2.3 / §2.4 的断言。下表左列是 **v7 原文的判断**，
+> 右列是本轮实测。凡标「不成立 / 降级」的，§4.7 与 §5 已同步改过，不要按旧结论排期。
+
+| 断言（v7） | 实测（`1a59adf`） | 判定 |
+|---|---|---|
+| 服务容器缺失，落点新建 `plugin-services.js` | 文件名已被「后台子进程服务」占用；DI 容器确实缺失，现状是 10 个域各自的 `Map + register/clear`，无查找 / 替换 / inject / 就绪 / disposer | 缺口成立，**落点改名** |
+| 事件只有 `appEvents.on` | `app-events.js` 是订阅桥：`onApp / onWindow / onWorkspace / onOwned / onResource`，纯过滤器，无发起能力 | 成立 |
+| 事件溯源缺失，新建 `internal/sessionlog/` | 已有 append-only JSONL：`header / msg / meta / archive / truncate / reset` + `replaySessionLog` + `RepairTornTail` + 分桶 + `sessionlock` + O_APPEND/fsync + Go `vacuum`（1017 行，带 parity） | **不成立** |
+| 编排状态 4 个 Map，重启即丢 | 4 个 Map 在；但 `raw.agent` 小元数据随消息落盘，载入时 running→stopped | 半成立：缺的是续跑 |
+| agent scope 缺失 | `scopeRootOf(session)` 已是会话级根；`toolsForScope(scope, planMode, session)` 已按会话出工具集 | 雏形比原文强 |
+| preset 缺失 | `session.agents` 已有 persona / role / group / model / temperature / replyStyle | 半成立（缺「决定工具集 + 根」） |
+| 上下文每轮全量重发 | `assembleSystemContext` 已拆 stable + `turnBlock`，动态块随用户消息落 `<system-reminder>` | **基本不成立**，只差 digest |
+| manifest 无依赖声明 | 13 字段确无 `dependencies / inject / config`，但 `minAppVersion` + `internal/vercmp` 已在 | 半成立 |
+| 无 `aiComplete` | `editor-plugin-view.js` 的 ctx 只有 `getSelection / requestSave`，全仓无 Ctrl+K | 成立 |
+| Go 侧无 agent loop | `AISendChat` 单轮流式即返回 | 成立（但这是独立工程，见 §5 的 S6 拆分） |
+
+**四条动手前的硬约束**（不处理必踩）：
+
+1. **命名**：DI 容器用 `frontend/src/shell/plugin-container.js`，不复用 `plugin-services.js`。
+2. **事件命名空间**：插件进程内事件走独立总线（`cadt.on / cadt.emit`），**不得登记进 `EVENT_SCOPES`**——
+   那张表被 `event-contract-guard.test.mjs` 做 Go↔前端双向差集，放进去会要求 Go 侧有对应发射点。
+   两条总线各管一层：`EVENT_SCOPES` 管「Go → 前端跨窗口」，新总线管「进程内 JS 钩子」。
+3. **改事件格式必须同批改 Go**：`ai-session-store.js` 的事件词表一变，`internal/sessionstore`
+   （含 `vacuum.go`）与 `frontend/test/ai/ai-session-vacuum-parity.test.mjs` 必须在同一批改完，
+   否则存量会话整理会静默丢事件。
+4. **脏树**：见 §0 最后一条，开工前先定 `view-root.js` / `wipeguard-roots.js` 那批改动的归属。
 
 ---
 
@@ -405,17 +493,21 @@ deepseek 做可校验可回放的 `workingDirectory` 投影）。不写的后果
 
 ### 4.7 插件平台原语（线 B）
 
-| 原语 | 现状 | 目标 | 落点 |
+> v8 复核后按实测重写「现状」与「落点」两列。三处落点变更：容器改名、总线与日志表分开、
+> **不再新建 `internal/sessionlog/`**（会与 `internal/sessionstore` 双写并击穿 vacuum parity）。
+
+| 原语 | 现状（v8 实测） | 目标 | 落点 |
 |---|---|---|---|
-| 服务容器 | 注册式 `cadt.*`，无查找/替换 | 服务注册表 + `inject` 声明 + 就绪等待 + 可替换/隔离 + disposer | 新建 `frontend/src/shell/plugin-services.js`，改 `plugins.js` |
-| 事件五模式 | 只有 `appEvents.on` | `emit / waterfall / parallel / serial / bail` | 新事件总线（扩展 `appEvents` 或独立模块） |
-| 事件溯源会话 | 缺失 | append-only 深冻结日志；replay 派生 UI / 恢复 / 审计；崩溃尾部合成闭合事件 | 新建 `internal/sessionlog/` + 前端写日志 |
-| 编排持久化 | 缺失（4 个前端 Map，重启即丢） | 流水线状态落盘、可续跑 | `ai-subagents.js` + 持久化层 |
-| Agent Scope | 缺失 | `agent.ctx` 扁平注册层，每 agent 独立工具/提示/变量 | 复用 `scopeRootOf` 演进 |
-| Agent Preset | 缺失 | 声明式目录（persona + 工具集 + 提示片段 + 根），随会话持久化 | 新模块 + 会话 header |
-| 配置 Schema | 缺失 | 校验 + 默认值 + UI，按 scope 隔离 | 新模块 |
-| 上下文去重 | 缺失（每轮全量重发） | durable 消息 + digest + `headerEquals` 去重 | `ai-system-context.js` 分区改造 |
-| 编辑器内联 AI | 无 `aiComplete` 桥 | `registerViewer` ctx 加 `aiComplete()`；Ace 行内 widget | `editor-plugin-view.js` + `editor-groups.js` |
+| 服务容器 | 10 个域各自的 `Map + register/clear`，无查找 / 替换 / inject / 就绪 / disposer | 服务注册表 + `inject` 声明 + 就绪等待 + 可替换 / 隔离 + disposer | **新建 `frontend/src/shell/plugin-container.js`**（不叫 `plugin-services`，该名已被子进程服务占用）+ 改 `plugins.js` 的 `apiFor` |
+| 事件五模式 | 订阅桥：`onApp / onWindow / onWorkspace / onOwned / onResource`，无发起能力 | `emit / waterfall / parallel / serial / bail` | **新建独立模块**（如 `core/hook-bus.js`），命名空间 `cadt.on / cadt.emit`；**不进 `EVENT_SCOPES`** |
+| 事件溯源会话 | append-only JSONL 六事件 + replay + 崩尾修复 + 分桶 + 锁 + fsync；Go 侧 vacuum | 事件粒度下探到工具 / 审批 / 子代理 / 回合；崩溃尾部**追加**闭合事件；可 replay 派生 UI | 扩 `ai/session/ai-session-store.js` 事件词表 + `ai-session-disk.js` 写点 + `internal/sessionstore`（vacuum 同批改）；**不新建 `internal/sessionlog/`** |
+| 编排持久化 | 4 个前端 Map；元数据随消息落盘、载入 running→stopped | 流水线状态可续跑（跨进程恢复子代理） | `ai-subagents.js` + 复用上面的事件通道；**Go 侧 agent loop 单独立项** |
+| Agent Scope | `scopeRootOf(session)` 已是唯一根；`toolsForScope(scope, planMode, session)` 已按会话 | `agent.ctx` 扁平注册层，每 agent 独立工具 / 提示 / 变量 | 在 `scopeRootOf` 之上演进，不另起根解析 |
+| Agent Preset | `session.agents` 已有 persona / role / group / model / temperature | 声明式 preset（persona + 工具集 + 提示片段 + 根），随会话持久化 | 扩 `ai/agent/ai-agent-model.js` + 会话 meta；工具集经 `toolsForScope` 注入 |
+| 配置 Schema | 缺失 | 校验 + 默认值 + UI，按 scope 隔离 | 新模块（纯函数 + 测试） |
+| 上下文去重 | 已分 stable / `turnBlock` 两区，前缀稳定；无 digest | durable 消息 + digest 去重 | `ai-system-context.js` 补 digest（增量小改，不再是分区改造） |
+| 编辑器内联 AI | 无 `aiComplete` 桥、无 Ctrl+K | `registerViewer` ctx 加 `aiComplete()`；Ace 行内 widget | `editor-plugin-view.js` + `editor-groups.js` |
+| 回合钩子（v8 补记） | 无 `onPreStep`；根冻结靠「根即会话属性」天然成立 | `agent/pre-step` 统一钩子点 | `ai-panel.js` 的 `startRound` 入口补钩子，接入上面的事件总线 |
 
 ### 4.8 未绑定会话：backing workspace
 
@@ -510,6 +602,15 @@ AI 相关调用点 24 处，其中会撞的：
 2. **真正需要互斥的少数文件**（`MEMORY.md`、`permissions.json`）改为**专用后端通道**：
    走 `resourcelease` + `atomfile`，前端不再直调 `SaveFile`。
 
+> **实施结果（v8 复核，2026-11-27）**：第 1 条**没有按原样落地**。线 A 实际做的是**新增**
+> `internal/fileio` 的 `SaveFileAtomic`（同目录临时文件 + fsync + Replace），**只给应用内务文件
+> （`.cadt/**`）用**；`SaveFile` 一个字节未改，用户文档保存仍是原来的非原子写
+> （见 `docs/reports/agent-host-platform-implementation.md` C 批与 `fileio_test.go:219` 的注释）。
+> 后果：**「搜 `backend.SaveFile(` = 全部无保护写点」这个判据仍然有效**，24 处里只有改成
+> `SaveFileAtomic` 的那部分消除了半截文件风险。第 2 条（`MEMORY.md` / `permissions.json` 专用通道）
+> 随 S2 落地，结论不受影响。若将来要把用户文档保存也原子化，需要单独立项
+> （`SaveFile` 的调用点包含编辑器直存，fsync 时机与撤销栈的交互要一起验）。
+
 ### 4.9.4 关键漏洞 C：跨窗口共享的 localStorage 无锁
 
 Wails 多窗口共享同一 WebView2 user data 目录 → **localStorage 是共享的，且没有锁**。
@@ -535,8 +636,8 @@ Wails 多窗口共享同一 WebView2 user data 目录 → **localStorage 是共�
 | worklog | `sessionlock` + `worklogMu` | ✅ | ✅ 追加 | 拒绝/等待 | 保持 |
 | wipe-guard 索引 | `sessionlock` + 10 次重试 + O_APPEND 兜底 | ✅ | ⚠️ 最坏丢一行 | 丢一行 | 保持（已声明） |
 | 补丁库 | 记录自带 root + atomfile | ✅ | ✅ | — | 保持 |
-| **`MEMORY.md`** | **`SaveFile` 裸写** | ❌ | ❌ | **丢更新 + 半截** | **S2 走锁通道** |
-| **`permissions.json`** | **`SaveFile` 裸写** | ❌ | ❌ | **丢更新 + 半截** | **S2 走锁通道** |
+| **`MEMORY.md`** | ~~`SaveFile` 裸写~~ → 专用锁通道 | ✅ | ✅ | ~~丢更新 + 半截~~ | **已落地（S2，E 批）** |
+| **`permissions.json`** | ~~`SaveFile` 裸写~~ → 专用锁通道 | ✅ | ✅ | ~~丢更新 + 半截~~ | **已落地（S2，E 批）** |
 | 计划落盘 | `SaveFile` 裸写 | ❌ | ❌ | 半截（按会话隔离不丢更新） | **S1 `SaveFile` 原子化** |
 | 群纪要 / 导出 / 粘贴 | `SaveFile` 裸写 | ❌ | ❌ | 半截 | S1 `SaveFile` 原子化 |
 | 设置（localStorage） | `kvSet` | ❌ | — | 覆盖 | 保持（合并入口） |
@@ -628,24 +729,33 @@ let lastAlarmAt = 0;          // 全局告警冷却（2 分钟，不分根）
 
 ## 5. 统一阶段规划（避免抢同一批文件）
 
-> 关键约束：两条线都改 `ai-panel.js`（20171 行）与 `ai-subagents.js`（2361 行）。
-> 线 B 的编排重构（S6）必须最后；线 A 的路径改造（S1）先做，因为线 B 的事件溯源（S5）也要改会话模型，
-> 放在 S3 之后可少改一次。
+> 关键约束：线 B 要改 `ai-panel.js`（**21045 行**）与 `ai-subagents.js`（**2364 行**）。
+> **线 A（S0–S3）已合入**，下表把 S0–S3 折叠成交付摘要（逐项明细见 git 历史与 v7 版本）；
+> 线 B 从 S4 起，编号沿用 S4–S7，括号里是复核后的建议批次名（B1–B4）。线 B 的编排重构（S6）仍必须最后。
+>
+> v8 复核后的人日：**S4 2→1.5–2**（落点改名，工程量不变）、**S5 3–4→2.5–3**（复用已有日志底座）、
+> **S6 5–8→3–4 + 单列 Go loop**（拆出「可续跑」与「引擎下沉」两件事）、**S7 3–5→2–3**
+> （版本兼容半成）。合计从 **13–21** 降至 **9.5–12** 人日（不含 Go loop 立项）。
 
 | 阶段 | 内容 | 涉及文件 | 人日 | 风险 |
 |---|---|---|---|---|
-| **S0** | 纯函数 + 测试：`windowWorkspace` / `activeFileDir` / `scopeRootOf`（四步）、`decideSessionOpen` 的 `switchInPlace` 分支、`workspaceOpenMode` 归一 | 新增 `ai-session-scope.js` 函数 + 测试 | 0.5 | 无 |
-| **S1** | 换手骨架 + 工具根改会话 + **`SaveFile` 原子化** + **wipe-guard 同根修复**：`switchWorkspaceInPlace` + 三处入口 + `applyWorkspaceSnapshot` + `busy` 兜底 + 根变更注入 + `aiResolveScopePath` / 两处 `aiRelPath` / `resolveScanRoot` / `commandCwdOf` / `isAutoWriteRisky` / `ai-worktree`（改用 `wt.path`）/ Git 撤销 / 生成产物 / 计划审批 cwd + `onPreStep` 根冻结；`internal/fileio.SaveFile` 内部改 `atomfile.WriteFileAtomicMode`（§4.9.3）；**`preCommand` 返回 `{root, fp}` 且 `postCommand` 用同一 root、`syncWorkspaceWatcher` 跟会话根（§4.9.8 F2/F3）** | `main.js`、`ai-panel.js`（路径段）、`ai-worktree.js`、`bridge-git.js`、`session-restore.js`、`internal/fileio/fileio.go`、`frontend/src/ai/security/ai-wipeguard.js`、`frontend/src/main.js:3652` | 3.5 | 中高（核心路径 + 全局写通道 + 防护） |
-| **S2** | 上下文与状态改会话根 + **并发加固**：AGENTS.md / 记忆（禁回落 + **`MEMORY.md` 走 resourcelease 专用通道**）/ 项目规则（**`permissions.json` 走专用通道**）/ 技能 + 缓存 / 认知预取缓存 / 群聊 / **§4.3 分层渲染** / 单槽缓存 Map 化 / **cognition 补窗口分桶（§4.9.2）** | `ai-system-context.js`、`ai-permission-settings.js`、`ai-cognition.js`、`ai-panel.js`、`internal/cognition/service.go`、新记忆/规则写通道 | 3.5–4.5 | 中 |
-| **S3** | harness 窗口 + **跨窗口协调与防护加固**：`--harness` + 不恢复 + 独立快照槽 + 侧栏跟会话 + backing workspace + 三选一选择器 + CLI 投递兼容 + `switchRootLight` + **重活去重表放 Go 侧** + **`WindowRegister` 加序号**（§4.9.6）+ **wipe-guard per-root 状态表 + 多根 watcher + 冷却按根（§4.9.8 F1/F4/F5/F6）** | `bridge-ui.js`、`session-restore.js`、`main.js`、`app_window.go`、`window_host.go`、`internal/windowreg`、`internal/watch/resource.go`、`ai-wipeguard.js` | 4 | 中高 |
-| **S4** | 平台原语一（低风险，纯新增）：DI 服务容器 + 五模式事件总线 + manifest 登记 + 单测 | 新增 `plugin-services.js`、事件总线模块 | 2 | 低 |
-| **S5** | 平台原语二：事件溯源日志（先「只写不读」，UI 仍走旧路径渲染，验证稳定后再切 replay） | 新增 `internal/sessionlog/` + `ai-panel.js` 写日志 | 3–4 | 中高 |
-| **S6** | 平台原语三（最大工程量）：编排持久化 + `ai-subagents.js` 重构；随后 P1 的 scope / preset / 上下文去重 | `ai-subagents.js`、新持久化层、`ai-system-context.js` | 5–8 | 高 |
-| **S7** | 平台配套：插件依赖声明 / 组合配置 / 版本兼容；编辑器内联 AI（`aiComplete` + Ace widget） | `plugins.js`、`editor-plugin-view.js`、`editor-groups.js` | 3–5 | 中 |
+| **S0** | ✅ 已实施。纯函数 + 测试：`windowWorkspace` / `activeFileDir` / `scopeRootOf`（四步）、`decideSessionOpen` 的 `switchInPlace` 分支、`workspaceOpenMode` 归一 | 新增 `ai-session-scope.js` 函数 + 测试 | 0.5 | 无 |
+| **S1** | ✅ 已实施。换手骨架 + 工具根改会话 + **`SaveFileAtomic`（仅 `.cadt/**`；`SaveFile` 未改，见 §4.9.3 实施结果）** + wipe-guard 同根修复（详见原表，此处不再展开） | `main.js`、`ai-panel.js`（路径段）、`ai-worktree.js`、`bridge-git.js`、`session-restore.js`、`internal/fileio/fileio.go`、`ai-wipeguard.js` | 3.5 | 中高 |
+| **S2** | ✅ 已实施。上下文与状态改会话根 + 并发加固（AGENTS.md / 记忆 / 项目规则 / 技能 / 认知 / 群聊 / 分层渲染 / 缓存 Map 化 / cognition 分桶） | `ai-system-context.js`、`ai-permission-settings.js`、`ai-cognition.js`、`ai-panel.js`、`internal/cognition/service.go` | 3.5–4.5 | 中 |
+| **S3** | ✅ 已实施。harness 窗口 + 跨窗口协调与防护加固（`--harness` / 独立快照槽 / backing workspace / 三选一选择器 / CLI 投递 / 重活去重放 Go / per-root wipe-guard） | `bridge-ui.js`、`session-restore.js`、`main.js`、`app_window.go`、`window_host.go`、`internal/windowreg`、`internal/watch/resource.go`、`ai-wipeguard.js` | 4 | 中高 |
+| **S4**（B1） | 平台原语一（低风险，纯新增）：DI 服务容器 + 五模式事件总线 + 收编 10 个域注册表的登记口 + 单测。**容器落点 `shell/plugin-container.js`；总线独立命名空间，不进 `EVENT_SCOPES`** | 新增 `shell/plugin-container.js`、`core/hook-bus.js`，改 `plugins.js` 的 `apiFor` | 1.5–2 | 低 |
+| **S5**（B2） | 平台原语二：事件粒度下探（`tool` / `approval` / `agent` / `turn` 四类事件）+ 崩溃尾部改成**追加** `turn/close`（保留现有载入改写兜底）+ **同批改 Go `sessionstore`/`vacuum` + parity 测试**。先「只写不读」 | 扩 `ai/session/ai-session-store.js`、`ai-session-disk.js`；`internal/sessionstore/*`；`ai-session-vacuum-parity.test.mjs` | 2.5–3 | 中高 |
+| **S6**（B3a） | 平台原语三：编排持久化——子代理运行态落盘、跨进程可续跑；随后 P1 的 preset / 配置 schema / digest 去重 | `ai-subagents.js`、`ai/agent/ai-agent-model.js`、`ai-system-context.js`、新持久化层 | 3–4 | 高 |
+| **S6′** | **单独立项**：Go 侧 agent loop（把前端闭包循环下沉）。与 S6 无强耦合，不要并成一批 | `internal/aichat`、新编排引擎包 | 待评估 | 极高 |
+| **S7**（B4） | 平台配套：插件依赖声明 / 组合配置（复用 `vercmp`）；编辑器内联 AI（`aiComplete` + Ace widget） | `plugins.js`、`internal/plugins/plugins.go`、`editor-plugin-view.js`、`editor-groups.js` | 2–3 | 中 |
 
-**最小可交付切片 = S0 + S1 ≈ 4 人日**（S0 0.5 + S1 3.5）：拿到「点会话不再满屏新窗口、且不写错仓库」，
-同时把 `SaveFile` 原子化与 wipe-guard 同根修复一并落地（这两项是全局收益，越早越好），
-且 `onPreStep` 收口已为将来的事件总线留好钩子。S2 与 S3 紧随；S4 可与 S1/S2 并行（纯新增文件）。
+**线 A 交付物**（S0+S1 ≈ 4 人日）已拿到「点会话不再满屏新窗口、且不写错仓库」，
+`SaveFile` 原子化与 wipe-guard 同根修复一并落地。**线 B 的起点因此是「干净的地基」**：
+会话级作用域已成立——`agent.ctx` 可以直接长在 `scopeRootOf` 上，不必先改根解析。
+
+**线 B 建议顺序**：S4 → S5 → S6 → S7。S4 与 S5 可小范围并行（S4 只碰 `shell/` 与 `plugins.js`，
+S5 只碰 `ai/session/` 与 Go `sessionstore`，文件不重叠），但**两者的测试基线必须先合并干净**
+（见 §0 的脏树）。S6 仍必须最后，S6′ 不进本项目排期。
 
 ```html
 <style>
@@ -654,18 +764,15 @@ let lastAlarmAt = 0;          // 全局告警冷却（2 分钟，不分根）
   .nm{color:var(--muted);font-size:11px}
   .track{position:relative;height:22px;background:color-mix(in srgb, var(--text) 6%, transparent);border-radius:5px}
   .bar{position:absolute;top:3px;height:16px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--on-accent);white-space:nowrap;overflow:hidden}
-  .a{background:var(--accent)}
   .b{background:var(--green)}
   .c{background:var(--warn)}
   .d{background:var(--muted)}
 </style>
 <div class="g">
-  <div class="r"><div class="nm">线 A · S0+S1</div><div class="track"><div class="bar a" style="left:0;width:22%">3 人日 · 路径层</div></div></div>
-  <div class="r"><div class="nm">线 A · S2</div><div class="track"><div class="bar a" style="left:22%;width:20%">上下文/缓存</div></div></div>
-  <div class="r"><div class="nm">线 A · S3</div><div class="track"><div class="bar a" style="left:42%;width:18%">harness 窗口</div></div></div>
-  <div class="r"><div class="nm">线 B · S4</div><div class="track"><div class="bar b" style="left:10%;width:16%">DI+事件总线（可并行）</div></div></div>
-  <div class="r"><div class="nm">线 B · S5</div><div class="track"><div class="bar c" style="left:60%;width:20%">事件溯源（只写不读）</div></div></div>
-  <div class="r"><div class="nm">线 B · S6+S7</div><div class="track"><div class="bar d" style="left:80%;width:20%">编排持久化 + 配套</div></div></div>
+  <div class="r"><div class="nm">B1 · S4</div><div class="track"><div class="bar b" style="left:0;width:18%">容器 + 总线 · 1.5–2 人日</div></div></div>
+  <div class="r"><div class="nm">B2 · S5</div><div class="track"><div class="bar c" style="left:18%;width:26%">事件粒度 + 闭合 · 2.5–3 人日</div></div></div>
+  <div class="r"><div class="nm">B3 · S6</div><div class="track"><div class="bar d" style="left:44%;width:34%">可续跑 + preset · 3–4 人日</div></div></div>
+  <div class="r"><div class="nm">B4 · S7</div><div class="track"><div class="bar d" style="left:78%;width:22%">配套 · 2–3 人日</div></div></div>
 </div>
 ```
 
@@ -677,12 +784,18 @@ let lastAlarmAt = 0;          // 全局告警冷却（2 分钟，不分根）
   `frontend/test/shell/session-restore.test.mjs`（`applyWorkspaceSnapshot`）、
   新增 `frontend/test/ai/session/scope-root.test.mjs`（会话根优先 / backing workspace / 两层兜底 /
   路径归一对齐 Go 向量）。**新测试文件必须登记进 `frontend/package.json` 的 `test:*` 清单**
-  （漏登记＝从没跑过）。线 B 的 S4 另需服务容器 / 事件总线单测，并登记 `test/core/test-manifest.test.mjs`。
+  （漏登记＝从没跑过）。线 B 的 S4 另需 `test/shell/plugin-container.test.mjs`（查找 / 替换 / inject 就绪 /
+  disposer）与 `test/core/hook-bus.test.mjs`（五模式语义：`waterfall` 短路、`bail` 首个返回值、
+  `serial` 顺序），两个都要登记进 `package.json` 的 `test:*` 清单**并由 `test-manifest.test.mjs` 兜住**。
+- **守卫**：S4 的新总线**不得**让 `event-bridge-guard` / `event-contract-guard` 变红——
+  前者管 `EventsOn` 只出现在桥里，后者管 Go↔前端事件名双向成对。插件进程内事件不进 `EVENT_SCOPES`。
 - **类型**：改动 `frontend/src/core/*` 与纯逻辑文件加 `// @ts-check`，`npm run typecheck` 零错。
-- **绑定面**：v6 **不新增 Go 绑定**。若实施中新增（如 `internal/sessionlog` 的绑定），
-  需 `UPDATE_BINDINGS_BASELINE=1 go test -run TestAppBindingBaseline .` + 重生成
-  `frontend/src/types/backend.d.ts` + `dev/mock-backend.js` 补 mock；避开
-  `Start / Close / EnsureDir / ServiceStartup` 四个禁用名。
+- **绑定面**：线 A 之前定的是「v6 不新增 Go 绑定」。**v8 复核后**：S5 只扩事件词表、写点仍在前端，
+  **不新增绑定**（原计划里 `internal/sessionlog` 的绑定随「不新建该包」一并取消）；S4 / S7 都在前端，同样不加。
+  只有 S6′（Go 侧 agent loop）真正下沉时才需要。若届时新增，需
+  `UPDATE_BINDINGS_BASELINE=1 go test -run TestAppBindingBaseline .` + 重生成
+  `frontend/src/types/backend.d.ts` + `dev/mock-backend.js` 补 mock；基线当前 **434** 条，
+  避开 `Start / Close / EnsureDir / ServiceStartup` 四个禁用名。
 - **构建门**：`npm test`（含 typecheck 前置门）、`go build ./...`。
 - **手工清单**：
   1. 会话列表点跨工作区会话 → 按设置项分别验证「新窗口」与「原地换手」；
@@ -713,7 +826,8 @@ let lastAlarmAt = 0;          // 全局告警冷却（2 分钟，不分根）
       - F4：harness 下 `snapshotTick` / 周期校准**有实际执行**且日志写明覆盖根；
       - F5：A 根告警后 2 分钟内 B 根的真破坏仍能报警（冷却按根独立）；
       - F6：A 会话删 ≥40 个文件（10s 滚动窗口阈值）的同时切到 B → 仍触发 critical 并投递给 A；
-  15. **平台原语（S4）**：最小写作 preset 插件跑通「注册工具 → 声明 inject → waterfall 接管一次请求」；
+  15. **平台原语（S4）**：最小双插件跑通「A 提供 service → B `inject` 后就绪并拿到同一实例 →
+      B 的 `waterfall` 钩子接管并短路一次请求 → 禁用 B 后 disposer 撤干净、A 的服务不受影响」；
   16. **回归**：子代理 `spawn/wait/send`、群聊四种模式、审批链全绿。
 
 ### 6.1 wipe-guard 端到端演练（必须真跑，S1 与 S3 各一次）
@@ -766,12 +880,19 @@ let lastAlarmAt = 0;          // 全局告警冷却（2 分钟，不分根）
 
 ### 7.2 线 B 决议
 
+> 1–4 为 v7 原决议；5–9 为 v8 复核（2026-11-27）新增，凡与旧决议冲突的以新决议为准。
+
 | # | 议题 | 决议 |
 |---|---|---|
 | 1 | 是否原样运行 DSH 插件 npm 包 | **不追求**（等于移植整个 DSH，238 workspace 包）；只做契约思想对齐 |
 | 2 | 务实路线 | 短期把 DSH 作为受管 sidecar（`registerService` + `internal/appservices`），CaDt 做书仓查看 / 状态面板 / 命令面板，两边共享书仓目录 |
 | 3 | 平台原生化顺序 | **先地基后编排**：S4（DI + 事件总线）→ S5（事件溯源，先只写不读）→ S6（编排持久化）；S6 之前不动 `ai-subagents.js` |
 | 4 | 两条线的关系 | 线 A 是线 B 的地基与验证场：先证明「会话级作用域」成立，再扩展成完整 `agent.ctx` |
+| 5 | 事件溯源落点（v8） | **不新建 `internal/sessionlog/`**。复用 `internal/sessionstore` 的日志与 vacuum，只在 `ai-session-store.js` 扩事件词表 + 追加 `turn/close` 闭合事件；改格式必须同批改 vacuum 与 parity 测试 |
+| 6 | DI 容器命名（v8） | 用 `shell/plugin-container.js`。`shell/plugin-services.js` 保留给「插件后台子进程服务」，**两者不合并**（一个是依赖注入，一个是进程托管） |
+| 7 | 五模式总线命名空间（v8） | 独立进程内总线（`cadt.on / cadt.emit`），**不进 `EVENT_SCOPES`**；那张表继续只做 Go↔前端跨窗口契约，由 `event-contract-guard` 守 |
+| 8 | 编排持久化与 Go loop（v8） | **拆开**：S6 只做「前端可续跑 + preset + schema」；Go 侧 agent loop 立为 S6′，单独评估、不进本次排期（原 5–8 人日里含它，是估算偏高的主因） |
+| 9 | 上下文去重（v8） | 从 P1 降为小改：`assembleSystemContext` 已分 stable / `turnBlock`，只补 digest 与 `headerEquals` 等价物，不再做「分区改造」 |
 
 ### 7.3 评审与审计处置摘要
 
@@ -803,10 +924,13 @@ harness 写共享单槽（→ S3）、TOCTOU 守卫（→ v6 撤销占位后消�
 | 同仓库两窗口并发写（v6 放开后） | 冲突交给 git；数据丢失风险由会话租约挡住（I1）；越界走升权审批 |
 | 大仓库 `git status` 无上限 | 走「标脏 + 空闲刷新」，不做后台轮询；S3 验收要求 1 次/工作区 |
 | **wipe-guard 漏报（§4.9.7 F1/F2）** | 这是最危险的失效——防护静默失灵等于 11-18 事故失去防线。S1 修同根与监听根，S3 补 per-root 状态表与多根 watcher；**验收按 §6.1 的四个场景真跑，单测不能替代** |
-| **`SaveFile` 裸写被遗漏** | S1 统一改 `atomfile`，一处改动覆盖 24 个调用点；`MEMORY.md` / `permissions.json` 另走锁通道 |
+| **`SaveFile` 裸写被遗漏** | ~~S1 统一改 `atomfile`，一处改动覆盖 24 个调用点~~ **v8 更正**：线 A 只新增了 `SaveFileAtomic` 给 `.cadt/**`，`SaveFile` 本身未改（§4.9.3 实施结果）。`MEMORY.md` / `permissions.json` 已随 S2 走锁通道；其余用户可见写点仍非原子，属**已知未收口项**，不要再当成"已修" |
 | `resourcelease` 进程内 refcount 漏洞 | 只有 `sessionLeases` / `memoLeases` 修过；S2 补 cognition 分桶，其余新增写通道一律照抄该模式 |
 | 一个窗口只能监听一个根 | harness 的树跟随当前会话根（不做多根监听）；接受旧工作区标签失去变更事件 |
 | `stash@{0}` 等外部工作区状态 | 动手前确认工作区干净；不覆盖他人未提交改动 |
+| **S5 改事件格式击穿 vacuum（v8 新增）** | 会话日志是「前端写 + Go 整理」的双端共识。事件词表一变，`internal/sessionstore/vacuum.go` 与 `ai-session-vacuum-parity.test.mjs` 必须同批改，否则存量会话整理会**静默丢事件**（不报错，回放才发现缺） |
+| **S4 两套「服务」混淆（v8 新增）** | 容器叫 `plugin-container`，`plugin-services` 保留给子进程托管；两者都在 `shell/` 下，靠文件名与文件头注释区分，不合并 |
+| **插件事件污染跨窗契约（v8 新增）** | 新总线独立命名空间，不进 `EVENT_SCOPES`；`event-contract-guard` 只认后者，混用会让「Go 没有发射点」的假失败掩盖真问题 |
 
 ### 8.2 不做
 
@@ -817,6 +941,10 @@ harness 写共享单槽（→ S3）、TOCTOU 守卫（→ v6 撤销占位后消�
 - 不做多根 mention（`@frontend:path` 类）——单根会话更清晰，复杂度会扩散到搜索/提及/路径适配三处。
 - 不原样运行 DSH npm 插件包。
 - 不给 git / 指纹加后台轮询。
+- （v8）**不新建 `internal/sessionlog/`**——与 `internal/sessionstore` 双写会击穿 vacuum parity；
+  事件溯源在既有日志上做增量，不另起一套存储。
+- （v8）**不把插件进程内事件登记进 `EVENT_SCOPES`**——那张表是 Go↔前端跨窗口契约，混用即失效。
+- （v8）**不把 Go 侧 agent loop 并入 S6**——它是独立工程，混进来会让「编排持久化」永远交付不了。
 
 ---
 
