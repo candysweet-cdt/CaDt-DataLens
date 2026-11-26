@@ -360,6 +360,13 @@ export function createAIPanel(options) {
         now: () => Date.now(),
     });
     const flash = typeof opts.flash === 'function' ? opts.flash : () => {};
+    // 诊断日志（宿主 main.js 注入的 logFrontend）：busy 退回队列这类「预期内的等待」只留痕
+    // 不打扰用户。**不要**在本模块裸用 logFrontend——它不在这个作用域里（2026-11-27 实测：
+    // 裸用让面板构造阶段就抛 ReferenceError，整块 AI 面板起不来）。宿主未注入时退化到
+    // console（mock / 测试桩环境）。
+    const logFrontend = typeof opts.logFrontend === 'function'
+        ? opts.logFrontend
+        : (level, message) => console.debug('[ai][' + level + '] ' + message);
     // 失败 / 后台事件统一通知（main.js 注入的 failureNotifier）：消息中心 + toast + 节流。
     // 与 notifyDesktop（AI 任务失败 / 提问 / 审批，带会话可见性策略）平行：
     // 后者是「对话级需要回来处理」，这里是「静默失败 / 后台事件」，清单见调用点。
@@ -13941,8 +13948,14 @@ async function requestApproval(session, toolMessage, info) {
             if (viewing && (!session || viewing.id !== session.id)) flushMessageQueue(viewing.id);
         }
         // 消费点 2（§4.4 时机 3）：流已注销，残余通知交给空闲唤醒——目标此时空闲就起新一轮，
-        // 否则按忙排队。放在消息队列冲刷之后，保证「用户排队消息优先于后台通知」。
-        if (session) flushAgentNotices(session.id);
+        // 否则按忙排队。
+        //
+        // **只在不冲用户队列时才冲通知**：flushMessageQueue 是 async 且不 await，
+        // 它内部的 startSessionTurn 要经过多个 await 才 attachStream，此刻 isSessionBusy
+        // 仍是 false → 紧接着冲通知会**再起一轮**，两轮并发、落败方的 assistant 被置
+        // stopped（子代理审查 #5）。用户队列优先的语义本来也是「这一轮先跑用户消息，
+        // 通知等它结束的边界」——跳过即可，且现在有重试触发器兜底，不会滞留。
+        if (!shouldFlush && session) flushAgentNotices(session.id);
         // 一轮结束后检查上下文预算：超阈值则自动压缩（不打断生成，此处已无 stream）。
         // **error 收尾同样要检查**：一轮把上下文堆过阈值后报错收场（限流 / 超窗措辞没命中
         // 恢复分支），而发送门禁已经拦住新轮——轮末检查若只在 done 时跑，这个会话就永久
@@ -17015,6 +17028,11 @@ async function requestApproval(session, toolMessage, info) {
         // 头部弹层（智能体团队 / 后台终端）是「上个会话的」列表：切会话就收起来
         if (chipsPopKind) hideChipsPop();
         setTimeout(() => flushMessageQueue(id), 0);
+        // 切到该会话时也冲一次通知：用户切回来往往是「看到信箱角标想读内容」，
+        // 若只冲用户队列，通知会一直等到重试退避或下次发消息（子代理审查 #4）。
+        setTimeout(() => {
+            try { flushAgentNotices(id); } catch (e) { /* 投递尽力而为，不拦切换 */ }
+        }, 0);
         // 面板切了会话：支线标签页据此重新判定「在位 / 失联」（统一收口在
         // notifySessionSwitchListeners：其余改指入口也走同一处）
         notifySessionSwitchListeners(id);
@@ -17493,7 +17511,15 @@ async function requestApproval(session, toolMessage, info) {
             return;
         }
         session.archivedAt = archived ? Date.now() : 0;
-        if (archived) clearQueueForSession(session.id);
+        if (archived) {
+            clearQueueForSession(session.id);
+            // 信箱一起清：归档后 deliverAgentNotice 会以 archived 拒收，已入队的通知
+            // 再也没有消费时机（compute 点只服务活跃会话），留着只是内存与角标噪音。
+            noticesMod.clearMailbox(session.id);
+        } else {
+            // 取消归档：归档期间攒下的通知（如果有）立刻投递
+            try { flushAgentNotices(session.id); } catch (e) { /* 运行 [] */ }
+        }
         logActivity('ai.session', session.id, {op: archived ? 'archive' : 'unarchive', title: session.title || ''}, {actor: 'user', source: 'user'});
         const isCurrent = currentSession() && currentSession().id === session.id;
         if (archived && isCurrent) {
@@ -18195,6 +18221,9 @@ async function requestApproval(session, toolMessage, info) {
         if (!text) {
             if (viewed) showNote('压缩失败：模型没有返回摘要。', true);
             else notifyDesktop({kind: 'error', title: '自动压缩失败', body: (session.title || '会话') + ' · 模型没有返回摘要', sessionId: session.id});
+            // 压缩失败也要解除「全局阻塞」：compactStarting 期间所有会话的通知都排队了，
+            // 只是冲压缩目标是不够的（子代理审查 #3）。
+            flushAllAgentNotices();
             releaseOneShot();
             return;
         }
@@ -18222,6 +18251,14 @@ async function requestApproval(session, toolMessage, info) {
                 ' 条（预留预算约 ' + retainBudget + ' tokens），归档 ' + archived.length + ' 条。');
         }
         flushMessageQueue(session.id);
+        // 通知队列也要冲：压缩期间 `compactStarting` 是**全局**的（不属于任何会话），
+        // 所有会话的 wakeWith 都会被 startSessionTurn 判 busy 而退回队列。压缩一结束，
+        // 这些排队的后台通知（子代理结算 / 定时任务 / 计时器）必须立刻重试，
+        // 否则要等用户下次发消息触发 foldBeforeTurn——实测就是「通知只在我发消息后才到」。
+        // 顺序在消息队列之后，保持「用户排队消息优先于后台通知」。
+        // 压缩目标单独冲（保证顺序），其余会话用批量冲刷补上。
+        flushAgentNotices(session.id);
+        flushAllAgentNotices({excludeId: session.id});
         releaseOneShot();
         // 上下文溢出恢复：压缩完成后自动重发本轮（六份参照 harness 的「压缩 → 重试」分支）。
         // 队列里还有待发消息时不抢：flushMessageQueue 已经起了一轮，重试交给用户。
@@ -19853,6 +19890,9 @@ async function requestApproval(session, toolMessage, info) {
         sessionById,
         streamOf,
         compactOf,
+        // 全局「压缩正在准备」标记：notices 的忙判定要能看见它（与起轮内核同口径），
+        // 否则压缩窗口内的后台通知会被误唤醒再被拒，报「投递失败：busy」。
+        compactStartingOf: () => compactStarting,
         startSessionTurn,
         currentSession,
         isOpen,
@@ -19861,6 +19901,8 @@ async function requestApproval(session, toolMessage, info) {
         setSessionUnread,
         notifyDesktop,
         flash,
+        // busy 退回队列这类「预期内的等待」只留诊断日志，不弹系统通知（见 wakeWith 注释）
+        logFrontend,
         persistSessions,
         getPendingEdit: () => pendingEdit,
         // 会话间投递（阶段 H）：选址列表按工作区过滤，默认只列同工作区
@@ -19872,6 +19914,10 @@ async function requestApproval(session, toolMessage, info) {
     const deliverAgentNotice = (...args) => noticesMod.deliverAgentNotice(...args);
     const foldAgentNotices = (...args) => noticesMod.foldNotices(...args);
     const flushAgentNotices = (...args) => noticesMod.flushNotices(...args);
+    // 冲刷**所有**待投通知的会话：压缩结束/失败、回前台、切会话等全局事件用。
+    // compactStarting 是全局标记，压缩期间**所有**会话的通知都被判忙排队，
+    // 只冲压缩目标会让别的会话干等到重试退避耗尽（子代理审查 #3）。
+    const flushAllAgentNotices = (opts) => noticesMod.flushAllPending(opts);
     const foldNoticesBeforeTurn = (...args) => noticesMod.foldBeforeTurn(...args);
     const pendingNoticeCount = (...args) => noticesMod.pendingCount(...args);
 

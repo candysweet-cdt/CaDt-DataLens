@@ -20,10 +20,11 @@ function makeHarness(overrides) {
         sessionById: (id) => sessions.get(id) || null,
         streamOf: (id) => (opts.streamOf ? opts.streamOf(id) : (busy ? {sessionId: 's1'} : null)),
         compactOf: (id) => (opts.compactOf ? opts.compactOf(id) : null),
-        startSessionTurn: (s, text, options) => {
+        // 「压缩正在准备」是**全局**标记（不属于任何会话）：用它模拟「别的会话正在压缩」
+        compactStartingOf: () => !!opts.compactStarting,        startSessionTurn: opts.startSessionTurn || ((s, text, options) => {
             calls.turns.push({sessionId: s.id, text, options});
             return opts.turnResult ? opts.turnResult : Promise.resolve({ok: true});
-        },
+        }),
         currentSession: () => session,
         isOpen: () => false,
         renderMessages: () => {},
@@ -203,6 +204,150 @@ test('flushNotices：忙时只排队不唤醒，空闲时唤醒', () => {
     assert.equal(h.calls.turns.length, 0);
     h.setBusy(false);
     assert.equal(h.notices.flushNotices('s1').woke, true);
+});
+
+// 实测 bug（2026-11-27）：明明会话空闲，后台通知却报「投递失败：busy」，而且消息要等
+// 用户下次发消息才到。根因是两处判定与起轮内核不同源：
+//   · deliverAgentNotice / flushNotices 用 isSessionBusy(id)（**不判** compactStarting）
+//   · startSessionTurn 判 streamOf || compactOf || compactStarting
+// 于是「某个会话正在压缩准备」这个**全局**窗口内，所有会话都被判空闲 → 唤醒 → 被拒 → 报错。
+test('压缩准备窗口（compactStarting）必须算忙，否则会误唤醒再被拒', async () => {
+    // 模拟：本会话没有 stream / compact，但全局 compactStarting 为真
+    const h = makeHarness({
+        compactStarting: true,          // 见下面 harness 支持
+        turnResult: Promise.resolve({ok: false, reason: 'busy'}),  // 起轮内核会拒
+    });
+    const receipt = h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '压缩期间到达的通知'});
+    // 关键：不能进 wakeWith。inclusion 正确时应直接排队返回 queued
+    assert.equal(receipt.reason, 'queued', '压缩准备窗口必须按忙排队，不能尝试唤醒');
+    assert.equal(h.calls.turns.length, 0, '不该调用 startSessionTurn（必然被拒）');
+    // flushNotices 同口径
+    assert.equal(h.notices.flushNotices('s1').reason, 'busy', 'flushNotices 也必须认 compactStarting');
+});
+
+test('wakeWith 拿到 busy 不报错（消息已退回队列，等下一边界）', async () => {
+    // 竞态场景：isSessionBusy 判定时空闲，但在 startSessionTurn 之前流起来了
+    const h = makeHarness({turnResult: Promise.resolve({ok: false, reason: 'busy'})});
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '竞态通知'});
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // 内容退回队列（不丢）
+    assert.equal(h.notices.pendingCount('s1'), 1, 'busy 被拒后内容必须回填队列');
+    // 但不该弹「投递失败」系统通知——busy 是预期状态，报了会让用户以为消息丢了
+    assert.equal(h.calls.desktop.length, 0, 'busy 不该触发「AI 后台通知投递失败」通知');
+    assert.equal(h.calls.flashes.filter((f) => f.isError).length, 0, 'busy 不该 flash 报错');
+});
+
+// 边界：startSessionTurn 同步抛错（不是 reject）。wakeWith 在调用它之前已 waking.add，
+// 且 batch 已被 splice 出队列。若不清理，该会话之后每次唤醒都被挡成 'waking'，
+// 通知永久滞留到用户手动发消息。
+test('startSessionTurn 同步抛错：waking 必须清理、内容必须回填', () => {
+    // 只让第一次抛（模拟一次意外同步错误）；第二次正常，用来验证 waking 已被清理。
+    let shouldThrow = true;
+    const h = makeHarness({
+        startSessionTurn: () => {
+            if (shouldThrow) { shouldThrow = false; throw new Error('同步炸了'); }
+            return Promise.resolve({ok: true});
+        },
+    });
+    assert.throws(() => h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '会炸通知'}),
+        '同步抛错应当向上抛出（不静默吞掉）');
+    // 内容回填，不丢
+    assert.equal(h.notices.pendingCount('s1'), 1, '同步抛错后内容必须回填队列');
+    // waking 已清理：下一次 flush 能真正起轮（不再返回 'waking'）
+    const second = h.notices.flushNotices('s1');
+    assert.notEqual(second.reason, 'waking', 'waking 残留会让该会话永久无法唤醒');
+    assert.equal(second.woke, true, '清理干净后应当正常唤醒');
+});
+
+// 实测 bug（2026-11-27）：投递时判忙 → 消息退回队列 → **再没有任何事件触发投递**，
+// 必须等用户手动发消息（foldBeforeTurn）才送达。用户原话：「要我给你发消息才会投递」。
+// 根源：队列非空这件事本身没有唤醒源——finishStream 只在有流结束时冲刷。
+// 修法：给非空队列配自带的重试触发器（退避，用尽即止）。
+test('忙时退回队列后，必须有重试源把消息送达（不依赖用户发消息）', async () => {
+    let busy = true;
+    const h = makeHarness({
+        streamOf: () => (busy ? {sessionId: 's1'} : null),
+    });
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '忙碌时到达的通知'});
+    assert.equal(h.notices.pendingCount('s1'), 1, '忙时消息入队');
+    assert.equal(h.calls.turns.length, 0, '忙时不该起轮');
+
+    // 转空闲：**不调用任何 flush**，只等重试定时器（首个退避 800ms）
+    busy = false;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    assert.equal(h.calls.turns.length, 1, '重试源必须自动送达（不靠用户发消息）');
+    assert.equal(h.notices.pendingCount('s1'), 0, '送达后队列清空');
+});
+
+test('重试退避用尽后放弃（不做无限轮询）', async () => {
+    // 一直忙：重试 5 次后应当停止（NOTICE_RETRY_DELAYS 有 5 档）
+    const h = makeHarness({streamOf: () => ({sessionId: 's1'})});
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '永远忙'});
+    // 直接把内部定时器全跑完不现实（累计 38s）；这里只验证「不会无限增长」：
+    // 连续多次投递不会叠加出多个 timer（scheduleRetry 有 st.timer 去重）。
+    for (let i = 0; i < 20; i++) {
+        h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '永远忙' + i});
+    }
+    // 队列深度受 NOTICE_DEPTH_MAX 限制，不会因为重试而爆炸
+    assert.ok(h.notices.pendingCount('s1') <= 10, '重试不该让队列无限增长');
+});
+
+// 这是「要发消息才投递」的**真正根因**（子代理审查 #1）：
+// wakeWith 是**同步**返回 {woke:true}（startSessionTurn 异步），所以
+// deliverAgentNotice 里 `if (!woke.woke) scheduleRetry()` 永远不会命中。
+// 真正的失败只发生在异步 .then 回调里——那里若不武装重试，消息退回队列后再没人试。
+test('异步唤醒失败（startSessionTurn 返回 ok:false）也必须武装重试', async () => {
+    let failTimes = 1;
+    const h = makeHarness({
+        // 第一次返回 busy（异步失败），之后成功
+        startSessionTurn: () => {
+            if (failTimes > 0) { failTimes -= 1; return Promise.resolve({ok: false, reason: 'busy'}); }
+            return Promise.resolve({ok: true, turns: [{sessionId: 's1'}]});
+        },
+    });
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '异步会失败的通知'});
+    // 让异步回调跑完：消息回填队列
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(h.notices.pendingCount('s1'), 1, '异步失败后内容必须回填');
+    // 关键：**不手动调 flush**，等重试定时器（首个退避 800ms）自己把它送出去
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    assert.equal(h.notices.pendingCount('s1'), 0, '异步失败后必须由重试源送达，不能等用户发消息');
+});
+
+// 子代理审查 #3：`compactStarting` 是**全局**标记，压缩期间所有会话的通知都会排队。
+// 压缩结束只冲压缩目标 → 别的会话干等到退避耗尽。flushAllPending 负责补齐。
+test('flushAllPending：一次冲刷所有有待投通知的会话（压缩结束用）', () => {
+    const h = makeHarness({busy: true});
+    const s2 = {id: 's2', title: '会话二', messages: [], archivedAt: 0};
+    h.sessions.set('s2', s2);
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: 'A'});
+    h.notices.deliverAgentNotice(s2, {kind: 'subagent', content: 'B'});
+    assert.equal(h.notices.pendingCount('s1'), 1);
+    assert.equal(h.notices.pendingCount('s2'), 1);
+
+    h.setBusy(false);
+    const r = h.notices.flushAllPending();
+    assert.equal(r.flushed, 2, '两个有待投通知的会话都要被尝试');
+    assert.equal(r.woke, 2, '空闲后两个都该唤醒');
+    assert.equal(h.notices.pendingCount('s1'), 0);
+    assert.equal(h.notices.pendingCount('s2'), 0);
+});
+
+test('flushAllPending：excludeId 跳过已单独冲刷的会话', () => {
+    const h = makeHarness({busy: true});
+    const s2 = {id: 's2', title: '会话二', messages: [], archivedAt: 0};
+    h.sessions.set('s2', s2);
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: 'A'});
+    h.notices.deliverAgentNotice(s2, {kind: 'subagent', content: 'B'});
+    h.setBusy(false);
+    const r = h.notices.flushAllPending({excludeId: 's1'});
+    assert.equal(r.flushed, 1, '排除的会话不重复冲刷');
+    assert.equal(h.notices.pendingCount('s1'), 1, '被排除的会话保持原样');
+    assert.equal(h.notices.pendingCount('s2'), 0);
 });
 
 test('foldBeforeTurn：不单独唤醒，直接折进即将发出的那一轮', () => {

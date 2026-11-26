@@ -134,7 +134,16 @@ export function createAIAgentNotices(ctx) {
     const compactOf = ctx.compactOf;
     // 「忙」判定与面板同源（ai-session-scope.js 的探针）。sessionStateOf 仍分开报
     // 'streaming' / 'compacting'：投递回执要区分这两种状态，不能合并成一个 busy。
-    const isSessionBusy = createSessionBusyProbe({streamOf, compactOf});
+    //
+    // compactStartingOf 必须接进来：`compactStarting` 是**全局**的「压缩正在准备」窗口
+    // （不属于任何单会话），起轮内核会因它拒轮。不接的话，deliverAgentNotice 传
+    // `{includeCompactStarting: true}` 也读不到它 → 仍会误判空闲 → 唤醒被拒 → 报
+    // 「投递失败：busy」（实测 2026-11-27）。
+    const isSessionBusy = createSessionBusyProbe({
+        streamOf,
+        compactOf,
+        compactStartingOf: typeof ctx.compactStartingOf === 'function' ? ctx.compactStartingOf : () => false,
+    });
     const startSessionTurn = ctx.startSessionTurn;
     const currentSession = ctx.currentSession;
     const isOpen = ctx.isOpen;
@@ -143,6 +152,8 @@ export function createAIAgentNotices(ctx) {
     const setSessionUnread = ctx.setSessionUnread;
     const notifyDesktop = ctx.notifyDesktop;
     const flash = ctx.flash;
+    // 诊断日志（可缺省）：busy 退回队列这类「预期内的等待」只留痕不打扰用户。
+    const logFrontend = typeof ctx.logFrontend === 'function' ? ctx.logFrontend : null;
     const persistSessions = ctx.persistSessions;
     const getPendingEdit = ctx.getPendingEdit || (() => null);
     const getSessions = ctx.getSessions || (() => []);
@@ -224,6 +235,9 @@ export function createAIAgentNotices(ctx) {
         if (!list.length) return 0;
         const batch = list.splice(0, Math.min(limit || NOTICE_FOLD_MAX, list.length));
         if (!list.length) notices.delete(session.id);
+        // 队列被消费：清掉重试状态。否则残留的 timer 会在稍后再跑一次空 flush，
+        // 且 attempt 计数会让下一条新通知少拿重试预算（子代理审查 #2）。
+        if (!list.length) clearRetry(session.id);
         notifyChanged();
         const ts = Date.now();
         session.messages.push({
@@ -249,21 +263,50 @@ export function createAIAgentNotices(ctx) {
         if (!list.length) notices.delete(session.id);
         notifyChanged();
         waking.add(session.id);
-        const run = startSessionTurn(session, noticeText(batch), {
-            app: noticeApp(batch),
-            allowPendingEdit: false,
-            truncateAt: null,
-            // 后台唤醒不抢用户滚动位置：贴底照常跟随，上翻阅读时保持原位（否则滚动条突然置底）
-            preserveScroll: true,
-        });
+        // 同步抛错保护：batch 已被 splice 出队列（上面若删过 entry 也算丢了），
+        // 而 `waking` 若不清就**永久**残留——该会话之后每次唤醒都被第 256 行挡成
+        // 'waking'，通知全部滞留到用户手动发消息为止。startSessionTurn 是 async
+        // （throw 会变 rejection 被下面兜住），但参数求值（noticeText / noticeApp）
+        // 发生在调用之前，属于同步段。
+        let run;
+        try {
+            run = startSessionTurn(session, noticeText(batch), {
+                app: noticeApp(batch),
+                allowPendingEdit: false,
+                truncateAt: null,
+                // 后台唤醒不抢用户滚动位置：贴底照常跟随，上翻阅读时保持原位（否则滚动条突然置底）
+                preserveScroll: true,
+            });
+        } catch (e) {
+            waking.delete(session.id);
+            for (let i = batch.length - 1; i >= 0; i--) enqueue(session.id, batch[i], true);
+            notifyChanged();
+            throw e;
+        }
         Promise.resolve(run).then((result) => {
             waking.delete(session.id);
             if (!result || !result.ok) {
-                // 唤醒被拒（无模型配置 / 预算超阈 / 会话已归档）：内容不清空，退回队列最前，
-                // 降级为未读卡片 + 状态栏提示，绝不静默丢弃（§4.14.3）。
+                // 唤醒被拒：内容不清空，退回队列最前，降级为未读卡片，绝不静默丢弃（§4.14.3）。
                 for (let i = batch.length - 1; i >= 0; i--) enqueue(session.id, batch[i], true);
                 setSessionUnread(session, 'done');
                 const reason = (result && result.reason) || 'unknown';
+                // **关键：这里必须武装重试。**
+                // wakeWith 是**同步**返回 `{woke:true}`（startSessionTurn 异步），所以调用方
+                // 的 `if (!woke.woke) scheduleRetry()` 永远不会命中——真正的失败只发生在
+                // 这个异步回调里。不回填后重试 = 消息退回队列后**再没人试**，只能等用户
+                // 手动发消息（实测 bug：「要我给你发消息才会投递」）。
+                scheduleRetry(session.id);
+                // **busy 不是失败**：目标在判定之后、起轮之前开始了新一轮（竞态），消息已退回
+                // 队列且会在下一边界投递。报「投递失败」会让用户以为消息丢了——实测就是这条
+                // 噪音掩盖了真正的问题。这里只留诊断日志，不弹系统通知。
+                if (reason === 'busy' || reason === 'waking') {
+                    if (typeof logFrontend === 'function') {
+                        logFrontend('info', '[通知] 目标正忙，已退回队列并安排重试：' + (session.title || '新会话'));
+                    }
+                    return;
+                }
+                // over_budget / no_profile 这类是**终态失败**：重试用尽也不会好，
+                // 但还是给一次退避机会（比如用户刚补上模型配置），之后放弃并提示。
                 const text = reason === 'over_budget'
                     ? '上下文已超阈，后台通知暂存在信箱：' + session.title
                     : '后台通知未能唤醒会话「' + (session.title || '新会话') + '」：' + reason;
@@ -275,8 +318,17 @@ export function createAIAgentNotices(ctx) {
                     sessionId: session.id,
                 });
             }
-        }).catch(() => {
+        }).catch((e) => {
             waking.delete(session.id);
+            // reject 同样会丢 batch：与 .then 的失败分支做同样的回填，绝不静默丢消息。
+            // （子代理报告 #1：这里原先只清 waking，startSessionTurn 任何 reject 都会让
+            //  最多 NOTICE_FOLD_MAX 条通知蒸发，而调用方早已收到 ok:true/woke。）
+            for (let i = batch.length - 1; i >= 0; i--) enqueue(session.id, batch[i], true);
+            notifyChanged();
+            scheduleRetry(session.id);
+            if (typeof logFrontend === 'function') {
+                logFrontend('warn', '[通知] 唤醒异常，已回填队列：' + ((e && e.message) || e));
+            }
         });
         return {woke: true, deferred: false, meta};
     }
@@ -313,20 +365,38 @@ export function createAIAgentNotices(ctx) {
             return {ok: true, reason: 'merged', messageId: item.messageId, woke: false};
         }
         enqueue(session.id, item, !!notice.urgent);
+        // 新消息入队：重置该会话的重试预算（否则一旦退避用尽，这条新消息也失去自动投递）。
+        // 只在「没有在跑的 timer」时复位，避免打断正在等待中的一次尝试。
+        {
+            const st = retryState.get(session.id);
+            if (!st || !st.timer) scheduleRetry(session.id, {fresh: true});
+        }
         // 入队即唤醒 wait_agent：内容仍在下面的轮边界注入，这里只让等待方别再睡。
         notifyWaiters(session.id);
         // 目标忙 → 排队等下一边界；目标空闲 → 立刻唤醒（单飞，冲突则留在队列里）。
-        if (isSessionBusy(session.id)) {
+        // **必须带 includeCompactStarting**：起轮内核判忙的条件是
+        // `streamOf || compactOf || compactStarting`，少判 compactStarting 会在「压缩刚启动、
+        // compactOf 还没注册」的窗口里误判成空闲 → 调用 wakeWith → startSessionTurn 返回 busy
+        // → 报「后台通知投递失败：busy」+ 消息退回队列，而之后没人再唤醒它（实测）。
+        if (isSessionBusy(session.id, {includeCompactStarting: true})) {
             renderSessionList();
+            // 忙：消息已在队列，安排重试（不能只等下一次 finishStream——见重试触发器注释）
+            scheduleRetry(session.id);
             return {ok: true, reason: 'queued', messageId: item.messageId, woke: false};
         }
         // 用户在目标会话处于重发 / 编辑态：本次唤醒改挂队列，避免破坏编辑流（§4.4 唤醒防护）。
         const editing = getPendingEdit();
         if (editing && editing.index != null && currentSession() === session) {
             renderSessionList();
+            // 编辑态是**用户自己的**操作，等用户结束编辑即可；但仍安排重试作为兜底
+            //（用户可能把编辑态放着不管），退避用尽后放弃。
+            scheduleRetry(session.id);
             return {ok: true, reason: 'deferred', messageId: item.messageId, woke: false};
         }
         const woke = wakeWith(session, NOTICE_FOLD_MAX);
+        // 唤醒没成（waking 竞态 / 起轮内核判忙 / 租约被占）→ 消息已回填队列，
+        // 必须有重试源，否则要等用户下次发消息（实测 bug）。
+        if (!woke.woke) scheduleRetry(session.id);
         renderSessionList();
         return {ok: true, reason: woke.woke ? 'woke' : 'queued', messageId: item.messageId, woke: !!woke.woke};
     }
@@ -341,16 +411,77 @@ export function createAIAgentNotices(ctx) {
         return foldIntoMessages(session, NOTICE_FOLD_MAX);
     }
 
+    // ---- 重试触发器（2026-11-27）------------------------------------------------
+    // 实测 bug：通知投递时判「忙」→ 消息退回队列 → **再没有任何事件触发投递**，
+    // 只能等用户手动发消息（foldBeforeTurn）才送达。
+    // 根源是「队列里有消息」这件事本身没有唤醒源：finishStream 只在**有流结束**时冲刷，
+    // 而判忙的时刻往往根本没有流（waking 竞态 / 压缩准备窗口 / 起轮内核第二道忙检查）。
+    //
+    // 这里给非空队列补一个自带的重试源：退避重试，用尽后放弃（留未读卡片等用户处理）。
+    // 不做无限轮询——那会把「等一会儿就好」变成持续 CPU 与日志噪音。
+    const NOTICE_RETRY_DELAYS = [800, 2000, 5000, 10000, 20000]; // 累计约 38s
+    const retryState = new Map(); // sessionId -> {attempt, timer}
+
+    function clearRetry(sessionId) {
+        const st = retryState.get(sessionId);
+        if (!st) return;
+        if (st.timer) clearTimeout(st.timer);
+        retryState.delete(sessionId);
+    }
+
+    function scheduleRetry(sessionId, opts) {
+        if (!sessionId) return;
+        const st = retryState.get(sessionId) || {attempt: 0, timer: 0};
+        if (st.timer) return;                       // 已有排程，不叠加
+        // 退避用尽：**不能永久毒化**。新消息到达时（opts.fresh）必须重新获得预算，
+        // 否则该会话一旦耗尽 5 次，之后所有通知都失去自动投递能力（子代理审查 #2）。
+        if (st.attempt >= NOTICE_RETRY_DELAYS.length) {
+            if (!(opts && opts.fresh)) return;
+            st.attempt = 0;
+        }
+        const delay = NOTICE_RETRY_DELAYS[st.attempt];
+        st.attempt += 1;
+        st.timer = setTimeout(() => {
+            st.timer = 0;
+            retryState.set(sessionId, st);
+            try {
+                flushNotices(sessionId);
+            } catch (e) {
+                // 单次重试失败不抛出（下一次 flush 或用户操作还会再来）
+                if (typeof logFrontend === 'function') {
+                    logFrontend('warn', '[通知] 重试投递异常：' + ((e && e.message) || e));
+                }
+            }
+        }, delay);
+        // Node 环境（单测）里不让这个定时器吊住进程退出；浏览器没有 unref，可选调用。
+        if (st.timer && typeof st.timer.unref === 'function') st.timer.unref();
+        retryState.set(sessionId, st);
+    }
+
     // 消费点 2：finishStream 收尾（流已注销）。残余通知交给空闲唤醒逻辑。
     function flushNotices(sessionId) {
         const session = sessionById(sessionId);
         if (!session) {
             notices.delete(sessionId);
+            clearRetry(sessionId);
             return {woke: false, reason: 'gone'};
         }
-        if (!pendingCount(sessionId)) return {woke: false, reason: 'empty'};
-        if (isSessionBusy(sessionId)) return {woke: false, reason: 'busy'};
-        return wakeWith(session, NOTICE_FOLD_MAX);
+        if (!pendingCount(sessionId)) {
+            clearRetry(sessionId);
+            return {woke: false, reason: 'empty'};
+        }
+        // 与起轮内核同口径（见 deliverAgentNotice 的注释）：少判 compactStarting 会让
+        // 「压缩刚启动」的窗口被当成空闲，唤醒了再被 startSessionTurn 拒，白报一次错。
+        if (isSessionBusy(sessionId, {includeCompactStarting: true})) {
+            // 忙：消息留在队列，安排重试。**不依赖**下一次 finishStream——它只在有流结束时
+            // 才触发，而判忙的时刻往往没有流（见上面重试触发器的注释）。
+            scheduleRetry(sessionId);
+            return {woke: false, reason: 'busy'};
+        }
+        const result = wakeWith(session, NOTICE_FOLD_MAX);
+        // waking（上一次唤醒还在等租约 / 等盘）或瞬时失败：同样需要重试源。
+        if (!result.woke) scheduleRetry(sessionId);
+        return result;
     }
 
     // 消费点 3：startSessionTurn 起轮前（用户手动发送与通知同时到达的滞留竞态，§4.14.4）。
@@ -360,10 +491,38 @@ export function createAIAgentNotices(ctx) {
         return foldIntoMessages(session, NOTICE_FOLD_MAX, true);
     }
 
+    // 冲刷**所有**有待投通知的会话。给「全局阻塞解除」的时刻用：压缩结束 / 失败、
+    // 应用回前台、切会话等——这些事件不是某个会话独有的，只冲一个会让别的会话干等。
+    // 返回 {flushed: 实际尝试的会话数, woke: 成功唤醒数}。
+    function flushAllPending(options) {
+        const opts = options || {};
+        const ids = Array.from(notices.keys());
+        let flushed = 0;
+        let woke = 0;
+        for (const id of ids) {
+            if (!pendingCount(id)) continue;
+            // excludeId：压缩结束时压缩目标已经单独冲过，避免重复
+            if (opts.excludeId && id === opts.excludeId) continue;
+            flushed += 1;
+            try {
+                const r = flushNotices(id);
+                if (r && r.woke) woke += 1;
+            } catch (e) {
+                // 单个会话失败不影响其他会话
+                if (typeof logFrontend === 'function') {
+                    logFrontend('warn', '[通知] 批量冲刷单个会话失败：' + ((e && e.message) || e));
+                }
+            }
+        }
+        return {flushed, woke};
+    }
+
     // 会话删除：信箱随之丢弃（既有 Map.delete 惯例）。
     function dropSession(sessionId) {
         notices.delete(sessionId);
         waking.delete(sessionId);
+        // 重试状态一起收：残留的 timer 会在会话删除后再跑一次空 flush，属于内存/日志泄漏。
+        clearRetry(sessionId);
         notifyChanged();
     }
 
@@ -556,6 +715,7 @@ export function createAIAgentNotices(ctx) {
         deliverAgentNotice,
         foldNotices,
         flushNotices,
+        flushAllPending,
         foldBeforeTurn,
         dropSession,
         clearMailbox,
