@@ -85,6 +85,14 @@ export function redisTTLLabel(ttl) {
     return Math.floor(ttl / 86400) + 'd';
 }
 
+/** redisTTLDraftAction TTL 输入语义：0 是删除确认，-1 是永久，其余负数非法。 */
+export function redisTTLDraftAction(ttl) {
+    if (!Number.isFinite(ttl) || ttl < -1) return 'invalid';
+    if (ttl === -1) return 'persist';
+    if (ttl === 0) return 'delete';
+    return 'set';
+}
+
 /** 行主键编解码：PK 值用 \x1f 连接（值里不可能出现单元分隔符的可靠分隔）。 */
 export function encodeRowKey(pkValues) {
     return (pkValues || []).map((v) => (v == null ? '' : String(v))).join('\x1f');

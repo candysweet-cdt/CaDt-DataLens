@@ -40,11 +40,13 @@ var (
 	sweeperOn  bool
 )
 
-func nextSessionID() string {
+func nextSessionID() string { return nextOperationID("db") }
+
+func nextOperationID(prefix string) string {
 	sessionsMu.Lock()
 	defer sessionsMu.Unlock()
 	sessionSeq++
-	return fmt.Sprintf("db-%d-%d", time.Now().UnixNano(), sessionSeq)
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), sessionSeq)
 }
 
 // openSession 走驱动建连并登记；超限时先回收空闲会话，仍满则拒绝。

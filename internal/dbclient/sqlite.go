@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -252,7 +253,59 @@ func sqliteDescribe(ctx context.Context, s *dbSession, _, table string) (*DBTabl
 		}
 		meta.Indexes = append(meta.Indexes, IndexMeta{Name: idx.name, Unique: idx.unique, Columns: cols})
 	}
+	fks, err := sqliteForeignKeys(ctx, s, table)
+	if err != nil {
+		return nil, err
+	}
+	meta.ForeignKeys = fks
 	return meta, nil
+}
+
+// sqliteForeignKeys 读取外键约束并按 id/seq 聚合复合外键；引用列未显式写出时保留空列表。
+func sqliteForeignKeys(ctx context.Context, s *dbSession, table string) ([]ForeignKeyMeta, error) {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA foreign_key_list("+quoteIdent(kindSQLite, table)+")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type fkRow struct {
+		id, seq            int
+		table, from, to    string
+		onUpdate, onDelete string
+	}
+	var raw []fkRow
+	for rows.Next() {
+		var r fkRow
+		var refCol sql.NullString
+		if err := rows.Scan(&r.id, &r.seq, &r.table, &r.from, &refCol, &r.onUpdate, &r.onDelete, new(string)); err != nil {
+			return nil, err
+		}
+		r.to = refCol.String
+		raw = append(raw, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(raw, func(i, j int) bool {
+		if raw[i].id != raw[j].id {
+			return raw[i].id < raw[j].id
+		}
+		return raw[i].seq < raw[j].seq
+	})
+	out := []ForeignKeyMeta{}
+	lastID := -1
+	for _, r := range raw {
+		if r.id != lastID {
+			out = append(out, ForeignKeyMeta{RefTable: r.table, OnUpdate: r.onUpdate, OnDelete: r.onDelete})
+			lastID = r.id
+		}
+		fk := &out[len(out)-1]
+		fk.Columns = append(fk.Columns, r.from)
+		if r.to != "" {
+			fk.RefColumns = append(fk.RefColumns, r.to)
+		}
+	}
+	return out, nil
 }
 
 func sqliteIndexColumns(ctx context.Context, s *dbSession, table, index string) ([]string, error) {

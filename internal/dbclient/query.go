@@ -169,6 +169,12 @@ func Browse(id string, req BrowseRequest) (sqlview.SQLResult, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
+	queryID := strings.TrimSpace(req.QueryID)
+	if queryID == "" {
+		queryID = nextOperationID("browse")
+	}
+	s.registerQuery(queryID, cancel)
+	defer s.unregisterQuery(queryID)
 	rows, err := s.db.QueryContext(ctx, stmt, args...)
 	if err != nil {
 		return sqlview.SQLResult{}, err

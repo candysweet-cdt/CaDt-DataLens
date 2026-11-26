@@ -4,6 +4,20 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（搜索忽略规则的 rg 取反语义）
+
+- **问题**：`.cadt/config/search-ignore` 写 `!node_modules` 时，rg 路径把取反规则转成 `--glob node_modules`；它只匹配目录本身、不匹配子树，而且正向 glob 会触发白名单模式，把未被取反的普通文件也挤掉，最终出现搜索 0 命中。
+- **修复**：排除规则与取反规则拆开处理。正常 rg 趟只使用排除 glob；有 `!` 规则时额外跑一趟正向白名单补扫，并同时给出 `foo/**` 子树 glob。文件名/排除通配与源码/产物分档在 Go 侧复核，两趟结果按命中位置去重后统一排序、截断。
+- **回归**：新增 glob 参数精确断言、目录路径取反子树补扫、文件取反不误伤普通文件三组测试；原有 `TestDefaultIgnoreAndIncludeIgnoredDualPath` 的 rg 子用例由失败转为通过。
+
+### 修复（数据库工具验收收口）
+
+- **Redis 测试连接**：不再误走 SQL Driver 注册表；正常连接与测试连接共用 `openRedisConnection`，AUTH/SELECT/PING 一致，测试再补 `INFO server` 版本读取（ACL 禁用 INFO 时容错）。Redis 建连同步复用 MySQL 的目标校验，拒绝云元数据与链路本地地址，并直连已校验 IP，封住 DNS rebinding 窗口。
+- **SQLite 元数据**：`DBDescribe` 补读 `PRAGMA foreign_key_list`，按复合外键顺序返回列、引用表/列与 ON UPDATE/DELETE 动作。
+- **表浏览取消**：浏览请求携带唯一 `queryId` 并登记到会话取消表；翻页/筛选/排序等新请求先取消旧请求，会话失效也取消在飞浏览，旧响应仍由请求序号丢弃。
+- **Redis TTL 安全语义**：TTL 输入 `0` 必须先确认删除，再走 `DEL` 命令预览；`-1` 为永久，空值或小于 `-1` 拒绝，避免空输入被误当成 0。
+- **验证**：数据库后端测试、绑定基线、前端类型检查与 `npm test`（3072 例）、前后端构建、linux/darwin 三平台交叉编译均通过；全量 `go test ./...` 亦通过（其间发现的 `internal/search` rg 取反缺陷已另行修复）。真实 MySQL/Redis 服务端联调未在本次重跑。方案已归档至 `docs/finished-plans/db-connection-tools.md`。
+
 ### 功能（AI 可显式接管用户手动打开的浏览器标签页）
 
 - 新增 `app_control adopt_browser_tab {id|name|url|index, reason?}`：把用户手动打开的浏览器标签交给当前 AI 会话，之后该会话的 `browser_*` 工具直接操作这张标签及其登录态，不再另开 `about:blank`。先用 `get_state` 看 tabs 的 `name / browserUrl / browserTabId / index` 定位；多个标签匹配时报错要求用 id 精确定位。
@@ -854,7 +868,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ### 新增（内置数据库连接与浏览工具：SQLite 本地库 / MySQL 连接 / 受控写入，P0–P2 一次落地）
 
-- **入口（一切皆标签，作者纠正后返工）**：活动栏新增「数据库」图标 → 侧栏面板列出**本工作区添加的数据库**（`settings.dbWorkspaceDatabases`，条目带 workspace 字段按工作区生效；按 SQLite / MySQL / MariaDB / 插件驱动分组可折叠）。顶部单一「**新建连接**」按钮 + 弹出菜单选类型（SQLite 库文件 / MySQL·MariaDB 连接 / 插件驱动）；MySQL 打开**对齐 JetBrains「数据源和驱动程序」的统一管理对话框**：左列表 +/−、右表单名称自动建议 `user@host:port`、主机端口并排、URL 预览、「加入当前工作区」开关，底部 测试连接 / 应用 / 确定）；**双击在内容区开「数据库」标签页**（视图型虚拟标签 `dbView`，一个标签 = 一个库会话，关标签即断开）；右键或行尾 `[...]` 菜单：打开 / 允许编辑（SQLite）/ 测试 / 编辑（打开连接管理并定位该连接）/ 删除连接（全局）/ 从工作区移除。标签页内仍为「对象树 | 表网格（面板内子标签）| SQL 控制台」三栏。总开关 `settings.dbToolsEnabled` 默认关，启用门在面板内。方案与实施记录（含入口重构 §11.6）见 `docs/unfinished-plans/db-connection-tools.md`（§11）。
+- **入口（一切皆标签，作者纠正后返工）**：活动栏新增「数据库」图标 → 侧栏面板列出**本工作区添加的数据库**（`settings.dbWorkspaceDatabases`，条目带 workspace 字段按工作区生效；按 SQLite / MySQL / MariaDB / 插件驱动分组可折叠）。顶部单一「**新建连接**」按钮 + 弹出菜单选类型（SQLite 库文件 / MySQL·MariaDB 连接 / 插件驱动）；MySQL 打开**对齐 JetBrains「数据源和驱动程序」的统一管理对话框**：左列表 +/−、右表单名称自动建议 `user@host:port`、主机端口并排、URL 预览、「加入当前工作区」开关，底部 测试连接 / 应用 / 确定）；**双击在内容区开「数据库」标签页**（视图型虚拟标签 `dbView`，一个标签 = 一个库会话，关标签即断开）；右键或行尾 `[...]` 菜单：打开 / 允许编辑（SQLite）/ 测试 / 编辑（打开连接管理并定位该连接）/ 删除连接（全局）/ 从工作区移除。标签页内仍为「对象树 | 表网格（面板内子标签）| SQL 控制台」三栏。总开关 `settings.dbToolsEnabled` 默认关，启用门在面板内。方案与实施记录（含入口重构 §11.6）见 `docs/finished-plans/db-connection-tools.md`（§11）。
 - **能力**：打开本地 SQLite 库文件（对象树两级按需加载）；MySQL 连接管理（新建/编辑/测试/删除、密码 DPAPI 加密单独落盘、复合凭据键）；表数据网格（虚拟滚动、列头排序、结构化筛选、分页 500 行/上限 5000，排序筛选分页全下推为参数化 SQL）；SQL 控制台（多语句逐条分类、Ctrl+Enter、执行中可取消 `DBCancel`）；受控写入（连接级「允许编辑」开关 + dirty model → 提交预览（内联展示值 SQL）→ 单事务提交 → 乐观并发冲突整体回滚 → noCache 刷新；无主键表/视图一律只读，主键列不可编辑）。
 - **安全**（P0 即埋，非事后补）：默认只读双保险——SQLite `mode=ro`（WAL 无读权限自动 immutable 兜底并显式标记）、MySQL `SET SESSION TRANSACTION READ ONLY` + 池限 1；查询路径逐条分类，任一条非只读整批拒——**数据变更 CTE（`WITH x AS (DELETE … RETURNING …)`）逐体检查**、未知语句 fail-closed 按写拒、PRAGMA 赋值判写、MySQL `INTO OUTFILE/CALL/GRANT/LOAD` 归危险；危险语句与缺 WHERE（含 WHERE TRUE / 1）走两阶段确认（guard 返回 confirm、前端确认后重发）；DDL 未开放；连接目标拒绝链路本地地址（IMDS 169.254.169.254）；写留痕 `db.exec` / `db.apply` 不含参数值与密码。
 - **实现**：Go 引擎 `internal/dbclient/`（driver/guard/sqlite/mysql/session/query/edit/config 九文件，纯引擎 + 根壳 `dbclient_app.go` 薄绑定）；前端新域 `frontend/src/db/`（factory+deps）；SQLite 复用已在库的 `modernc.org/sqlite`（增量 0），MySQL 用 `go-sql-driver/mysql`（纯 Go ~0.6 MB，作者已批准 2026-11-22，全功能最坏 +1.5 MB 预算内）。

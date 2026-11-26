@@ -19,6 +19,7 @@ import {
 
 const PAGE_SIZES = [10, 100, 250, DB_ROW_DEFAULT, 1000, DB_ROW_MAX]; // 档位；末档 = 服务端 rowMax 上限（「所有」）
 const DEFAULT_PAGE_SIZE = DB_ROW_DEFAULT;
+let browseRequestSeq = 0; // 模块级请求号：同一会话的多个表标签页也不得撞取消句柄
 
 export function createDbTablePane(deps, session, db, table) {
 
@@ -40,6 +41,7 @@ let orderCols = []; // 多列排序 [{column, desc}]（结构化：列名过元�
 let editMode = false;
 let loaded = false;
 let loadSeq = 0; // 请求序号：慢通道（插件驱动走 HTTP）下旧响应不得覆盖新状态
+let activeBrowseID = ''; // 当前在飞的浏览查询；新请求/会话失效时由 DBCancel 收口
 let pageSize = DEFAULT_PAGE_SIZE; // 分页档位（图7：10/100/250/500/1000/所有）
 let autoRefreshMs = 0; // 自动刷新档位（0 = 禁用；编辑中或有 dirty 时自动暂停）
 let autoTimer = null;
@@ -191,8 +193,20 @@ function rebuildKeyIndex() {
     serverRows.forEach((row, i) => keyIndex.set(rowKeyOf(meta, row, columns), i));
 }
 
+function cancelActiveBrowse() {
+    const queryID = activeBrowseID;
+    activeBrowseID = '';
+    if (!queryID || typeof deps.backend.DBCancel !== 'function') return;
+    Promise.resolve(deps.backend.DBCancel(session.id, queryID)).catch(() => {
+        // 尽力而为：请求可能已自然结束，或会话已被回收；旧响应仍由 loadSeq 丢弃
+    });
+}
+
 async function loadPage() {
+    cancelActiveBrowse();
     const seq = ++loadSeq;
+    const queryID = 'browse' + (++browseRequestSeq);
+    activeBrowseID = queryID;
     loading = true;
     error = '';
     renderStatus();
@@ -200,6 +214,7 @@ async function loadPage() {
         const res = await deps.backend.DBBrowse(session.id, {
             database: db,
             table,
+            queryId: queryID,
             sortColumn: sortCol,
             sortDesc,
             filters,
@@ -220,6 +235,7 @@ async function loadPage() {
         deps.flash('表数据加载失败：' + error, true);
     } finally {
         if (seq === loadSeq) {
+            if (activeBrowseID === queryID) activeBrowseID = '';
             loading = false;
             loaded = true;
             applyToGrid();
@@ -1050,6 +1066,8 @@ return {
     el,
     /** 会话断开时由页面调用（隐藏编辑簇并停自动刷新）。 */
     invalidate() {
+        cancelActiveBrowse();
+        loadSeq++; // 在飞响应作废；重连后由宿主重建面板
         editMode = false;
         setAutoRefresh(0, true); // 静默停自动刷新（重连重建后默认关，用户可再开）
         rebuildToolbar();

@@ -114,6 +114,40 @@ func TestSQLiteReadOnlyFlow(t *testing.T) {
 	}
 }
 
+func TestSQLiteDescribeForeignKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fk.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmts := []string{
+		`CREATE TABLE parent (a INTEGER, b INTEGER, PRIMARY KEY (a, b))`,
+		`CREATE TABLE child (id INTEGER PRIMARY KEY, pa INTEGER, pb INTEGER,
+			FOREIGN KEY (pa, pb) REFERENCES parent(a, b) ON UPDATE CASCADE ON DELETE SET NULL)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			_ = db.Close()
+			t.Fatalf("建外键测试库失败：%v", err)
+		}
+	}
+	_ = db.Close()
+	info := openFor(t, path, false)
+	defer func() { _ = CloseSession(info.ID) }()
+	meta, err := describeMeta(mustSession(t, info.ID), "", "child", false)
+	if err != nil {
+		t.Fatalf("describe child：%v", err)
+	}
+	if len(meta.ForeignKeys) != 1 {
+		t.Fatalf("外键数 = %d，want 1：%+v", len(meta.ForeignKeys), meta.ForeignKeys)
+	}
+	fk := meta.ForeignKeys[0]
+	if strings.Join(fk.Columns, ",") != "pa,pb" || fk.RefTable != "parent" || strings.Join(fk.RefColumns, ",") != "a,b" ||
+		fk.OnUpdate != "CASCADE" || fk.OnDelete != "SET NULL" {
+		t.Fatalf("外键元数据不符：%+v", fk)
+	}
+}
+
 func TestBrowseSortFilterPushdown(t *testing.T) {
 	path := makeTestDB(t)
 	info := openFor(t, path, false)
@@ -188,6 +222,51 @@ func TestBrowseOrderCols(t *testing.T) {
 	// 混合方向的真实顺序抽查：name DESC 时首行应为 name 最大值
 	if res.Rows[0][1] < res.Rows[len(res.Rows)-1][1] {
 		t.Fatalf("name DESC 顺序不对：首行 %v 末行 %v", res.Rows[0][1], res.Rows[len(res.Rows)-1][1])
+	}
+}
+
+func TestBrowseCancel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "slow.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE VIEW slow AS WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM c) SELECT count(*) AS n FROM c`)
+	_ = db.Close()
+	if err != nil {
+		t.Fatalf("建慢查询视图失败：%v", err)
+	}
+	info := openFor(t, path, false)
+	defer func() { _ = CloseSession(info.ID) }()
+	s := mustSession(t, info.ID)
+	done := make(chan error, 1)
+	go func() {
+		_, err := Browse(info.ID, BrowseRequest{Table: "slow", Limit: 1, QueryID: "browse-cancel"})
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		_, running := s.active["browse-cancel"]
+		s.mu.Unlock()
+		if running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("浏览查询未登记取消句柄")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := Cancel(info.ID, "browse-cancel"); err != nil {
+		t.Fatalf("取消浏览失败：%v", err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("浏览取消后应返回 context.Canceled，got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("浏览查询取消后未及时退出")
 	}
 }
 

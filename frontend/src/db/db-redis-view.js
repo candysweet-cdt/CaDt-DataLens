@@ -10,7 +10,7 @@
 import {iconSvg} from '../core/icons.js';
 import {createInput, createSelect, createTextarea} from '../core/form-controls.js';
 import {createDbGrid} from './db-grid-core.js';
-import {redisTTLLabel} from './db-model.js';
+import {redisTTLLabel, redisTTLDraftAction} from './db-model.js';
 
 // redisTypeLabel 类型徽标文案
 function redisTypeLabel(type) {
@@ -541,7 +541,7 @@ export function createDbRedisKeyPane(deps, session, db, key) {
         headEl.textContent = '修改 TTL · ' + key;
         const bodyEl = document.createElement('div');
         bodyEl.className = 'db-preview-body db-redis-confirm-body';
-        const ttlInput = createInput({type: 'number', value: cur > 0 ? cur : '', min: -1});
+        const ttlInput = createInput({type: 'number', value: cur > 0 ? cur : -1, min: -1});
         const line = document.createElement('div');
         line.className = 'db-conn-rowline';
         const label = document.createElement('span');
@@ -602,13 +602,31 @@ export function createDbRedisKeyPane(deps, session, db, key) {
             confirmAndApply([{kind: 'persist', Key: key}]);
         });
         okBtn.addEventListener('click', () => {
-            const n = Number(ttlInput.control.value);
-            if (!Number.isFinite(n)) {
-                deps.flash('请输入秒数', true);
+            const raw = String(ttlInput.control.value).trim();
+            if (raw === '') {
+                deps.flash('请输入 ≥ -1 的整数秒数（-1 = 永久，0 = 删除）', true);
+                return;
+            }
+            const n = Math.floor(Number(raw));
+            const action = redisTTLDraftAction(n);
+            if (action === 'invalid') {
+                deps.flash('请输入 ≥ -1 的整数秒数（-1 = 永久，0 = 删除）', true);
+                return;
+            }
+            if (action === 'delete' && typeof deps.openConfirmDialog !== 'function') {
+                deps.flash('当前环境无法确认删除操作', true);
                 return;
             }
             close();
-            confirmAndApply([{kind: 'setTTL', Key: key, TTLSeconds: Math.floor(n)}]);
+            if (action === 'delete') {
+                deps.openConfirmDialog(
+                    'TTL 设为 0 会立即删除键「' + key + '」，此操作不可撤销。',
+                    async () => { await confirmAndApply([{kind: 'delKey', Key: key}]); },
+                    '删除', 'TTL 设为 0 将删除键？',
+                );
+                return;
+            }
+            confirmAndApply([{kind: action === 'persist' ? 'persist' : 'setTTL', Key: key, TTLSeconds: n}]);
         });
     });
 

@@ -1,7 +1,7 @@
 # 内置数据库连接与浏览工具（分期方案）
 
-> 状态：**P0–P3 已实施**（2026-11-22 评估、调研、评审、实施同日完成；落地决策与偏离记录见 §11；
-> P3 Redis 见 §11.13）
+> 状态：**P0–P3 已实施并收口**（2026-11-22 评估、调研、评审、实施；2026-11-27 验收缺口修复并归档；落地决策与偏离记录见 §11；
+> P3 Redis 见 §11.13，收口记录见 §11.14）
 >
 > 目标形态：类 JetBrains DataGrip / Beekeeper Studio 的「连接 → 对象树 → 表数据网格 → SQL 查询 → 受控编辑」，
 > 但严格保持本项目「单 exe、零依赖、无索引、轻快」的核心竞争力——**做一个够用的轻量数据查看器，不做一个瘦版 DataGrip**。
@@ -328,7 +328,7 @@ type QueryRequest struct {
 ### 11.1 交付物
 
 - **Go 引擎 `internal/dbclient/`**（纯引擎，不 import main）：`dbclient.go`（类型/常量/入口）、`driver.go`（契约+编译期注册）、`guard.go`（SQL 分类器）、`sqlite.go`、`mysql.go`、`session.go`（注册表/空闲回收/取消）、`query.go`（控制台+浏览下推）、`edit.go`（受控写入）、`config.go`（连接配置+dpapi 凭据）；测试 `guard_test.go` / `dbclient_test.go` / `config_test.go`（含真实 SQLite 端到端）。
-- **根壳 `dbclient_app.go`**：15 个绑定（DBOpen / DBConnect / DBListDatabases / DBListObjects / DBDescribe / DBBrowse / DBQuery / DBCancel / DBClose / DBListConnections / DBSaveConnection / DBDeleteConnection / DBTestConnection / DBPreviewChanges / DBApplyChanges），mock-backend 全部补齐。
+- **根壳绑定**：首次落地为根目录 `dbclient_app.go` 的 15 个绑定（DBOpen / DBConnect / DBListDatabases / DBListObjects / DBDescribe / DBBrowse / DBQuery / DBCancel / DBClose / DBListConnections / DBSaveConnection / DBDeleteConnection / DBTestConnection / DBPreviewChanges / DBApplyChanges）；当前按服务化嵌入约定迁至 `internal/dbclient/service.go`，共 25 个 `DB*` 绑定，mock-backend 全部补齐。
 - **前端 `src/db/`**（新域，factory+deps）：`db-page.js`（三栏装配+启用门）、`db-object-tree.js`、`db-table-grid.js`、`db-query-editor.js`、`db-connections.js`、`db-grid-core.js`、`db-model.js`（纯函数）；测试 `frontend/test/db/db-model.test.mjs` 已登记 `npm test`。
 - 接线：`core/app-pages.js` 加 `database` 页、`main.js` appPageMounters 注入、样式追加 `style.css` 尾段。
 
@@ -433,3 +433,22 @@ MySQL 的添加/编辑从「先选已有再新建」两步流收敛为**统一�
 - **mock**：演示连接管理（DBListConnections/DBSaveConnection 内存 store）+ Redis 键空间 store（五类型 + 中文前缀组）+ 控制台按行拆的 guard 行为演示——浏览器 mock 环境全流程可测。
 - **测试**：Go 假 server（每用例独立 listener，不写 TestMain——规避 AGENTS.md 子进程递归陷阱）全链路 8 例 + RESP/词表/拆行表驱动；前端 `db-redis.test.mjs` 9 例（聚合/转义/TTL 文案）。
 - **已知边界**：不支持 Cluster/Sentinel/TLS/Pub-Sub/MONITOR/Lua 编辑；SCAN 期间键增删不承诺快照一致；非 UTF-8 键名显示转义、操作全程精确传值；string 预览截断 256KB、集合行集截断 5000 元素。
+
+### 11.14 验收缺口收口与归档（2026-11-27）
+
+逐项对照 §5.1–§5.4 复查后，修复五处未收口点：
+
+1. **Redis 测试连接**：`TestConnection` 对 Redis 走独立分派，不再调用只注册 SQLite/MySQL 的 `driverFor`；正常连接与测试连接共用 `openRedisConnection`，AUTH/SELECT/PING 完全一致，测试再读 `INFO server` 版本（ACL 禁用 INFO 时返回 `Redis unknown`，不把可选元数据权限误判成连接失败）。
+2. **Redis 目标校验**：`openRedisConnection` 复用 `resolveSafeAddrs`，拒绝云元数据/链路本地地址，并直连校验后的 IP，封住校验与拨号间的 DNS rebinding 窗口；localhost 多候选按 IPv4 优先逐个尝试。
+3. **SQLite 外键元数据**：`DBTableMeta` 新增 `ForeignKeys`，`sqliteDescribe` 读取 `PRAGMA foreign_key_list`，按 id/seq 聚合复合外键，保留引用表/列与 ON UPDATE/DELETE 动作。
+4. **浏览取消**：`BrowseRequest.QueryID` 与 `DBCancel` 对齐；前端每次浏览带模块级唯一 `queryId`，新请求先取消旧请求，会话失效也取消在飞浏览。取消只中断服务端执行，旧响应仍由 `loadSeq` 丢弃，不回写新状态。
+5. **Redis TTL=0**：TTL 输入 `0` 先弹删除确认，再走 `DEL` 等价命令预览；`-1` 为永久，空值与小于 `-1` 的输入拒绝，避免空输入被 `Number('')` 误当成 0。
+
+回归测试新增：`TestSQLiteDescribeForeignKeys`、`TestBrowseCancel`、`TestRedisTestConnection`、`TestRedisRejectsLinkLocalTarget`，以及前端 `redisTTLDraftAction` 与浏览取消接线守卫。真实 MySQL/Redis 服务端联调未在本次重跑；Redis 后端链路由进程内假 server 覆盖，SQLite 使用真实临时库。
+
+**验证（2026-11-27）**：
+
+- `go test -timeout 180s ./internal/dbclient`、`go test -timeout 120s -run TestAppBindingBaseline .`：通过。
+- `npm test`：typecheck + 1737 + 777 + 537 + 21，共 3072 例通过；`npm run build`、`go build`：通过。
+- `tools/check-crossbuild.cmd`：linux/amd64、darwin/arm64、darwin/amd64 全部通过。
+- `go test -timeout 300s ./...`：通过。初次全量运行暴露的既有 `internal/search` rg 取反缺陷已于同日另行修复，最终全量复跑通过。

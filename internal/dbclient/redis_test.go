@@ -382,6 +382,50 @@ func TestRedisDialHandshake(t *testing.T) {
 	}
 }
 
+func TestRedisTestConnection(t *testing.T) {
+	srv := startFakeRedis(t, func(cmd []string) []byte {
+		switch strings.ToUpper(cmd[0]) {
+		case "AUTH":
+			return respSimple("OK")
+		case "PING":
+			return respSimple("PONG")
+		case "INFO":
+			return respBulk("# Server\r\nredis_version:7.2.4\r\n")
+		default:
+			return []byte("-ERR unexpected " + cmd[0] + "\r\n")
+		}
+	})
+	host, portStr, err := net.SplitHostPort(srv.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := strconv.Atoi(portStr)
+	cfg := ConnectionConfig{ID: "test-redis", Name: "test", Kind: kindRedis, Host: host, Port: port, User: "default"}
+	version, err := TestConnection(cfg, "secret")
+	if err != nil {
+		t.Fatalf("Redis TestConnection：%v", err)
+	}
+	if version != "Redis 7.2.4" {
+		t.Fatalf("版本文案 = %q，want Redis 7.2.4", version)
+	}
+	if !containsExact(srv.commands(), "INFO server") {
+		t.Fatalf("测试连接未做第二级 INFO 校验：%q", srv.commands())
+	}
+}
+
+func TestRedisRejectsLinkLocalTarget(t *testing.T) {
+	_, err := openSession(openSpec{
+		Kind: kindRedis,
+		Config: ConnectionConfig{
+			Name: "blocked", Kind: kindRedis, Host: "169.254.169.254", Port: 6379,
+		},
+		Password: "secret",
+	})
+	if err == nil || !strings.Contains(err.Error(), "链路本地") {
+		t.Fatalf("Redis 应复用目标校验拒绝链路本地地址：%v", err)
+	}
+}
+
 func TestRedisScanKeysPipeline(t *testing.T) {
 	srv := startFakeRedis(t, func(cmd []string) []byte {
 		switch strings.ToUpper(cmd[0]) {

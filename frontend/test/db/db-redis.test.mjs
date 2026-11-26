@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    kindLabel, redisPrefixTree, redisGroupPrefix, redisKeyDisplayName, redisTTLLabel, REDIS_KEY_SEP,
+    kindLabel, redisPrefixTree, redisGroupPrefix, redisKeyDisplayName, redisTTLLabel, redisTTLDraftAction, REDIS_KEY_SEP,
 } from '../../src/db/db-model.js';
 
 test('kindLabel：redis', () => {
@@ -80,4 +80,12 @@ test('redisTTLLabel：永久/负值/人性化秒数', () => {
     assert.equal(redisTTLLabel(120), '2m');
     assert.equal(redisTTLLabel(7200), '2h');
     assert.equal(redisTTLLabel(172800), '2d');
+});
+
+test('redisTTLDraftAction：0 必须走删除确认，-1 永久，其余负数非法', () => {
+    assert.equal(redisTTLDraftAction(0), 'delete');
+    assert.equal(redisTTLDraftAction(-1), 'persist');
+    assert.equal(redisTTLDraftAction(-2), 'invalid');
+    assert.equal(redisTTLDraftAction(Number.NaN), 'invalid');
+    assert.equal(redisTTLDraftAction(60), 'set');
 });

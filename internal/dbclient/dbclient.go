@@ -110,17 +110,27 @@ type IndexMeta struct {
 	Columns []string `json:"columns"`
 }
 
+// ForeignKeyMeta 一个外键约束（SQLite PRAGMA foreign_key_list；为后续结构编辑铺路）。
+type ForeignKeyMeta struct {
+	Columns    []string `json:"columns"`
+	RefTable   string   `json:"refTable"`
+	RefColumns []string `json:"refColumns,omitempty"`
+	OnUpdate   string   `json:"onUpdate,omitempty"`
+	OnDelete   string   `json:"onDelete,omitempty"`
+}
+
 // DBTableMeta 元数据 L2：整表定义。PK 为空时该表不可编辑（无主键一律只读）。
 type DBTableMeta struct {
-	Table        string       `json:"table"`
-	Database     string       `json:"database,omitempty"`
-	Kind         string       `json:"kind"`
-	Columns      []ColumnMeta `json:"columns"`
-	PK           []string     `json:"pk"`
-	Indexes      []IndexMeta  `json:"indexes"`
-	RowEstimate  int64        `json:"rowEstimate,omitempty"`
-	TableComment string       `json:"tableComment,omitempty"` // 表注释（MySQL 专有）
-	Editable     bool         `json:"editable"`
+	Table        string           `json:"table"`
+	Database     string           `json:"database,omitempty"`
+	Kind         string           `json:"kind"`
+	Columns      []ColumnMeta     `json:"columns"`
+	PK           []string         `json:"pk"`
+	Indexes      []IndexMeta      `json:"indexes"`
+	ForeignKeys  []ForeignKeyMeta `json:"foreignKeys,omitempty"`
+	RowEstimate  int64            `json:"rowEstimate,omitempty"`
+	TableComment string           `json:"tableComment,omitempty"` // 表注释（MySQL 专有）
+	Editable     bool             `json:"editable"`
 }
 
 // OrderCol 多列排序（结构化：列名在 Go 侧过元数据白名单后拼 ORDER BY，不拼原始 SQL 片段）。
@@ -146,6 +156,7 @@ type BrowseRequest struct {
 	Filters    []FilterCond `json:"filters,omitempty"`
 	Offset     int          `json:"offset"`
 	Limit      int          `json:"limit"`
+	QueryID    string       `json:"queryId,omitempty"` // 本次浏览的取消句柄；与 DBCancel 对应
 }
 
 // QueryOutcome 控制台查询结果。Status=confirm 表示 guard 要求二次确认（Confirm 给出原因），

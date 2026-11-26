@@ -26,3 +26,9 @@ test('数据表状态条：renderStatus 只更新文本 span，不清空整个 s
     assert.ok(/if \(!statusBar\.firstChild\)[\s\S]*statusBar\.append\(statusText, rowHeightSel\.element, pageSizeSel\.element\)/.test(src),
         '两个下拉与文本节点只在首次挂载一次，后续重绘不重建（保住增强包装层）');
 });
+
+test('表浏览：每次请求带取消句柄，新请求先取消旧请求', () => {
+    assert.ok(/queryId: queryID/.test(src), 'DBBrowse 必须带 queryId，后端才能登记到 DBCancel');
+    assert.ok(/deps\.backend\.DBCancel\(session\.id, queryID\)/.test(src), '旧浏览请求必须走统一取消入口');
+    assert.ok(/let browseRequestSeq = 0/.test(src), '取消句柄必须跨表标签页唯一');
+});

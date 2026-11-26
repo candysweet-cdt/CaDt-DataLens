@@ -15,7 +15,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -78,39 +77,67 @@ type RedisPrefixDelete struct {
 	Deleted int `json:"deleted"`
 }
 
-// openRedisSession 建连并产出 Redis 会话（绕开 Driver 接口——driver.go 的既定声明；
-// 生命周期登记复用 openSession 的通用流程：上限/空闲回收/取消）。
-func openRedisSession(spec openSpec) (SessionInfo, error) {
-	cfg := spec.Config
+type redisConnection struct {
+	client   *redisClient
+	addr     string
+	database int
+}
+
+// openRedisConnection 复用 SQL 连接的目标校验与候选地址解析，避免 Redis 绕过
+// 云元数据/链路本地地址防线；正常连接与「测试连接」共用同一条建连路径。
+func openRedisConnection(cfg ConnectionConfig, password string) (*redisConnection, error) {
 	port := cfg.Port
 	if port <= 0 {
 		port = 6379
 	}
-	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(port))
+	addrs, err := resolveSafeAddrs(cfg.Host, port)
+	if err != nil {
+		return nil, err
+	}
+	if len(addrs) > 3 {
+		addrs = addrs[:3]
+	}
 	dbNum := 0
 	if d := strings.TrimSpace(cfg.Database); d != "" {
 		n, err := strconv.Atoi(d)
 		if err != nil || n < 0 || n > 15 {
-			return SessionInfo{}, fmt.Errorf("Redis 数据库编号无效：%q（0–15 的数字）", cfg.Database)
+			return nil, fmt.Errorf("Redis 数据库编号无效：%q（0–15 的数字）", cfg.Database)
 		}
 		dbNum = n
 	}
-	c, err := dialRedis(addr, strings.TrimSpace(cfg.User), spec.Password, dbNum)
+	var lastErr error
+	for _, addr := range addrs {
+		c, err := dialRedis(addr, strings.TrimSpace(cfg.User), password, dbNum)
+		if err == nil {
+			return &redisConnection{client: c, addr: addr, database: dbNum}, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("无可用地址")
+	}
+	return nil, fmt.Errorf("Redis 连接失败（已尝试 %d 个地址；检查主机/端口/用户名密码，以及网络可达性）：%w", len(addrs), lastErr)
+}
+
+// openRedisSession 建连并产出 Redis 会话（绕开 Driver 接口——driver.go 的既定声明；
+// 生命周期登记复用 openSession 的通用流程：上限/空闲回收/取消）。
+func openRedisSession(spec openSpec) (SessionInfo, error) {
+	conn, err := openRedisConnection(spec.Config, spec.Password)
 	if err != nil {
 		return SessionInfo{}, err
 	}
-	name := strings.TrimSpace(cfg.Name)
+	name := strings.TrimSpace(spec.Config.Name)
 	if name == "" {
-		name = addr
+		name = conn.addr
 	}
 	return registerSession(&dbSession{
 		kind:     kindRedis,
 		name:     name,
-		server:   addr,
-		database: "db" + strconv.Itoa(dbNum),
+		server:   conn.addr,
+		database: "db" + strconv.Itoa(conn.database),
 		editable: spec.AllowEdit,
 		caps:     Capabilities{Editable: true},
-		redis:    c,
+		redis:    conn.client,
 	})
 }
 

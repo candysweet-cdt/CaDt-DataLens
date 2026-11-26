@@ -106,14 +106,14 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 ### 数据库
 
 - 活动栏「数据库」图标打开侧栏面板（JetBrains DataGrip 对齐）：列出**本工作区添加的数据库**（按 SQLite / MySQL / MariaDB / Redis / 插件驱动分组、可折叠），顶部按钮**新建 SQLite 数据库**（选路径建空库文件，已存在绝不覆盖）、添加 SQLite 库文件（`.db` / `.sqlite` / `.sqlite3`）、MySQL/MariaDB 连接（同一引擎，JetBrains 式统一管理对话框）、**Redis 连接**（host/port/密码 + ACL 用户名可选 + 数据库编号 0–15）或**插件驱动**（`cadt.registerDbDriver`，其他数据库类型交给插件，见 docs/plugins/README.md）。**点击连接条目即在侧栏内建立会话并展开对象树**：库 → 分组「表 N」「视图 N」+ MySQL 专属「服务器对象」（排序规则 / 用户 / 虚拟视图，懒加载，权限不足的组自动隐藏），表/视图节点行尾显示表注释；全部按需加载，库行有刷新按钮。**双击表/视图直接以独立标签页打开全宽数据网格**（一个表一个标签）；行尾 `[...]` 菜单有 打开查询控制台（每会话一个标签页）/ 断开连接 / 允许编辑 / 测试 / 编辑 / 移除等。会话生命周期挂侧栏：关标签页只关视图，断开或空闲回收后网格给重连入口。总开关 `settings.dbToolsEnabled` 默认关，启用门在面板内。
-- 表数据网格：虚拟滚动、点列头排序、结构化筛选（包含/比较/NULL，全部下推为参数化 SQL）、分页（每页 500 行，服务端截断有标记）；不跑 `COUNT(*)`，MySQL 行数用 information_schema 估算值。
+- 表数据网格：虚拟滚动、点列头排序、结构化筛选（包含/比较/NULL，全部下推为参数化 SQL）、分页（每页 500 行，服务端截断有标记）；不跑 `COUNT(*)`，MySQL 行数用 information_schema 估算值。翻页/筛选/排序等新请求会自动取消旧浏览请求，避免慢查询继续占用连接。
 - SQL 控制台（独立标签页）：多语句逐条分类执行，Ctrl+Enter 运行、执行中可取消（`DBCancel`）、结果表复用网格；结果行数上限 100–5000。
-- **默认只读是双保险**：SQLite 以 `mode=ro` 打开（WAL 无读权限时自动 immutable 兜底并明确提示）、MySQL 建连即 `SET SESSION TRANSACTION READ ONLY` + 连接池限 1；查询路径再逐条分类，任一条非只读整批拒（数据变更 CTE、未知语句 fail-closed 都判写）。
+- **默认只读是双保险**：SQLite 以 `mode=ro` 打开（WAL 无读权限时自动 immutable 兜底并明确提示）、MySQL 建连即 `SET SESSION TRANSACTION READ ONLY` + 连接池限 1；MySQL 与 Redis 建连都拒绝云元数据/链路本地地址并直连已校验 IP；查询路径再逐条分类，任一条非只读整批拒（数据变更 CTE、未知语句 fail-closed 都判写）。
 - **受控写入是显式授权**：连接级「允许编辑」开关（SQLite 在添加时勾选，行菜单可改，断开重连生效）+ 编辑器全局只读锁同样生效；dirty model → 单元格显示新值并高亮（行号列同色）→ 提交 icon 亮起：点击出提交预览（逐条展示内联值的 SQL）确认后写库，**Ctrl+Enter 跳过预览直接提交**；单事务提交，任一语句行数不符预期整体回滚并提示刷新；无主键表与视图一律只读，主键列本身不可编辑。
 - **从零建库建表（仅 SQLite）**：顶部「新建 SQLite 数据库…」建空库文件并加入工作区（默认允许编辑）；editable 会话的「表」分组行有 **+ 新建表**入口——结构化表单（表名 / 列名 / 类型 / 主键 / 必填）生成 `CREATE TABLE` 走控制台同一条 guard 通道，单主键落列内（INTEGER 主键保留 rowid 别名）、复合主键用表级声明；控制台里 DROP TABLE 等结构变更同样开放（DROP 类走两阶段确认）；MySQL 会话 DDL 保持恒拒。
-- 危险语句（DROP/TRUNCATE/ATTACH/CALL/GRANT/LOAD 等）与缺 WHERE（或 WHERE TRUE）的 UPDATE/DELETE 走两阶段确认；DDL 未开放。
+- 危险语句（DROP/TRUNCATE/ATTACH/CALL/GRANT/LOAD 等）与缺 WHERE（或 WHERE TRUE）的 UPDATE/DELETE 走两阶段确认；SQLite 仅 editable 会话开放 DDL，MySQL 会话 DDL 保持恒拒。
 - 密码经 DPAPI 加密单独落 `db-credentials.json`（复合键防撞；换用户/换机器解不开时提示重存，绝不覆盖）；写操作进操作留痕（类型/行数/耗时，不含参数值）；会话空闲 15 分钟自动断开，连接上限 8 个。
-- **Redis 连接（键空间浏览，JetBrains Redis 形态）**：连接条目展开即 SCAN 键空间——`:` 前缀虚拟分组（可切扁平列表）、类型图标（string/hash/list/set/zset/stream）+ TTL 角标、根层模式过滤（SCAN MATCH）、「已匹配 N + 加载更多」诚实计数（全程只用 SCAN，绝无 KEYS）；**双击键开键查看器标签页**（每键一个）：string 支持 Text/JSON/HEX/Binary 四档 formatter，hash/list/set/zset 行集网格（stream 只读）；editable 会话可编辑值/修改 TTL/删除键，前缀批量删需 Type-to-Confirm（输入完整前缀）；查询控制台每行一条命令，读命令白名单放行、写命令跟随「允许编辑」、FLUSHALL/CONFIG SET/DEBUG 等两阶段确认、MULTI/EXEC 拒。自写 RESP2 客户端 0 新依赖；不支持 Cluster/Sentinel/TLS。
+- **Redis 连接（键空间浏览，JetBrains Redis 形态）**：连接条目展开即 SCAN 键空间——`:` 前缀虚拟分组（可切扁平列表）、类型图标（string/hash/list/set/zset/stream）+ TTL 角标、根层模式过滤（SCAN MATCH）、「已匹配 N + 加载更多」诚实计数（全程只用 SCAN，绝无 KEYS）；**双击键开键查看器标签页**（每键一个）：string 支持 Text/JSON/HEX/Binary 四档 formatter，hash/list/set/zset 行集网格（stream 只读）；editable 会话可编辑值/修改 TTL/删除键，TTL 输入 `0` 需先确认删除再展示 `DEL` 预览，`-1` 表示永久，空值或小于 `-1` 拒绝；前缀批量删需 Type-to-Confirm（输入完整前缀）；查询控制台每行一条命令，读命令白名单放行、写命令跟随「允许编辑」、FLUSHALL/CONFIG SET/DEBUG 等两阶段确认、MULTI/EXEC 拒。自写 RESP2 客户端 0 新依赖；不支持 Cluster/Sentinel/TLS。
 
 ### 生命周期
 

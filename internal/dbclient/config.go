@@ -425,7 +425,8 @@ func Connect(id string) (SessionInfo, error) {
 }
 
 // TestConnection 测试连接：先连再查版本（两级验证）；password 为空时用已存凭据。
-// 临时会话不进注册表。
+// 临时会话不进注册表。Redis 是独立子系统，不能走 SQL Driver 注册表，改为共用
+// openRedisConnection 的正常建连路径（目标校验 / AUTH / SELECT / PING 均一致）。
 func TestConnection(cfg ConnectionConfig, password string) (string, error) {
 	if err := validateConfig(cfg); err != nil {
 		return "", err
@@ -439,12 +440,24 @@ func TestConnection(cfg ConnectionConfig, password string) (string, error) {
 			password = p
 		}
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if cfg.Kind == kindRedis {
+		conn, err := openRedisConnection(cfg, password)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = conn.client.Close() }()
+		version, err := redisServerVersion(ctx, &dbSession{kind: kindRedis, redis: conn.client})
+		if err != nil {
+			return "", err
+		}
+		return "Redis " + version, nil
+	}
 	drv, err := driverFor(cfg.Kind)
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 	s, err := drv.Open(ctx, openSpec{Kind: cfg.Kind, Config: cfg, Password: password, AllowEdit: false})
 	if err != nil {
 		return "", err
