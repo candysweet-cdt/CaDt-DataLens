@@ -11,7 +11,7 @@
 | HTML 转义 | `core/escape.js` `escapeHtml` | 拼 `innerHTML` 的文本/属性，5 实体全转 | 业务模块里再写 `function escapeHtml`（护栏 `utility-duplication-guard` 拦） |
 | 字节/时间人可读 | `core/humanize.js` `formatBytes` / `formatFullTime` / `relativeTime` | 体积、时长、相对时间展示 | 局部 `formatBytes`/`humanBytes`/`aiFormatBytes`/`relativeTime` 实现（委托包装可保留旧名） |
 | 图标 | `core/icons.js` `iconSvg` | 所有通用 UI 图标 | 内联 `<svg>`、局部图标表、MDL2 码位（`icon-guard` 拦） |
-| 表单控件 | `core/form-controls.js` `createSwitch/createSelect/createInput/createTextarea` | 动态创建控件 | 裸 `<input>/<select>/<textarea>`（`form-controls-factory` 拦） |
+| 表单控件 | `core/form-controls.js` `createSwitch/createCheckbox/createSelect/createInput/createTextarea/createNumber/createSlider/createPathInput` | 动态创建控件（数字步进 / 滑杆含 segments 分段 / 路径+浏览按钮） | 裸 `<input>/<select>/<textarea>`（`form-controls-factory` 拦） |
 | 弹层注册 | `core/overlay-stack.js` `overlayStack.open` | 对话框/模态/popover/菜单/灯箱 | 自挂全局 Esc 监听（`overlay-esc-guard` 拦）；自挂 document 外点关闭监听（`outside-click-guard` 拦） |
 | 浮层定位 | `core/popover-position.js` `placePopover` | 锚点浮层的视口钳制/翻转 | 局部手写 `Math.max(8, Math.min(rect.left, ...))` |
 | 对话框拖动 | `core/dialog-drag.js` `createDialogDrag` | 对话框头部拖动 | 埋在某个业务模块里的 `startDialogDrag` |
@@ -26,6 +26,9 @@
 | 会话状态判定 | `ai/session/ai-session-scope.js` `isArchived/isSideChat/isUnboundSession/isWorkspaceEligibleSession` | 单个维度的会话谓词（归档 / 支线 / 不绑工作区 / 可作候选） | 手写 `isTransientSession(x) \|\| isNoWorkspaceSession(x)`、裸真值判 `archivedAt` / `sideOf` |
 | 会话忙 / 起轮门禁 | `ai/session/ai-session-scope.js` `createSessionBusyProbe` / `canStartTurn` / `canSendMessage` | 任何「这个会话忙不忙 / 现在能不能起一轮 / 发送按钮该不该禁用」 | 手写 `streamOf(id) \|\| compactOf(id)`；四处各写一套发送门禁（UI / 内核 / 编辑重发 / 队列冲刷口径必须同源） |
 | 附件 → 起轮载荷分组 | `ai/chat/ai-quote.js` `groupAttachmentsForTurn` | 把附件拆成 `images` / `videos` / `texts`（媒体分组、引用与 null 不进文本附件），喂给 `startSessionTurn` | 手动发送 / 排队冲刷 / 原地编辑各写一份 `filter(kind === 'image')` 分组（2026-11-27 收口，护栏 `ai-quote.test.mjs`） |
+| 可过滤下拉 | `core/combo-select.js` `createComboSelect` | 输入过滤 + 候选面板的 combobox（过滤复用 `completion.js` 的 `scoreMatch`、副标题降权；面板 body 挂载 + placePopover；外点/Esc 归 overlay-stack） | 复制 settings-select 的 Portal DOM、自挂外点/Esc 监听、再写一份过滤打分 |
+| 胶囊徽标 | `core/badge.js` `createBadge` | 五档语义色小标记（`.mi-badge` + tone 类，基类即 accent 档） | 新写一份同形异名徽标 CSS 类；业务代码手拼 `mi-badge` 加色值 |
+| 空状态占位 | `core/empty-state.js` `renderEmptyState` | 「无会话/无文件/无结果/无记录」占位（icon 圈 + 标题 + 提示 + 可选动作按钮） | 各域手绘空态 DOM、新写一份 empty 样式类 |
 
 ## 语义相近但**不算**重复（别误合并）
 
@@ -41,6 +44,10 @@
   - `core/jsonpath.js` 的 `jsonPathKey`：JSONPath 段转义（`['a\\b']`），与文件系统无关，只是形态像
   - `ai/settings/ai-cognition.js` 的 `normalizeRelKey`、`ai/security/ai-permissions.js` 的 `writeRuleSubject`：相对 key / glob subject，套绝对路径 key 会改变 `**` 匹配语义
 - `shell/message-center.js` 的局部 `relativeTime`：面板专用 `MM-DD HH:mm` 紧凑格式，与 core 口径不同（已加注释）
+- `shell/palette-model.js` 的 `fuzzyScore`：命令面板口径（整串 > 任意位置 > 子序列 + 中文冒号组前缀拆分），服务全屏面板形态；与 `completion.js` 的 `scoreMatch`（前缀>驼峰>子串>fuzzy，锚点下拉用）**不要互并**（2026-11-28 全仓扫查确认）
+- `core/combo-select.js` 的 `.fc-combo-empty`：下拉面板内一行轻提示，不是页面级空态——别换成 `renderEmptyState` 的大块占位（icon 圈放进窄面板反而突兀）
+- 交互芯片（`.dbg-chip` / `.mcfg-chip` / `.ai-pill` / `.ai-paste-pill` 等，可点/可移除）与方形首字徽标（`.ws-project-badge` / `.pp-badge`，avatar 形态）：不是 `createBadge` 的语义色胶囊，勿收编
+- AI 技能文档内嵌的 `.badge ok|no|warn`（`ai/core/ai-constants.js`）：渲染给模型看的技能 HTML 文档，非应用 UI
 
 ## 护栏测试（新代码违反即红）
 

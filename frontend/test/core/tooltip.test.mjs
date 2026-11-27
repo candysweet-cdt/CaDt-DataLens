@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resolveTipDelay, parseTipActions, resolveScrollAction, SHOW_DELAY_MS, RESHOW_DELAY_MS } from '../../src/core/tooltip.js';
+import { resolveTipDelay, parseTipActions, resolveScrollAction, tipPosition, SHOW_DELAY_MS, RESHOW_DELAY_MS } from '../../src/core/tooltip.js';
 
 const css = readFileSync(new URL('../../src/style.css', import.meta.url), 'utf8');
 
@@ -47,6 +47,21 @@ test('data-tip-delay 垃圾值（空/非数字/负数）忽略，回落默认窗
     for (const bad of ['', '   ', 'abc', '-1', 'NaN', null, undefined]) {
         assert.equal(resolveTipDelay({ delayAttr: bad }), SHOW_DELAY_MS, '应忽略 ' + JSON.stringify(bad));
     }
+});
+
+test('tooltip 默认在锚点下方，靠近底部时翻到上方', () => {
+    const rect = {left: 100, right: 140, top: 100, bottom: 120, width: 40, height: 20};
+    assert.deepEqual(tipPosition(rect, 200, 80, 800, 600), {x: 20, y: 126});
+    assert.deepEqual(tipPosition({...rect, top: 500, bottom: 520}, 200, 80, 800, 600), {x: 20, y: 414});
+});
+
+test('tooltip 支持左右侧放置，空间不足时自动翻到对侧', () => {
+    const rect = {left: 20, right: 40, top: 100, bottom: 120, width: 20, height: 20};
+    assert.deepEqual(tipPosition(rect, 200, 80, 800, 600, 'right'), {x: 46, y: 70});
+    assert.deepEqual(tipPosition(rect, 200, 80, 800, 600, 'left'), {x: 46, y: 70});
+    const right = {...rect, left: 700, right: 720};
+    assert.deepEqual(tipPosition(right, 200, 80, 800, 600, 'right'), {x: 494, y: 70});
+    assert.deepEqual(tipPosition(right, 200, 80, 800, 600, 'left'), {x: 494, y: 70});
 });
 
 test('data-tip-actions 正常解析：label+action 均非空才收，空白裁掉', () => {

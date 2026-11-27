@@ -2,7 +2,7 @@
 // 列表只读 meta（快照来自 runtime.subscribe）；创建弹窗用面板对话框三件套，
 // 表单控件一律走 core/form-controls.js（表单控件硬规范）。
 // 预检纯函数与内置主持人模板在 ai-group-model.js。
-import {createInput, createSelect, createSwitch, createTextarea} from '../../core/form-controls.js';
+import {createInput, createNumber, createSelect, createSwitch, createTextarea} from '../../core/form-controls.js';
 import {iconSvg} from '../../core/icons.js';
 import {relativeTime} from '../../core/humanize.js';
 import {aiNowId} from '../core/ai-constants.js';
@@ -665,9 +665,9 @@ export function createAIGroupSidebar(deps) {
             roundOptions.unshift({value: String(meta.maxRounds), label: meta.maxRounds + ' 轮（当前）', selected: true});
         }
         const roundsCtl = createSelect({options: roundOptions});
-        const speechesCtl = createInput({type: 'number', value: meta.maxSpeeches || 12, min: 12, max: 200, step: 1});
+        const speechesCtl = createNumber({value: meta.maxSpeeches || 12, min: 12, max: 200});
         const totalMinutes = Math.round((meta.timeouts && meta.timeouts.discussionTotalMs ? meta.timeouts.discussionTotalMs : 3600000) / 60000);
-        const minutesCtl = createInput({type: 'number', value: totalMinutes, min: 15, max: 180, step: 5});
+        const minutesCtl = createNumber({value: totalMinutes, min: 15, max: 180, step: 5});
         const statusLine = node('div', 'set-desc');
         statusLine.style.minHeight = '14px';
 

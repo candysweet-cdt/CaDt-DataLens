@@ -3,6 +3,7 @@
 // sessions 为重赋值 let 且模块内只读（经 getSessions()），stickBottom 经 setStickBottom 写。
 // 列表分组状态与搜索状态为域私有，随域迁入本模块。
 import {iconSvg} from '../../core/icons.js';
+import {renderEmptyState} from '../../core/empty-state.js';
 import {aiTextOf, aiFormatSessionTime, aiFormatBytes, AI_SESSION_READ_LIMIT} from '../core/ai-constants.js';
 import {sessionActivityTs} from './ai-session-store.js';
 import {planAwaitingUserReply} from '../core/ai-plan-file.js';
@@ -614,20 +615,12 @@ export function createAISessionList(ctx) {
         }
         const ordered = orderSessionsWithOrchestration(orderSessionsWithSides(getSessions().slice().sort((a, b) => sessionActivity(b) - sessionActivity(a))));
         if (!ordered.length) {
-            const empty = document.createElement('div');
-            empty.className = 'ai-session-empty';
-            const text = document.createElement('div');
-            text.textContent = '还没有会话';
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'dlg-btn';
-            button.textContent = '新建会话';
-            button.addEventListener('click', () => {
-                ensureOpen();
-                newSession();
-            });
-            empty.append(text, button);
-            sessionListEl.appendChild(empty);
+            // 空态收编 core/empty-state.js（2026-11-28）：统一 icon 圈 + 标题 + 弱化动作按钮
+            sessionListEl.appendChild(renderEmptyState({
+                icon: 'tray',
+                title: '还没有会话',
+                action: {label: '新建会话', onClick: () => { ensureOpen(); newSession(); }},
+            }));
             return;
         }
         // 过滤（标题 / 会话 ID 子串）：命中集为空时给独立空态，不把「还没有会话」的
@@ -665,10 +658,7 @@ export function createAISessionList(ctx) {
             return !parent || orchExpanded(parent);
         });
         if (!filtered.length) {
-            const empty = document.createElement('div');
-            empty.className = 'ai-session-empty';
-            empty.textContent = '没有匹配的会话';
-            sessionListEl.appendChild(empty);
+            sessionListEl.appendChild(renderEmptyState({icon: 'search', title: '没有匹配的会话'}));
             return;
         }
 

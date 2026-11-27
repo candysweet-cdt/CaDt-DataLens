@@ -6,7 +6,7 @@
 // defaultGenModelOf 取同类型第一个启用的条目）——数据仍是同一个 genModels[]，
 // 上移/下移只在同类型的槽位之间交换（moveGenModelWithinKind），不会打乱另一组。
 import {iconSvg} from '../../core/icons.js';
-import {createInput, createSelect, createSwitch, createTextarea} from '../../core/form-controls.js';
+import {createInput, createNumber, createSelect, createSwitch, createTextarea} from '../../core/form-controls.js';
 import {aiNowId} from '../core/ai-constants.js';
 import {parseJson} from '../../core/json-safe.js';
 import {
@@ -292,7 +292,7 @@ export function createAIGenSettings(ctx, extras) {
         proxyCtl.control.addEventListener('change', () => {
             proxyURLCtl.element.style.display = proxyCtl.control.value === 'custom' ? '' : 'none';
         });
-        const timeoutCtl = createInput({type: 'number', value: base.timeoutSec, min: 30, max: 300, step: 10});
+        const timeoutCtl = createNumber({value: base.timeoutSec, min: 30, max: 300, step: 10});
         const baseURLCtl = createInput({value: base.baseURL, placeholder: 'https://api.siliconflow.cn 或 http://127.0.0.1:8188（本地服务）', spellcheck: false});
         const pathCtl = createInput({value: base.path, placeholder: '/v1/images/generations', spellcheck: false});
         const editPathCtl = createInput({value: base.editPath, placeholder: '/v1/images/edits（留空 = 不支持参考图）', spellcheck: false});
@@ -320,7 +320,7 @@ export function createAIGenSettings(ctx, extras) {
         const errorPathCtl = createInput({value: base.errorPath, placeholder: 'error.message', spellcheck: false});
         const defaultModelCtl = createInput({value: base.defaultModel, placeholder: 'Kwai-Kolors/Kolors', spellcheck: false});
         const defaultSizeCtl = createInput({value: base.defaultSize, placeholder: '1024x1024', spellcheck: false});
-        const defaultNCtl = createInput({type: 'number', value: base.defaultN, min: 1, max: 4, step: 1});
+        const defaultNCtl = createNumber({value: base.defaultN, min: 1, max: 4});
         const submitPathCtl = createInput({value: base.submitPath, placeholder: '/v1/video/submit（留空 = 同步型条目）', spellcheck: false});
         const jobIdPathCtl = createInput({value: base.jobIdPath, placeholder: 'output.task_id', spellcheck: false});
         const pollPathCtl = createInput({value: base.pollPath, placeholder: '/v1/video/status?task_id={{jobId}}', spellcheck: false});
@@ -328,8 +328,8 @@ export function createAIGenSettings(ctx, extras) {
         const probePathCtl = createInput({value: base.probePath, placeholder: '/v1/videos/{{jobId}}/content（可选）', spellcheck: false});
         const doneValueCtl = createInput({value: base.doneValue, placeholder: 'SUCCESS', spellcheck: false});
         const failedValueCtl = createInput({value: base.failedValue, placeholder: 'FAIL', spellcheck: false});
-        const pollIntervalCtl = createInput({type: 'number', value: base.pollIntervalSec, min: 2, max: 30, step: 1});
-        const maxPollsCtl = createInput({type: 'number', value: base.maxPolls, min: 1, max: 240, step: 1});
+        const pollIntervalCtl = createNumber({value: base.pollIntervalSec, min: 2, max: 30});
+        const maxPollsCtl = createNumber({value: base.maxPolls, min: 1, max: 240});
 
         const body = document.createElement('div');
         body.appendChild(groupTitle('基本信息'));

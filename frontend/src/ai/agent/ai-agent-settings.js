@@ -9,6 +9,7 @@
 import {createInput, createSelect, createSwitch, createTextarea} from '../../core/form-controls.js';
 import {iconSvg} from '../../core/icons.js';
 import {overlayStack} from '../../core/overlay-stack.js';
+import {placePopover} from '../../core/popover-position.js';
 import {aiNowId} from '../core/ai-constants.js';
 import {modelRefLabel} from '../core/ai-config-model.js';
 import {REPLY_STYLES} from '../core/ai-persona.js';
@@ -50,19 +51,12 @@ export function createAIAgentSettings(ctx) {
             groupSuggestEl.appendChild(item);
         }
         if (!groupSuggestEl.parentElement) document.body.appendChild(groupSuggestEl);
-        // 定位：贴分组输入框下沿，越下沿翻转、钳在视口内（body 定位，栈配 z-index）
+        // 定位：贴分组输入框下沿，翻上/视口钳制统一走 placePopover（body 定位，栈配 z-index）
         const control = editorControls && editorControls.group ? editorControls.group.control : null;
         if (control) {
-            groupSuggestEl.style.visibility = 'hidden';
             const rect = control.getBoundingClientRect();
-            const width = Math.max(rect.width, 160);
-            const height = groupSuggestEl.offsetHeight;
-            let top = rect.bottom + 4;
-            if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 4);
-            groupSuggestEl.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)) + 'px';
-            groupSuggestEl.style.top = top + 'px';
-            groupSuggestEl.style.width = width + 'px';
-            groupSuggestEl.style.visibility = '';
+            groupSuggestEl.style.width = Math.max(rect.width, 160) + 'px';
+            placePopover(groupSuggestEl, control, {gap: 4});
         }
         if (!groupSuggestHandle) {
             const groupAnchor = editorControls && editorControls.group && editorControls.group.element;

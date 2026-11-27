@@ -1,6 +1,7 @@
 import {el} from '../core/dom.js';
 import {iconSvg} from '../core/icons.js';
 import {INTERNAL_PATHS_MIME, encodeDropPaths} from '../core/drop-mime.js';
+import {renderEmptyState} from '../core/empty-state.js';
 
 // 局部键 → 注册表键（原散落 SVG 已收编 core/icons.js）；svg 尺寸由 .sb-chev/.sb-icon/.sb-tool 的 CSS 规则统一
 const ICONS = {
@@ -396,15 +397,12 @@ export function createExplorer(options) {
     }
 
     function emptyState(text, buttonText, action) {
-        const wrap = el('div', 'sb-empty');
-        wrap.appendChild(el('div', null, text));
-        if (buttonText && action) {
-            const btn = el('button', 'sb-empty-btn', buttonText);
-            btn.type = 'button';
-            btn.addEventListener('click', action);
-            wrap.appendChild(btn);
-        }
-        return wrap;
+        // 空态收编 core/empty-state.js（2026-11-28）：保留签名、内部委托，调用点零改动
+        return renderEmptyState({
+            icon: 'tray',
+            title: text,
+            action: buttonText && action ? {label: buttonText, onClick: action} : undefined,
+        });
     }
 
     function statusRow(text, isError) {

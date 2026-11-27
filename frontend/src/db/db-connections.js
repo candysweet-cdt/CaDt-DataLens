@@ -10,7 +10,7 @@
 // 「项目数据源」↔「加入当前工作区」开关；URL 自动生成 ↔ 只读预览（不支持 URL 驱动表单，够用）。
 
 import {iconSvg} from '../core/icons.js';
-import {createInput, createSelect, createSwitch} from '../core/form-controls.js';
+import {createInput, createNumber, createSelect, createSwitch} from '../core/form-controls.js';
 import {overlayStack} from '../core/overlay-stack.js';
 
 // openMaskDialog：通用模态骨架——遮罩 + overlayStack 注册。
@@ -140,7 +140,7 @@ export function openConnectionsManager(deps, opts = {}) {
             ],
         });
         const hostInput = createInput({value: '', placeholder: '主机（IP 或域名）'});
-        const portInput = createInput({type: 'number', value: 3306, min: 1, max: 65535});
+        const portInput = createNumber({value: 3306, min: 1, max: 65535});
         const userInput = createInput({value: '', placeholder: '用户名'});
         const passInput = createInput({type: 'password', value: '', placeholder: '密码'});
         passInput.control.autocomplete = 'new-password';

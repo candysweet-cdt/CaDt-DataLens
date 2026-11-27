@@ -8,7 +8,7 @@
 // 弹层全部经 overlay-stack 注册（close/onClose 双路径清理，与 db-create-table.js 同款）。
 
 import {iconSvg} from '../core/icons.js';
-import {createInput, createSelect, createTextarea} from '../core/form-controls.js';
+import {createInput, createNumber, createSelect, createTextarea} from '../core/form-controls.js';
 import {createDbGrid} from './db-grid-core.js';
 import {redisTTLLabel, redisTTLDraftAction} from './db-model.js';
 
@@ -302,7 +302,7 @@ export function createDbRedisKeyPane(deps, session, db, key) {
         const valInput = createTextarea({rows: 4, value: row[1] || ''});
         bodyEl.append(fieldLabel, valInput.element);
         if (isZset) {
-            const scoreInput = createInput({type: 'number', value: row[1] || '0', step: 'any'});
+            const scoreInput = createNumber({value: row[1] || '0'}); // 分数无界、允许小数，失焦钳制走组件默认
             const scoreLine = document.createElement('div');
             scoreLine.className = 'db-conn-rowline';
             const scoreLabel = document.createElement('span');
@@ -541,7 +541,7 @@ export function createDbRedisKeyPane(deps, session, db, key) {
         headEl.textContent = '修改 TTL · ' + key;
         const bodyEl = document.createElement('div');
         bodyEl.className = 'db-preview-body db-redis-confirm-body';
-        const ttlInput = createInput({type: 'number', value: cur > 0 ? cur : -1, min: -1});
+        const ttlInput = createNumber({value: cur > 0 ? cur : -1, min: -1}); // -1 = 永久
         const line = document.createElement('div');
         line.className = 'db-conn-rowline';
         const label = document.createElement('span');

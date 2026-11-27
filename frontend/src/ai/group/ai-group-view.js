@@ -5,6 +5,7 @@
 import {createInput, createTextarea} from '../../core/form-controls.js';
 import {el} from '../../core/dom.js';
 import {iconSvg} from '../../core/icons.js';
+import {renderEmptyState} from '../../core/empty-state.js';
 import {STANCE_LABELS, stripHandoffMarker} from './ai-group-model.js';
 import {
     buildRichHtml,
@@ -258,14 +259,12 @@ export function createAIGroupView(deps) {
         if (state.deletedShown) return;
         state.deletedShown = true;
         state.shell.textContent = '';
-        const empty = el('div', 'gc-empty-state');
-        empty.appendChild(el('div', 'gc-empty-title', '群聊已删除或不可用'));
-        empty.appendChild(el('div', 'gc-empty-hint', '共享对话与成员私有过程已进回收站。'));
-        const back = el('button', 'gc-btn', '返回会话');
-        back.type = 'button';
-        back.addEventListener('click', () => { if (showSessions) showSessions(); });
-        empty.appendChild(back);
-        state.shell.appendChild(empty);
+        // 空态收编 core/empty-state.js（2026-11-28）：与其它域的空态同一套观感
+        state.shell.appendChild(renderEmptyState({
+            title: '群聊已删除或不可用',
+            hint: '共享对话与成员私有过程已进回收站。',
+            action: {label: '返回会话', onClick: () => { if (showSessions) showSessions(); }},
+        }));
     }
 
     // ---------- 顶部工具栏 ----------

@@ -4,7 +4,7 @@
 // 状态来自 mcpMod.getState()（Go 事件整代快照，本模块不自行维护连接态）。
 // readOnlyHint 是服务器自填的 hint，绝不作为安全判断——批量勾选只是省点击，授权动作是用户点按钮本身。
 import {aiEstimateTokens} from '../core/ai-constants.js';
-import {createInput, createTextarea} from '../../core/form-controls.js';
+import {createInput, createNumber, createTextarea} from '../../core/form-controls.js';
 import {DESKTOP_MCP_SERVER} from './ai-desktop-control.js';
 import {escapeHtml} from '../../core/escape.js';
 
@@ -314,8 +314,8 @@ export function createAIMcpSettings(ctx) {
             placeholder: '例如：提交前先校验字段长度；一次最多提交 10 条；按来源分批提交',
         });
         notesCtl.control.maxLength = MCP_NOTES_MAX_CHARS;
-        const timeoutCtl = (seconds, label) => createInput({
-            type: 'number', className: 'dlg-input ai-mcp-timeout',
+        const timeoutCtl = (seconds, label) => createNumber({
+            className: 'ai-mcp-timeout',
             value: seconds, min: 1, max: 600, attrs: {'aria-label': label},
         });
         const t1Ctl = timeoutCtl(Math.round((cfg.startupTimeoutMs || 30000) / 1000), '启动超时（秒）');

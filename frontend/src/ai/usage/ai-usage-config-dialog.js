@@ -2,7 +2,7 @@
 // 模板专属字段（apiKey / baseUrl / extraFields）/ 自定义脚本编辑器 / 测试脚本。
 // 走 openAIDialog 动态构建（同 gen-settings 先例），DOM 不进 index.html；
 // 查询管线在 ai-usage-quota.js，本模块只做表单与落盘。
-import {createInput, createSwitch, createTextarea} from '../../core/form-controls.js';
+import {createInput, createNumber, createSwitch, createTextarea} from '../../core/form-controls.js';
 import {normalizeUsageConfig} from '../core/ai-config-model.js';
 import {
     USAGE_NEWAPI_FIELDS,
@@ -87,14 +87,14 @@ export function createAIUsageConfigDialog(ctx, extras) {
     }
 
     function numberInput(value, min, max, onInput) {
-        const {control} = createInput({
-            type: 'number',
-            value: String(value),
+        // 收编 core/form-controls.js 的 createNumber（2026-11-28）：步进/钳制/非法回退内建
+        const {element, control} = createNumber({
+            value,
             min,
             max,
-            onInput: (event) => onInput(event.target.value),
+            onInput: () => onInput(control.value),
         });
-        return control;
+        return element;
     }
 
     function scriptTextarea(code) {

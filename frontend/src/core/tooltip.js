@@ -151,8 +151,31 @@ function pointerInBubble() {
 }
 
 // ===== 定位与内容渲染 =====
-// 摆位（锚点在 showFor 里先落到 anchor 上）：越界翻到上方并做视口钳制。
-// follow/retether 重摆复用同一段数学。锚点离文档或量不出面积就撤——不弹到 (0,0) 垃圾位。
+// 默认摆在锚点下方；data-tip-placement=left/right 可显式选择左右侧（会话滑轨在左缘时用 right）。
+// 空间不足时自动翻到对侧，最后再做视口钳制；follow/retether 重摆复用同一段数学。
+export function tipPosition(rect, width, height, viewportWidth, viewportHeight, placement = 'bottom') {
+    const margin = VIEWPORT_MARGIN;
+    const gap = GAP;
+    const side = placement === 'left' || placement === 'right' ? placement : 'bottom';
+    let x = rect.left + rect.width / 2 - width / 2;
+    let y = rect.bottom + gap;
+    if (side === 'right') {
+        x = rect.right + gap;
+        y = rect.top + rect.height / 2 - height / 2;
+        if (x + width > viewportWidth - margin && rect.left - width - gap >= margin) x = rect.left - width - gap;
+    } else if (side === 'left') {
+        x = rect.left - width - gap;
+        y = rect.top + rect.height / 2 - height / 2;
+        if (x < margin && rect.right + gap + width <= viewportWidth - margin) x = rect.right + gap;
+    } else if (y + height > viewportHeight - margin && rect.top - height - gap >= margin) {
+        y = rect.top - height - gap;
+    }
+    x = Math.max(margin, Math.min(x, viewportWidth - width - margin));
+    y = Math.max(margin, Math.min(y, viewportHeight - height - margin));
+    return {x: Math.round(x), y: Math.round(y)};
+}
+
+// 锚点在 showFor 里先落到 anchor 上。锚点离文档或量不出面积就撤——不弹到 (0,0) 垃圾位。
 function positionBubble() {
     if (!bubble || !anchor || !anchor.isConnected) return;
     const rect = anchor.getBoundingClientRect();
@@ -165,14 +188,10 @@ function positionBubble() {
     bubble.style.top = '0px';
     const width = bubble.offsetWidth;
     const height = bubble.offsetHeight;
-    let x = rect.left + rect.width / 2 - width / 2;
-    x = Math.max(VIEWPORT_MARGIN, Math.min(x, window.innerWidth - width - VIEWPORT_MARGIN));
-    let y = rect.bottom + GAP;
-    if (y + height > window.innerHeight - VIEWPORT_MARGIN && rect.top - height - GAP >= VIEWPORT_MARGIN) {
-        y = rect.top - height - GAP;
-    }
-    bubble.style.left = Math.round(x) + 'px';
-    bubble.style.top = Math.round(Math.max(VIEWPORT_MARGIN, y)) + 'px';
+    const pos = tipPosition(rect, width, height, window.innerWidth, window.innerHeight,
+        anchor.getAttribute('data-tip-placement'));
+    bubble.style.left = pos.x + 'px';
+    bubble.style.top = pos.y + 'px';
 }
 
 // 两段式气泡内容：data-tip-title 存在时渲染「标题 + 描述」两行，否则维持原来的单段纯文本。

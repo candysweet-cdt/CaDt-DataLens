@@ -29,6 +29,7 @@ import {
     parseRuleLines, webRuleSubject, writeRuleSubject,
 } from '../security/ai-permissions.js';
 import {matchCommandRule, commandFamilySignature, commandText} from '../security/ai-command-rules.js';
+import {resolveToolFailureMax} from '../chat/ai-tool-failure-guard.js';
 import {canAutoFill} from '../core/model-catalog.js';
 import {createSessionBusyProbe} from '../session/ai-session-scope.js';
 
@@ -442,6 +443,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.notifySystem) opt.notifySystem.checked = getConfig().notifySystem === true;
         if (opt.notifyFinish) opt.notifyFinish.checked = getConfig().notifyFinish !== false;
         if (opt.retryMax) opt.retryMax.value = String(getConfig().retryMax);
+        if (opt.toolFailureMax) opt.toolFailureMax.value = String(resolveToolFailureMax(getConfig().toolFailureMax));
         if (opt.subAgentMax) opt.subAgentMax.value = String(getConfig().subAgentMax);
         if (opt.subAgentMaxDepth) opt.subAgentMaxDepth.value = String(getConfig().subAgentMaxDepth);
         if (opt.subAgentRounds) opt.subAgentRounds.value = String(aiClampInt(getConfig().subAgentRounds, 3, 200, 200));
@@ -975,6 +977,14 @@ export function createAISettingsDialog(ctx) {
             opt.retryMax.value = String(getConfig().retryMax);
             saveAIConfig();
             setSettingsStatus(getConfig().retryMax > 0 ? '失败重试：' + getConfig().retryMax + ' 次（指数退避）' : '失败重试：关闭', 'ok');
+        });
+        if (opt.toolFailureMax) opt.toolFailureMax.addEventListener('change', () => {
+            getConfig().toolFailureMax = resolveToolFailureMax(opt.toolFailureMax.value);
+            opt.toolFailureMax.value = String(getConfig().toolFailureMax);
+            saveAIConfig();
+            setSettingsStatus(getConfig().toolFailureMax > 0
+                ? '工具熔断：连续同类失败 ' + getConfig().toolFailureMax + ' 次即拦截'
+                : '工具熔断：已关闭', 'ok');
         });
         if (opt.subAgentMax) opt.subAgentMax.addEventListener('change', () => {
             getConfig().subAgentMax = aiClampInt(opt.subAgentMax.value, 1, 20, 20);

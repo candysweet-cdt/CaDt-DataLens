@@ -82,3 +82,13 @@ const prompt = createTextarea({id: 'foo-prompt', rows: 5, spellcheck: false});
 - 不要手写 `innerHTML` 拼表单控件再事后补 class：字符串里的标签同样会被静态扫描抓到。
 - 设置页之外的下拉若需要浮层增强，走 `createSettingsSelect` 的接线，不要复制浮层 DOM：工厂返回的 `enhanceSelect(sel)` 对单个 select 幂等增强（main.js 经 deps getter 注入到需要的域，如 `explorer/global-search.js` 的 AI 会话范围下拉）；增强后 wrap 继承原 select 的布局类，触发器外观由各域自己的样式适配（紧凑行在注入样式里覆盖 `.set-select-btn`）。已增强的 select 再调一次不会重复包装，只重新同步触发器文本——程序化改 `select.value` 不派发 change，面板刷新后可补一次调用。
 - **主副标题选项**：给 `<option>` 加 `data-subtitle`，`option.text` 写主标题（同时是触发器显示值），`settings-select.js` 会渲染成两行（`.ss-opt-rich` + `.ss-main` / `.ss-sub`）。没有该属性的选项保持单行，完全向后兼容；不要把「名字 · 描述」再拼进一个字符串里让它被截断。
+
+## 6. fc- 组合控件（2026-11-28 起）
+
+三个带结构与交互的控件同样走工厂（样式在 `style.css` 的「core/form-controls.js 的 fc- 工厂控件」段，测试在 `test/core/form-controls-factory.test.mjs`）：
+
+- `createNumber({value, min, max, step, unit, ...})`：`[- 输入 +]` 一体数字步进。按钮 / 键盘 ↑↓ / 手输三条路收敛到导出的纯函数 `stepNumber` / `normalizeNumberInput`（失焦钳制、非法回退上次有效值）；按钮长按连发（400ms 延迟后 110ms 一步）。返回 `{element, control, value}`：control 是中间的原生 input（字符串真源），`value` getter 返回数值。
+- `createSlider({value, min, max, step, segments, format, ...})`：原生 `<input type=range>` + `.opt-range`（accent-color 跟主题，与设置页字号/温度滑杆同款），可选右侧等宽读数（`.fc-slider-value`，tabular-nums）。`segments: N` 把轨道分成 N 段只能停 N+1 档——内部 0..N 整数步进（原生 step 锁死拖动与键盘），读取映射回真实区间，轨道下自动加 N+1 个点标位；onChange / onInput 收到的都是映射后的数值。
+- `createPathInput({value, placeholder, onBrowse, ...})`：`dlg-input` + 「浏览」按钮。core 不碰后端——`onBrowse(control)` 由调用方注入（闭包里拿 mode/filters 调 Wails 文件对话框，把结果写回 `control.value`）；没传 `onBrowse` 按钮禁用，不给「点了没反应」的假按钮留位置。path 输入默认关闭「空值 Tab 填 placeholder」（这里的 placeholder 是提示语）。
+
+配套组件：可过滤下拉 `core/combo-select.js` 的 `createComboSelect`（面板 body 挂载 + `placePopover` 视口钳制，外点/Esc 走 overlay-stack；过滤复用 `completion.js` 的 `scoreMatch`，副标题命中降 200 分）、胶囊徽标 `core/badge.js` 的 `createBadge`（五档语义色，见 `style.css` `.mi-badge` 段）、空状态占位 `core/empty-state.js` 的 `renderEmptyState`。
