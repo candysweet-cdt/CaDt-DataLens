@@ -255,7 +255,7 @@ export function createAIReminders(ctx) {
             [titleField.element, detailField.element, errEl],
             [
                 ctx.dialogButton('取消', 'dlg-btn', close),
-                ctx.dialogButton('添加', 'dlg-btn', submit),
+                ctx.dialogButton('添加', 'dlg-btn primary', submit),
             ]);
         for (const control of [titleField.control, detailField.control]) {
             control.addEventListener('keydown', (e) => {

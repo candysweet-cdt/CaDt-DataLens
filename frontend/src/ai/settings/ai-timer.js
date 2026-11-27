@@ -3,7 +3,7 @@
 // 经 ai-panel 的 wakeSessionByTimer 注入系统消息唤醒对应会话（与定时任务同一投递通道）。
 // 头部只挂一枚「计时」胶囊（数量角标 + 最近倒计时剩余走秒），无计时器时隐藏；
 // 点击弹出计时器列表：行点击进入详情（读数/起止时刻/id + 停止按钮），行尾【x】直接停止。
-// 用户也能从消息框「+」→ 计时器手动创建倒计时 / 正计时（openCreateDialog，居中弹窗）。
+// 用户也能从消息框「+」→ 计时器手动创建（openCreateDialog，居中弹层，顶部分段切换倒计时/正计时）。
 // 弹层复用 chips-pop 机制（kind=timers，内容由 renderPop 提供）。
 //
 // deps 由 ai-panel 显式传入（getter 延迟求值）：
@@ -18,6 +18,7 @@
 // - openDialog/closeDialog/dialogNode/dialogButton: 居中弹窗三件套（ai-panel openAIDialog）
 import {iconSvg} from '../../core/icons.js';
 import {createInput, createSelect} from '../../core/form-controls.js';
+import {createDateTimePicker, FIELDS_DATETIME} from './ai-datetime-picker.js';
 
 const AI_TIMER_SESSION_MAX = 5; // 单会话同时运行上限（应用总上限 30 在 Go 侧 aiTimerMaxActive）
 
@@ -48,6 +49,26 @@ export function secondsUntilClock(hhmm, nowMs) {
     let delta = target.getTime() - now;
     if (delta <= 0) delta += 24 * 3600 * 1000;
     return Math.round(delta / 1000);
+}
+
+// secondsUntilDatetime 把自绘日期时间选择器的值 'YYYY-MM-DD HH:mm' 换算成距现在的秒数。
+// 与 secondsUntilClock 的区别：这是绝对日期时刻（可选任意未来日期，不受 24h 限制），
+// 过去时刻返回 0（调用方据此提示「须晚于现在」），非法格式同样返回 0。
+export function secondsUntilDatetime(text, nowMs) {
+    const match = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2}))?$/.exec(String(text || '').trim());
+    if (!match) return 0;
+    const y = Number(match[1]);
+    const mo = Number(match[2]);
+    const d = Number(match[3]);
+    const h = Number(match[4] || 0);
+    const mi = Number(match[5] || 0);
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59) return 0;
+    const target = new Date(y, mo - 1, d, h, mi, 0, 0);
+    // 拒绝被 Date 自动进位掉的非法日期（如 2 月 30 日 → 3 月 2 日）
+    if (target.getFullYear() !== y || target.getMonth() !== mo - 1 || target.getDate() !== d) return 0;
+    const now = Number(nowMs) || Date.now();
+    const delta = target.getTime() - now;
+    return delta > 0 ? Math.round(delta / 1000) : 0;
 }
 
 // 计时器会话隔离（纯函数，ai-timer.test.mjs 覆盖）。
@@ -143,6 +164,18 @@ export function createAITimer(ctx) {
             '.ai-timer-mark-input { flex: 1; min-width: 0; font-size: 11px; }',
             '.ai-timer-mark-btn { flex: none; }',
             '.ai-timer-create-err { font-size: 11px; color: var(--red); min-height: 14px; }',
+            // 统一创建弹层：分段切换 + 复用定时任务行式布局
+            '.ai-timer-editor { display: flex; flex-direction: column; gap: 6px; min-width: 440px; }',
+            '.ai-timer-mode-switch { display: inline-flex; align-self: flex-start; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); margin-bottom: 6px; }',
+            '.ai-timer-mode-btn { border: none; border-radius: 5px; background: none; color: var(--muted); font: inherit; font-size: 12px; padding: 5px 18px; cursor: pointer; }',
+            '.ai-timer-mode-btn:hover { color: var(--text); background: var(--hover); }',
+            '.ai-timer-mode-btn.active { background: var(--accent); color: var(--on-accent); }',
+            '.ai-timer-section { display: flex; flex-direction: column; gap: 2px; }',
+            '.ai-timer-section.hidden { display: none; }',
+            '.ai-timer-editor .ai-sched-field > label { width: 72px; }',
+            '.ai-timer-editor .ai-sched-field > .dlg-input { flex: 1; min-width: 0; }',
+            '.ai-timer-editor .ai-sched-field > .dtp-trigger { flex: 1; }',
+            '.ai-timer-hint { font-size: 10.5px; color: var(--muted); padding: 2px 0 0 80px; line-height: 1.5; }',
         ].join('\n');
         document.head.appendChild(style);
     }
@@ -429,85 +462,97 @@ export function createAITimer(ctx) {
     }
 
 // ===== 创建对话框 =====
-    // 「+」菜单的创建对话框（居中弹窗）：倒计时选常用时长档位或自定义到点时刻，
-    // 正计时填目的 + 可选「到点自动停止」时刻。Go 侧按 duration 计时，到点时刻在此换算成秒。
-    function openCreateDialog(mode) {
+    // 日期时间 → 'YYYY-MM-DD HH:mm'（自绘选择器的输入格式）
+    function fmtDatetime(ms) {
+        const d = new Date(ms);
+        const pad = (n) => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+            + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+
+    // 「+」菜单的创建对话框（居中弹层）：顶部分段切换倒计时/正计时，复用定时任务的行式布局
+    // 与自绘日期时间选择器。Go 侧按 duration 计时，到点时刻在此换算成秒。
+    function openCreateDialog(initialMode) {
         if (typeof ctx.openDialog !== 'function') {
             flash('当前版本不支持创建对话框', true);
             return;
         }
         ensureStyle();
         closeCreateDialog();
-        const isCountdown = mode !== 'countup';
-        const errEl = ctx.dialogNode ? ctx.dialogNode('div', 'ai-timer-create-err', '') : document.createElement('div');
+        let mode = initialMode === 'countup' ? 'countup' : 'countdown';
+        const node = (tag, cls, text) => {
+            const el = ctx.dialogNode ? ctx.dialogNode(tag, cls, text) : document.createElement(tag);
+            if (!ctx.dialogNode) {
+                if (cls) el.className = cls;
+                if (text != null) el.textContent = text;
+            }
+            return el;
+        };
+        const errEl = node('div', 'ai-timer-create-err', '');
 
-        const labelField = createInput({
-            maxLength: 60,
-            placeholder: '计时目的（必填，如「等待构建完成」）',
-            spellcheck: false,
-        });
+        // 顶部分段切换：倒计时 / 正计时
+        const switchEl = node('div', 'ai-timer-mode-switch');
+        const cdBtn = node('button', 'ai-timer-mode-btn', '倒计时');
+        cdBtn.type = 'button';
+        const cuBtn = node('button', 'ai-timer-mode-btn', '正计时');
+        cuBtn.type = 'button';
+        switchEl.append(cdBtn, cuBtn);
 
-        let presetSelect = null;
-        let clockField = null;
-        let autoStopField = null;
-        if (isCountdown) {
-            // 到点时刻默认值：现在 + 10 分钟（取整到分钟）
-            const def = new Date(Date.now() + 10 * 60 * 1000);
-            const pad = (n) => String(n).padStart(2, '0');
-            const defClock = pad(def.getHours()) + ':' + pad(def.getMinutes());
-            presetSelect = createSelect({
-                options: AI_TIMER_PRESETS.map((p) => ({value: p.value, label: p.label}))
-                    .concat([{value: 'custom', label: '自定义到点时刻'}]),
-                onChange: () => syncClockVisible(),
-            });
-            clockField = createInput({
-                type: 'time',
-                value: defClock,
-                title: '到点时刻（已过按明天同一时刻算）',
-                onChange: () => {
-                    // 选了时刻但档位还是时长：自动切到自定义档（程序赋值不触发 change，需手动同步可见性）
-                    if (presetSelect.control.value !== 'custom') presetSelect.control.value = 'custom';
-                    syncClockVisible();
-                },
-            });
-        } else {
-            // 正计时：可选「到点自动停止」兜底（忘停不再无限挂着）；留空 = 一直计到手动停
-            const def = new Date(Date.now() + 30 * 60 * 1000);
-            const pad = (n) => String(n).padStart(2, '0');
-            autoStopField = createInput({
-                type: 'time',
-                value: '',
-                title: '到点自动停止（可选，留空 = 一直计到手动停止；已过时刻按明天算）',
-                placeholder: '到点自动停止（可选）',
-                onChange: () => {},
-            });
-            autoStopField.control.dataset.defClock = pad(def.getHours()) + ':' + pad(def.getMinutes());
-        }
+        // 共用的计时目的
+        const labelField = createInput({maxLength: 60, placeholder: '计时目的（必填，如「等待构建完成」）', spellcheck: false});
+        const labelRow = node('div', 'ai-sched-field');
+        labelRow.append(node('label', '', '计时目的'), labelField.element);
 
-        const body = [];
-        body.push(labelField.element);
-        if (isCountdown) {
-            body.push(presetSelect.element);
-            body.push(clockField.element);
-        } else {
-            body.push(autoStopField.element);
-        }
-        body.push(errEl);
+        // ---- 倒计时分段：快捷时长 / 指定到点时刻 二选一 ----
+        const cdSection = node('div', 'ai-timer-section');
+        const waySelect = createSelect({options: [
+            {value: 'preset', label: '快捷时长'},
+            {value: 'datetime', label: '指定到点时刻'},
+        ]});
+        const wayRow = node('div', 'ai-sched-field');
+        wayRow.append(node('label', '', '计时方式'), waySelect.element);
+        const presetSelect = createSelect({options: AI_TIMER_PRESETS.map((p) => ({value: p.value, label: p.label}))});
+        const presetRow = node('div', 'ai-sched-field');
+        presetRow.append(node('label', '', '时长'), presetSelect.element);
+        const cdPicker = createDateTimePicker({fields: FIELDS_DATETIME, placeholder: 'YYYY-MM-DD HH:mm'});
+        const cdTimeField = cdPicker.createTrigger({value: fmtDatetime(Date.now() + 10 * 60 * 1000), ariaLabel: '到点日期时间'});
+        const cdTimeRow = node('div', 'ai-sched-field');
+        cdTimeRow.append(node('label', '', '到点时刻'), cdTimeField.element);
+        cdSection.append(wayRow, presetRow, cdTimeRow);
+
+        // ---- 正计时分段：可选「自动停止时刻」 ----
+        const cuSection = node('div', 'ai-timer-section');
+        const cuPicker = createDateTimePicker({fields: FIELDS_DATETIME, placeholder: 'YYYY-MM-DD HH:mm'});
+        const autoStopField = cuPicker.createTrigger({ariaLabel: '自动停止日期时间'});
+        const autoStopRow = node('div', 'ai-sched-field');
+        autoStopRow.append(node('label', '', '自动停止'), autoStopField.element);
+        const cuHint = node('div', 'ai-timer-hint', '留空 = 持续计时，直到手动停止；填了则到点自动停止并上报时长。');
+        cuSection.append(autoStopRow, cuHint);
+
+        const editor = node('div', 'ai-timer-editor');
+        editor.append(switchEl, labelRow, cdSection, cuSection, errEl);
 
         const close = () => closeCreateDialog();
-        const footerNodes = [
-            ctx.dialogButton('取消', 'dlg-btn', close),
-            ctx.dialogButton(isCountdown ? '启动' : '开始计时', 'dlg-btn', () => {
-                submit().catch(() => {});
-            }),
-        ];
-        ctx.openDialog(isCountdown ? '新建倒计时' : '新建正计时', body, footerNodes);
+        const submitBtn = ctx.dialogButton('启动', 'dlg-btn primary', () => { submit().catch(() => {}); });
+        ctx.openDialog('新建计时器', [editor], [ctx.dialogButton('取消', 'dlg-btn', close), submitBtn], {wide: true});
 
-        const syncClockVisible = () => {
-            if (!clockField) return;
-            clockField.element.classList.toggle('hidden', presetSelect.control.value !== 'custom');
-        };
-        syncClockVisible();
+        function syncUI() {
+            const isCd = mode === 'countdown';
+            cdBtn.classList.toggle('active', isCd);
+            cuBtn.classList.toggle('active', !isCd);
+            cdSection.classList.toggle('hidden', !isCd);
+            cuSection.classList.toggle('hidden', isCd);
+            submitBtn.textContent = isCd ? '启动' : '开始计时';
+            if (isCd) {
+                const byDatetime = waySelect.control.value === 'datetime';
+                presetRow.classList.toggle('hidden', byDatetime);
+                cdTimeRow.classList.toggle('hidden', !byDatetime);
+            }
+        }
+        cdBtn.addEventListener('click', () => { mode = 'countdown'; syncUI(); });
+        cuBtn.addEventListener('click', () => { mode = 'countup'; syncUI(); });
+        waySelect.control.addEventListener('change', syncUI);
+        syncUI();
 
         const submit = async () => {
             errEl.textContent = '';
@@ -518,44 +563,41 @@ export function createAITimer(ctx) {
                 return;
             }
             let seconds = 0;
-            if (isCountdown && presetSelect) {
-                if (presetSelect.control.value === 'custom') {
-                    const hhmm = clockField.control.value;
-                    seconds = secondsUntilClock(hhmm, Date.now());
+            if (mode === 'countdown') {
+                if (waySelect.control.value === 'datetime') {
+                    seconds = secondsUntilDatetime(cdTimeField.control.value, Date.now());
                     if (!seconds) {
-                        errEl.textContent = '请选择有效的到点时刻';
-                        clockField.control.focus();
+                        errEl.textContent = '请选择有效的到点日期时间（须晚于现在）';
                         return;
                     }
                 } else {
                     seconds = Number(presetSelect.control.value) || 0;
+                    if (seconds < 1 || seconds > 86400) {
+                        errEl.textContent = '时长须在 1 秒 – 24 小时内';
+                        return;
+                    }
                 }
-                if (seconds < 1 || seconds > 86400) {
-                    errEl.textContent = '到点时间须在 1 秒 – 24 小时内';
-                    return;
-                }
-            } else if (autoStopField && autoStopField.control.value) {
+            } else if (autoStopField.control.value) {
                 // 正计时的到点自动停止（可选）：留空 = 一直计到手动停止
-                seconds = secondsUntilClock(autoStopField.control.value, Date.now());
-                if (seconds < 1 || seconds > 86400) {
-                    errEl.textContent = '自动停止时刻须在 1 秒 – 24 小时内';
-                    autoStopField.control.focus();
+                seconds = secondsUntilDatetime(autoStopField.control.value, Date.now());
+                if (!seconds) {
+                    errEl.textContent = '自动停止时刻须晚于现在';
                     return;
                 }
             }
             try {
-                const created = await start(isCountdown ? 'countdown' : 'countup', seconds, label);
+                const created = await start(mode, seconds, label);
                 close();
-                flash((isCountdown ? '倒计时「' : '正计时「') + created.label + '」已启动' +
-                    (isCountdown ? '，' + fmtClock(created.endMs) + ' 到点'
+                flash((mode === 'countdown' ? '倒计时「' : '正计时「') + created.label + '」已启动' +
+                    (mode === 'countdown' ? '，' + fmtClock(created.endMs) + ' 到点'
                         : (created.autoStopMs ? '，' + fmtClock(created.autoStopMs) + ' 自动停止' : '')));
             } catch (e) {
                 errEl.textContent = (e && e.message) || String(e);
             }
         };
         // Enter 提交 / Esc 关闭（绑在弹窗输入控件上，冒泡统一处理）
-        for (const control of [labelField.control, presetSelect ? presetSelect.control : null,
-            clockField ? clockField.control : null, autoStopField ? autoStopField.control : null].filter(Boolean)) {
+        for (const control of [labelField.control, waySelect.control, presetSelect.control,
+            cdTimeField.control, autoStopField.control]) {
             control.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();

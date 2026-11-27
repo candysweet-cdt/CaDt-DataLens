@@ -63,7 +63,9 @@ type AISchedule struct {
 	Cron            string `json:"cron,omitempty"`
 	Prompt          string `json:"prompt"`
 	SessionId       string `json:"sessionId"`
-	Scope           string `json:"scope"` // chat | read | edit（新建会话时生效）
+	Scope           string `json:"scope"`               // inherit | read | edit | auto | full
+	ProfileId       string `json:"profileId,omitempty"` // 新建会话时指定的模型账号；空 = 跟随会话默认
+	ModelId         string `json:"modelId,omitempty"`   // 新建会话时指定的模型条目；空 = 跟随会话默认
 	Enabled         bool   `json:"enabled"`
 	CreatedAt       int64  `json:"createdAt"`
 	LastRunAt       int64  `json:"lastRunAt"`
@@ -84,6 +86,8 @@ type AIScheduleInput struct {
 	Prompt          string `json:"prompt"`
 	SessionId       string `json:"sessionId"`
 	Scope           string `json:"scope"`
+	ProfileId       string `json:"profileId"`
+	ModelId         string `json:"modelId"`
 	MaxRuns         int    `json:"maxRuns"`
 }
 
@@ -94,6 +98,8 @@ type AIScheduleFirePayload struct {
 	Prompt     string `json:"prompt"`
 	RunNo      int    `json:"runNo"`
 	Scope      string `json:"scope"`
+	ProfileId  string `json:"profileId"`
+	ModelId    string `json:"modelId"`
 }
 
 var (
@@ -147,7 +153,9 @@ func aiScheduleEnsureLocked() error {
 		cron TEXT DEFAULT '',
 		prompt TEXT NOT NULL,
 		session_id TEXT DEFAULT '',
-		scope TEXT DEFAULT 'chat',
+		scope TEXT DEFAULT 'inherit',
+		profile_id TEXT DEFAULT '',
+		model_id TEXT DEFAULT '',
 		enabled INTEGER DEFAULT 1,
 		created_at INTEGER DEFAULT 0,
 		last_run_at INTEGER DEFAULT 0,
@@ -159,8 +167,49 @@ func aiScheduleEnsureLocked() error {
 		_ = db.Close()
 		return err
 	}
+	// 旧库迁移：CREATE TABLE IF NOT EXISTS 不改既有表结构，缺列要补，旧 chat 值归一为 inherit。
+	if err := aiScheduleMigrateLocked(db); err != nil {
+		_ = db.Close()
+		return err
+	}
 	aiScheduleDB = db
 	if err := aiScheduleReloadLocked(time.Now()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// aiScheduleMigrateLocked 给旧版 ai_schedules 补 profile_id / model_id 列，并把旧的
+// scope='chat'（旧口径「走设置默认」）归一为 'inherit'。幂等：每次启动都检查缺列。
+func aiScheduleMigrateLocked(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(ai_schedules)`)
+	if err != nil {
+		return err
+	}
+	cols := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		cols[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, col := range []string{"profile_id", "model_id"} {
+		if !cols[col] {
+			if _, err := db.Exec(`ALTER TABLE ai_schedules ADD COLUMN ` + col + ` TEXT DEFAULT ''`); err != nil {
+				return err
+			}
+		}
+	}
+	// 旧 chat = 新建会话走设置默认 = 新的 inherit 语义。
+	if _, err := db.Exec(`UPDATE ai_schedules SET scope = 'inherit' WHERE scope = 'chat'`); err != nil {
 		return err
 	}
 	return nil
@@ -170,7 +219,8 @@ func aiScheduleEnsureLocked() error {
 // cron 取下一个匹配时刻；once 已错过的标记为「已错过」并停用（不补跑）。
 func aiScheduleReloadLocked(now time.Time) error {
 	rows, err := aiScheduleDB.Query(`SELECT id, name, kind, at, interval_minutes, cron, prompt,
-		session_id, scope, enabled, created_at, last_run_at, next_run_at, run_count, max_runs, last_result
+		session_id, scope, profile_id, model_id, enabled, created_at, last_run_at, next_run_at,
+		run_count, max_runs, last_result
 		FROM ai_schedules`)
 	if err != nil {
 		return err
@@ -180,12 +230,15 @@ func aiScheduleReloadLocked(now time.Time) error {
 		s := &AISchedule{}
 		var enabled int
 		if err := rows.Scan(&s.Id, &s.Name, &s.Kind, &s.At, &s.IntervalMinutes, &s.Cron, &s.Prompt,
-			&s.SessionId, &s.Scope, &enabled, &s.CreatedAt, &s.LastRunAt, &s.NextRunAt,
-			&s.RunCount, &s.MaxRuns, &s.LastResult); err != nil {
+			&s.SessionId, &s.Scope, &s.ProfileId, &s.ModelId, &enabled, &s.CreatedAt, &s.LastRunAt,
+			&s.NextRunAt, &s.RunCount, &s.MaxRuns, &s.LastResult); err != nil {
 			rows.Close()
 			return err
 		}
 		s.Enabled = enabled != 0
+		if s.Scope == "" {
+			s.Scope = "inherit"
+		}
 		list = append(list, s)
 	}
 	rows.Close()
@@ -220,16 +273,18 @@ func aiScheduleReloadLocked(now time.Time) error {
 
 func aiSchedulePersistRow(s *AISchedule) error {
 	_, err := aiScheduleDB.Exec(`INSERT INTO ai_schedules
-		(id, name, kind, at, interval_minutes, cron, prompt, session_id, scope, enabled,
+		(id, name, kind, at, interval_minutes, cron, prompt, session_id, scope, profile_id, model_id, enabled,
 		 created_at, last_run_at, next_run_at, run_count, max_runs, last_result)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 		name=excluded.name, kind=excluded.kind, at=excluded.at,
 		interval_minutes=excluded.interval_minutes, cron=excluded.cron, prompt=excluded.prompt,
-		session_id=excluded.session_id, scope=excluded.scope, enabled=excluded.enabled,
+		session_id=excluded.session_id, scope=excluded.scope, profile_id=excluded.profile_id,
+		model_id=excluded.model_id, enabled=excluded.enabled,
 		created_at=excluded.created_at, last_run_at=excluded.last_run_at, next_run_at=excluded.next_run_at,
 		run_count=excluded.run_count, max_runs=excluded.max_runs, last_result=excluded.last_result`,
 		s.Id, s.Name, s.Kind, s.At, s.IntervalMinutes, s.Cron, s.Prompt, s.SessionId, s.Scope,
+		s.ProfileId, s.ModelId,
 		boolToInt(s.Enabled), s.CreatedAt, s.LastRunAt, s.NextRunAt, s.RunCount, s.MaxRuns, s.LastResult)
 	return err
 }
@@ -333,6 +388,7 @@ func aiScheduleTick() {
 		fired = append(fired, AIScheduleFirePayload{
 			ScheduleId: s.Id, SessionId: s.SessionId, Name: s.Name,
 			Prompt: s.Prompt, RunNo: s.RunCount, Scope: s.Scope,
+			ProfileId: s.ProfileId, ModelId: s.ModelId,
 		})
 		if finish {
 			finished[s.Id] = true
@@ -393,6 +449,8 @@ func (sch *Scheduler) AIScheduleCreate(input AIScheduleInput) (*AISchedule, erro
 		Cron:            strings.TrimSpace(input.Cron),
 		SessionId:       strings.TrimSpace(input.SessionId),
 		Scope:           strings.TrimSpace(input.Scope),
+		ProfileId:       strings.TrimSpace(input.ProfileId),
+		ModelId:         strings.TrimSpace(input.ModelId),
 		MaxRuns:         input.MaxRuns,
 	}
 	if err := aiScheduleValidateAndFill(s, input.Prompt, input.Name, input.DelayMinutes, true, time.Now()); err != nil {
@@ -433,6 +491,8 @@ func (sch *Scheduler) AIScheduleUpdate(id string, input AIScheduleInput) (*AISch
 	next.Cron = strings.TrimSpace(input.Cron)
 	next.SessionId = strings.TrimSpace(input.SessionId)
 	next.Scope = strings.TrimSpace(input.Scope)
+	next.ProfileId = strings.TrimSpace(input.ProfileId)
+	next.ModelId = strings.TrimSpace(input.ModelId)
 	next.MaxRuns = input.MaxRuns
 	if err := aiScheduleValidateAndFill(next, input.Prompt, input.Name, input.DelayMinutes, true, time.Now()); err != nil {
 		return nil, err
@@ -601,12 +661,15 @@ func aiScheduleValidateAndFill(s *AISchedule, prompt, name string, delayMinutes 
 		return errors.New("kind 必须是 once / interval / cron")
 	}
 	if s.Scope == "" {
-		s.Scope = "chat"
+		s.Scope = "inherit"
 	}
+	// 兼容旧口径 chat（= 走设置默认，等同 inherit）；新口径与主权限体系对齐。
 	switch s.Scope {
-	case "chat", "read", "edit":
+	case "chat":
+		s.Scope = "inherit"
+	case "inherit", "read", "edit", "auto", "full":
 	default:
-		return fmt.Errorf("scope 无效：%s（chat / read / edit）", s.Scope)
+		return fmt.Errorf("scope 无效：%s（inherit / read / edit / auto / full）", s.Scope)
 	}
 	if s.MaxRuns < 0 {
 		s.MaxRuns = 0

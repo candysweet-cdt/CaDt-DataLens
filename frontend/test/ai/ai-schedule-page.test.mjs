@@ -62,7 +62,7 @@ test('编辑器输入框必须带 dlg-input（不能只用域内 class 覆盖掉
 // 就与内层 .set-select-btn 叠成双层边框。故这三个会被增强的 select 只能带纯布局类（或不传，走默认 opt-select）。
 test('弹窗里被增强的 select 不得带输入框外观类（避免框中框）', () => {
     const editorBody = scheduleSrc.slice(scheduleSrc.indexOf('function openScheduleEditor'), scheduleSrc.indexOf('// ---- 定时任务触发'));
-    for (const name of ['kindCtl', 'scopeCtl', 'targetCtl']) {
+    for (const name of ['kindCtl', 'scopeCtl', 'targetCtl', 'onceModeCtl', 'modelCtl']) {
         const start = editorBody.indexOf('const ' + name + ' = createSelect');
         assert.ok(start >= 0, '应找到 ' + name + ' 的 createSelect 调用');
         const block = editorBody.slice(start, editorBody.indexOf(');', start));
@@ -71,13 +71,13 @@ test('弹窗里被增强的 select 不得带输入框外观类（避免框中框
 });
 
 test('定时任务弹窗里的 select 经 enhanceSelect 增强（去掉原生菜单）', () => {
-    // 弹窗挂 body（不在 .apppage-root 里），扫描器扫不到，必须打开后手动增强三个下拉。
+    // 弹窗挂 body（不在 .apppage-root 里），扫描器扫不到，必须打开后手动增强所有下拉。
     assert.ok(/const enhanceSelect = typeof ctx\.enhanceSelect/.test(scheduleSrc),
         '必须接收 ctx.enhanceSelect');
     const editorBody = scheduleSrc.slice(scheduleSrc.indexOf('function openScheduleEditor'), scheduleSrc.indexOf('// ---- 定时任务触发'));
     assert.ok(/if \(enhanceSelect\)/.test(editorBody), '编辑器打开后必须增强下拉');
-    assert.ok(/for \(const ctl of \[kindCtl, scopeCtl, targetCtl\]\) enhanceSelect\(ctl\.control\)/.test(editorBody),
-        '类型 / 权限档 / 目标会话三个下拉都要增强');
+    assert.ok(/for \(const ctl of \[kindCtl, scopeCtl, targetCtl, onceModeCtl, modelCtl\]\) enhanceSelect\(ctl\.control\)/.test(editorBody),
+        '类型 / 权限档 / 目标会话 / 倒计时模式 / 模型五个下拉都要增强');
 });
 
 test('跨窗口刷新：main.js 的 schedules-changed 订阅必须刷新应用页标签', () => {

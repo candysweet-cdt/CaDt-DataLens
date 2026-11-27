@@ -3,10 +3,13 @@
 // sessions 为重赋值 let 且模块内只读，经 getSessions() 访问。
 import {iconSvg} from '../../core/icons.js';
 import {createInput, createSelect, createTextarea} from '../../core/form-controls.js';
-import {pageHeader, commandBar, filterChips, statusBadge, stateBlock, relativeTime} from '../../app-pages/ui-kit.js';
+import {pageHeader, commandBar, filterChips, statusBadge, stateBlock, relativeTime, copyButton} from '../../app-pages/ui-kit.js';
 import {describeAISchedule, aiFormatLocalMs, aiClampInt, aiTextOf} from '../core/ai-constants.js';
 import {kvGet, kvSet} from '../../core/kv-store.js';
 import {schedFireKey} from '../../core/storage-keys.js';
+import {normalizeScheduleScope, scheduleScopeOptions, resolveScheduleScope, resolveOnceAt, splitOnceAt} from './ai-schedule-scope.js';
+import {sessionFilterHit} from '../session/ai-session-list.js';
+import {createDateTimePicker, FIELDS_DATETIME} from './ai-datetime-picker.js';
 
 export function createAISchedule(ctx) {
     const opt = ctx.opt;
@@ -33,6 +36,13 @@ export function createAISchedule(ctx) {
     const sendAppMessage = ctx.sendAppMessage;
     // 会话信箱（阶段 I）：定时任务改成「一个通知发送方」——与子代理结算走同一条注入管道
     const deliverAgentNotice = typeof ctx.deliverAgentNotice === 'function' ? ctx.deliverAgentNotice : null;
+    // 权限档 / 模型：读设置默认档、会话权限，full 确认框，模型固定（触发时落值）。
+    const getConfig = typeof ctx.getConfig === 'function' ? ctx.getConfig : () => ({});
+    const currentScopeOf = typeof ctx.currentScopeOf === 'function' ? ctx.currentScopeOf : (s) => (s && s.scope) || 'read';
+    const confirmFullPermission = typeof ctx.confirmFullPermission === 'function' ? ctx.confirmFullPermission : null;
+    const pinSessionModel = typeof ctx.pinSessionModel === 'function' ? ctx.pinSessionModel : null;
+    // 模型下拉选项：[{value:'profileId|modelId', label}]，空值 = 跟随会话默认。
+    const modelChoices = typeof ctx.modelChoices === 'function' ? ctx.modelChoices : () => [];
     // 打开定时任务管理的统一出口（虚拟标签页改造后开应用页面标签页，悬浮窗降级回对话框）
     const openSchedulesPage = typeof ctx.openSchedulesPage === 'function' ? ctx.openSchedulesPage : null;
 
@@ -95,9 +105,12 @@ export function createAISchedule(ctx) {
         const row = document.createElement('div');
         row.className = 'ap-sched-row' + (s.enabled ? '' : ' disabled');
         const kindLabel = s.kind === 'once' ? '单次' : (s.kind === 'interval' ? '循环' : 'cron');
-        const scopeBadge = statusBadge(s.scope, s.scope === 'edit' ? 'warn' : 'neutral');
+        // 绑定已有会话时 scope 不生效（只对「每次新建会话」生效）：显示「沿用会话」，
+        // 免得把 full 会话的任务误读成用 chat 权限唤醒（便签待修改⑩）。
+        const boundSession = !!s.sessionId;
+        const scopeBadge = statusBadge(boundSession ? '沿用会话' : s.scope, !boundSession && s.scope === 'edit' ? 'warn' : 'neutral');
         const target = s.sessionId
-            ? (sessionTitleById(s.sessionId) || s.sessionId.slice(0, 8))
+            ? (sessionTitleById(s.sessionId) || '（未命名会话）')
             : '每次新建';
         const status = statusBadge(s.enabled ? '启用' : '停用', s.enabled ? 'success' : 'neutral');
         const nextText = s.nextRunAt ? relativeTime(s.nextRunAt) : '—';
@@ -114,8 +127,23 @@ export function createAISchedule(ctx) {
             el.dataset.tip = c.text;
             row.appendChild(el);
         }
+        // 会话 ID 单独一列：整格可点复制完整 id（复用 ui-kit 的 copyButton）。
+        const sidCell = document.createElement('span');
+        sidCell.className = 'ap-sched-sid';
+        if (s.sessionId) {
+            sidCell.appendChild(copyButton(() => s.sessionId, {
+                flash, tip: '复制会话 ID', label: s.sessionId.slice(0, 8),
+            }));
+            sidCell.dataset.tip = s.sessionId;
+        } else {
+            sidCell.textContent = '—';
+        }
+        row.appendChild(sidCell);
         const scopeCell = document.createElement('span');
         scopeCell.className = 'ap-sched-scope';
+        scopeCell.dataset.tip = boundSession
+            ? '唤醒已有会话：沿用该会话自身的权限档，任务权限档仅对「每次新建会话」生效'
+            : '新建会话时采用的权限档';
         scopeCell.appendChild(scopeBadge);
         row.appendChild(scopeCell);
         row.appendChild(status);
@@ -199,7 +227,7 @@ export function createAISchedule(ctx) {
         addBtn.addEventListener('click', () => openScheduleEditor(null, {top: true}));
         host.appendChild(pageHeader({
             title: '定时任务',
-            desc: '单次 / 固定间隔 / cron 自动唤醒 AI。仅在应用运行期间有效；关闭后挂起，错过的任务不补跑。',
+            desc: '应用运行时生效 · 关闭挂起 · 错过不补跑',
             actions: [addBtn],
         }));
 
@@ -221,7 +249,7 @@ export function createAISchedule(ctx) {
 
         const head = document.createElement('div');
         head.className = 'ap-sched-thead';
-        for (const label of ['任务', '排程', '下次触发', '目标会话', '权限', '状态', '操作']) {
+        for (const label of ['任务', '排程', '下次触发', '目标会话', '会话 ID', '权限', '状态', '操作']) {
             const cell = document.createElement('span');
             cell.textContent = label;
             head.appendChild(cell);
@@ -410,8 +438,9 @@ export function createAISchedule(ctx) {
         const desc = document.createElement('span');
         desc.className = 'ai-sched-desc';
         desc.textContent = describeAISchedule(s) +
-            ' · 权限 ' + s.scope +
-            (s.sessionId ? ' · 唤醒会话「' + (sessionTitleById(s.sessionId) || s.sessionId.slice(0, 8)) + '」' : ' · 每次新建会话') +
+            // 绑定已有会话时 scope 不生效：沿用会话自身权限，避免误读成按任务权限降级（便签待修改⑩）
+            (s.sessionId ? ' · 唤醒会话「' + (sessionTitleById(s.sessionId) || '（未命名会话）') + '」id=' + s.sessionId + '（沿用该会话权限）'
+                : ' · 每次新建会话 · 权限 ' + s.scope) +
             (s.lastResult ? ' · 最近：' + s.lastResult : '');
         main.append(name, badge, desc);
         const actions = document.createElement('div');
@@ -463,89 +492,160 @@ export function createAISchedule(ctx) {
             r.append(label, control);
             return r;
         };
-        // 表单控件一律走 core/form-controls.js（修复存量裸控件违规）
+        // 表单控件一律走 core/form-controls.js（修复存量裸控件违规）。
+        // 两栏布局：左「做什么」（名称/指令），右「何时·以什么身份·对谁」（时间/权限/会话/模型）。
         const nameCtl = createInput({className: 'dlg-input ai-settings-input', placeholder: '省略则取指令前 30 字'});
-        // 会被 enhanceSelect 增强的下拉不要传 dlg-input/ai-settings-input 外观类：
-        // 增强器的 wrap 会继承 select 的 class（settings-select.js），外观类跟着套到外层
-        // 就与内层 .set-select-btn 形成「框中框」。保留工厂默认 opt-select（纯布局）即可。
+        // 会被 enhanceSelect 增强的下拉不要传外观类（否则 wrap 套两层边框，见 ai-schedule-page 守卫）。
         const kindCtl = createSelect({
             options: [
-                {value: 'once', label: '单次（once）'},
-                {value: 'interval', label: '固定间隔（interval）'},
-                {value: 'cron', label: 'cron 表达式'},
+                {value: 'once', label: '单次'},
+                {value: 'interval', label: '间隔'},
+                {value: 'cron', label: 'cron'},
             ],
         });
         const valueCtl = createInput({className: 'dlg-input ai-settings-input'});
-        const valueLabel = node('label');
-        const valueRow = node('div', 'ai-sched-field');
-        valueRow.append(valueLabel, valueCtl.element);
         const promptCtl = createTextarea({
-            className: 'dlg-input ai-settings-input', rows: 4,
+            className: 'dlg-input ai-settings-input', rows: 5,
             placeholder: '到点注入给 AI 的指令，例如：检查构建进度并汇报',
         });
-        const scopeCtl = createSelect({
+        // once 的两种输入：倒计时（分钟数） / 日期时间（datetime-local）
+        const onceModeCtl = createSelect({
             options: [
-                {value: 'chat', label: 'chat（纯对话）'},
-                {value: 'read', label: 'read（只读访问）'},
-                {value: 'edit', label: 'edit（每次询问）'},
+                {value: 'countdown', label: '倒计时'},
+                {value: 'datetime', label: '日期时间'},
             ],
         });
-        // 目标会话：默认唤醒当前会话；也可选每次新建
+        const countdownCtl = createInput({type: 'number', className: 'dlg-input ai-settings-input', min: 1, placeholder: '30'});
+        // 自绘日期时间控件（fields 参数决定粒度；支持手输 + 日历选择）
+        const dtPicker = createDateTimePicker({fields: FIELDS_DATETIME, placeholder: 'YYYY-MM-DD HH:mm'});
+        const datetimeCtl = dtPicker.createTrigger({});
+        const valueLabel = node('label');
+        const countdownRow = node('div', 'ai-sched-field');
+        countdownRow.append(node('span'), countdownCtl.element); // 标签由 syncKind 动态填
+        const datetimeRow = node('div', 'ai-sched-field');
+        datetimeRow.append(node('span'), datetimeCtl.element);
+        const valueRow = node('div', 'ai-sched-field');
+        valueRow.append(valueLabel, valueCtl.element); // interval / cron 用
+
+        // 权限档：选项按上限裁剪（上限 = max(目标会话, 创建时所在会话)）
+        const scopeCtl = createSelect({options: []});
+        const fillScopeOptions = () => {
+            const bound = !!targetSel.value;
+            const targetSession = getSessions().find((s) => s.id === targetSel.value);
+            const targetScope = bound ? currentScopeOf(targetSession) : '';
+            const creatorScope = currentScopeOf(currentSession());
+            const allowed = scheduleScopeOptions(targetScope, creatorScope, bound);
+            const labels = {inherit: '继承（默认）', read: 'read（只读）', edit: 'edit（每次询问）', auto: 'auto（自动审批）', full: 'full（完全权限）'};
+            scopeCtl.control.textContent = '';
+            for (const s of allowed) {
+                const o = node('option');
+                o.value = s;
+                o.textContent = labels[s] || s;
+                scopeCtl.control.appendChild(o);
+            }
+        };
+
+        // 目标会话：默认当前会话；可搜索标题 / id；每次新建会话固定为首项
         const targetCtl = createSelect({});
         const targetSel = targetCtl.control;
+        const searchCtl = createInput({className: 'dlg-input ai-settings-input', placeholder: '搜索标题或会话 id…'});
         const fillTargetOptions = () => {
+            const q = String(searchCtl.control.value || '').trim();
             targetSel.textContent = '';
             const fresh = node('option');
             fresh.value = '';
             fresh.textContent = '每次新建会话';
             targetSel.appendChild(fresh);
             const recent = getSessions().slice()
+                .filter((s) => !q || sessionFilterHit(s, q))
                 .sort((a, b) => sessionActivity(b) - sessionActivity(a))
-                .slice(0, 30);
+                .slice(0, q ? 50 : 30);
             for (const s of recent) {
                 const opt = node('option');
                 opt.value = s.id;
-                opt.textContent = '唤醒会话：' + (s.title || '新会话') + (s.archivedAt ? '（已归档）' : '');
+                opt.textContent = '唤醒会话：' + (s.title || '新会话') + ' · ' + s.id.slice(0, 8) + (s.archivedAt ? '（已归档）' : '');
                 targetSel.appendChild(opt);
             }
         };
+        searchCtl.control.addEventListener('input', () => {
+            const before = targetSel.value;
+            fillTargetOptions();
+            if ([...targetSel.options].some((o) => o.value === before)) targetSel.value = before;
+            fillScopeOptions();
+        });
+        targetSel.addEventListener('change', fillScopeOptions);
         fillTargetOptions();
+
         const maxRunsCtl = createInput({type: 'number', className: 'dlg-input ai-settings-input', min: 0, placeholder: '0 = 不限'});
+        const modelCtl = createSelect({options: modelChoices()});
+
         const syncKind = () => {
             const v = kindCtl.control.value;
-            if (v === 'once') {
-                valueLabel.textContent = '触发时间（本地，如 2026-11-13 09:00）';
-                valueCtl.control.placeholder = '留空则用「N 分钟后」';
+            const once = v === 'once';
+            onceModeCtl.element.classList.toggle('hidden', !once);
+            countdownRow.classList.toggle('hidden', !once || onceModeCtl.control.value !== 'countdown');
+            datetimeRow.classList.toggle('hidden', !once || onceModeCtl.control.value !== 'datetime');
+            valueRow.classList.toggle('hidden', once);
+            if (once) {
+                // 提示文字放 label，布局本身解释「填什么」
+                countdownRow.firstChild.textContent = '分钟后触发';
+                datetimeRow.firstChild.textContent = '触发时刻';
             } else if (v === 'interval') {
-                valueLabel.textContent = '循环间隔（分钟，1–525600）';
+                valueLabel.textContent = '间隔（分钟，1–525600）';
                 valueCtl.control.placeholder = '如 10 = 每 10 分钟';
             } else {
-                valueLabel.textContent = 'cron 表达式（分 时 日 月 周）';
+                valueLabel.textContent = 'cron（分 时 日 月 周）';
                 valueCtl.control.placeholder = '如 0 9 * * 1-5';
             }
         };
         kindCtl.control.addEventListener('change', syncKind);
+        onceModeCtl.control.addEventListener('change', syncKind);
         syncKind();
+
+        // 回填
+        let initialOnce = {mode: 'countdown', minutes: 30, datetime: ''};
         if (isEdit) {
             nameCtl.control.value = existing.name || '';
             kindCtl.control.value = existing.kind || 'once';
-            syncKind();
             if (existing.kind === 'interval') valueCtl.control.value = String(existing.intervalMinutes || '');
             else if (existing.kind === 'cron') valueCtl.control.value = existing.cron || '';
-            else valueCtl.control.value = existing.at ? aiFormatLocalMs(existing.nextRunAt || existing.lastRunAt) : '';
+            else {
+                initialOnce = splitOnceAt(existing.at || (existing.nextRunAt ? new Date(existing.nextRunAt).toISOString() : ''));
+                onceModeCtl.control.value = initialOnce.mode;
+                countdownCtl.control.value = String(initialOnce.minutes);
+                datetimeCtl.control.value = initialOnce.datetime;
+            }
             promptCtl.control.value = existing.prompt || '';
-            scopeCtl.control.value = ['chat', 'read', 'edit'].includes(existing.scope) ? existing.scope : 'chat';
             maxRunsCtl.control.value = String(existing.maxRuns || 0);
+            const ref = (existing.profileId && existing.modelId) ? existing.profileId + '|' + existing.modelId : '';
+            if (ref && [...modelCtl.control.options].some((o) => o.value === ref)) modelCtl.control.value = ref;
+        } else {
+            // 新建默认权限档取设置值（绑定会话则继承）
+            const def = normalizeScheduleScope((getConfig() || {}).defaultScope);
+            countdownCtl.control.value = '30';
         }
-        // 目标会话预选：编辑 = 已绑定会话；新建 = 当前会话；不在最近 30 个列表时补选项兜底
+        syncKind();
+
+        // 目标会话预选：编辑 = 已绑定会话；新建 = 当前会话；不在列表时补 option 兜底
         const preselectId = isEdit ? (existing.sessionId || '') : (currentSession() ? currentSession().id : '');
-        if (preselectId && targetSel.value !== preselectId) {
+        if (preselectId && ![...targetSel.options].some((o) => o.value === preselectId)) {
             const opt = node('option');
             opt.value = preselectId;
-            opt.textContent = '唤醒会话：' + (sessionTitleById(preselectId) || preselectId.slice(0, 8));
+            opt.textContent = '唤醒会话：' + (sessionTitleById(preselectId) || preselectId.slice(0, 8)) + ' · ' + preselectId.slice(0, 8);
             targetSel.appendChild(opt);
         }
         if (preselectId) targetSel.value = preselectId;
+        fillScopeOptions();
+        if (isEdit) {
+            const sc = normalizeScheduleScope(existing.scope);
+            if ([...scopeCtl.control.options].some((o) => o.value === sc)) scopeCtl.control.value = sc;
+        } else {
+            // 新建默认：绑定会话=inherit；每次新建=设置默认档（若不在上限内则 inherit）
+            const def = normalizeScheduleScope((getConfig() || {}).defaultScope);
+            const wanted = targetSel.value ? 'inherit' : def;
+            if ([...scopeCtl.control.options].some((o) => o.value === wanted)) scopeCtl.control.value = wanted;
+        }
+
         const cancelBtn = node('button', 'dlg-btn');
         cancelBtn.type = 'button';
         cancelBtn.textContent = '取消';
@@ -554,7 +654,6 @@ export function createAISchedule(ctx) {
         save.type = 'button';
         save.textContent = isEdit ? '保存' : '创建';
         save.addEventListener('click', () => {
-            const v = valueCtl.control.value.trim();
             const input = {
                 name: nameCtl.control.value.trim(),
                 kind: kindCtl.control.value,
@@ -563,50 +662,78 @@ export function createAISchedule(ctx) {
                 scope: scopeCtl.control.value,
                 maxRuns: aiClampInt(maxRunsCtl.control.value, 0, 1000000, 0),
             };
+            const commit = () => {
+                const call = isEdit
+                    ? backend.AIScheduleUpdate(existing.id, input)
+                    : backend.AIScheduleCreate(input);
+                Promise.resolve(call).then(() => {
+                    closeAIDialog();
+                    renderScheduleSettings();
+                    flash((isEdit ? '已保存定时任务：' : '已创建定时任务：') + (input.name || '（未命名）'));
+                }).catch((e) => flash('保存失败：' + ((e && e.message) || e), true));
+            };
+            const v = valueCtl.control.value.trim();
             if (input.kind === 'once') {
-                input.at = v;
-                if (!v) {
-                    flash('请填写触发时间', true);
-                    return;
-                }
+                const parsed = resolveOnceAt({
+                    mode: onceModeCtl.control.value,
+                    minutes: Number(countdownCtl.control.value),
+                    datetime: datetimeCtl.control.value,
+                });
+                if (!parsed.ok) { flash(parsed.error, true); return; }
+                input.at = parsed.at;
             } else if (input.kind === 'interval') {
                 input.intervalMinutes = aiClampInt(v, 0, 525600, 0);
-                if (input.intervalMinutes <= 0) {
-                    flash('请填写循环间隔（分钟）', true);
-                    return;
-                }
+                if (input.intervalMinutes <= 0) { flash('请填写循环间隔（分钟）', true); return; }
             } else {
                 input.cron = v;
-                if (!v) {
-                    flash('请填写 cron 表达式', true);
-                    return;
+                if (!v) { flash('请填写 cron 表达式', true); return; }
+            }
+            // 新建会话的模型：拆 'profileId|modelId'
+            if (!input.sessionId) {
+                const ref = modelCtl.control.value;
+                if (ref && ref.includes('|')) {
+                    const [pid, mid] = ref.split('|');
+                    input.profileId = pid;
+                    input.modelId = mid;
                 }
             }
-            const call = isEdit
-                ? backend.AIScheduleUpdate(existing.id, input)
-                : backend.AIScheduleCreate(input);
-            Promise.resolve(call).then(() => {
-                closeAIDialog();
-                renderScheduleSettings();
-                flash((isEdit ? '已保存定时任务：' : '已创建定时任务：') + (input.name || '（未命名）'));
-            }).catch((e) => flash('保存失败：' + ((e && e.message) || e), true));
+            // full 确认：设置默认档非 full 时才弹（默认已是 full 视为用户已授权）
+            const settingsDefault = normalizeScheduleScope((getConfig() || {}).defaultScope);
+            if (input.scope === 'full' && settingsDefault !== 'full' && confirmFullPermission) {
+                confirmFullPermission(commit, {
+                    top: true,
+                    title: '允许定时任务使用完全权限？',
+                    intro: '该任务触发时，AI 将以完全权限运行：命令不进沙箱、可写工作区外任意路径、且不进写审批。',
+                    note: '任务在后台触发，无人在场确认写操作。请只在信任当前设备与触发时段上下文时开启。',
+                });
+            } else {
+                commit();
+            }
         });
+
+        // 单列纵向：一行一个字段（上下结构，不再左右分栏——分栏在 560px 弹层里会撑出横向滚动条）。
+        // 触发指令独占一行：标签在上、textarea 占满整行剩余宽度。
         const body = node('div', 'ai-sched-editor');
+        const promptRow = node('div', 'ai-sched-field ai-sched-field-block');
+        const promptLabel = node('label');
+        promptLabel.textContent = '触发指令';
+        promptRow.append(promptLabel, promptCtl.element);
         body.append(
             row('名称', nameCtl.element),
+            promptRow,
             row('类型', kindCtl.element),
-            valueRow,
-            row('触发指令', promptCtl.element),
+            row('', onceModeCtl.element),
+            countdownRow, datetimeRow, valueRow,
+            row('权限档', scopeCtl.element),
             row('目标会话', targetCtl.element),
-            row('权限档（新建会话时生效）', scopeCtl.element),
+            row('', searchCtl.element),
+            row('模型', modelCtl.element),
             row('最多触发次数', maxRunsCtl.element),
         );
         openAIDialog(isEdit ? '编辑定时任务' : '新建定时任务', [body], [cancelBtn, save], opts && opts.top ? {top: true} : undefined);
-        // 弹窗挂在 body（不在 .apppage-root 里），扫描器扫不到——入 DOM 后逐个增强，
-        // 否则类型 / 权限档 / 目标会话三个下拉露浏览器原生菜单（与其它自绘控件两套外观）。
-        // 增强器幂等，原生 select 仍是值真源，change 照常派发。
+        // 弹窗挂 body，手动增强被扫描器漏掉的下拉（幂等，原生 select 仍是值真源）。
         if (enhanceSelect) {
-            for (const ctl of [kindCtl, scopeCtl, targetCtl]) enhanceSelect(ctl.control);
+            for (const ctl of [kindCtl, scopeCtl, targetCtl, onceModeCtl, modelCtl]) enhanceSelect(ctl.control);
         }
     }
     // ---- 定时任务触发（sched-fire）----
@@ -661,12 +788,34 @@ export function createAISchedule(ctx) {
                 throw new Error('目标会话属于其他工作区，请到对应工作区的窗口处理');
             }
             let session = target;
+            const bound = !!session;
             if (!session) {
                 // 「每次新建会话」形态：没有目标就没有可注入的对象，仍然建一个（用户预期是新对话）
                 newSession();
                 session = currentSession();
                 if (!session) throw new Error('无法创建会话');
-                if (fire.scope === 'read' || fire.scope === 'edit') session.scope = fire.scope;
+                // 触发时落模型（profileId/modelId 仅在新建会话任务里有意义）
+                if (pinSessionModel && (fire.profileId || fire.modelId)) {
+                    try { pinSessionModel(session, fire.profileId || '', fire.modelId || ''); } catch (e) {}
+                }
+            }
+            // 解析任务权限档：inherit+绑定会话→沿用会话档；inherit+新建→设置默认档；显式档直接用。
+            const cfg = getConfig() || {};
+            const settingsDefault = cfg.defaultScope || 'read';
+            const effectiveScope = resolveScheduleScope(
+                fire.scope, currentScopeOf(session), settingsDefault, bound);
+            const beforeScope = currentScopeOf(session);
+            session.scope = effectiveScope;
+            persistSessions();
+            // full 告警：任务把会话从非 full 抬到 full 时，投一条非阻塞提醒（新文案，不复用子代理那版）。
+            if (effectiveScope === 'full' && beforeScope !== 'full' && deliverAgentNotice) {
+                deliverAgentNotice(session, {
+                    kind: 'scope-warning',
+                    label: '定时任务 · 完全权限提醒',
+                    content: '［定时任务权限提醒］定时任务「' + name + '」已把会话「' +
+                        (session.title || session.id) + '」的权限档设为 full（完全权限）。\n' +
+                        '该档位下 AI 命令不进沙箱、可写工作区外任意路径，且不进写审批。若非本意，请到会话权限菜单调低档位。',
+                });
             }
             if (session.archivedAt) {
                 // 用户自己设的定时任务，唤醒即恢复归档（§4.13.4：与「外部投递拒收归档会话」是两套语义）

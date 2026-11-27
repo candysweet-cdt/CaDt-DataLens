@@ -133,6 +133,45 @@ func TestAIScheduleCreateValidate(t *testing.T) {
 	if _, err := app.AIScheduleCreate(AIScheduleInput{Kind: "interval", IntervalMinutes: 5, Prompt: long}); err == nil {
 		t.Fatal("prompt 超限应被拒绝")
 	}
+	// scope 白名单：主权限体系 + inherit；旧 chat 兼容归一为 inherit；非法值拒绝。
+	for _, scope := range []string{"inherit", "read", "edit", "auto", "full", "chat", ""} {
+		if _, err := app.AIScheduleCreate(AIScheduleInput{Kind: "interval", IntervalMinutes: 5, Prompt: "x", Scope: scope}); err != nil {
+			t.Fatalf("scope %q 应被接受: %v", scope, err)
+		}
+	}
+	if _, err := app.AIScheduleCreate(AIScheduleInput{Kind: "interval", IntervalMinutes: 5, Prompt: "x", Scope: "danger"}); err == nil {
+		t.Fatal("非法 scope 应被拒绝")
+	}
+}
+
+func TestAIScheduleScopeAndModelRoundtrip(t *testing.T) {
+	resetAIScheduleTest(t)
+	app := &Scheduler{}
+	s, err := app.AIScheduleCreate(AIScheduleInput{
+		Kind: "interval", IntervalMinutes: 5, Prompt: "x",
+		Scope: "full", ProfileId: "acct-1", ModelId: "gpt-x",
+	})
+	if err != nil {
+		t.Fatalf("创建失败: %v", err)
+	}
+	if s.Scope != "full" || s.ProfileId != "acct-1" || s.ModelId != "gpt-x" {
+		t.Fatalf("字段未落值: %+v", s)
+	}
+	// 重新加载（模拟重启）后字段仍在。
+	aiScheduleMu.Lock()
+	if aiScheduleDB != nil {
+		_ = aiScheduleDB.Close()
+	}
+	aiScheduleDB = nil
+	aiSchedules = nil
+	aiScheduleMu.Unlock()
+	list, err := app.AIScheduleList()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("重载后列表异常: %v err=%v", list, err)
+	}
+	if list[0].Scope != "full" || list[0].ProfileId != "acct-1" || list[0].ModelId != "gpt-x" {
+		t.Fatalf("重载后字段丢失: %+v", list[0])
+	}
 }
 
 func TestAIScheduleCreateListDeleteRoundtrip(t *testing.T) {
@@ -140,7 +179,7 @@ func TestAIScheduleCreateListDeleteRoundtrip(t *testing.T) {
 	app := &Scheduler{}
 	s, err := app.AIScheduleCreate(AIScheduleInput{
 		Name: "每 10 分钟问好", Kind: "interval", IntervalMinutes: 10,
-		Prompt: "向用户问好", Scope: "chat",
+		Prompt: "向用户问好", Scope: "inherit",
 	})
 	if err != nil {
 		t.Fatalf("创建失败: %v", err)
@@ -148,7 +187,7 @@ func TestAIScheduleCreateListDeleteRoundtrip(t *testing.T) {
 	if s.Id == "" || s.NextRunAt <= time.Now().UnixMilli() {
 		t.Fatalf("nextRunAt 应指向将来: %+v", s)
 	}
-	if s.Scope != "chat" || !s.Enabled || s.MaxRuns != 0 {
+	if s.Scope != "inherit" || !s.Enabled || s.MaxRuns != 0 {
 		t.Fatalf("默认值异常: %+v", s)
 	}
 	list, err := app.AIScheduleList()

@@ -1,7 +1,7 @@
 // ai-timer 纯函数测试：计时器的会话隔离（显示过滤 + 会话内上限计数）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {filterTimersForSession, countSessionTimers, snapshotTimersForTree, secondsUntilClock, createAITimer} from '../../../src/ai/settings/ai-timer.js';
+import {filterTimersForSession, countSessionTimers, snapshotTimersForTree, secondsUntilClock, secondsUntilDatetime, createAITimer} from '../../../src/ai/settings/ai-timer.js';
 
 function makeTimers(entries) {
     const timers = new Map();
@@ -167,4 +167,26 @@ test('secondsUntilClock：当天未到 / 已过按明天 / 非法格式', () => 
     assert.equal(secondsUntilClock('25:00', now), 0);
     assert.equal(secondsUntilClock('12:60', now), 0);
     assert.equal(secondsUntilClock('', now), 0);
+});
+
+// secondsUntilDatetime：自绘选择器的 'YYYY-MM-DD HH:mm' → 距现在的秒数（可选任意未来日期，不受 24h 限制）。
+test('secondsUntilDatetime：未来日期时间 / 跨月跨年 / 过去时刻 / 非法格式', () => {
+    // 固定 now：2026-11-15 10:00:00 本地时间
+    const now = new Date(2026, 10, 15, 10, 0, 0, 0).getTime();
+    // 当天未到：14:30 → 4.5 小时
+    assert.equal(secondsUntilDatetime('2026-11-15 14:30', now), 4.5 * 3600);
+    // 未来日期（超过 24h）：11-20 10:00 → 5 天
+    assert.equal(secondsUntilDatetime('2026-11-20 10:00', now), 5 * 24 * 3600);
+    // 跨年
+    const dec = new Date(2026, 11, 31, 23, 0, 0, 0).getTime();
+    assert.equal(secondsUntilDatetime('2027-01-01 00:00', dec), 3600);
+    // 过去时刻 → 0（调用方提示「须晚于现在」）
+    assert.equal(secondsUntilDatetime('2026-11-15 09:00', now), 0);
+    assert.equal(secondsUntilDatetime('2026-11-14 10:00', now), 0);
+    // 非法：格式错 / 越界 / 不存在的日期
+    assert.equal(secondsUntilDatetime('not-a-date', now), 0);
+    assert.equal(secondsUntilDatetime('2026-13-01 10:00', now), 0);
+    assert.equal(secondsUntilDatetime('2026-02-30 10:00', now), 0);
+    assert.equal(secondsUntilDatetime('2026-11-15 25:00', now), 0);
+    assert.equal(secondsUntilDatetime('', now), 0);
 });
