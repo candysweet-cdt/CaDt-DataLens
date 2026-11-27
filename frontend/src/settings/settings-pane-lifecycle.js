@@ -6,7 +6,7 @@
 // 条目行不用 .set-row 标记类——刻意不进设置树（设置树只暴露总开关一行，见 §7 决策 10）。
 // 2026-11-21 由 settings-pane-precommands.js 改名，DOM id / CSS 类同步 precmd-* → lifecycle-*。
 
-import {createInput, createSelect, createSwitch} from '../core/form-controls.js';
+import {createInput, createNumber, createSelect, createSwitch} from '../core/form-controls.js';
 import {overlayStack} from '../core/overlay-stack.js';
 import {
     LIFECYCLE_HOOK_TIMEOUT_DEFAULT,
@@ -271,10 +271,10 @@ function openHookEditor(entry) {
     cmdIn.element.style.minWidth = '0';
     const seconds = entry ? Math.round((entry.timeoutMs || LIFECYCLE_HOOK_TIMEOUT_DEFAULT) / 1000)
         : Math.round(LIFECYCLE_HOOK_TIMEOUT_DEFAULT / 1000);
-    const timeoutIn = createInput({
-        type: 'number', value: String(seconds),
-        min: Math.round(LIFECYCLE_HOOK_TIMEOUT_MIN / 1000), max: Math.round(LIFECYCLE_HOOK_TIMEOUT_MAX / 1000), step: 1,
-        onChange: () => {},
+    const timeoutIn = createNumber({
+        value: seconds,
+        min: Math.round(LIFECYCLE_HOOK_TIMEOUT_MIN / 1000),
+        max: Math.round(LIFECYCLE_HOOK_TIMEOUT_MAX / 1000),
     });
     // 旧名 ai-session-start（一期存量）在下拉里映射到规范名 session-start，
     // 否则没有选项命中会默认选第一项 workspace-open，保存时把用户的命令改错事件（审查 P1）

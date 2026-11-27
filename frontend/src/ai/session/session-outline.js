@@ -1,10 +1,8 @@
-// 会话结构（用户消息定位条）：
-// 把当前 AI 会话里的每一轮用户消息渲染成一行可点击的定位项，点一下跳到那条消息。
-// 数据由 ai-panel 的 bridgeSessionOutline() 提供，跳转也由 ai-panel 执行（消息窗口、
-// 滚动与高亮都在那边），本模块只做渲染与键盘/点击交互。
+// 会话大纲数据层：把当前 AI 会话的用户消息压成定位项（buildSessionOutlineItems），
+// 供 AI 面板的会话滑轨（session-rail.js）渲染刻度与气泡。渲染/跳转已随「会话结构」来源
+// 下线，本模块只保留纯数据函数与定位条控制器（snapshot / 视口判定 / jumpTo）。
 import {splitTurnReminderPrefix} from '../chat/ai-turn-reminder.js';
 import {splitQuotePrefix} from '../chat/ai-quote.js';
-import {el} from '../../core/dom.js';
 
 const MAX_TEXT = 160;
 const MAX_ITEMS = 400;
@@ -33,18 +31,6 @@ export function assistantPreviewAfter(messages, userIndex) {
         if (m.role === 'assistant') return oneLine(m.content == null ? '' : String(m.content));
     }
     return '';
-}
-
-function shortTime(ts) {
-    const ms = Number(ts) || 0;
-    if (!ms) return '';
-    const d = new Date(ms);
-    const now = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() &&
-        d.getDate() === now.getDate();
-    return sameDay ? pad(d.getHours()) + ':' + pad(d.getMinutes())
-        : (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 
 // 把 session.messages 压成定位项：只留用户真正说过的话。
@@ -86,61 +72,6 @@ export function buildSessionOutlineItems(messages, options) {
     }
     const items = all.length > max ? all.slice(all.length - max) : all;
     return {total: all.length, truncated: all.length > items.length, items};
-}
-
-// snapshot: {items: [{index, round, text, ts}], activeIndex}
-// opts: {onJump(index)}
-export function renderSessionOutline(body, snapshot, opts) {
-    if (!body) return;
-    const options = opts || {};
-    const items = (snapshot && snapshot.items) || [];
-    const active = Number(snapshot && snapshot.activeIndex);
-    const list = el('div', 'so-list');
-    for (let i = 0; i < items.length; i += 1) {
-        const item = items[i] || {};
-        const index = Number(item.index);
-        if (!Number.isFinite(index)) continue;
-        const row = el('div', 'sb-row so-row' + (index === active ? ' so-current' : '') + (item.steer ? ' so-steer' : ''));
-        row.tabIndex = -1;
-        row.dataset.index = String(index);
-        row.appendChild(el('span', 'so-num', String(item.round || i + 1)));
-        if (item.steer) row.appendChild(el('span', 'so-steer-tag', '插话'));
-        row.appendChild(el('span', 'so-text', oneLine(item.text) || '（图片消息）'));
-        const time = shortTime(item.ts);
-        if (time) row.appendChild(el('span', 'so-time', time));
-        const jump = () => {
-            if (typeof options.onJump === 'function') options.onJump(index);
-        };
-        row.addEventListener('click', () => {
-            row.focus({preventScroll: true});
-            jump();
-        });
-        row.addEventListener('keydown', (e) => {
-            const rows = [...body.querySelectorAll('.so-row')];
-            const at = rows.indexOf(row);
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                if (at + 1 < rows.length) rows[at + 1].focus();
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                if (at > 0) rows[at - 1].focus();
-            } else if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                jump();
-            }
-        });
-        list.appendChild(row);
-    }
-    body.appendChild(list);
-}
-
-// 只更新「当前定位」高亮：滚动时避免整表重建
-export function syncSessionOutlineActive(body, activeIndex) {
-    if (!body) return;
-    const active = String(Number(activeIndex));
-    for (const row of body.querySelectorAll('.so-row')) {
-        row.classList.toggle('so-current', row.dataset.index === active);
-    }
 }
 
 // ---------- 定位条控制器（方案 M5 从 ai-panel.js 搬入） ----------

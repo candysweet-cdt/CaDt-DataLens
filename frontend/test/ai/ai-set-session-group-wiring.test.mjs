@@ -68,3 +68,46 @@ test('get_ai 返回 session.group / callerSession / sessionGroups', () => {
 test('session_list 输出带分组（有分组才显示）', () => {
     assert.match(notices, /session\.group \? ' · 分组：' \+ session\.group : ''/);
 });
+
+test('get_state 用精简会话列表 + 工作区列表，不再下发全量会话表', () => {
+    const state = sliceFunction(main, "case 'get_state': {", "\n        case 'get_settings'");
+    // sessions 走精简 bridge，不再调用全量 bridgeListSessions
+    assert.match(state, /bridgeListSessionsBrief\(callerSessionId\)/);
+    assert.doesNotMatch(state, /bridgeListSessions\(callerSessionId\)/);
+    // 工作区聚合列表
+    assert.match(state, /workspaces: aiPanel && aiPanel\.bridgeListWorkspaces \? aiPanel\.bridgeListWorkspaces\(\) : \[\]/);
+    // 技能表同步：声明身份 2 + 运行中 20 的语义与「按 id 找走 session_list / get_ai」的指引
+    const line = constants.split('\n').find((l) => l.includes("'- get_state"));
+    assert.ok(line, '找不到技能表 get_state 行');
+    assert.match(line, /身份会话/);
+    assert.match(line, /运行中会话/);
+    assert.match(line, /aiPanel\.workspaces/);
+    assert.match(line, /session_list \/ get_ai/);
+});
+
+test('bridgeListSessionsBrief：身份 2 条必含 + 运行中 20 条上限，字段瘦身', () => {
+    const brief = sliceFunction(panel, 'bridgeListSessionsBrief: (callerSessionId) => {', '\n        // get_state 专用：会话涉及的工作区');
+    // 身份会话必含（caller + activeId）
+    assert.match(brief, /for \(const id of \[caller, activeId\]\)/);
+    assert.match(brief, /identity\.push/);
+    // 运行中会话上限 20、合计 22
+    assert.match(brief, /running\.length >= 20/);
+    assert.match(brief, /\.slice\(0, 22\)/);
+    // 去重
+    assert.match(brief, /seen\.has\(s\.id\)/);
+    // 字段最小集（含 state）
+    for (const key of ['id: s.id', 'title: s.title', 'workspace: s.workspace', 'state,', 'active:', 'caller:']) {
+        assert.ok(brief.includes(key), '精简会话缺字段 ' + key);
+    }
+    // 全量字段（messages/orchestration 等）不出现
+    assert.doesNotMatch(brief, /messages: sessionMessageCount/);
+    assert.doesNotMatch(brief, /orchestration:/);
+});
+
+test('bridgeListWorkspaces 去重聚合、上限 8、带 current/active 标记', () => {
+    const ws = sliceFunction(panel, 'bridgeListWorkspaces: () => {', '\n        // AI 弹窗已进全局弹层栈');
+    assert.match(ws, /\.slice\(0, 8\)/);
+    assert.match(ws, /current: aiWorkspaceKey\(entry\.path\) === current/);
+    assert.match(ws, /active: aiWorkspaceKey\(entry\.path\) === activeWs/);
+    assert.match(ws, /sessions: entry\.count/);
+});

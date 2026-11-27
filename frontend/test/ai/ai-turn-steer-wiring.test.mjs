@@ -14,6 +14,7 @@ const estimate = read('../../src/ai/chat/ai-context-estimate.js');
 const store = read('../../src/ai/session/ai-session-store.js');
 const usage = read('../../src/ai/usage/ai-usage-ui.js');
 const outline = read('../../src/ai/session/session-outline.js');
+const rail = read('../../src/ai/session/session-rail.js');
 
 function sliceBetween(source, startMarker, endMarker) {
     const start = source.indexOf(startMarker);
@@ -234,12 +235,13 @@ test('steer 不进轮次口径：lastUserIndex / 回合边界 / 统计', () => {
     assert.match(usage, /accumulateUsage\(acc, message\)/, '统计行走共享累加核');
 });
 
-test('插话可见性：结构面板列出插话（同轮号 + 标记），回合折叠不藏用户插话', () => {
-    // 结构面板：steer 项带 steer: true、不占新轮号
+test('插话可见性：会话滑轨列出插话（同轮号 + 标记），回合折叠不藏用户插话', () => {
+    // 数据层：steer 项带 steer: true、不占新轮号
     assert.match(outline, /const steer = message\.steer === true;/);
     assert.match(outline, /if \(!steer\) round \+= 1;/);
     assert.match(outline, /steer,/);
-    assert.match(outline, /so-steer-tag/);
+    // 呈现层：结构面板「会话结构」来源已下线，插话标记由会话滑轨承担
+    assert.match(rail, /ai-rail-tick-steer/);
     // 回合折叠：插话切成独立段，整条渲染在折叠区外
     const turn = sliceBetween(panel, 'function renderTurn(group, session, isLastGroup, parent, extraOptions) {', '// 看板娘文案池与轮换索引见 ai-mascot-phrases.js');
     assert.match(turn, /if \(item\.message\.steer\) \{/);

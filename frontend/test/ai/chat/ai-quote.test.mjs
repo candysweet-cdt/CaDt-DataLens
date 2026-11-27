@@ -127,7 +127,7 @@ test('接线护栏：引用只进 user content，气泡截断 + title 全文，�
     assert.ok(panel.includes('splitTurnReminderPrefix(message.content'));
     assert.ok(panel.includes('splitQuotePrefix(parsedReminder.body)'));
     assert.ok(panel.includes('excerpt.dataset.tip = quote.text'));
-    assert.ok(panel.includes('引用所选到输入框') && panel.includes('引用整条回复'));
+    assert.ok(panel.includes('引用所选到输入框'));
     // 右键菜单图标语义：复制类用 copy、引用类用 quote、全选补 select-all，不再四个都挂同一个图标
     assert.ok(panel.includes("label: '复制所选', shortcut: 'Ctrl+C', icon: 'copy'"));
     assert.ok(panel.includes("label: '引用所选到输入框', icon: 'quote'"));

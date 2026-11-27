@@ -189,11 +189,14 @@ test('添加服务器走独立弹层（openAIDialog），不是设置页内联�
     }
     // 底部按钮：取消 / 保存
     assert.deepEqual(calls[0].footer.map((b) => b.textContent), ['取消', '保存']);
-    // 表单控件一律走 form-controls 工厂（带 .dlg-input 封装 class）
+    // 表单控件一律走 form-controls 工厂：createInput / createTextarea 默认带 .dlg-input；
+    // createNumber（fc-number 步进框）的封装观感在 .fc-number 外框上，内层 input 挂工厂自带 .fc-number-input
     const controls = collectControls(calls[0].body[0]);
     assert.ok(controls.length >= 7);
     for (const ctl of controls) {
-        assert.ok(String(ctl.className || '').includes('dlg-input'), '控件未走工厂封装：' + ctl.className);
+        const cls = String(ctl.className || '');
+        assert.ok(cls.includes('dlg-input') || cls.includes('fc-number-input'),
+            '控件未走工厂封装：' + ctl.className);
     }
 });
 

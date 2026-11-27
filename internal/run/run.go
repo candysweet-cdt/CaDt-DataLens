@@ -429,7 +429,18 @@ func (s *runStdin) pump() {
 				return
 			}
 		case <-s.eof:
-			return
+			// eof 与输入可能同时就绪：入队必然早于 close(eof)（RunInput/sendEOF 共用 inputMu），
+			// select 却可能随机选中 eof。退出前把已入队的输入排空，否则丢输入。
+			for {
+				select {
+				case text := <-s.queue:
+					if !s.write(text) {
+						return
+					}
+				default:
+					return
+				}
+			}
 		case <-s.done:
 			return
 		}
