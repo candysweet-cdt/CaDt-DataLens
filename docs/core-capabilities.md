@@ -25,6 +25,7 @@
 | 窗口模式 / 会话根判定 | `core/root-scope.js` `isMultiWorkspace` / `sessionHasWorkspace` | 判断单/多工作区窗口、会话是否有工作区归属（三态） | 直接读 `window.__harnessWindow`（护栏 `root-scope-guard` 拦） |
 | 会话状态判定 | `ai/session/ai-session-scope.js` `isArchived/isSideChat/isUnboundSession/isWorkspaceEligibleSession` | 单个维度的会话谓词（归档 / 支线 / 不绑工作区 / 可作候选） | 手写 `isTransientSession(x) \|\| isNoWorkspaceSession(x)`、裸真值判 `archivedAt` / `sideOf` |
 | 会话忙 / 起轮门禁 | `ai/session/ai-session-scope.js` `createSessionBusyProbe` / `canStartTurn` / `canSendMessage` | 任何「这个会话忙不忙 / 现在能不能起一轮 / 发送按钮该不该禁用」 | 手写 `streamOf(id) \|\| compactOf(id)`；四处各写一套发送门禁（UI / 内核 / 编辑重发 / 队列冲刷口径必须同源） |
+| 附件 → 起轮载荷分组 | `ai/chat/ai-quote.js` `groupAttachmentsForTurn` | 把附件拆成 `images` / `videos` / `texts`（媒体分组、引用与 null 不进文本附件），喂给 `startSessionTurn` | 手动发送 / 排队冲刷 / 原地编辑各写一份 `filter(kind === 'image')` 分组（2026-11-27 收口，护栏 `ai-quote.test.mjs`） |
 
 ## 语义相近但**不算**重复（别误合并）
 
