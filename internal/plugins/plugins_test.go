@@ -80,6 +80,8 @@ func TestReadPluginManifestRejects(t *testing.T) {
 		{"bad minver", `{"id":"ok-id","name":"x","author":"a","entry":"main.js","minAppVersion":"v1.x"}`, "minAppVersion"},
 		{"missing entry", `{"id":"ok-id","name":"x","author":"a","entry":"gone.js"}`, "入口文件不存在"},
 		{"escape entry", `{"id":"ok-id","name":"x","author":"a","entry":"../../x.js"}`, "越界"},
+		{"bad dep id", `{"id":"ok-id","name":"x","author":"a","entry":"main.js","dependencies":["Bad_Dep"]}`, "依赖 id 无效"},
+		{"self dep", `{"id":"ok-id","name":"x","author":"a","entry":"main.js","dependencies":["ok-id"]}`, "不能依赖自己"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,8 +103,42 @@ func TestReadPluginManifestRejects(t *testing.T) {
 	}
 }
 
-func createTestZip(t *testing.T, path string, files map[string]string) {
-	t.Helper()
+// 依赖声明的归一口径：去空白、去重、保序（S7）。顺序对前端拓扑排序无影响，
+// 但「保序」让诊断输出可复现，不因 map 遍历顺序抖动。
+func TestReadPluginManifestNormalizesDependencies(t *testing.T) {
+	dir := t.TempDir()
+	manifest := `{"id":"dep-owner","name":"业主插件","author":"a","entry":"main.js",` +
+		`"dependencies":[" b-plugin ","a-plugin","b-plugin",""]}`
+	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.js"), []byte("//"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := readPluginManifest(dir)
+	if err != nil {
+		t.Fatalf("读取清单失败: %v", err)
+	}
+	want := []string{"b-plugin", "a-plugin"}
+	if len(m.Dependencies) != len(want) {
+		t.Fatalf("依赖归一结果不符：%v", m.Dependencies)
+	}
+	for i, id := range want {
+		if m.Dependencies[i] != id {
+			t.Fatalf("第 %d 项应为 %q，得到 %q（完整：%v）", i, id, m.Dependencies[i], m.Dependencies)
+		}
+	}
+	// 清单里的依赖必须原样传到 PluginSource —— 前端排序读的是它，断了就退化成「按目录名排」。
+	src, err := pluginSourceAt(dir, m)
+	if err != nil {
+		t.Fatalf("读取插件源失败: %v", err)
+	}
+	if len(src.Dependencies) != 2 || src.Dependencies[0] != "b-plugin" {
+		t.Fatalf("PluginSource 未带依赖：%v", src.Dependencies)
+	}
+}
+
+func createTestZip(t *testing.T, path string, files map[string]string) {	t.Helper()
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)

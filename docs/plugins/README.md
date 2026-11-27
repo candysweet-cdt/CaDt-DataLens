@@ -52,7 +52,80 @@ my-plugin/
 
 ## 插件 API
 
-入口文件是一个普通 JS 脚本体，加载时会以 `cadt` 为参数执行（相当于 `new Function('cadt', code)`）。可用的 API：
+入口文件是一个普通 JS 脚本体，加载时会以 `cadt` 为参数执行（相当于 `new Function('cadt', 'module', 'exports', code)`）。
+也可以写成 Cordis 风格——`return {apply(ctx)}` 或 `module.exports = {apply(ctx)}`，`ctx` 就是下面这个 `cadt`：
+
+```js
+// 三种写法等价，可混用（同一插件里既有直接注册、又有 apply 也合法）
+// ① 脚本式：加载即执行 cadt.xxx()
+// ② return {apply(ctx) { ... }}
+// ③ module.exports = {apply(ctx) { ... }}
+module.exports = { apply(cadt) { /* 同脚本体内可用的一切 */ } };
+```
+
+> 注意：入口不是 ES 模块，`import` / `export` 语法会直接语法错误。`apply` 可以是 async，
+> 但宿主等待有 5 秒上限（超时按加载失败处理，其余插件继续），不要在里面做长任务。
+
+### 依赖声明与执行顺序
+
+清单里可以声明依赖的其他插件：
+
+```json
+{ "id": "my-writer", "dependencies": ["llm-base", "store-sqlite"] }
+```
+
+宿主按依赖关系**拓扑排序**后依次执行（被依赖者先 `apply`），因此「后启动的插件去取前者提供的服务」不会扑空。
+三条失败语义：缺依赖（未安装/被禁用）→ 跳过该插件并记错误；依赖被跳过 → 下游一并跳过（不半启动）；
+循环依赖 → 环上全部跳过并报一条错误。其余插件照常加载，一个坏插件不会带垮全部。
+
+### 依赖注入：`cadt.provide` / `require` / `inject`
+
+服务是「挂在稳定 key 上的能力对象」，key 用点分命名空间。约定：自己提供的服务叫
+`plugin.<插件id>.<名字>`；想替换核心服务就直接用核心 key 并传 `replace: true`（冲突会明确报错，
+不会静默覆盖）。
+
+```js
+// 提供（返回撤销函数；插件被禁用时宿主还会按 owner 整体撤一遍）
+const off = cadt.provide('plugin.my-writer.store', {save, load}, {dispose() { /* 清理 */ }});
+
+// 硬依赖：缺失时抛错，错误信息会列出已注册的 key（便于发现拼写错误）
+const store = cadt.require('plugin.my-writer.store');
+
+// 软依赖：有就用、没有就降级
+const llm = cadt.getService('plugin.llm-base.client');
+if (llm) { /* 增强能力 */ }
+
+// 声明依赖并等待就绪（服务由别的插件稍后提供时用它，默认 5s 超时）
+const {'core.host': hostSvc} = await cadt.inject(['core.host']);
+```
+
+核心已提供的服务：`core.host`（`flash / getActiveFile / getActiveText / openPath / readAsset`）、
+`core.hooks`（钩子总线本身）。
+
+### 钩子：`cadt.on` 与五种分发
+
+```js
+const off = cadt.on('agent/pre-step', (value, payload) => {
+    // waterfall 模式：返回新值即接管；返回 undefined 表示不动，交给下一个监听器
+    return {...value, extra: 1};
+});
+```
+
+| 方法 | 语义 |
+|---|---|
+| `cadt.emit(name, payload)` | 观察：同步串行，忽略返回值，单个监听器抛错不影响其他 |
+| `cadt.waterfall(name, value, payload)` | 环绕中间件：值依次穿过监听器，`undefined` = 不接管 |
+| `cadt.parallel(name, payload)` | 并行：全部并发，等 `allSettled`，失败项为 `undefined` |
+| `cadt.serial(name, payload)` | 有序：顺序 await，任一抛错即中断并向上抛 |
+| `cadt.bail(name, payload)` | 首个返回值：第一个返回非 `undefined` 的监听器终止整条链 |
+
+`cadt.on` 返回解绑函数。监听器随插件禁用整体撤销（按 owner），不需要自己维护生命周期。
+
+> `emit` / `waterfall` / `bail` 是**同步**模式：监听器写成 `async` 时其返回值（Promise）会被忽略并记一条诊断，
+> 不会当成交接值传下去。需要异步请用 `cadt.serial` / `cadt.parallel`。
+
+> 钩子是**进程内**的：不跨窗口、不经 Go，因此事件名**不需要**（也不应该）登记进前端的事件契约表。
+> 跨窗口状态广播仍由宿主的应用事件桥负责，插件不直接参与。
 
 ### `cadt.registerFormat(driver)`
 

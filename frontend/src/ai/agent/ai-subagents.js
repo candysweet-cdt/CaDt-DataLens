@@ -11,6 +11,9 @@ import {normalizeWorktreeState} from '../tools/ai-worktree.js';
 import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT} from '../core/ai-constants.js';
 import {parseJson} from '../../core/json-safe.js';
 import {aiStreamRetryBudget, shouldAutoRetryStream} from '../chat/ai-stream-retry.js';
+import {encodeAgentEvent} from '../session/ai-session-store.js';
+import {encodeAgentRun, normalizeAgentRuns, resumePlanOf} from './ai-agent-resume.js';
+import {createAgentScope, normalizeAgentPreset} from './ai-agent-preset.js';
 import {AI_TOOL_DEFS, buildSpawnAgentDef} from '../tools/ai-tool-defs.js';
 import {inspectToolArguments} from '../tools/ai-tool-args.js';
 import {buildSettlementNotice, buildAskNotice} from './ai-agent-notices.js';
@@ -446,6 +449,9 @@ export function createAISubagents(ctx) {
     // 终态记录保留上限（LRU）：超出先降级为「仅状态 + 结论摘要、不可续」，再超就删最早的。
     // 冷唤醒与子代理压缩都需要活引用（sub.session / profile / entry），不能 done 即删。
     const AI_SUB_RECORDS_MAX = 20;
+    // 只留摘要（不可续）的记录上限：降级本身不再占用"活跃记录"配额，
+    // 但也不能无限留壳，超出后从最旧的降级记录开始真删。
+    const AI_SUB_DEGRADED_MAX = 8;
     const AI_SUB_SYSTEM_PROMPT = [
         '你是主代理派出的只读子代理：独立完成任务后输出最终结论，不与用户直接交互。',
         '约束：只做只读探索（列目录 / 读文件 / 看图片（本地文件或公网图片 URL）/ 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
@@ -844,6 +850,9 @@ export function createAISubagents(ctx) {
             session: null,
             flow: null,
             inbox: newSubInbox(),
+            // 每 live agent 的扁平注册层 agent.ctx（S6）：工具 / 提示 / 变量只对该 agent 可见，
+            // 终态时由 finalizeSubAgent dispose，不残留、不串到别的 agent。
+            agentCtx: createAgentScope({owner: sub.id, realm: ''}),
         };
         toolMessage.agent = {
             key: sub.key,
@@ -937,6 +946,7 @@ export function createAISubagents(ctx) {
             usage: null,
         };
         subAgents.set(sub.id, sub);
+        auditAgent(sub, 'spawn');
         agentRegistry.set(sub.key, {
             subId: sub.id, key: sub.key, toolCallId: sub.toolCallId, depth,
             parentSessionId: sub.parentSessionId, rootSessionId,
@@ -966,6 +976,9 @@ export function createAISubagents(ctx) {
 
     function runSubRound(sub) {
         const s = sub.flow;
+        // 每个轮边界刷一次运行态快照：进程在长回合中被杀时，重启后能续到「最近一轮」，
+        // 而不是只能回到派单时的第一条消息。
+        persistRun(sub, 'running');
         if (sub.state !== 'running' || s.stopped) {
             finalizeSubAgent(sub, s.stopped ? 'stopped' : sub.state);
             return;
@@ -1382,18 +1395,27 @@ export function createAISubagents(ctx) {
         };
         subAgentRecords.delete(sub.id);
         subAgentRecords.set(sub.id, record);
+        let degraded = 0;
+        for (const rec of subAgentRecords.values()) {
+            if (rec && rec.continuable === false) degraded++;
+        }
         while (subAgentRecords.size > AI_SUB_RECORDS_MAX) {
             const oldestKey = subAgentRecords.keys().next().value;
             const oldest = subAgentRecords.get(oldestKey);
-            if (oldest && oldest.continuable !== false) {
-                // 降级：丢活引用，只留状态与结论摘要（HUD 仍可展示，冷唤醒拒绝）
+            if (oldest && oldest.continuable !== false && degraded < AI_SUB_DEGRADED_MAX) {
+                // 降级：丢活引用，只留状态与结论摘要（HUD 仍可展示，冷唤醒拒绝）。
+                // 必须 delete + set：Map.set 对已存在的 key 不改变顺序，原地 set 后
+                // 下一轮 while 会再取到同一个 key 走 else 直接把摘要删掉。
+                subAgentRecords.delete(oldestKey);
                 subAgentRecords.set(oldestKey, {
                     ...oldest,
                     session: null, profile: null, entry: null, continuable: false,
                 });
                 subAgentTranscripts.delete(oldest.key);
+                degraded++;
             } else {
                 subAgentRecords.delete(oldestKey);
+                subAgentTranscripts.delete(oldestKey);
             }
         }
         return record;
@@ -1471,9 +1493,36 @@ export function createAISubagents(ctx) {
         return !!(receipt && receipt.ok);
     }
 
+    // 子代理生命周期落日志（S6 切片）：spawn / 终态各记一条 agent 审计事件。
+    // 边界要写清楚：这是「**持久可查**」，不是「**可续跑**」——重启后仍按 stopped 收敛，
+    // 恢复运行需要运行态快照（方案 S6 的剩余部分）。价值在于：日志能回答「这次崩溃时
+    // 派出了几个子代理、它们最后到哪个状态」，而不是只剩界面上的已消失卡片。
+    function auditAgent(sub, phase, state) {
+        if (!sub || !ctx.auditEvent) return;
+        const parentSessionId = sub.parentSessionId || (sub.session && sub.session.id);
+        if (!parentSessionId) return;
+        try {
+            const event = encodeAgentEvent(sub.id, phase, state);
+            if (event) ctx.auditEvent(parentSessionId, event);
+        } catch (e) {}
+    }
+
+    // 运行态快照落盘（S6）：跨进程续跑的唯一依据。母会话侧落进 meta.json 的 agentRuns，
+    // 剪枝 / 上限 / 校验都在 ai-agent-resume 里。失败只记诊断——快照丢了的后果是「续不上」，
+    // 不该影响本次运行。
+    function persistRun(sub, state) {
+        if (!sub || !ctx.saveAgentRun) return;
+        try {
+            const snapshot = encodeAgentRun(sub, state);
+            if (snapshot) ctx.saveAgentRun(snapshot);
+        } catch (e) {}
+    }
+
     function finalizeSubAgent(sub, state, note, options) {
         if (sub.state !== 'running') return;
         sub.state = state;
+        auditAgent(sub, state === 'done' ? 'done' : 'stopped', state);
+        persistRun(sub, state);
         sub.note = note || '';
         // 兜底：任何终态都不留挂起的提问（否则 ask_user 的 await 永远不返回）
         if (sub.inbox && sub.inbox.ask) settleSubAsk(sub, '', 'stopped');
@@ -1485,6 +1534,8 @@ export function createAISubagents(ctx) {
             clearInterval(sub.heartbeat);
             sub.heartbeat = 0;
         }
+        // 释放该 agent 的作用域注册层（S6）：终态后工具/提示/变量不再对该 agent 可见。
+        if (sub.agentCtx && !sub.agentCtx.disposed) sub.agentCtx.dispose();
         const s = sub.flow;
         s.stopped = state !== 'done';
         if (s.assistant && s.assistant.status === 'streaming') {
@@ -1767,6 +1818,7 @@ export function createAISubagents(ctx) {
         // 终态记录移出（重新变 live）：事件路由、HUD、LRU 都以 subAgents 为准
         subAgentRecords.delete(sub.id);
         subAgents.set(sub.id, sub);
+        auditAgent(sub, 'spawn');
         if (toolMessage && toolMessage.agent) {
             toolMessage.agent.state = 'running';
             toolMessage.agent.note = '';
@@ -2335,6 +2387,110 @@ export function createAISubagents(ctx) {
         return entries.length ? entries : null;
     }
 
+    // ── 跨进程续跑（S6）──────────────────────────────────────────────────────
+    //
+    // 载入时把会话里的 agentRuns 快照重建成「可续」记录：session / profile / entry 三个
+    // 活引用全部按 id 重新解析，转录来自快照。**不自动起轮**——用户可能并不想继续上次那件事，
+    // 自动续跑会消耗 token 且可能重复执行上次未完成的写操作。状态一律记 interrupted，
+    // 由用户/主代理显式触发 resumeAgentRun。
+    function restoreAgentRuns(session) {
+        if (!session || !session.id) return 0;
+        const runs = normalizeAgentRuns(session.agentRuns);
+        let restored = 0;
+        for (const run of runs) {
+            if (subAgentRecords.has(run.id) || subAgents.has(run.id)) continue;
+            const plan = resumePlanOf(run);
+            const detail = run.run;
+            const profile = (typeof ctx.profileOf === 'function' && detail.profileId)
+                ? ctx.profileOf(detail.profileId) : null;
+            const entry = (profile && typeof ctx.entryOf === 'function')
+                ? ctx.entryOf(profile, detail.modelId) : null;
+            subAgentRecords.set(run.id, {
+                id: run.id,
+                key: run.key,
+                toolCallId: run.toolCallId,
+                name: run.name,
+                task: run.task,
+                maxRounds: run.maxRounds,
+                depth: run.depth,
+                mode: run.mode,
+                sandboxMode: run.sandboxMode,
+                parentSessionId: run.parentSessionId,
+                rootSessionId: run.rootSessionId,
+                // 一律 interrupted：不假装还在跑，也不假装已完成。
+                state: 'interrupted',
+                summary: '',
+                note: plan.ok ? '进程重启，可续跑' : ('进程重启，不可续跑：' + plan.reason),
+                rounds: run.rounds,
+                ms: 0,
+                tokens: 0,
+                startedAt: run.startedAt,
+                finishedAt: 0,
+                session: {
+                    id: run.id,
+                    title: '',
+                    parentSessionId: run.parentSessionId,
+                    rootSessionId: run.rootSessionId,
+                    originSessionId: detail.originSessionId,
+                    workspace: detail.workspace,
+                    profileId: detail.profileId,
+                    modelId: detail.modelId,
+                    ctxLimit: detail.ctxLimit,
+                    systemPrompt: detail.systemPrompt,
+                    promptTemplateId: detail.promptTemplateId,
+                    scope: detail.scope,
+                    planMode: false,
+                    messages: detail.messages,
+                    todos: [],
+                    changes: [],
+                    approvedPaths: [],
+                    readRoots: [],
+                    summary: null,
+                    archived: [],
+                    round: run.rounds,
+                    worktree: detail.worktree || null,
+                },
+                profile: profile || null,
+                entry: entry || null,
+                baseRound: run.baseRound,
+                continuable: plan.ok,
+                resumeAvailable: plan.ok,
+                resumeReason: plan.reason,
+                restoredAt: Date.now(),
+            });
+            restored += 1;
+        }
+        if (restored) refreshHeadChips();
+        return restored;
+    }
+
+    // 续跑一个重启后留下的子代理：复用冷唤醒（reviveSubAgent），它会重建 flow、
+    // 把「继续」作为一条用户消息投进去并起轮。返回 {ok, error?} 供 UI 直接提示。
+    function resumeAgentRun(agentId) {
+        const record = subAgentRecords.get(aiTextOf(agentId));
+        if (!record) return {ok: false, error: '找不到该子代理的运行记录'};
+        if (subAgents.has(record.id)) return {ok: false, error: '该子代理正在运行'};
+        // 注意：record 是「记录」形状（session/continuable），不是快照形状（run），
+        // 所以不能拿 resumePlanOf(record) 判——那会永远报「缺少运行态」。可续性在载入
+        // 重建记录时已经算过，存在 resumeAvailable / resumeReason 上。
+        if (record.resumeAvailable !== true) {
+            return {ok: false, error: record.resumeReason || '该记录不可续跑'};
+        }
+        const rounds = Number(record.rounds) || 0;
+        const cap = Number(record.maxRounds) || 0;
+        if (cap > 0 && rounds >= cap) {
+            return {ok: false, error: '已用满轮次预算（' + rounds + '/' + cap + '）'};
+        }
+        if (!record.profile || !record.session) {
+            return {ok: false, error: '缺少模型账号或转录，无法续跑（可能已被压缩或删除）'};
+        }
+        record.note = '';
+        const sub = reviveSubAgent(record, '（进程重启后继续上次未完成的任务：先接手已有进展，不要重复已完成的部分）',
+            {from: 'agent'});
+        if (!sub) return {ok: false, error: '续跑失败：记录不可唤醒'};
+        return {ok: true, agentId: sub.id};
+    }
+
     return {
         subAgentLimit, subAgentMaxDepth, subAgentCanSpawn, subSystemPromptFor, subToolsForScope,
         activeSubCount, subTranscriptPush, subThrottleRender,
@@ -2350,6 +2506,7 @@ export function createAISubagents(ctx) {
         parentSessionOfSub, runSubAgent, startSubAgent, runSubRound, handleSubEvent, finalizeSubAgent, stopSubAgentsOf, initHud,
         deliverBgExitNotice,
         pushSubAgentRecord, unseenInboxCount, dropSubAgentRecordsOf,
+        restoreAgentRuns, resumeAgentRun, persistRun,
         consumeSubInbox, queueSubAgentMessage, steerSubAgent, stopSubAgent, subRunDigest,
         reviveSubAgent, sendToSubAgent, stopSubAgentByInput, handleAgentTool, answerSubAsk,
         runSubAskQuestion, settleSubAsk, waitForInbox,

@@ -6,6 +6,7 @@
 
 import {PERSONA_TEXT_MAX, REPLY_STYLES} from '../core/ai-persona.js';
 import {findModelEntry, modelRefLabel, resolveModelRef} from '../core/ai-config-model.js';
+import {normalizeAgentPreset} from './ai-agent-preset.js';
 
 export const AGENT_MAX_COUNT = 32;
 export const AGENT_NAME_MAX = 32;
@@ -103,6 +104,9 @@ export function normalizeAgent(raw, index, idGen) {
         modelRef: clampText(source.modelRef, AGENT_MODELREF_MAX),
         personaText: clampText(source.personaText, PERSONA_TEXT_MAX),
         replyStyle: validReplyStyle(source.replyStyle) ? source.replyStyle : 'default',
+        // 声明式 preset（S6）：决定工具集 / 提示片段 / realm；无声明时为空壳，
+        // 不覆盖上面的 personaText（后者是设置页可直接编辑的人设字段）。
+        preset: source.preset ? normalizeAgentPreset(source.preset) : null,
         temperature,
         slowTier: source.slowTier === true,
         chair: source.chair === true,

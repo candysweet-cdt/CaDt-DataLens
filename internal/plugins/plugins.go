@@ -102,6 +102,10 @@ type pluginManifest struct {
 	Keywords      []string `json:"keywords,omitempty"`
 	MinAppVersion string   `json:"minAppVersion,omitempty"`
 	Icon          string   `json:"icon,omitempty"`
+	// Dependencies 声明依赖的其他插件 id（S7）：前端按它排执行顺序，保证「提供服务的插件
+	// 先 apply」。这里只做形状校验（id 合法、不依赖自己、去重），拓扑排序与缺失判定在前端
+	// 完成——因为「装没装」是前端看到启用列表之后才知道的事。
+	Dependencies []string `json:"dependencies,omitempty"`
 }
 
 type PluginInfo struct {
@@ -119,16 +123,18 @@ type PluginInfo struct {
 	Keywords      []string `json:"keywords,omitempty"`
 	MinAppVersion string   `json:"minAppVersion,omitempty"`
 	IconData      string   `json:"iconData,omitempty"`
+	Dependencies  []string `json:"dependencies,omitempty"`
 	Enabled       bool     `json:"enabled"`
 	EntryOK       bool     `json:"entryOk"`
 }
 
 type PluginSource struct {
-	Id      string `json:"id"`
-	Name    string `json:"name"`
-	Version string `json:"version,omitempty"`
-	Dir     string `json:"dir"`
-	Code    string `json:"code"`
+	Id           string   `json:"id"`
+	Name         string   `json:"name"`
+	Version      string   `json:"version,omitempty"`
+	Dir          string   `json:"dir"`
+	Code         string   `json:"code"`
+	Dependencies []string `json:"dependencies,omitempty"`
 }
 
 // pluginsRootFor 返回插件安装根目录：portable = exe 旁 plugins，
@@ -211,6 +217,30 @@ func readPluginManifest(dir string) (*pluginManifest, error) {
 	m.Id = strings.TrimSpace(m.Id)
 	m.Author = strings.TrimSpace(m.Author)
 	m.MinAppVersion = strings.TrimSpace(m.MinAppVersion)
+	// 依赖声明归一（S7）：去空白、去重、保序。形状错误在装载期就拒——等到前端拓扑排序
+	// 再报错，用户看到的是「插件被跳过」而不是「清单写错了」，定位成本差一个数量级。
+	if len(m.Dependencies) > 0 {
+		seen := make(map[string]bool, len(m.Dependencies))
+		normalized := make([]string, 0, len(m.Dependencies))
+		for _, dep := range m.Dependencies {
+			depId := strings.TrimSpace(dep)
+			if depId == "" {
+				continue
+			}
+			if !pluginIdPattern.MatchString(depId) {
+				return nil, fmt.Errorf("插件 %s 的依赖 id 无效（只允许小写字母、数字和连字符）：%q", m.Id, dep)
+			}
+			if depId == m.Id {
+				return nil, fmt.Errorf("插件 %s 不能依赖自己", m.Id)
+			}
+			if seen[depId] {
+				continue
+			}
+			seen[depId] = true
+			normalized = append(normalized, depId)
+		}
+		m.Dependencies = normalized
+	}
 	m.Entry = strings.TrimSpace(m.Entry)
 	if m.Entry == "" {
 		m.Entry = pluginDefaultEntry
@@ -371,6 +401,7 @@ func listPluginsAt(root string, disabled map[string]bool) ([]*PluginInfo, error)
 			Keywords:      m.Keywords,
 			MinAppVersion: m.MinAppVersion,
 			IconData:      pluginIconData(dir, m),
+			Dependencies:  m.Dependencies,
 			Enabled:       !disabled[m.Id],
 			EntryOK:       entryOK,
 		})
@@ -705,11 +736,12 @@ func pluginSourceAt(dir string, m *pluginManifest) (*PluginSource, error) {
 		return nil, err
 	}
 	return &PluginSource{
-		Id:      m.Id,
-		Name:    m.Name,
-		Version: m.Version,
-		Dir:     dir,
-		Code:    string(raw),
+		Id:           m.Id,
+		Name:         m.Name,
+		Version:      m.Version,
+		Dir:          dir,
+		Code:         string(raw),
+		Dependencies: m.Dependencies,
 	}, nil
 }
 
@@ -822,7 +854,12 @@ func (pm *Manager) GetPluginSources() ([]PluginSource, error) {
 		if !p.Enabled || !p.EntryOK {
 			continue
 		}
-		m := &pluginManifest{Id: p.Id, Name: p.Name, Version: p.Version, Entry: p.Entry}
+		// Dependencies 必须带过来：前端按它做拓扑排序。漏掉的话前端拿到的永远是空数组，
+		// 「被依赖者先 apply」静默退化成「按目录名排」，inject 只能等超时。
+		m := &pluginManifest{
+			Id: p.Id, Name: p.Name, Version: p.Version, Entry: p.Entry,
+			Dependencies: p.Dependencies,
+		}
 		source, err := pluginSourceAt(p.Dir, m)
 		if err != nil {
 			continue

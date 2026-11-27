@@ -2,6 +2,9 @@
 // 与 main.js 通过 initPluginRuntime(hooks) 单向注入，避免循环依赖。
 import {registerPluginFormat, unregisterAllPluginFormats} from '../core/formats.js';
 import {themeRegistry} from '../core/theme-registry.js';
+import {createHookBus} from '../core/hook-bus.js';
+import {createPluginContainer} from './plugin-container.js';
+import {orderByDependencies} from './plugin-dependencies.js';
 import {clearPluginAIProviders, getPluginAIProviders, registerPluginAIProvider} from './plugin-ai-providers.js';
 import {normalizePluginCommand} from './plugin-commands-model.js';
 import {
@@ -43,6 +46,38 @@ export function getPluginDocConverters() {
     return [...docConverters.values()];
 }
 
+// ── 平台原语：依赖注入容器 + 进程内钩子总线（S4）─────────────────────────────
+// 每次 loadPlugins 重建一对新实例：插件重放是幂等的（先 clear 再执行），容器与总线也必须
+// 跟着换代，否则上一轮的服务引用与监听器会跨重载残留。消费者（ai-panel / editor 等）
+// 一律经 getPluginContainer() / getPluginHookBus() **现取**，不要缓存引用。
+let pluginContainer = null;
+let pluginHookBus = null;
+
+function ensurePlatformPrimitives() {
+    pluginContainer = createPluginContainer({logf: (msg) => console.info(msg)});
+    pluginHookBus = createHookBus({logf: (msg) => console.info(msg)});
+    // 核心服务：插件可以 require 它们，也可以对它们挂钩子（如 core/pre-turn）
+    pluginContainer.provide('core.host', {
+        flash: (message) => host.flash(String(message ?? '')),
+        getActiveFile: () => host.getActiveFile(),
+        getActiveText: () => host.getActiveText(),
+        openPath: (path) => host.openPath(path),
+        readAsset: (pluginId, path) => Promise.resolve(host.readPluginAsset(pluginId, String(path || ''))),
+    }, {owner: 'core'});
+    pluginContainer.provide('core.hooks', pluginHookBus, {owner: 'core'});
+    return {container: pluginContainer, bus: pluginHookBus};
+}
+
+/** 当前这一轮的插件容器（未加载过插件时为 null）。 */
+export function getPluginContainer() {
+    return pluginContainer;
+}
+
+/** 当前这一轮的插件钩子总线（未加载过插件时为 null）。 */
+export function getPluginHookBus() {
+    return pluginHookBus;
+}
+
 export function initPluginRuntime(hooks) {
     Object.assign(host, hooks || {});
 }
@@ -73,6 +108,16 @@ export function getPluginLoadErrors() {
 
 function pluginError(plugin, message) {
     return new Error(`[${plugin.name || plugin.id}] ${message}`);
+}
+
+function requireContainer() {
+    if (!pluginContainer) throw new Error('插件容器尚未初始化（loadPlugins 未执行）');
+    return pluginContainer;
+}
+
+function requireHookBus() {
+    if (!pluginHookBus) throw new Error('插件钩子总线尚未初始化（loadPlugins 未执行）');
+    return pluginHookBus;
 }
 
 function apiFor(plugin) {
@@ -248,6 +293,55 @@ function apiFor(plugin) {
                 convert: spec.convert,
             });
         },
+        // ── 依赖注入（S4）───────────────────────────────────────────────────
+        // 服务名用点分稳定 key（约定：插件自己提供的服务用 `plugin.<插件id>.<名字>`，
+        // 想替换核心服务则直接用核心的 key 并传 replace:true，冲突时有明确报错）。
+        // group（realm 隔离）：opts.group 缺省不分组（全局可见）；显式给定时同名服务
+        // 只在同 group 内可见，查找先同组再回落全局——对齐 Cordis realm。
+        // provide 返回撤销函数；卸载插件时宿主还会按 owner 整体撤一遍，双保险。
+        provide(name, value, opts) {
+            return requireContainer().provide(name, value, {...(opts || {}), owner: plugin.id});
+        },
+        // 取服务，缺失返回 undefined（用于「有就增强、没有就降级」）。
+        getService(name, opts) {
+            return requireContainer().get(name, opts);
+        },
+        // 取服务，缺失抛错（用于「硬依赖」；错误信息会列出已注册 key 便于排查拼写）。
+        require(name, opts) {
+            return requireContainer().require(name, opts);
+        },
+        hasService(name, opts) {
+            return requireContainer().has(name, opts);
+        },
+        // 声明依赖并等待就绪：await cadt.inject(['core.host']) → {'core.host': {...}}
+        inject(names, opts) {
+            return requireContainer().inject(names, opts);
+        },
+        // 声明一次性副作用并登记 disposer（Cordis ctx.effect）：fn 立即执行，返回的
+        // 清理函数在插件禁用 / 重载时由宿主按 owner 统一调用；也可自己调返回的撤销函数。
+        effect(fn, opts) {
+            return requireContainer().effect(fn, {...(opts || {}), owner: plugin.id});
+        },
+        // ── 钩子（S4，进程内五模式）──────────────────────────────────────────
+        // on 返回解绑函数；owner 自动记为插件 id，禁用插件时整体撤销。
+        on(name, fn, opts) {
+            return requireHookBus().on(name, fn, {...(opts || {}), owner: plugin.id});
+        },
+        emit(name, payload) {
+            return requireHookBus().emit(name, payload);
+        },
+        waterfall(name, value, payload) {
+            return requireHookBus().waterfall(name, value, payload);
+        },
+        parallel(name, payload) {
+            return requireHookBus().parallel(name, payload);
+        },
+        serial(name, payload) {
+            return requireHookBus().serial(name, payload);
+        },
+        bail(name, payload) {
+            return requireHookBus().bail(name, payload);
+        },
         getActiveFile() {
             return host.getActiveFile();
         },
@@ -295,6 +389,14 @@ export function loadPlugins(backend) {
 }
 
 async function reloadPlugins(backend) {
+    // 换代前先把上一轮的容器与总线整体拆掉：等待中的 inject 会被拒（不会永远悬着），
+    // 插件注册的 dispose 逐个执行，监听器随总线一起丢弃。顺序在 clear* 之前——否则
+    // dispose 回调里若读注册表会读到已被清空的状态。
+    if (pluginContainer) pluginContainer.dispose();
+    if (pluginHookBus) pluginHookBus.dispose();
+    pluginContainer = null;
+    pluginHookBus = null;
+
     themeRegistry.clearPluginThemes();
     unregisterAllPluginFormats();
     clearPluginAIProviders();
@@ -310,6 +412,7 @@ async function reloadPlugins(backend) {
     commandClassifiers.clear();
     docConverters.clear();
     lastLoadErrors = [];
+    ensurePlatformPrimitives();
     host.onPluginsChanged();
     if (!backend || typeof backend.GetPluginSources !== 'function') {
         console.info('[plugins] 跳过加载：宿主无 GetPluginSources 绑定');
@@ -328,12 +431,42 @@ async function reloadPlugins(backend) {
         return [...lastLoadErrors];
     }
     const errors = [];
-    for (const source of sources) {
+    // 依赖声明（S7）：manifest 的 dependencies 决定执行顺序——被依赖者先执行，否则它
+    // 提供的服务在对方 apply 时还不存在，inject 只能等超时。排序失败（循环 / 缺依赖）
+    // 记一条错误并把该插件跳过，不阻断其余插件。
+    const ordered = orderByDependencies(sources, errors);
+    for (const source of ordered) {
         try {
             const api = apiFor({id: source.id, name: source.name, dir: source.dir || ''});
-            new Function('cadt', `"use strict";\n${source.code || ''}`)(api);
+            // Cordis 风格：插件可以 `return {apply(ctx)}`、`module.exports = {apply(ctx)}`，
+            // 也可以继续用纯脚本式的 cadt.xxx() 直接注册（老插件零改动）。三种写法可共存。
+            // module / exports 是给 CommonJS 写法准备的薄壳：没有它，插件里写 module.exports
+            // 会直接 ReferenceError（真踩过）。
+            const moduleShim = {exports: {}};
+            const returned = new Function('cadt', 'module', 'exports',
+                `"use strict";\n${source.code || ''}`)(api, moduleShim, moduleShim.exports);
+            const exported = returned || moduleShim.exports;
+            if (exported && typeof exported.apply === 'function') {
+                const applied = exported.apply(api);
+                // apply 允许是 async：等它完成再执行下一个插件，保证「被依赖者先就绪」。
+                // 但必须有上限——插件返回一个永不结算的 Promise 会把整条 pluginLoadQueue
+                // 永久挂住，之后所有 loadPlugins 调用都排在它后面（旧代码是 fire-and-forget）。
+                if (applied && typeof applied.then === 'function') {
+                    await Promise.race([
+                        applied,
+                        new Promise((_resolve, reject) => {
+                            setTimeout(() => reject(new Error('apply 超时（5000ms），已放弃等待')), 5000);
+                        }),
+                    ]);
+                }
+            }
         } catch (e) {
             themeRegistry.removePluginThemes(source.id);
+            // 只撤本轮新增的平台侧注册（服务 / 钩子）。命令、分类器、转换器等「已成功的部分」
+            // 按既有契约保留到下一次全局 clear*——plugin-commands 的集成测试钉住了这个语义
+            // （半个插件失败时，先前那条命令仍可用），改它会静默改变用户可见行为。
+            if (pluginContainer) pluginContainer.disposeOwner(source.id);
+            if (pluginHookBus) pluginHookBus.offOwner(source.id);
             const message = `${source.name || source.id}：${(e && e.message) || e}`;
             errors.push(message);
         }
@@ -356,7 +489,9 @@ async function reloadPlugins(backend) {
         ' 个 · 服务 ' + buildServiceSpecs().length +
         ' 个 · 数据库驱动 ' + getPluginDbDrivers().length +
         ' 个 · 设置面板 ' + getPluginSettingsPanels().length +
-        ' 个 · 错误 ' + errors.length + (errors.length ? '：' + errors.join('；') : ''));
+        ' 个 · DI 服务 ' + (pluginContainer ? pluginContainer.size : 0) +
+        ' 个 · 钩子 ' + (pluginHookBus ? pluginHookBus.eventNames().length : 0) +
+        ' 类 · 错误 ' + errors.length + (errors.length ? '：' + errors.join('；') : ''));
     host.onPluginsChanged();
     host.onThemesChanged();
     notifyPluginsLoaded();
