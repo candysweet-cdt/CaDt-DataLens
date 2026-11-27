@@ -14,7 +14,8 @@ export function setPermissionLifecycleHook(fn) {
 }
 import {iconSvg} from '../core/icons.js';
 import {isMultiWorkspace} from '../core/root-scope.js';
-import {formatOutlineText, parseOutline} from '../core/file-outline.js';
+import {formatOutlineText} from '../core/file-outline.js';
+import {detectLanguage, outlineForLanguage, planSectionComments, applySectionEdits} from '../core/code-outline.js';
 import {overlayStack} from '../core/overlay-stack.js';
 import {createContextMenu} from '../shell/contextmenu.js';
 import {mergePluginAIRequest, pluginAIAccounts} from '../shell/plugin-ai-providers.js';
@@ -1724,7 +1725,7 @@ export function createAIPanel(options) {
             }] : []);
         const questions = [];
         const usedIds = new Set();
-        source.slice(0, 5).forEach((raw, index) => {
+        source.slice(0, 8).forEach((raw, index) => {
             if (!raw || typeof raw !== 'object') return;
             const question = aiTextOf(raw.question).trim().slice(0, 1000);
             if (!question) return;
@@ -7720,7 +7721,7 @@ export function createAIPanel(options) {
         if (data.isDir) throw new Error('这是目录，不是文件');
         // code 供附件入口区分「读不了正文但路径有效」的情况（降级为路径引用），
         // 其余调用方只读 message，加 code 不影响它们。
-        // allowLarge 仅供 get_file_outline 这类「不返回正文、只输出结构化摘要」的调用放开 10MB 闸；
+        // allowLarge 仅供 code_outline 这类「不返回正文、只输出结构化摘要」的调用放开 10MB 闸；
         // 后端 >100MB 硬闸与二进制拒绝不受此参数影响，照常生效。
         if (data.large && !allowLarge) throw Object.assign(new Error('文件过大（>10 MB）'), {code: 'large'});
         if (data.binary) throw Object.assign(new Error('二进制文件不可作为文本读取'), {code: 'binary'});
@@ -10897,11 +10898,28 @@ async function requestApproval(session, toolMessage, info) {
                 head += '）\n\n';
                 return head + view.text + (view.hint ? '\n' + view.hint : '');
             }
-            case 'get_file_outline': {
-                // 与 read_file 同一条路径授权链（工作区外 read/edit 弹卡、auto/full 直读、点名直读）。
-                const resolved = await resolveReadPathWithApproval(ctx, 'get_file_outline', input.path);
-                if (!resolved.ok) return resolved.message;
-                const path = resolved.path;
+            case 'code_outline': {
+                const action = input.action === 'maintain' ? 'maintain' : 'read';
+                // 双模式工具：read 走读授权链（工作区外 read/edit 弹卡、auto/full 直读、点名直读）；
+                // maintain 是写操作，必须与 edit_file 同源走 aiResolveScopePath（非 full 档拒绝越界），
+                // 否则 auto 档会用读授权放行工作区外路径、零审批写入（见 S4）。
+                let path;
+                if (action === 'maintain') {
+                    if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('维护大纲缺少会话上下文');
+                    // 写闸四件套：计划模式零副作用 / 只读档无写权 / 无隔离区子代理只读 / 路径不越界。
+                    if (ctx.session.planMode === true) throw new Error('计划模式下不能写入文件，请先退出计划模式');
+                    if (!AI_WRITE_SCOPES.includes(currentScopeOf(ctx.session))) {
+                        throw new Error('维护大纲需要写权限：请把底部权限切到「每次询问」或更高');
+                    }
+                    if (ctx.session.parentSessionId && !normalizeWorktreeState(ctx.session.worktree)) {
+                        throw new Error('子代理没有隔离区，不能写入主工作区文件');
+                    }
+                    path = aiResolveScopePath(input.path, ctx.session);
+                } else {
+                    const resolved = await resolveReadPathWithApproval(ctx, 'code_outline', input.path);
+                    if (!resolved.ok) return resolved.message;
+                    path = resolved.path;
+                }
                 let read;
                 try {
                     // 大纲只输出分节/函数/行号，不返回正文，故放开 10MB 闸（allowLarge）；
@@ -10914,14 +10932,47 @@ async function requestApproval(session, toolMessage, info) {
                 }
                 recordRead(ctx && ctx.session, path, read.data && read.data.mtime, read.data && read.data.size);
                 if (ctx && ctx.toolMessage) ctx.toolMessage.targetPath = path;
-                const outline = parseOutline(read.text);
+                const langId = aiTextOf(input.language).trim() || detectLanguage(path, read.text).id;
+                const outline = outlineForLanguage(read.text, langId);
                 const shown = redactToolText(input.path || path, ctx && ctx.session);
-                return formatOutlineText(shown, outline, {
-                    sectionsOnly: !!input.sectionsOnly,
-                    offset: input.offset,
-                    limit: input.limit,
-                    section: input.section,
-                }) + '\n\n（大纲仅供定位；要某段正文请用 read_file 指定 startLine/endLine。）';
+
+                if (action === 'read') {
+                    return formatOutlineText(shown, outline, {
+                        sectionsOnly: !!input.sectionsOnly,
+                        offset: input.offset,
+                        limit: input.limit,
+                        section: input.section,
+                    }) + '\n\n（语言：' + outline.language + '。大纲仅供定位；要某段正文请用 read_file 指定 startLine/endLine。）';
+                }
+
+                // ---- maintain：把语义分区写成分节注释，走与 edit_file 同源的写守卫 ----
+                if (!Array.isArray(input.sections) || !input.sections.length) {
+                    throw new Error('maintain 需要提供 sections（5~10 个语义分区，每项含语义标题与符号名）');
+                }
+                if (input.sections.length > 20) throw new Error('sections 过多（上限 20 个分区）');
+                const relPath = aiRelPath(sessionScopeRoot(ctx.session), path);
+                assertNotCognitionPath(relPath);
+                const edits = planSectionComments(read.text, langId, input.sections);
+                if (!edits.length) return '没有可写入的分节：符号名未匹配到任何函数/类，或分区为空。先用 read 拿准确符号名再试。';
+                const next = applySectionEdits(read.text, edits);
+                if (next === read.text) return '文件内容未变化：' + relPath;
+                if (wipeguardRef()) {
+                    await wipeguardRef().backupWrite({
+                        sessionId: ctx.session.id, tool: 'code_outline',
+                        ws: sessionScopeRoot(ctx.session), relPath, absPath: path, content: read.text,
+                    });
+                }
+                const ops = computeLineDiff(read.text, next);
+                const stats = diffStats(ops);
+                const preview = buildDiffPreview(ops);
+                const msg = await applyWorkspaceWrite(ctx.session, ctx.toolMessage, {
+                    tool: 'code_outline', path, relPath, content: next,
+                    eol: read.data.eol, hasBom: !!read.data.hasBom, enc: read.data.enc,
+                    expectMtime: (read.data && read.data.mtime) || '', newFile: false,
+                    added: stats.added, removed: stats.removed,
+                    truncated: preview.truncated, diff: preview.lines,
+                });
+                return msg + '（语言：' + langId + '，插入 ' + edits.length + ' 处分节注释）';
             }
             case 'read_image': {
                 const target = aiTextOf(input.path).trim();
@@ -17632,7 +17683,7 @@ async function requestApproval(session, toolMessage, info) {
 
     // ---- harness 窗口的「新建会话」：先选根（最近工作区 / 打开文件夹 / 会话沙盒）----
     // 非 harness 窗口行为逐字不变（直接 newSession()）。背景见
-    // docs/unfinished-plans/agent-host-platform.md §4.8：harness 不带工作区，静默建一条无根会话
+    // docs/finished-plans/agent-host-platform.md §4.8：harness 不带工作区，静默建一条无根会话
     // 会让模型没有可解析的相对路径。
 
     // 最近工作区：会话表里出现过的 workspace，按最近更新排序（去重后取前 N 个）。

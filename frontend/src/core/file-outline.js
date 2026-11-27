@@ -2,7 +2,7 @@
 // file-outline.js：从源码文本提取「分节注释 / 顶层函数 / case 分支」的纯函数解析器。
 // 供两处共用（单一真源，避免两套解析漂移）：
 //   ① scripts/gen-file-maps.mjs —— 为超大文件生成静态符号地图 md；
-//   ② AI 工具 get_file_outline —— 模型运行时按需取某个文件的实时大纲。
+//   ② AI 工具 code_outline —— 模型运行时按需取某个文件的实时大纲（JS 解析委托本文件）。
 // 无 DOM、无 backend、无副作用：输入字符串，输出结构化数组。
 
 /** @typedef {{n: number, title: string}} Section */

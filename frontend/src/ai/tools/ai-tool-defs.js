@@ -40,17 +40,20 @@ export const AI_TOOL_DEFS = {
             required: ['path'],
         },
     },
-    get_file_outline: {
-        name: 'get_file_outline',
-        description: '取一个源码文件的结构大纲：分节导航（带序号、起始行-结束行）+ 顶层函数/箭头/case 分支索引（带行号）。用于超大文件（如 main.js、ai-panel.js）先摸清「哪段是干啥的」再精准 read_file，避免盲读上万行。只读、不返回正文，行号实时解析不会漂移。path 为相对范围根的文件路径或已授权的工作区外绝对路径，授权规则与 read_file 相同。符号索引支持分页：默认每页 200 条（上限 500），结果回报「本次返回 N 条 / 共 M 条 / offset」，未取完时用 offset+返回条数续取，避免撑爆上下文；section 传分节标题的子串可只看某段的符号（分节导航始终全量，带序号便于选段）；sectionsOnly:true 时只返回分节导航（最省 token）。二进制文件不支持；超过 100 MB 后端拒绝打开。大纲只返回结构化摘要、不返回正文，因此 10–100 MB 的大文件也可取大纲（read_file 读正文仍受 10 MB 限制）。要具体内容仍用 read_file；找文本用 search_text，找文件用 glob。',
+    code_outline: {
+        name: 'code_outline',
+        description: '取或维护源码文件的结构大纲，跨语言（按扩展名自动识别 JS/TS/Go/Python/Java/C/C++/C#/Rust/Ruby/PHP/Swift/Kotlin/SQL/Shell/Markdown/HTML/XML/YAML 等，未知按纯文本）。两种模式：action=read（默认，只读）返回分节导航（带序号、起止行）+ 顶层函数/类/箭头/case 索引（带行号），先摸清「哪段是干啥的」再精准 read_file，不返回正文、行号实时不漂移；action=maintain 把分节注释写进文件——你需先 read 拿到符号清单，再归纳出 5~10 个语义分区（每项给一个语义标题与其首个符号名，或符号名列表），工具按语言自动选注释符（JS/Go/Java 用 //，Python/Shell/YAML 用 #，SQL 用 --，HTML/XML 用 <!-- -->）插入到各区首个符号前，写入走 diff 预览 + 写守卫（需写权限档，会弹审批）。分节注释是可选约定：没写也能列函数/类，只是没有分节导航。path 为相对范围根路径或已授权的工作区外绝对路径，授权规则同 read_file。read 模式符号索引支持分页：默认每页 200 条（上限 500），回报「本次返回 N 条 / 共 M 条 / offset」，未取完用 offset+返回条数续取；section 传分节标题子串可只看某段；sectionsOnly:true 只返回分节导航（最省 token）。language 可显式指定语言 id 覆盖自动识别。二进制文件不支持；超过 100 MB 后端拒绝打开。read 只返回摘要，10–100 MB 大文件也可取大纲（read_file 读正文仍受 10 MB 限制）。要正文用 read_file；找文本用 search_text，找文件用 glob。',
         parameters: {
             type: 'object',
             properties: {
                 path: {type: 'string', description: '相对范围根的源码文件路径，或已授权的工作区外绝对路径'},
-                sectionsOnly: {type: 'boolean', description: '只返回分节导航、不列符号索引（大文件省 token），默认 false'},
-                offset: {type: 'integer', description: '符号索引分页起点，跳过前 N 条（默认 0）；结果会回报本次条数/总条数/offset，未取完用 offset+本次条数续取'},
-                limit: {type: 'integer', description: '每页符号数，默认 200、上限 500；超出夹到 500，传 0 或负数夹到 1'},
-                section: {type: 'string', description: '按分节标题子串过滤符号，只返回落在该分节行区间内的符号；无匹配时会提示可选分节标题'},
+                action: {type: 'string', enum: ['read', 'maintain'], description: 'read=只读大纲（默认）；maintain=把分节注释写进文件（需写权限档，走 diff 预览与审批）'},
+                sections: {type: 'array', description: 'maintain 用：5~10 个语义分区方案数组，每项含 title（语义标题）与 startName（该区首个符号名）或 symbolNames（该区符号名列表）；工具据此把注释插到各区首个符号前'},
+                language: {type: 'string', description: '显式指定语言 id（如 go/python/java/javascript），省略则按文件扩展名自动识别'},
+                sectionsOnly: {type: 'boolean', description: 'read 用：只返回分节导航、不列符号索引（大文件省 token），默认 false'},
+                offset: {type: 'integer', description: 'read 用：符号索引分页起点，跳过前 N 条（默认 0）；结果会回报本次条数/总条数/offset，未取完用 offset+本次条数续取'},
+                limit: {type: 'integer', description: 'read 用：每页符号数，默认 200、上限 500；超出夹到 500，传 0 或负数夹到 1'},
+                section: {type: 'string', description: 'read 用：按分节标题子串过滤符号，只返回落在该分节行区间内的符号；无匹配时会提示可选分节标题'},
             },
             required: ['path'],
         },
@@ -363,13 +366,13 @@ export const AI_TOOL_DEFS = {
     },
     ask_user: {
         name: 'ask_user',
-        description: '向用户提出一个或多个问题并等待回答。关键选择、补充信息或需要用户拍板时使用。最多 5 个问题，每题可单选或多选，可在最合理的一项上标记 recommended=true；面板默认会在选项后追加一个「自己输入」项（仅当明确不需要用户自由作答时才 allow_custom=false），用户也可点「跳过」不回答并让你继续。不要用它询问可以自行查证的信息。可用 timeoutSec（秒，0=本次不限时）与 timeoutAction（recommended/wait/abort/ai_decide）只为本次提问定制超时，不修改用户设置。',
+        description: '向用户提出一个或多个问题并等待回答。关键选择、补充信息或需要用户拍板时使用。最多 8 个问题，每题可单选或多选，可在最合理的一项上标记 recommended=true；面板默认会在选项后追加一个「自己输入」项（仅当明确不需要用户自由作答时才 allow_custom=false），用户也可点「跳过」不回答并让你继续。不要用它询问可以自行查证的信息。可用 timeoutSec（秒，0=本次不限时）与 timeoutAction（recommended/wait/abort/ai_decide）只为本次提问定制超时，不修改用户设置。',
         parameters: {
             type: 'object',
             properties: {
                 questions: {
                     type: 'array',
-                    description: '1–5 个问题，一次向用户提出',
+                    description: '1–8 个问题，一次向用户提出',
                     items: {
                         type: 'object',
                         properties: {
@@ -606,7 +609,7 @@ export const AI_TOOL_DEFS = {
     },
     spawn_agent: {
         name: 'spawn_agent',
-        description: '派出一个子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离）。注意：子代理是当前会话任务树里的临时协作者，不是新的独立 AI 会话；用户要的是面板里一个全新的独立会话/话题时，用 app_control 的 ai_new_session，不是本工具。默认阻塞：等它跑完，把最终结论作为工具结果返回。mode=background 时派单即返回（不回等），做完自动通知你、期间你可以继续干活——适合一轮里同时派多个方向；要停下等回报就用 wait_agent（等的是自己收件箱里的新输入）。子代理默认只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网 / 记忆读取 / 技能 / 再派子代理），不能写文件或执行命令。isolation=worktree 时给子代理建一个独立隔离 git worktree：挂上 write_file / edit_file，写效应圈定在它自己的 .cadt/worktree/<slug>/ 前缀内（前缀外会被拒绝）、写操作自动应用——适合「多个方向并行试改，看结果再定」；它的改动不会进主根，完成后你用 worktree_manage 的 export（带 name=<slug>）导出补丁审阅回灌，或 discard 丢弃。子代理并发数（所有层级同时运行中的子代理总和）与层级上限（整棵树最多几层，主代理算第 1 层，你直接派出的子代理是第 2 层）受「设置 → AI 助手 → 子代理」限制：阻塞模式到并发上限会等空位，后台模式直接报错让你稍后再派（可等现有子代理完成再试）。你以子代理身份再派单时，maxRounds 不传会继承你自己的轮次上限（主代理派单才用设置默认）——多层审计 / 调研里中间层不会先于下级耗尽预算。sandbox 可把子代理权限档往严收（如把 auto 档的子代理限成 read 做纯调查，收紧命令写效应与读边界）；只能降不能升——父档更严时此值被忽略，绝不会给子代理松绑。',
+        description: '派出一个子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离）。注意：子代理是当前会话任务树里的临时协作者，不是新的独立 AI 会话；用户要的是面板里一个全新的独立会话/话题时，用 app_control 的 ai_new_session，不是本工具。默认阻塞：等它跑完，把最终结论作为工具结果返回。mode=background 时派单即返回（不回等），做完自动通知你、期间你可以继续干活——适合一轮里同时派多个方向；要停下等回报就用 wait_agent（等的是自己收件箱里的新输入）。子代理默认只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网 / 记忆读取 / 技能 / 再派子代理），不能写文件或执行命令。isolation=worktree 时给子代理建一个独立隔离 git worktree：挂上 write_file / edit_file，写效应圈定在它自己的 .cadt/worktree/<slug>/ 前缀内（前缀外会被拒绝）、写操作自动应用——适合「多个方向并行试改，看结果再定」；它的改动不会进主根，完成后你用 worktree_manage 的 export（带 name=<slug>）导出补丁审阅回灌，或 discard 丢弃。子代理并发数（所有层级同时运行中的子代理总和）与层级上限（整棵树最多几层，主代理算第 1 层，你直接派出的子代理是第 2 层）受「设置 → AI 助手 → 子代理」限制：阻塞模式到并发上限会等空位，后台模式直接报错让你稍后再派（可等现有子代理完成再试）。你以子代理身份再派单时，maxRounds 不传会继承你自己的轮次上限（主代理派单才用设置默认）——多层审计 / 调研里中间层不会先于下级耗尽预算。sandbox 可把子代理权限档往严收（如把 auto 档的子代理限成 read 做纯调查，收紧命令写效应与读边界）；只能降不能升——父档更严时此值被忽略，绝不会给子代理松绑。不传 sandbox 时默认封顶 auto：子代理命令进 OS 沙箱、写效应圈在工作区内；确实需要子代理跨目录写时显式传 full，此时主代理会收到一条非阻塞权限警告消息。',
         parameters: {
             type: 'object',
             properties: {
@@ -626,7 +629,7 @@ export const AI_TOOL_DEFS = {
                 sandbox: {
                     type: 'string',
                     enum: ['read', 'edit', 'auto', 'full'],
-                    description: '把子代理权限档往严收（单向降档）：取「父会话档」与「此值」中更严的一个生效。传比父档宽的值无效（不升档）。省略 = 继承父档',
+                    description: '把子代理权限档往严收（单向降档）：取「父会话档」与「此值」中更严的一个生效。传比父档宽的值无效（不升档）。省略 = 封顶 auto（默认，命令进沙箱、写效应圈在工作区）；显式传 full = 完全权限（不进沙箱、可写工作区外，主代理会收到一条非阻塞警告消息）',
                 },
             },
             required: ['name', 'task'],
@@ -1304,7 +1307,7 @@ export function buildSpawnAgentDef(choices, defaultRounds) {
 export const AI_TOOL_CATALOG = {
     list_dir: {group: 'read', blurb: '列目录与文件大小；depth 传 2–8 可递归出树，一次摸清多层结构'},
     read_file: {group: 'read', blurb: '读文件正文（可指定行范围），改文件前必须先读'},
-    get_file_outline: {group: 'read', blurb: '取源码文件的分节+函数+case 大纲（带行号），超大文件先摸结构再精准 read_file；行号实时不漂移'},
+    code_outline: {group: 'read', blurb: '跨语言源码大纲：read 取分节+函数/类索引（带行号），maintain 按语义分区写入分节注释；超大文件先摸结构再精准 read_file'},
     read_image: {group: 'read', blurb: '读图片把画面附加到对话（截图 / 图表 / UI 核对 / 公网图片 URL）；文本内容仍用 read_file'},
     read_video: {group: 'read', blurb: '读本地 mp4 把视频画面附加到对话（演示录屏 / 操作过程，≤16 MB）；图片用 read_image'},
     search_text: {group: 'read', blurb: '文本搜索（字面量/正则/全词，排除通配，files/count 聚合，offset/limit 分页+字符预算，includeIgnored 临时放行忽略目录），拿 path:line 或文件清单；结果不足再 read_file'},
@@ -1432,9 +1435,9 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.read_file,
             AI_TOOL_DEFS.read_image,
             AI_TOOL_DEFS.search_text,
-            // 文件大纲：纯只读解析，超大文件先摸结构再精准 read_file；全档位与计划模式可用。
+            // 代码大纲：read 纯只读解析（全档位与计划模式可用），maintain 写入按会话权限档判定。
             // 放在 read_video 的 splice(3,0) 插入点之后，避免破坏「read_video 紧跟 read_image」的顺序契约。
-            AI_TOOL_DEFS.get_file_outline,
+            AI_TOOL_DEFS.code_outline,
             // 文件发现：只读（Go FindFiles），所有档位与计划模式可用
             AI_TOOL_DEFS.glob,
             AI_TOOL_DEFS.memory_list,
@@ -1576,7 +1579,7 @@ export function createAIToolDefs(ctx) {
         }
         if (orcRole === 'work' || orcRole === 'review') {
             const allowed = new Set([
-                'list_dir', 'read_file', 'get_file_outline', 'read_image', 'read_video',
+                'list_dir', 'read_file', 'code_outline', 'read_image', 'read_video',
                 'search_text', 'glob', 'memory_list', 'memory_read', 'preference_list',
                 'session_history', 'session_search', 'session_read', 'skill_use', 'skill_list',
                 'env_list', 'web_search', 'web_fetch', 'cognition_read', 'cognition_status',
@@ -1645,7 +1648,7 @@ export function createAIToolDefs(ctx) {
         lines.push(
             '调度原则：',
             '- 先查后答：涉及文件、代码或数据时先读再下结论，不要凭记忆编造内容、行号或命令输出。',
-            '- 超大文件（几千行以上，如 main.js / ai-panel.js）：先 get_file_outline 拿分节+函数+case 大纲定位行段，再 read_file 精准读；不要整段试读或用 search_text 反复猜关键词。',
+            '- 超大文件（几千行以上，如 main.js / ai-panel.js）或跨语言源码：先 code_outline 拿分节+函数/类大纲定位行段，再 read_file 精准读；不要整段试读或用 search_text 反复猜关键词。要给没有分节的大文件建大纲时，先 code_outline read 拿符号清单，归纳 5~10 个语义分区后 code_outline maintain 写入（走审批）；小文件不必建大纲。',
             '- 并行读、串行写：互不依赖的只读调用可在同一轮一起发（多个文件、多个关键词）；有依赖时按结果顺序来。',
             '- 有专用工具就不要用 run_command 绕：列目录 / 读文件 / 搜索 / 找文件用 list_dir / read_file / search_text / glob；正则要用 search_text 的 regex:true，别拼 grep；工作区外路径也能直接传（已授权或会弹审批），不要拼 shell 命令去搜——引号与编码转义容易出错。',
             '- 工作区外的路径：用户明确给过路径的直接读/搜；没给过时 read/edit 档会请求批准（批准过的目录免询问）、auto/full 档可直接访问。search_text / glob 传 path 与 read_file 同权。被拒绝的路径不要反复尝试。',
@@ -1660,7 +1663,8 @@ export function createAIToolDefs(ctx) {
         const hasAll = (names) => names.every((name) => available.has(name));
         const chains = [
             {need: ['read_file'], text: '读懂代码/数据：search_text 定位 → read_file（多个文件可并行读）→ 结论标 path:line'},
-            {need: ['get_file_outline', 'read_file'], text: '读懂超大文件：get_file_outline 拿分节/函数大纲定位行段 → read_file 按 startLine/endLine 精准读'},
+            {need: ['code_outline', 'read_file'], text: '读懂超大文件/跨语言源码：code_outline 拿分节/函数/类大纲定位行段 → read_file 按 startLine/endLine 精准读'},
+            {need: ['code_outline'], text: '维护文件大纲：code_outline read 拿符号清单 → 归纳 5~10 个语义分区 → code_outline maintain 写入分节注释（大文件才需要，走审批）'},
             {need: ['read_image'], text: '看画面：截图 / 图表 / 设计稿 / 照片一律 read_image 直接附加到对话（read_file 读二进制会报错）；公网图片链接也传给它（web_fetch 只读文本）'},
             {need: ['read_video'], text: '看视频：需要理解本地 mp4（演示 / 录屏）时 read_video 把视频附加到对话（≤16 MB；图片用 read_image）'},
             {need: ['read_file', 'edit_file'], text: '修改文件：read_file 确认原文 → edit_file 最小替换 → run_command 跑测试/构建验证'},

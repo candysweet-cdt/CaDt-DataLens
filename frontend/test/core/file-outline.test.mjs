@@ -1,5 +1,5 @@
 // test/core/file-outline.test.mjs：core/file-outline.js 纯解析器的契约测试。
-// 这个解析器同时供静态地图脚本与 AI 工具 get_file_outline 用，行号/分节口径必须钉住。
+// 这个解析器同时供静态地图脚本与 AI 工具 code_outline（JS 委托）用，行号/分节口径必须钉住。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -86,7 +86,7 @@ test('parseOutline：返回总行数（按换行切分，与 read_file 行号同
 });
 
 test('parseOutline：大文本（数万行）无隐藏上限，首尾符号行号正确', () => {
-    // get_file_outline 放开 10MB 闸的前提：解析层对大文件没有行数/长度截断。
+    // code_outline 放开 10MB 闸的前提：解析层对大文件没有行数/长度截断。
     const lines = ['// ===== 第一段 =====', 'function first() {}'];
     for (let i = 0; i < 50000; i++) lines.push('const v' + i + ' = ' + i + ';');
     lines.push('// ===== 末段 =====', 'function last() {}');

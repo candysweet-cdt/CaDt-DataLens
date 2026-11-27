@@ -13,6 +13,7 @@ import {answerThinkingDefaultCollapsed} from '../chat/ai-always-collapse.js';
 import {CONTINUATION_PROMPT, truncatedNotice} from '../chat/ai-truncation.js';
 import '../core/ai-plan-file.js';
 
+// ===== 工具状态与实时摘要 =====
 // 解码可能未闭合的 JSON 字符串字面量：截掉不完整转义、补收尾引号再 parse；
 // parse 仍失败（如截断的 \uXX）就退回手写替换。仅显示用，无需严格。
 function decodePartialJsonString(frag) {
@@ -192,6 +193,7 @@ export function planApprovalInstruction(inWorktree, session) {
         'run_command / background_command 未显式传 cwd 时默认在隔离区里执行。';
 }
 
+// ===== 审批与询问卡片渲染 =====
 export function createAIToolCards(ctx) {
     const copyText = ctx.copyText;
     const flash = ctx.flash;
@@ -613,6 +615,7 @@ export function createAIToolCards(ctx) {
         wrap.appendChild(card);
     }
 
+// ===== 工具元数据表 =====
     // 工具卡 ZCode 风格：动词 + 图标 + 主参数（文件名/路径/命令）+ 目录 + diff 统计 + 状态
     // 每个动作使用独立图标，便于一眼区分「读取 / 搜索 / 写入」等不同操作。
     function toolMeta(name, approval) {
@@ -626,7 +629,7 @@ export function createAIToolCards(ctx) {
         }
         switch (name) {
             case 'read_file': return {verb: '读取', icon: 'eye'};
-            case 'get_file_outline': return {verb: '文件大纲', icon: 'list'};
+            case 'code_outline': return {verb: '代码大纲', icon: 'list'};
             case 'read_image': return {verb: '看图', icon: 'image'};
             case 'read_video': return {verb: '看视频', icon: 'play'};
             case 'list_dir': return {verb: '列目录', icon: 'folder'};
@@ -716,6 +719,7 @@ export function createAIToolCards(ctx) {
         }
     }
 
+// ===== 工具主标签与文件动词 =====
     function toolPrimary(message) {
         const args = parseJson(message.arguments, {}) || {};
         const path = aiTextOf(args.path).trim();
@@ -851,6 +855,7 @@ export function createAIToolCards(ctx) {
         }
     }
 
+// ===== 工具消息渲染 =====
     function toolFileVerb(message) {
         return message.name === 'read_file' || message.name === 'read_image' ||
             message.name === 'write_file' || message.name === 'edit_file';
@@ -1395,6 +1400,7 @@ export function createAIToolCards(ctx) {
         if (statusOnlyBody) chev.remove(); // 无正文：折叠箭头不出现（与读取卡同一口径）
     }
 
+// ===== 回答正文与代码块增强 =====
     // AI 正文的完整增强链：代码块复制钮 + 本地图片解析 + 可视化卡片（mermaid / echarts / svg /
     // html / 关系图 / 词云）。主消息区与子代理详情标签页共用同一条——少走一步，围栏就只剩
     // 一块源码占位（子代理视图历史遗留问题）。必须在 innerHTML 写入之后调用。
@@ -1485,6 +1491,7 @@ export function createAIToolCards(ctx) {
     const liveBaseTexts = new Map();
     const liveStatsCache = new Map();
     let liveTurnMessage = null; // 换轮即清缓存：调用序号跨轮复用，基线不能串轮
+// ===== 实时行与差异统计 =====
     function liveDiffStats(key, name, parts) {
         let baseText = null;
         let progress = -1;
@@ -1611,6 +1618,7 @@ export function createAIToolCards(ctx) {
         setTextIfChanged(row.querySelector('.ai-tool-state'), liveToolStateText(parts));
     }
 
+// ===== 助手元素实时更新 =====
     // 占位区增量更新：按 key 复用行、按 live 顺序就位、消失的行移除；
     // 形态（path 是否已收到 / ±统计是否可算）变化才重建那一行。
     function updateLiveTools(box, live, message) {
@@ -1882,6 +1890,7 @@ export function createAIToolCards(ctx) {
         if (!streaming) appendActions(wrap, message, Number(wrap.dataset.aiIdx), (options && options.session) || currentSession());
     }
 
+// ===== 计划批准 =====
     // grantItems：批准卡勾选的条目（{mode:'family', signature} / {mode:'exact', command}）。
     // 危险 / 复合条目（mode null）不会进勾选集合，这里再兜一层——危险命令永不落会话规则。
     // opts.inWorktree：批准卡「在隔离区中执行」开关——勾选后先建隔离区再执行，批准指令也随之不同。
