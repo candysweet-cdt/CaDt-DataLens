@@ -62,6 +62,26 @@ func (a *App) SetCloseAction(action string) error {
 	return nil
 }
 
+// MinimizeToTray 前端三选一确认框「最小化到托盘」按钮的落点：把调用方窗口藏起来，
+// 进程与 AI 回合、终端、后台命令全部照旧跑。只处理主窗口且有托盘能力的情形，
+// 其余（附属窗口 / 非 Windows）返回 false，前端据此可提示用户。
+func (a *App) MinimizeToTray(ctx context.Context) bool {
+	if a.convert != nil || !traySupported() {
+		return false
+	}
+	st := stateForCaller(ctx)
+	if st == nil || st.Startup().Mode != windowModeMain {
+		return false
+	}
+	w := st.Window()
+	if w == nil {
+		return false
+	}
+	setMainWindow(w)
+	a.hideToTray(w)
+	return true
+}
+
 // QuitApp 显式退出（菜单「退出」/ 托盘右键「退出」）。与点 X 不同，它不受
 // 「最小化到托盘」影响，但未保存 / 任务进行中的确认照旧要走。
 //

@@ -1,6 +1,6 @@
 // structure-panel.js：从 main.js 拆出的域模块（factory + 显式依赖注入）。
 // 结构面板：语言结构解析（Worker + 缓存）、面板初始化与大纲渲染、
-// 来源切换、会话结构导出菜单。
+// 结构化复制 / 导出菜单。
 //
 // deps 由 main.js 显式传入（getter 延迟求值）；原裸标识符引用已重写为 deps.X，
 // 对象简写位展开为 key: deps.X。
@@ -126,87 +126,13 @@ function initStructurePanel() {
         },
         onJump: (node) => jumpToStructureNode(node),
         parseAsync: (name, text, doc) => parseStructureCached(name, text, doc),
-        onSessionJump: (index) => {
-            if (deps.aiPanel && typeof deps.aiPanel.bridgeJumpToMessage === 'function') deps.aiPanel.bridgeJumpToMessage(index);
-        },
     });
     if (deps.els.structureExport) {
         deps.els.structureExport.innerHTML = iconSvg('structured-dir');
         deps.els.structureExport.addEventListener('click', () => showStructureExportMenu());
     }
-    if (deps.els.structureSource) {
-        deps.els.structureSource.innerHTML = deps.iconSvg('file', 14);
-        deps.els.structureSource.addEventListener('click', toggleStructureSource);
-    }
-    // 会话结构模式下「刷新」要重新向 AI 面板取一次快照（面板内部的 refresh 只重渲染已有数据）
-    if (deps.els.structureRefresh) {
-        deps.els.structureRefresh.addEventListener('click', () => {
-            if (deps.structurePanel && deps.structurePanel.getSource() === 'session') refreshStructureSources();
-        });
-    }
-    deps.structurePanel.setSource(deps.settings.structureSource);
     deps.structurePanel.setDoc(deps.file);
     deps.applySidebarUI();
-    refreshStructureSources();
-}
-
-// ---- 结构面板的两个来源：文件结构 / 会话结构（用户消息定位条） ----
-// 内容区只有文件            → 只显示文件结构
-// 内容区只有 AI 助手        → 只显示当前会话的结构（全屏，或停靠且没打开文件时 AI 占满内容区）
-// 两者都在                  → 默认文件结构，面板头部图标可在两者间切换（偏好存 settings）
-function structureSources() {
-    const aiOpen = !!(deps.aiPanel && deps.aiPanel.isOpen && deps.aiPanel.isOpen());
-    const aiMode = deps.aiPanel && deps.aiPanel.getMode ? deps.aiPanel.getMode() : '';
-    // 悬浮窗在另一个窗口里，本窗口内容区没有 AI，也就没有可定位的会话结构
-    const aiVisible = aiOpen && aiMode !== 'float';
-    const hasFile = !!deps.file;
-    const aiOnly = aiVisible && (aiMode === 'fullscreen' || !hasFile);
-    return {file: hasFile && !aiOnly, session: aiVisible};
-}
-
-function structureOutlineSnapshot() {
-    try {
-        if (deps.aiPanel && typeof deps.aiPanel.bridgeSessionOutline === 'function') return deps.aiPanel.bridgeSessionOutline();
-    } catch (e) {}
-    return null;
-}
-
-function syncStructureChrome(effective, sources) {
-    const sessionMode = effective === 'session';
-    if (deps.els.structureTitle) deps.els.structureTitle.textContent = sessionMode ? '会话结构' : '结构';
-    if (deps.els.structureSource) {
-        const both = sources.file && sources.session;
-        deps.els.structureSource.classList.toggle('hidden', !both);
-        deps.els.structureSource.classList.toggle('active', sessionMode);
-        deps.els.structureSource.innerHTML = deps.iconSvg(sessionMode ? 'feedback' : 'file', 14);
-        deps.els.structureSource.setAttribute('aria-pressed', String(sessionMode));
-        deps.els.structureSource.dataset.tip = sessionMode
-            ? '当前：会话结构（点击切到文件结构）'
-            : '当前：文件结构（点击切到会话结构）';
-    }
-    // 复制/导出与「全部折叠」只对文件结构有意义
-    if (deps.els.structureExport) deps.els.structureExport.classList.toggle('hidden', sessionMode);
-    if (deps.els.structureCollapse) deps.els.structureCollapse.classList.toggle('hidden', sessionMode);
-    if (deps.els.structureRefresh) deps.els.structureRefresh.dataset.tip = sessionMode ? '刷新会话结构' : '刷新结构';
-}
-
-function refreshStructureSources() {
-    if (!deps.structurePanel) return '';
-    const src = structureSources();
-    const effective = deps.structurePanel.setSources(src);
-    deps.structurePanel.setSessionOutline(src.session ? structureOutlineSnapshot() : null);
-    syncStructureChrome(effective, src);
-    return effective;
-}
-
-function toggleStructureSource() {
-    if (!deps.structurePanel) return;
-    const next = deps.structurePanel.getSource() === 'session' ? 'file' : 'session';
-    deps.settings.structureSource = next;
-    // 轻量落盘出口：structureSource 是每窗独立键，广播到对端会被剥掉，但出口必须统一
-    deps.persistSettingsLight();
-    const effective = deps.structurePanel.setSource(next);
-    syncStructureChrome(effective, structureSources());
 }
 
 // 结构面板的结构化复制 / 导出：文本格式与「结构化目录」一致
@@ -257,11 +183,6 @@ function toggleStructureExportLineNums() {
         parseStructureCached,
         scheduleStructureRefresh,
         initStructurePanel,
-        structureSources,
-        structureOutlineSnapshot,
-        syncStructureChrome,
-        refreshStructureSources,
-        toggleStructureSource,
         structureTreeText,
         showStructureExportMenu,
         toggleStructureExportLineNums,

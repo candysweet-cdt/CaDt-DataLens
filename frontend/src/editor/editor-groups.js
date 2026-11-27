@@ -1721,7 +1721,6 @@ function updateDocChrome() {
     // 内容区不可见」的空白状态。收起从来不是固定锁，看内容就展开。
     if (deps.onDocVisible) deps.onDocVisible(deps.file);
     syncAllBrowserTabs();
-    deps.refreshStructureSources();
 }
 
 function showWelcome() {
@@ -1771,7 +1770,6 @@ function showWelcome() {
     deps.syncExplorerActive();
     if (deps.structurePanel) deps.structurePanel.setDoc(null);
     if (deps.aiPanel) deps.aiPanel.refreshDockFill();
-    deps.refreshStructureSources();
 }
 
 let activateToken = 0;

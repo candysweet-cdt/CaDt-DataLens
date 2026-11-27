@@ -27,13 +27,19 @@ AI 正在跑长任务、终端里有命令、后台作业还在跑，手贱关�
 | `app_close_action.go` | `shouldHideOnClose` 唯一判定、`GetCloseAction` / `SetCloseAction` / `QuitApp` 绑定、`hideToTray` / `restoreFromTray` / `quitFromTray` / `stopTray` |
 | `app_window.go` | `beforeClose` 最前面加隐藏分支；真正退出的两条出口调 `stopTray` |
 | `trayhost_windows.go` / `trayhost_other.go` | 平台接缝：托盘图标编号（复用 exe 图标组 `appIconID`）、`SM_SHUTTINGDOWN` 探测 |
-| `internal/appconfig` | `config.json` 新增 `closeAction`（`exit` / `tray`，非法值回落 `exit`） |
+| `internal/appconfig` | `config.json` 新增 `closeAction`（`ask` / `exit` / `tray`，默认 `ask`，非法值回落 `exit`） |
 | 前端 | 设置页「关闭窗口时」下拉 + `settings.closeAction` + `syncCloseAction`（复用 openMode 那套「前端改 → 后端落盘」）；`exitApp` 改走 `QuitApp`；启动时 `GetCloseAction` 回读覆盖本机 localStorage |
+
+> 2026-11-29 追加 `ask`（每次询问，默认值）：点 X 弹三选一（取消 / 退出应用 / 最小化到托盘），
+> 勾选「不再询问」把选择写回 `closeAction`。判定见下表新增的 ask 行；前端对话框 `#dlg-close-confirm`
+> 与绑定 `MinimizeToTray` 是这次新增的落点。
 
 ### 3.1 判定表（`shouldHideOnClose`）
 
 | action | 主窗口 | forceClose | 显式退出 | 系统关机 | 结果 |
 | --- | --- | --- | --- | --- | --- |
+| ask | 是 | 否 | 否 | 否 | **弹三选一**（`close-choice` 事件）：取消 / 退出应用（`ForceQuitAll`）/ 最小化到托盘（`MinimizeToTray`） |
+| ask | 否 / 强制 / 关机 | — | — | — | 回落 exit 分支（附属窗口与关机不能弹框卡住） |
 | exit / 空 | 任意 | 任意 | 任意 | 任意 | 退出 |
 | tray | 否 | — | — | — | 退出（多窗口 / 浮窗 / 调试台） |
 | tray | 是 | 是 | — | — | 退出（强制关闭） |

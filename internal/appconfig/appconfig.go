@@ -27,6 +27,8 @@ type Config struct {
 
 // 点窗口关闭按钮（X）时的行为。
 const (
+	// CloseActionAsk 每次点 X 都弹三选一确认框（取消 / 退出应用 / 最小化到托盘），是默认值。
+	CloseActionAsk = "ask"
 	// CloseActionExit 直接退出程序。
 	CloseActionExit = "exit"
 	// CloseActionTray 隐藏窗口留在托盘，进程与后台任务（AI 回合、终端、后台命令）继续跑。
@@ -34,17 +36,17 @@ const (
 )
 
 // NormalizeCloseAction 归一化关闭行为取值，非法值回落「直接退出」
-// （宁可退出也别把窗口藏起来让人找不着）。
+// （宁可退出也别把窗口藏起来让人找不着；ask 只在显式配置或首次默认时出现）。
 func NormalizeCloseAction(action string) string {
-	if action == CloseActionTray {
-		return CloseActionTray
+	if action == CloseActionTray || action == CloseActionExit || action == CloseActionAsk {
+		return action
 	}
 	return CloseActionExit
 }
 
 // Default 返回无配置时的默认值。
 func Default() Config {
-	return Config{OpenMode: "tab", CloseAction: CloseActionExit, PluginsPathMode: "portable", DataSource: plugins.MarketSourceGitee}
+	return Config{OpenMode: "tab", CloseAction: CloseActionAsk, PluginsPathMode: "portable", DataSource: plugins.MarketSourceGitee}
 }
 
 // Path 返回 config.json 的绝对路径（应用数据根目录不可用时返回空串）。

@@ -14,6 +14,8 @@ let writingCaretRaf = 0;
 let writingCaretTimer = 0;
 // 通用确认框当前绑定的触发键（openConfirmDialog 的 options.keys）；框关闭后由可见性判定兜底失效
 let confirmKeys = [];
+// 关窗三选一确认框本次的回调（取消 / 退出应用 / 最小化到托盘），由 openCloseConfirmDialog 注入
+let closeConfirmHandlers = null;
 
 function writingActive() {
     return !!deps.settings.writingMode && !!deps.file && !deps.file.binary && !deps.file.large
@@ -561,6 +563,29 @@ function openConfirmDialog(message, action, okLabel, title, variant, options) {
     deps.openDialogEl(deps.elsDialogs.confirm, {keepSettings: true});
 }
 
+// openCloseConfirmDialog：关窗三选一（取消 / 退出应用 / 最小化到托盘）+「不再询问」复选框。
+// 与 openConfirmDialog 分开，避免动它 6 参契约（confirm-dialog-keys.test.mjs 依赖）。
+// handlers = {cancel, exit, tray}，三者都收到同一个「不再询问」布尔值。
+function openCloseConfirmDialog(detailText, handlers) {
+    closeConfirmHandlers = handlers || {};
+    const d = deps.elsDialogs;
+    if (d.closeConfirmDetail) {
+        d.closeConfirmDetail.textContent = detailText || '';
+        d.closeConfirmDetail.classList.toggle('hidden', !detailText);
+    }
+    if (d.closeConfirmRemember) d.closeConfirmRemember.checked = false;
+    deps.openDialogEl(d.closeConfirm, {keepSettings: true});
+}
+
+function submitCloseConfirm(choice) {
+    const handlers = closeConfirmHandlers || {};
+    const remember = !!(deps.elsDialogs.closeConfirmRemember && deps.elsDialogs.closeConfirmRemember.checked);
+    closeConfirmHandlers = null;
+    deps.closeTopDialog();
+    const fn = handlers[choice];
+    if (typeof fn === 'function') fn(remember);
+}
+
 function submitConfirm() {
     const action = deps.getConfirmAction();
     deps.setConfirmAction(null);
@@ -570,6 +595,9 @@ function submitConfirm() {
 }
 
 document.getElementById('btn-discard').addEventListener('click', submitConfirm);
+deps.elsDialogs.closeCancel.addEventListener('click', () => submitCloseConfirm('cancel'));
+deps.elsDialogs.closeExit.addEventListener('click', () => submitCloseConfirm('exit'));
+deps.elsDialogs.closeTray.addEventListener('click', () => submitCloseConfirm('tray'));
 
 // 确认框触发键：window 捕获阶段——弹框时焦点可能仍落在触发它的输入框（如消息编辑区），
 // 那里自己的 keydown 会 stopPropagation，冒泡监听收不到。只在框可见、按下本次绑定键且
@@ -590,7 +618,8 @@ document.getElementById('btn-props-ok').addEventListener('click', deps.closeDial
 document.querySelectorAll('.dialog-close').forEach((btn) => btn.addEventListener('click', deps.closeTopDialog));
 deps.elsDialogs.mask.addEventListener('click', (e) => {
     if (e.target !== deps.elsDialogs.mask) return;
-    if (!deps.elsDialogs.confirm.classList.contains('hidden') || !deps.elsDialogs.conflict.classList.contains('hidden') ||
+    if (!deps.elsDialogs.confirm.classList.contains('hidden') || !deps.elsDialogs.closeConfirm.classList.contains('hidden') ||
+        !deps.elsDialogs.conflict.classList.contains('hidden') ||
         !deps.elsDialogs.name.classList.contains('hidden') ||
         !deps.elsDialogs.props.classList.contains('hidden') || !deps.elsDialogs.update.classList.contains('hidden') ||
         !deps.elsDialogs.writing.classList.contains('hidden') ||
@@ -610,24 +639,10 @@ document.querySelector('.settings-nav').addEventListener('click', (e) => {
     const pane = item.dataset.pane;
     deps.selectSettingsPane(pane);
     if (pane === 'integration') deps.syncIntegrationStatus();
-    // 锚点入口：同一个 pane 内的不同分组各给一个侧栏入口（写作模式 / 代码截图 / 子代理 / 端侧分类器）。
-    // selectSettingsPane 按 dataset.pane 高亮会让同 pane 的多个按钮一起亮，这里纠正为只亮被点的那个；
-    // 再把目标分组滚到视口中央短暂高亮。不改 pane id，AI 工具的 open_settings pane 清单因此保持有效。
-    const anchor = item.dataset.anchor;
-    if (anchor) {
-        document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b === item));
-        requestAnimationFrame(() => {
-            const group = document.getElementById(anchor);
-            if (!group || !group.isConnected) return;
-            group.scrollIntoView({block: 'center'});
-            group.classList.add('settings-hit');
-            setTimeout(() => group.classList.remove('settings-hit'), 1600);
-        });
-    }
 });
 // 常用编程语言：独立于数据格式，每个语言单独配置环境信息（为后续辅助运行代码预留）
 
 return {applyWritingFormat, applyWritingMode, insertSceneSeparator, jumpToPosition, openConfirmDialog,
-        openGotoDialog, openWritingNameDialog, scheduleCursorPosition, scheduleWritingCaret, toggleWritingMode,
-        updateCursorPosition, updateWritingStats, writingFormatable};
+        openCloseConfirmDialog, openGotoDialog, openWritingNameDialog, scheduleCursorPosition, scheduleWritingCaret,
+        toggleWritingMode, updateCursorPosition, updateWritingStats, writingFormatable};
 }

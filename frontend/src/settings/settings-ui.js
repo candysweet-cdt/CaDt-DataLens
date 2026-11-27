@@ -275,6 +275,13 @@ const elsDialogs = {
     confirm: document.getElementById('dlg-confirm'),
     confirmText: document.getElementById('dlg-confirm-text'),
     confirmOk: document.getElementById('btn-discard'),
+    closeConfirm: document.getElementById('dlg-close-confirm'),
+    closeConfirmText: document.getElementById('dlg-close-confirm-text'),
+    closeConfirmDetail: document.getElementById('dlg-close-confirm-detail'),
+    closeConfirmRemember: document.getElementById('close-confirm-remember'),
+    closeExit: document.getElementById('btn-close-exit'),
+    closeTray: document.getElementById('btn-close-tray'),
+    closeCancel: document.getElementById('btn-close-cancel'),
     conflict: document.getElementById('dlg-save-conflict'),
     runDirty: document.getElementById('dlg-run-dirty'),
     runDirtyText: document.getElementById('dlg-run-dirty-text'),
@@ -339,11 +346,12 @@ function syncOpenMode() {
     }
 }
 
-// 关闭行为（exit / tray）：判定在后端 beforeClose，所以每次变化都要推过去落盘。
+// 关闭行为（ask / exit / tray）：判定在后端 beforeClose，所以每次变化都要推过去落盘。
 // 首次 applySettings 只记快照不推送——启动时后端已从 config.json 读到同一个值。
 let syncedCloseAction = null;
 function syncCloseAction() {
-    const value = deps.settings.closeAction === 'tray' ? 'tray' : 'exit';
+    const raw = deps.settings.closeAction;
+    const value = raw === 'tray' || raw === 'ask' ? raw : 'exit';
     if (syncedCloseAction === null) {
         syncedCloseAction = value;
         return;
@@ -888,16 +896,7 @@ function selectSettingsPane(pane) {
             if (parent) parent.setAttribute('aria-expanded', 'true');
         }
     }
-    const aiGroup = document.getElementById('snav-ai');
-    if (aiGroup) {
-        // 外部工具、智能体已迁为应用页面标签页（core/app-pages.js），不再是设置子页
-        const inAI = pane === 'models' || pane === 'gen-models' || pane === 'ai' || pane === 'orchestration' || pane === 'persona' || pane === 'context' || pane === 'preferences';
-        if (inAI && !aiGroup.classList.contains('expanded')) {
-            aiGroup.classList.add('expanded');
-            const parent = aiGroup.querySelector('.snav-parent');
-            if (parent) parent.setAttribute('aria-expanded', 'true');
-        }
-    }
+    // AI 分组已平铺到「AI」section 下（无 snav-ai 折叠组），无需展开逻辑。
     if (pane === 'formats') deps.renderFmtTable();
     else if (String(pane).startsWith('fmt-')) deps.renderFormatPane(pane.slice(4));
     else if (String(pane).startsWith('lang-')) deps.renderLangPane(pane.slice(5));

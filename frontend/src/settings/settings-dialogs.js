@@ -8,7 +8,7 @@ export function createSettingsDialogs(deps) {
 // Esc 归全局栈按层序退（子对话框先于设置窗）；这里的 parentSettings 伪栈只管家族内部。
 const familyHandles = new Map();
 function familyDlgList() {
-    return [deps.elsDialogs.settings, deps.elsDialogs.confirm, deps.elsDialogs.conflict, deps.elsDialogs.runDirty, deps.elsDialogs.runConfirm, deps.elsDialogs.name, deps.elsDialogs.goto, deps.elsDialogs.props, deps.elsDialogs.update, deps.elsDialogs.writing, deps.elsDialogs.writingName];
+    return [deps.elsDialogs.settings, deps.elsDialogs.confirm, deps.elsDialogs.closeConfirm, deps.elsDialogs.conflict, deps.elsDialogs.runDirty, deps.elsDialogs.runConfirm, deps.elsDialogs.name, deps.elsDialogs.goto, deps.elsDialogs.props, deps.elsDialogs.update, deps.elsDialogs.writing, deps.elsDialogs.writingName];
 }
 function disposeFamilyHandlesExcept(dlg) {
     for (const el of familyDlgList()) {
@@ -31,7 +31,7 @@ function openDialogEl(dlg, options) {
         !deps.elsDialogs.settings.classList.contains('hidden');
     deps.elsDialogs.mask.classList.remove('hidden');
     if (!keepSettings) deps.elsDialogs.settings.classList.add('hidden');
-    for (const other of [deps.elsDialogs.confirm, deps.elsDialogs.conflict, deps.elsDialogs.runDirty, deps.elsDialogs.runConfirm, deps.elsDialogs.name, deps.elsDialogs.goto, deps.elsDialogs.props, deps.elsDialogs.update, deps.elsDialogs.writing, deps.elsDialogs.writingName]) {
+    for (const other of [deps.elsDialogs.confirm, deps.elsDialogs.closeConfirm, deps.elsDialogs.conflict, deps.elsDialogs.runDirty, deps.elsDialogs.runConfirm, deps.elsDialogs.name, deps.elsDialogs.goto, deps.elsDialogs.props, deps.elsDialogs.update, deps.elsDialogs.writing, deps.elsDialogs.writingName]) {
         if (other !== dlg) other.classList.add('hidden');
     }
     dlg.dataset.parentSettings = keepSettings ? '1' : '';
@@ -56,7 +56,7 @@ function openDialogEl(dlg, options) {
 
 function closeTopDialog() {
     if (!deps.elsDialogs.settings.classList.contains('hidden')) {
-            for (const dlg of [deps.elsDialogs.confirm, deps.elsDialogs.conflict, deps.elsDialogs.runDirty, deps.elsDialogs.runConfirm, deps.elsDialogs.name, deps.elsDialogs.goto, deps.elsDialogs.props, deps.elsDialogs.update, deps.elsDialogs.writing, deps.elsDialogs.writingName]) {
+            for (const dlg of [deps.elsDialogs.confirm, deps.elsDialogs.closeConfirm, deps.elsDialogs.conflict, deps.elsDialogs.runDirty, deps.elsDialogs.runConfirm, deps.elsDialogs.name, deps.elsDialogs.goto, deps.elsDialogs.props, deps.elsDialogs.update, deps.elsDialogs.writing, deps.elsDialogs.writingName]) {
             if (dlg.classList.contains('hidden') || dlg.dataset.parentSettings !== '1') continue;
             dlg.classList.add('hidden');
             const handle = familyHandles.get(dlg);
@@ -86,6 +86,7 @@ function closeDialogs() {
     deps.elsDialogs.mask.classList.add('hidden');
     deps.elsDialogs.settings.classList.add('hidden');
     deps.elsDialogs.confirm.classList.add('hidden');
+    deps.elsDialogs.closeConfirm.classList.add('hidden');
     // runDirty / runConfirm 也要一起藏：disposeFamilyHandlesExcept 现在只出栈「已隐藏」的成员，
     // 漏掉这两个会让它们在强制收场后既不 hidden 也不出栈（既露在屏上又占着 Esc）。
     deps.elsDialogs.runDirty.classList.add('hidden');

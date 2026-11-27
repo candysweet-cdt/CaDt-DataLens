@@ -38,8 +38,8 @@ func TestSaveReadRoundTrip(t *testing.T) {
 
 func TestCloseActionDefaultAndRoundTrip(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
-	// 缺省是「直接退出」：没配置过不能把窗口藏进托盘
-	if got := CloseAction(); got != CloseActionExit {
+	// 缺省是「每次询问」：点 X 弹三选一，让用户自己决定退出还是留后台
+	if got := CloseAction(); got != CloseActionAsk {
 		t.Fatalf("默认关闭行为不符: %q", got)
 	}
 	if err := SaveCloseAction(CloseActionTray); err != nil {
@@ -66,6 +66,7 @@ func TestCloseActionDefaultAndRoundTrip(t *testing.T) {
 
 func TestNormalizeCloseAction(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
+		{"ask", CloseActionAsk},
 		{"tray", CloseActionTray},
 		{"exit", CloseActionExit},
 		{"", CloseActionExit},
@@ -86,7 +87,7 @@ func TestCloseActionIgnoresBrokenStorage(t *testing.T) {
 	if err := os.WriteFile(Path(), []byte(`{"closeAction":"tray","openMode":`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := CloseAction(); got != CloseActionExit {
-		t.Fatalf("坏配置必须回落默认值，得到 %q", got)
+	if got := CloseAction(); got != CloseActionAsk {
+		t.Fatalf("坏配置必须回落默认值（ask），得到 %q", got)
 	}
 }

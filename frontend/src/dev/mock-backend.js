@@ -1705,7 +1705,13 @@ const mockBackend = {
     async ResolveRunShell() { return {path: 'mock-shell', name: 'Mock Shell'}; },
     async CleanupRunTemp() { return null; },
     async CleanupRunTempStale() { return 0; },
-    async DetectRunProject() { return {root: '', kind: 'Mock', marker: '', commands: [], note: '浏览器 mock 环境没有项目探测'}; },
+    async DetectRunProject() {
+        // ?maven 场景：dev 模式下让 Maven 工具窗口可达（否则 kind 恒为 Mock，面板 mock 全是死代码）
+        if (mockScenario.has('maven')) {
+            return {root: 'mock://workspace/sky', kind: 'Maven', marker: 'pom.xml', commands: [], note: 'Maven 项目请在侧边栏 Maven 工具窗口里执行目标。'};
+        }
+        return {root: '', kind: 'Mock', marker: '', commands: [], note: '浏览器 mock 环境没有项目探测'};
+    },
     async MavenProjectInfo() {
         return {
             root: 'mock://workspace/sky', pomPath: 'mock://workspace/sky/pom.xml',
@@ -1717,7 +1723,7 @@ const mockBackend = {
             settingsPath: 'mock://home/.m2/settings.xml', settingsExists: true,
         };
     },
-    async MavenData(workspaceRoot, mvnPath, timeoutMs, kind) {
+    async MavenData(workspaceRoot, mvnPath, timeoutMs, kind, moduleRelPath) {
         if (kind === 'dependency-tree') {
             return [
                 'com.sky:sky:jar:1.0.0',
@@ -2298,10 +2304,11 @@ const mockBackend = {
     },
     async SetOpenMode(mode) { window.__mockOpenMode = mode; },
     async GetCloseAction() {
-        if (!window.__mockCloseAction) window.__mockCloseAction = 'exit';
+        if (!window.__mockCloseAction) window.__mockCloseAction = 'ask';
         return window.__mockCloseAction;
     },
-    async SetCloseAction(action) { window.__mockCloseAction = action === 'tray' ? 'tray' : 'exit'; },
+    async SetCloseAction(action) { window.__mockCloseAction = action === 'tray' || action === 'ask' ? action : 'exit'; },
+    async MinimizeToTray() { window.__mockMinimizeToTray = (window.__mockMinimizeToTray || 0) + 1; return true; },
     async QuitApp() { this._calls.push('quit-app'); },
     async ForceQuitAll() { window.__mockForceQuitAll = (window.__mockForceQuitAll || 0) + 1; },
     // --quit 优雅退出的窗口 ack（真实后端按窗口名去重；mock 记数即可）
@@ -2633,7 +2640,10 @@ const mockBackend = {
             cron: String(input.cron || ''),
             prompt: String(input.prompt || ''),
             sessionId: String(input.sessionId || ''),
-            scope: ['chat', 'read', 'edit'].includes(input.scope) ? input.scope : 'chat',
+            scope: ['inherit', 'read', 'edit', 'auto', 'full', 'chat'].includes(input.scope)
+                ? (input.scope === 'chat' ? 'inherit' : input.scope) : 'inherit',
+            profileId: String(input.profileId || ''),
+            modelId: String(input.modelId || ''),
             enabled: true,
             createdAt: now,
             lastRunAt: 0,
@@ -2659,7 +2669,10 @@ const mockBackend = {
             intervalMinutes: Number(input.intervalMinutes) || 0,
             cron: String(input.cron || ''),
             prompt: String(input.prompt || schedule.prompt),
-            scope: ['chat', 'read', 'edit'].includes(input.scope) ? input.scope : schedule.scope,
+            scope: ['inherit', 'read', 'edit', 'auto', 'full', 'chat'].includes(input.scope)
+                ? (input.scope === 'chat' ? 'inherit' : input.scope) : schedule.scope,
+            profileId: String(input.profileId || ''),
+            modelId: String(input.modelId || ''),
             maxRuns: Number(input.maxRuns) || 0,
             nextRunAt: Date.now() + 60000,
         });
@@ -4573,6 +4586,8 @@ const mockBackend = {
             warnings: [], plan: plan,
             waves: (plan.batches || []).map((b) => [b.id]),
             reviewEnabled: !!(plan.policy && plan.policy.review),
+            finalReviewEnabled: !!(plan.policy && plan.policy.finalReview),
+            finalReviewCount: (plan.policy && plan.policy.finalReviewCount) || 0,
             auditMinMs: 7200000,
         };
     },

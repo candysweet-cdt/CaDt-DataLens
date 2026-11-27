@@ -257,6 +257,17 @@ func (a *App) beforeCloseWindow(st *windowState) bool {
 		a.hideToTray(st.Window())
 		return true
 	}
+	// 设置里选了「每次询问」（默认值）：点 X 弹三选一确认框（取消 / 退出应用 / 最小化到托盘）。
+	// 仅主窗口参与；非 Windows 无托盘能力时回落下面的 exit 逻辑（避免「最小化到托盘」藏了找不回）。
+	// 系统关机 / 显式退出 / 强制关闭时不能弹框卡住，直接走下面的放行分支。
+	if a.convert == nil && isMain && traySupported() && a.closeAction == appconfig.CloseActionAsk &&
+		!st.ForceClosed() && !a.quitRequested.Load() && !systemShuttingDown() {
+		if w := st.Window(); w != nil {
+			// 风险快照按「退出应用」口径（弹窗的「退出应用」走 ForceQuitAll，带走全部窗口与进程级任务）。
+			w.EmitEvent("close-choice", a.appQuitReasonSnapshot())
+			return true
+		}
+	}
 	// 关窗二次确认的依据不止「AI 回合进行中」：终端会话与 AI 后台命令作业都会随
 	// 进程退出被静默终止，一并计入。这些是进程级资源：只有「退出应用」的路径
 	// （最后一个主窗口 / 最后一个窗口）才真正带走它们——关掉中间某个主窗口时

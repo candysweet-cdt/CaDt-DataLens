@@ -67,7 +67,8 @@ const STRUCT_INTERFACES = {
     AISchedule: [
         ['id', 'string'], ['name', 'string'], ['kind', 'string'], ['at?', 'string'],
         ['intervalMinutes?', 'number'], ['cron?', 'string'], ['prompt', 'string'], ['sessionId', 'string'],
-        ['scope', 'string'], ['enabled', 'boolean'], ['createdAt', 'number'], ['lastRunAt', 'number'],
+        ['scope', 'string'], ['profileId?', 'string'], ['modelId?', 'string'],
+        ['enabled', 'boolean'], ['createdAt', 'number'], ['lastRunAt', 'number'],
         ['nextRunAt', 'number'], ['runCount', 'number'], ['maxRuns', 'number'], ['lastResult', 'string'],
     ],
 };
