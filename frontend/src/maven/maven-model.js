@@ -33,6 +33,11 @@ export function mavenFlagArgs(flags) {
 // 但 Windows 外层还有 cmd /c 包装，cmd 元字符（& | < > ^ % ! 引号 空白）会被再解释，一律不收。
 const SAFE_TOKEN_RE = /^[A-Za-z0-9_\-:.,+=?@/\\]+$/;
 
+// 模块相对路径白名单：relPath 来自**不可信 pom** 的 <module> 原文，与 goal 词元进同一条
+// cmd /c 命令行——goal 有白名单这里也必须有，否则 <module>foo&calc</module> 会绕过整道防线。
+// 模块路径本就只需要字母数字与 . / _ -（Go 侧 RelPath 已 ToSlash，`\` 一律异常）。
+const SAFE_MODULE_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
 // 把自由文本拆成词元；任一词元含不允许的字符即抛错（错误文案直接给 flash）。
 export function splitGoalTokens(text) {
     const tokens = String(text || '').trim().split(/\s+/).filter(Boolean);
@@ -50,7 +55,7 @@ export function assembleMavenArgs({flags, goal, moduleRelPath} = {}) {
     const args = mavenFlagArgs(flags || {});
     const rel = String(moduleRelPath || '').trim();
     if (rel) {
-        if (rel.startsWith('/') || rel.startsWith('\\') || rel.includes('..') || rel.includes(':') || rel.includes('\\')) {
+        if (!SAFE_MODULE_RE.test(rel) || rel.includes('..') || rel.includes(':') || rel.includes('\\')) {
             throw new Error('非法模块路径：' + rel);
         }
         args.push('-pl', rel);
@@ -131,13 +136,20 @@ function xmlText(v) {
     return typeof v === 'string' ? v.trim() : (v == null ? '' : String(v));
 }
 
+// 取文档根节点：help:effective-pom 在聚合根上会按 reactor 输出多个 <project>（fast-xml-parser
+// 把同名兄弟收进数组），effective-settings 同理——只取第一个根。
+function firstNode(doc, key) {
+    const raw = doc && (doc[key] || Object.values(doc || {})[0]);
+    return Array.isArray(raw) ? raw[0] : raw;
+}
+
 // effective-pom 的 build/plugins——生效插件清单（pluginManagement 已被 Maven 解析进去）。
 // 只取顶层 <build><plugins>：Maven 的 help:effective-pom 已把激活 profile 与父 POM 的插件
 // 合并到这里，未激活 profile 的插件不在其中（有意为之，不单独展示）。
 // 返回 [{groupId, artifactId, version}]；解析失败抛错（调用方负责兜 UI）。
 export function parseEffectivePomPlugins(text) {
     const doc = xmlParse(text);
-    const project = doc && (doc.project || Object.values(doc)[0]);
+    const project = firstNode(doc, 'project');
     if (!project || typeof project !== 'object') return [];
     const build = xmlChild(project, 'build');
     const plugins = build && xmlChild(build, 'plugins');
@@ -154,7 +166,7 @@ export function parseEffectivePomPlugins(text) {
 // 返回 {localRepository, mirrors:[{id,url,mirrorOf}], repositories:[{id,url}]}。
 export function parseEffectiveSettings(text) {
     const doc = xmlParse(text);
-    const settings = doc && (doc.settings || Object.values(doc)[0]);
+    const settings = firstNode(doc, 'settings');
     const empty = {localRepository: '', mirrors: [], repositories: []};
     if (!settings || typeof settings !== 'object') return empty;
     const mirrorNodes = xmlChild(settings, 'mirrors');

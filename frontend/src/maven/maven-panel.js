@@ -43,7 +43,11 @@ export function createMavenPanel(deps) {
     async function ensureTrigger() {
         const key = deps.workspaceFolder || '';
         if (trigger.done && trigger.key === key) return trigger.ok;
-        trigger = {key, done: false, ok: false, reason: '', root: ''};
+        // 代际守卫：mount() 的启动判定与切工作区的 syncTrigger 可能并发（首次工具链扫描要起
+        // DetectToolchain 子进程，可耗时数秒）——完成时不校验归属，旧 key 的 ok/root 会写进
+        // 新 key 的对象（非 Maven 工作区显示图标、渲染错项目）。完成前发现被换代就整体作废。
+        const mine = {key, done: false, ok: false, reason: '', root: ''};
+        trigger = mine;
         syncButton();
         let ok = false;
         let reason = '';
@@ -56,7 +60,7 @@ export function createMavenPanel(deps) {
                     const tool = await deps.ensureToolchainForRun('java', 'maven');
                     if (tool && tool.path) {
                         ok = true;
-                        trigger.root = info.root;
+                        mine.root = info.root;
                         mvnPathCache = tool.path;
                     } else {
                         reason = '本机还没扫描到 Maven：到 设置 → 编程语言 → Java 里扫描或手动指定 mvn 路径。';
@@ -68,9 +72,10 @@ export function createMavenPanel(deps) {
         } catch (e) {
             reason = errText(e);
         }
-        trigger.done = true;
-        trigger.ok = ok;
-        trigger.reason = reason;
+        if (trigger !== mine) return ok;
+        mine.done = true;
+        mine.ok = ok;
+        mine.reason = reason;
         syncButton();
         // 触发失败但视图还停在 maven（重启恢复了残留的 sidebarView / 工作区刚被关）：
         // 自动退回 files，别让用户停在空面板上。
@@ -345,7 +350,7 @@ export function createMavenPanel(deps) {
                 icon: 'folder',
                 label: mod.artifactId || mod.name,
                 sub: mod.hasPom ? '' : '（没有 pom.xml）',
-                expandable: true,
+                expandable: !!mod.hasPom,
                 depth: 0,
                 children: mod.hasPom ? projectChildren(mod, mod.relPath) : [],
             });
@@ -423,6 +428,8 @@ export function createMavenPanel(deps) {
         try {
             await ensureProjectInfo();
         } catch (e) {
+            // 陈旧调用的失败不污染新一轮状态：先判代再写共享 trigger
+            if (seq !== renderSeq) return;
             trigger.ok = false;
             trigger.reason = '读取项目结构失败：' + errText(e);
         }
@@ -434,6 +441,16 @@ export function createMavenPanel(deps) {
         trigger = {key: deps.workspaceFolder || '', done: false, ok: false, reason: '', root: ''};
         resetCaches();
         renderTree();
+    }
+
+    // 设置变更入口（settings-changed → main.js）：设置页补扫了 Maven 后不用切工作区就能让
+    // 图标出现。与 syncTrigger 的区别是不做 key 去重——上次失败可能正是「工具链没扫」这类
+    // 可被设置修复的原因；但已就绪（图标已显示且 key 未变）时跳过，避免无关设置变更白起探测。
+    function revalidate() {
+        if (trigger.done && trigger.ok && trigger.key === (deps.workspaceFolder || '')) return;
+        trigger = {key: deps.workspaceFolder || '', done: false, ok: false, reason: '', root: ''};
+        syncButton();
+        ensureTrigger().then(() => syncButton()).catch(() => {});
     }
 
     // ---------- goal 弹窗（overlay-stack 注册，Esc 按层退） ----------
@@ -535,5 +552,5 @@ export function createMavenPanel(deps) {
         ensureTrigger().then(() => syncButton()).catch(() => {});
     }
 
-    return {mount, renderTree, syncTrigger, syncButton, refresh};
+    return {mount, renderTree, syncTrigger, syncButton, refresh, revalidate};
 }

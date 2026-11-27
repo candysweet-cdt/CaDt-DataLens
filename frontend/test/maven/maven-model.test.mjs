@@ -2,6 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {XMLParser} from 'fast-xml-parser';
 import {
     MAVEN_LIFECYCLE,
     MAVEN_FLAG_DEFS,
@@ -65,6 +66,11 @@ test('assembleMavenArgs：模块路径越界与空 goal 拒绝', () => {
     assert.throws(() => assembleMavenArgs({goal: 'compile', moduleRelPath: '..\\escape'})); // 反斜杠穿越（L5）
     assert.throws(() => assembleMavenArgs({goal: 'compile', moduleRelPath: 'a\\b'})); // 反斜杠分隔（L5）
     assert.throws(() => assembleMavenArgs({flags: {}, goal: ''}));
+    // cmd 元字符注入面：relPath 来自不可信 pom 的 <module> 原文，与 goal 词元同一道防线——
+    // Windows 上命令外层是 cmd /c，& | < > ^ % ! 会被 cmd 再解释
+    for (const bad of ['foo&bar', 'a|b', 'x>y', 'a<b', '%VAR%', 'a^b', 'a!b', 'a b', 'a;b']) {
+        assert.throws(() => assembleMavenArgs({goal: 'compile', moduleRelPath: bad}), undefined, bad + ' 应被拒绝');
+    }
 });
 
 test('parseDependencyTreeText：带 [INFO] 前缀与尾注的完整树', () => {
@@ -163,6 +169,19 @@ test('parseEffectivePomPlugins：无插件 / 垃圾输入', () => {
     assert.throws(() => parseEffectivePomPlugins('not xml at all <'));
 });
 
+// 聚合根上 help:effective-pom 按 reactor 输出多个 <project>，fast-xml-parser 收成数组——
+// 只取第一个根（根项目的插件），不能因为取不到 build 而返回空。
+test('parseEffectivePomPlugins：多根 reactor 输出取第一个根', () => {
+    const dualRoot = `<project><artifactId>root</artifactId><build><plugins><plugin><groupId>g</groupId><artifactId>root-plugin</artifactId></plugin></plugins></build></project>
+<project><artifactId>mod-a</artifactId><build><plugins><plugin><groupId>g</groupId><artifactId>mod-plugin</artifactId></plugin></plugins></build></project>`;
+    // 先实证双根在 fast-xml-parser 下确实是数组（这是修复的前提事实）
+    const doc = new XMLParser({ignoreAttributes: true, parseTagValue: false, trimValues: true}).parse(dualRoot);
+    assert.ok(Array.isArray(doc.project), '双根应解析为 project 数组');
+    const plugins = parseEffectivePomPlugins(dualRoot);
+    assert.equal(plugins.length, 1);
+    assert.equal(plugins[0].artifactId, 'root-plugin');
+});
+
 test('parseEffectiveSettings：本地仓库 + 镜像 + profile 仓库', () => {
     const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
@@ -216,6 +235,13 @@ test('parseEffectiveSettings：顶层仓库 + profile 仓库都收，按 id|url 
     const settings = parseEffectiveSettings(xml);
     assert.equal(settings.repositories.length, 2);
     assert.deepEqual(settings.repositories.map((r) => r.id), ['root-repo', 'profile-repo']);
+});
+
+test('parseEffectiveSettings：多根输出取第一个根', () => {
+    const dualRoot = `<settings><localRepository>/first</localRepository></settings>
+<settings><localRepository>/second</localRepository></settings>`;
+    const settings = parseEffectiveSettings(dualRoot);
+    assert.equal(settings.localRepository, '/first');
 });
 
 test('parseEffectiveSettings：缺段落回退空结构', () => {

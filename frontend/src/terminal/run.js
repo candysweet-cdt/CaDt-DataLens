@@ -1263,6 +1263,11 @@ export function createRunController(deps) {
     // Maven 工具窗口入口：按 exe+args+cwd 起一个运行会话。复用 runProject 的门禁
     // （isReadOnly / 并发上限）与会话机制，这里只补「首次确认」——按 lang 记一次。
     async function runCommand({label, exe, args, cwd}) {
+        // 只读拒绝前置：与 run 的门禁顺序一致（先拒只读再弹首次确认，别让只读用户白弹一次框）
+        if (deps.isReadOnly()) {
+            deps.flash('只读模式下不执行代码', true);
+            return;
+        }
         if (!deps.hasConfirmed('maven')) {
             // confirmRunOnce 的文案是「执行 <label> 代码」，传 'Maven' 才通顺（不是 'Maven 目标'）。
             const ok = await deps.confirmRun('Maven', 'maven');

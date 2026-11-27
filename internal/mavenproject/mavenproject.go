@@ -168,7 +168,11 @@ func readModules(parentDir string, names []string, parentRel string, depth int, 
 			continue
 		}
 		name = filepath.ToSlash(filepath.Clean(name))
-		if strings.HasPrefix(name, "/") || strings.Contains(name, "..") || strings.ContainsRune(name, ':') ||
+		// 元字符白名单与 validateModuleRelPath 同源：模块名进 cmd /c 命令行（-pl），
+		// 不可信 pom 里的 <module>foo&calc</module> 在这里就拦下，不进前端。
+		// `.` 自引用（Clean 后为 "."）会形成自嵌套怪树，一并跳过。
+		if name == "." || !safeModuleRelPath(name) || strings.Contains(name, "..") ||
+			strings.HasPrefix(name, "/") || strings.ContainsRune(name, ':') ||
 			strings.HasPrefix(name, "\\") {
 			skipped++
 			continue
@@ -277,6 +281,10 @@ func runMavenToFile(workspaceRoot, mvnPath string, timeoutMs int, moduleRelPath 
 	if _, err := runMaven(workspaceRoot, mvnPath, timeoutMs, args); err != nil {
 		return "", err
 	}
+	// 上限先用 Stat 预判：超大文件直接报错，不整读进内存
+	if st, serr := os.Stat(tmpPath); serr == nil && st.Size() > maxOutputBytes {
+		return "", fmt.Errorf("Maven 输出超过 %d MB 上限", maxOutputBytes>>20)
+	}
 	data, err := os.ReadFile(tmpPath)
 	if err != nil {
 		return "", fmt.Errorf("读取 Maven 输出失败：%w", err)
@@ -344,13 +352,27 @@ func runMaven(workspaceRoot, mvnPath string, timeoutMs int, args []string) (stri
 }
 
 // validateModuleRelPath 拦掉 -pl 参数里的路径穿越与绝对路径：它会被拼进命令行。
+// Windows 上命令外层是 cmd /c 包装（见 cmdwrap_windows.go），cmd 元字符会被再解释——
+// 模块路径本就只需要字母数字与 . _ / -，白名单之外的字符（& | < > ^ % ! 引号等）一律拒绝。
 func validateModuleRelPath(rel string) error {
 	if rel == "" {
 		return nil
 	}
-	if strings.Contains(rel, "..") || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "\\") ||
-		strings.ContainsRune(rel, ':') || filepath.IsAbs(rel) {
+	if !safeModuleRelPath(rel) || strings.Contains(rel, "..") || strings.HasPrefix(rel, "/") ||
+		strings.HasPrefix(rel, "\\") || strings.ContainsRune(rel, ':') || filepath.IsAbs(rel) {
 		return fmt.Errorf("非法模块路径：%s", rel)
 	}
 	return nil
+}
+
+// safeModuleRelPath 模块相对路径字符白名单（<module> 原文来自不可信 pom）。
+func safeModuleRelPath(rel string) bool {
+	for _, r := range rel {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '.' || r == '_' || r == '-' || r == '/'
+		if !ok {
+			return false
+		}
+	}
+	return rel != ""
 }

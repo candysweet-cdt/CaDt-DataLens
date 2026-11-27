@@ -92,7 +92,9 @@ func TestValidateModuleRelPath(t *testing.T) {
 			t.Errorf("%q 不应报错：%v", ok, err)
 		}
 	}
-	for _, bad := range []string{"..", "a/../b", "/abs", "C:\\x", "C:/x"} {
+	// cmd /c 包装下元字符会被再解释：<module> 原文来自不可信 pom，白名单外一律拒绝
+	for _, bad := range []string{"..", "a/../b", "/abs", "C:\\x", "C:/x",
+		"foo&bar", "a|b", "x>y", "a<b", "%VAR%", "a^b", "a!b", `a"b`, "a b", "a;b"} {
 		if err := validateModuleRelPath(bad); err == nil {
 			t.Errorf("%q 应报错", bad)
 		}
