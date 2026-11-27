@@ -3,7 +3,7 @@
 // 磁盘存储才有「复制会话路径」；普通对话不再出现一排灰掉的无关项。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSessionMenuItems, buildWorkspaceMenuItems, buildSubgroupMenuItems, subgroupFolded, aggregateSessionBadge, planPendingNeedsAttention, workspaceGroupExpanded, sessionOverLimitOf, sessionOverLimitTip, sessionFilterHit, buildWorkspaceSubgroups, subgroupPageKey} from '../../../src/ai/session/ai-session-list.js';
+import {buildSessionMenuItems, buildWorkspaceMenuItems, buildSubgroupMenuItems, subgroupFolded, aggregateSessionBadge, planPendingNeedsAttention, workspaceGroupExpanded, sessionOverLimitOf, sessionOverLimitTip, sessionFilterHit, buildWorkspaceSubgroups, subgroupPageKey, orderSessionsWithOrchestration} from '../../../src/ai/session/ai-session-list.js';
 import {ICONS} from '../../../src/core/icons.js';
 
 const baseEnv = {pendingNoticeCount: () => 0, diskStorage: true};
@@ -413,4 +413,20 @@ test('subgroupFolded：默认展开，仅显式折叠过才收起', () => {
     assert.equal(subgroupFolded('active:ws1:前端', {folded}), true, '显式折叠的桶收起');
     assert.equal(subgroupFolded('active:ws1:后端', {folded}), false, '没折叠过的默认展开');
     assert.equal(subgroupFolded('x', {}), false, '无 folded 集合不报错，默认展开');
+});
+
+
+test('编排批次会话紧跟发起会话，parentSessionId 优先于活跃度排序', () => {
+    const list = [
+        {id: 'other', title: '别的'},
+        {id: 'child-2', title: 'B2', orchestration: {role: 'work', parentSessionId: 'parent', batchId: 'B2'}},
+        {id: 'parent', title: '发起'},
+        {id: 'child-1', title: 'B1', orchestration: {role: 'work', parentSessionId: 'parent', batchId: 'B1'}},
+    ];
+    const ids = orderSessionsWithOrchestration(list).map((s) => s.id);
+    assert.deepEqual(ids, ['other', 'parent', 'child-2', 'child-1']);
+
+    // 父会话已删除 / parentSessionId 悬空：批次回落普通会话，渲染不能少一条
+    const orphan = [{id: 'child', orchestration: {role: 'work', parentSessionId: 'gone'}}];
+    assert.deepEqual(orderSessionsWithOrchestration(orphan).map((s) => s.id), ['child']);
 });

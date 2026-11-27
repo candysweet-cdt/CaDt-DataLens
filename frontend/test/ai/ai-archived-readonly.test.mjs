@@ -61,12 +61,20 @@ test('入口：canInlineEdit 与保存路径都挡住归档会话', () => {
 });
 
 test('兜底：archived 失败原因统一成中文文案，不露裸 reason 码', () => {
-    const flash = sliceFunction(panel, 'function flashTurnStartFailure(result) {');
-    assert.match(flash, /result\.reason === 'archived'/);
-    assert.match(flash, /flash\('该会话已归档，取消归档后再发送', true\)/);
+    // 文案单一来源：turnStartFailureText（手动发送 / 原地编辑 / 排队冲刷共用）；薄壳只写状态栏
+    const text = sliceFunction(panel, 'function turnStartFailureText(result, opts) {');
+    assert.match(text, /case 'archived':/);
+    assert.match(text, /'该会话已归档，取消归档后再发送'/);
+    assert.match(text, /'发送失败：' \+ \(result\.reason \|\| 'unknown'\)/,
+        '通用兜底仍在，archived 已在前面 return，不会走到「发送失败：archived」');
+    const flash = sliceFunction(panel, 'function flashTurnStartFailure(result, opts) {');
+    assert.match(flash, /turnStartFailureText\(result, opts\)/);
+    assert.match(flash, /flash\(text, true\)/);
+    // 编辑保存（2026-11-27 收口）：不再自建 reason 表，整条失败链复用主表 + 编辑语境
     const save = sliceFunction(panel, 'async function doSaveInlineEdit(state, session, payload) {');
-    assert.match(save, /reason === 'archived'/);
-    assert.match(save, /flash\('该会话已归档，取消归档后再发送', true\)/);
-    // 通用兜底仍然存在，但 archived 已在前面 return，不会走到 "发送失败：archived"
-    assert.match(flash, /flash\('发送失败：' \+ \(result\.reason \|\| 'unknown'\), true\)/);
+    assert.match(save, /flashTurnStartFailure\(result, \{context: 'inline-edit'\}\)/, '编辑保存必须复用统一文案');
+    assert.doesNotMatch(save, /reason === 'archived'/, '编辑保存不再自建失败分支');
+    // 编辑态专属文案只在主表里出现（busy / empty 两条），其余 reason 与手动发送同款
+    assert.match(text, /case 'busy':\s*return editing \? '该会话刚开始新一轮，稍后再保存'/);
+    assert.match(text, /case 'empty':\s*return editing \? '消息不能为空'/);
 });

@@ -15,6 +15,7 @@ import {isTransientSession, isNoWorkspaceSession, isUnboundSession} from '../ses
 // 路径归属判定与 aiPathInside 同口径（大小写不敏感、只认完整目录段）——<workspace_context>
 // 按工作区分层渲染时用它把「本会话根下」与「其它工作区」分开，不另写一份比较。
 import {readRootCovers} from '../security/ai-read-roots.js';
+import {contextDigest, headerEquals, createContextWarmCache} from './ai-context-dedup.js';
 
 
 // 空记忆占位引导：MEMORY.md 不存在或为空时注入，替代「整块消失」——模型由此得知记忆区的存在与写入时机
@@ -28,6 +29,32 @@ const AI_MEMORY_PLACEHOLDER_TEXT = '（记忆区暂为空）你拥有跨会话�
 const AGENT_DOC_NAMES = ['AGENTS.md', 'CLAUDE.md'];
 
 export function createAISystemContext(ctx) {
+    // 稳定区 warm cache（S6）：系统提示词的 durable 部分每轮逐字一致，digest 未变时
+    // 复用上一轮文本，避免重复拼装；动态块（工作区 / 清单 / 提醒 / 附件）仍每轮重算。
+    // digest 由「会影响稳定区的输入」拼成，任一变化即失效重算。
+    const stableCache = createContextWarmCache({limit: 24});
+
+    /** 计算稳定区输入的 digest：覆盖 base / 设置 / 配置 / 根 / scope / planMode / 会话身份。 */
+    function stableDigest(session, base) {
+        const settings = ctx.settings || {};
+        const keys = [
+            'aiInjectPersona', 'aiInjectAgentsMd', 'aiInjectMemory', 'aiInjectPreferences',
+            'aiInjectSkills', 'aiInjectEnvVars', 'aiInjectRoot',
+        ];
+        const flags = keys.map((k) => k + '=' + (settings[k] !== false ? 1 : 0)).join(',');
+        const persona = ctx.config && ctx.config.persona ? ctx.config.persona : {};
+        const personaSig = JSON.stringify([persona.replyStyle, persona.instructions,
+            (ctx.config && ctx.config.outputLanguage) || '', (ctx.config && ctx.config.preferences) || []]);
+        const sessionSig = JSON.stringify([
+            aiTextOf(session && session.id), aiTextOf(session && session.sideOf),
+            aiTextOf(session && session.scope), !!(session && session.planMode),
+            !!(session && session.worktree && session.worktree.name),
+            isUnboundSession(session), isTransientSession(session), isNoWorkspaceSession(session),
+            sessionRoot(session),
+        ]);
+        return contextDigest([base, flags, personaSig, sessionSig].join('\u0001'));
+    }
+
     // 会话根（AI 作用域的唯一取根入口）：有面板注入的 ctx.scopeRootOf(session) 时**完全信任它**
     // ——它返回空就表示「该会话确实没有根」（harness 未绑定会话 / 会话沙盒尚未就绪），此时绝不
     // 能回落窗口根或活动文件父目录：否则 <workspace_rules> 的范围根与 <workspace_context> 会指向
@@ -637,10 +664,34 @@ export function createAISystemContext(ctx) {
         if (turn.meta.cognition) meta.cognition = turn.meta.cognition;
         if (turn.meta.cognitionNudge) meta.cognitionNudge = turn.meta.cognitionNudge;
 
-        return {text: parts.join('\n\n'), meta, turnBlock: turn.text};
+        // 稳定区文本经 warm cache：digest 未变时复用上一轮字符串（同一引用），
+        // 让服务商前缀缓存与「durable 消息加载一次不重发」成立；meta 仍由本轮实时收集，
+        // 动态块 turnBlock 每轮独立重算——两者都不缓存，避免串会话 / 串轮。
+        const stableText = parts.join('\n\n');
+        const key = aiTextOf(session && session.id) || '__no_session__';
+        const digest = stableDigest(session, base);
+        const cachedText = stableCache.get(key, digest, () => stableText);
+        // headerEquals 等价物：digest 命中但文本因异常不一致时以本轮为准并记诊断（不打断用户）。
+        // 正常情况两段逐字相等，直接复用缓存引用，服务商前缀缓存可整段命中。
+        let finalText = stableText;
+        if (cachedText !== stableText) {
+            if (headerEquals(cachedText, stableText)) finalText = cachedText;
+            else if (typeof ctx.logFrontend === 'function') {
+                try { ctx.logFrontend('[ctx-dedup] digest 命中但稳定区文本不一致，已采用本轮结果：' + key); } catch (e) {}
+            }
+        }
+        meta.stable = {digest, cached: finalText === cachedText};
+        return {text: finalText, meta, turnBlock: turn.text};
     }
 
-    return {assembleSystemContext, turnContextBundle, planModeBlock};
+    return {
+        assembleSystemContext,
+        turnContextBundle,
+        planModeBlock,
+        // 诊断 / 失效入口：设置变更或工作区切换后可主动清 warm cache。
+        invalidateStableCache: (key) => stableCache.invalidate(String(key == null ? '' : key)),
+        clearStableCache: () => stableCache.clear(),
+    };
 }
 
 // ---------- 技能索引纯函数（导出供测试） ----------

@@ -1,8 +1,12 @@
 # 会话信箱可靠投递：统一语义与状态机方案
 
-> 状态：**待实施**（2026-11-27 成文）
+> 状态：**已实施**（2026-11-27 成文并落地）
 >
 > 触发问题：多工作区下，主会话已经停止，子会话结果仍挂在信箱里；用户主动发一条消息后，旧通知才随该轮进入模型上下文。
+>
+> 实施记录：`ai-agent-notices.js` 收敛为 per-session `DeliveryRecord` 状态机；`ai-session-scope.js` 的压缩准备判定改为按 sessionId；`ai-panel.js` 注入统一自动起轮门禁，压缩所有退出路径统一 `settleCompact`，并在起轮、重读、租约释放、回前台等事件恢复信箱。新增长忙期、在飞清空、urgent 排序、满箱合并、分批续投、跨会话压缩隔离等测试。`npm test` 全量（含 typecheck、AI、UI-core、UI-shell、Maven）与 `npm run build` 通过。
+>
+> 2026-11-27 全流程复审补充：修复同会话并发起轮、准备态切会话/归档/删除竞态、异步提交误清其他会话输入、队列冲刷重入与同毫秒乱序、纯附件恢复、长文本胶囊草稿丢失、租约重读后截断锚点漂移、溢出恢复重发最新消息、工具轮异常不收尾、压缩失败/取消不冲用户队列、压缩收尾异常泄漏租约，以及早期释放失败无重试等问题。二次复审进一步补齐租约释放同步异常、批量附件切会话、重启后 seq 基线、压缩租约延迟释放和压缩准备期会话对象替换五个边界；三次复审补齐压缩准备取消时已取租约释放、共享租约释放状态机，以及交错队列逐条回滚归位。
 >
 > 本文只设计前端 AI 会话信箱的投递闭环，不修改子代理收件箱、composer 排队消息、Go 后端或会话存储格式。工作区当前已有部分补丁（异步 busy 重试、`compactStarting` 判定、`flushAllPending` 等），本文用于把这些点状修复收敛为一套可验证的统一语义。
 
@@ -853,10 +857,10 @@ UI 提示与 `outcome` 由调用方决定，但状态清理和信箱恢复只能
 
 ## 17. 与既有方案的关系
 
-- [session-messaging.md](../finished-plans/session-messaging.md)：保留“一条管道 N 个发送方”、单批 ≤5、用户队列优先、后台不切视图、信箱不持久化等裁决；本文补齐其投递失败后的闭环。
-- [ai-queue-background-flush.md](../finished-plans/ai-queue-background-flush.md)：保留 composer 队列独立语义和“一轮一条”；本文不把信箱并进 composer 队列。
-- [multi-instance-sync.md](../finished-plans/multi-instance-sync.md)：保留回合租约单写者、`other_window`、终态写盘后释放；本文只规定信箱如何等待与重试，不修改锁实现。
-- [session-compaction-disk-growth.md](./session-compaction-disk-growth.md)：压缩存储/磁盘语义不变；本文只收口压缩对信箱投递的生命周期影响。
+- [session-messaging.md](./session-messaging.md)：保留“一条管道 N 个发送方”、单批 ≤5、用户队列优先、后台不切视图、信箱不持久化等裁决；本文补齐其投递失败后的闭环。
+- [ai-queue-background-flush.md](./ai-queue-background-flush.md)：保留 composer 队列独立语义和“一轮一条”；本文不把信箱并进 composer 队列。
+- [multi-instance-sync.md](./multi-instance-sync.md)：保留回合租约单写者、`other_window`、终态写盘后释放；本文只规定信箱如何等待与重试，不修改锁实现。
+- [session-compaction-disk-growth.md](../unfinished-plans/session-compaction-disk-growth.md)：压缩存储/磁盘语义不变；本文只收口压缩对信箱投递的生命周期影响。
 
 ## 18. 最终设计判定
 

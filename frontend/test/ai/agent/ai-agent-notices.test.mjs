@@ -1,15 +1,15 @@
 // ai-agent-notices.test.mjs：会话信箱（后台注入通道）的行为护栏。
 // 覆盖：结算文案（done / error / stopped，含「投递层不截断」）、三态投递、
 // 信箱深度与溢出策略（会话投递拒收 / 结算合并）、折叠成 user 消息、唤醒被拒后内容回填。
-import test from 'node:test';
+import test, {mock} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {buildSettlementNotice, buildAskNotice, buildBgJobExitNotice, buildTerminalExitNotice, formatBgDuration, createAIAgentNotices, NOTICE_DEPTH_MAX} from '../../../src/ai/agent/ai-agent-notices.js';
+import {buildSettlementNotice, buildAskNotice, buildBgJobExitNotice, buildTerminalExitNotice, formatBgDuration, createAIAgentNotices, NOTICE_DEPTH_MAX, NOTICE_RETRY_DELAYS} from '../../../src/ai/agent/ai-agent-notices.js';
 
 function makeHarness(overrides) {
     const opts = overrides || {};
     const sessions = new Map();
-    const calls = {turns: [], unread: [], notices: [], flashes: [], desktop: [], notified: []};
+    const calls = {turns: [], unread: [], notices: [], flashes: [], desktop: [], notified: [], overBudget: []};
     const session = {id: 's1', title: '会话一', messages: [], archivedAt: 0};
     sessions.set('s1', session);
     let busy = !!opts.busy;
@@ -20,8 +20,15 @@ function makeHarness(overrides) {
         sessionById: (id) => sessions.get(id) || null,
         streamOf: (id) => (opts.streamOf ? opts.streamOf(id) : (busy ? {sessionId: 's1'} : null)),
         compactOf: (id) => (opts.compactOf ? opts.compactOf(id) : null),
-        // 「压缩正在准备」是**全局**标记（不属于任何会话）：用它模拟「别的会话正在压缩」
-        compactStartingOf: () => !!opts.compactStarting,        startSessionTurn: opts.startSessionTurn || ((s, text, options) => {
+        canAutoStartTurn: opts.canAutoStartTurn || ((id) => {
+            if (opts.compactStarting && id === 's1') return {ok: false, reason: 'busy'};
+            if (opts.reloading) return {ok: false, reason: 'reloading'};
+            if (opts.starting) return {ok: false, reason: 'starting'};
+            if (opts.streamOf && opts.streamOf(id)) return {ok: false, reason: 'busy'};
+            if (opts.compactOf && opts.compactOf(id)) return {ok: false, reason: 'busy'};
+            return busy ? {ok: false, reason: 'busy'} : {ok: true, reason: ''};
+        }),
+        startSessionTurn: opts.startSessionTurn || ((s, text, options) => {
             calls.turns.push({sessionId: s.id, text, options});
             return opts.turnResult ? opts.turnResult : Promise.resolve({ok: true});
         }),
@@ -32,6 +39,10 @@ function makeHarness(overrides) {
         setSessionUnread: (s, kind) => calls.unread.push({id: s.id, kind}),
         notifyDesktop: (o) => calls.desktop.push(o),
         flash: (text, isError) => calls.flashes.push({text, isError}),
+        onOverBudget: (s) => {
+            calls.overBudget.push(s.id);
+            return opts.overBudgetResult !== false;
+        },
         persistSessions: () => {},
         // 信箱增减钩子（头部「信箱」胶囊角标）：透传以便断言触发次数
         onChanged: () => { if (opts.onChanged) opts.onChanged(); },
@@ -186,7 +197,7 @@ test('折叠：单次消费上限内多条合并，超出部分留在信箱', ()
 });
 
 test('唤醒被拒：内容退回信箱最前并打未读，不静默丢弃', async () => {
-    const h = makeHarness({turnResult: Promise.resolve({ok: false, reason: 'over_budget'})});
+    const h = makeHarness({turnResult: Promise.resolve({ok: false, reason: 'over_budget'}), overBudgetResult: false});
     h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '要送达的通知'});
     await Promise.resolve();
     await Promise.resolve();
@@ -206,13 +217,9 @@ test('flushNotices：忙时只排队不唤醒，空闲时唤醒', () => {
     assert.equal(h.notices.flushNotices('s1').woke, true);
 });
 
-// 实测 bug（2026-11-27）：明明会话空闲，后台通知却报「投递失败：busy」，而且消息要等
-// 用户下次发消息才到。根因是两处判定与起轮内核不同源：
-//   · deliverAgentNotice / flushNotices 用 isSessionBusy(id)（**不判** compactStarting）
-//   · startSessionTurn 判 streamOf || compactOf || compactStarting
-// 于是「某个会话正在压缩准备」这个**全局**窗口内，所有会话都被判空闲 → 唤醒 → 被拒 → 报错。
-test('压缩准备窗口（compactStarting）必须算忙，否则会误唤醒再被拒', async () => {
-    // 模拟：本会话没有 stream / compact，但全局 compactStarting 为真
+// 压缩准备必须算忙，且只阻塞正在准备压缩的目标会话；其他工作区会话不能被串扰。
+test('压缩准备窗口必须算忙，否则会误唤醒再被拒', async () => {
+    // 模拟：本会话没有 stream / compact，但正在准备压缩
     const h = makeHarness({
         compactStarting: true,          // 见下面 harness 支持
         turnResult: Promise.resolve({ok: false, reason: 'busy'}),  // 起轮内核会拒
@@ -239,11 +246,8 @@ test('wakeWith 拿到 busy 不报错（消息已退回队列，等下一边界�
     assert.equal(h.calls.flashes.filter((f) => f.isError).length, 0, 'busy 不该 flash 报错');
 });
 
-// 边界：startSessionTurn 同步抛错（不是 reject）。wakeWith 在调用它之前已 waking.add，
-// 且 batch 已被 splice 出队列。若不清理，该会话之后每次唤醒都被挡成 'waking'，
-// 通知永久滞留到用户手动发消息。
-test('startSessionTurn 同步抛错：waking 必须清理、内容必须回填', () => {
-    // 只让第一次抛（模拟一次意外同步错误）；第二次正常，用来验证 waking 已被清理。
+// 同步抛错也必须被状态机接住：内容回填、inFlight 清理、重试继续，不把异常甩给发送方。
+test('startSessionTurn 同步抛错：内容回填且下一次尝试能成功', () => {
     let shouldThrow = true;
     const h = makeHarness({
         startSessionTurn: () => {
@@ -251,13 +255,11 @@ test('startSessionTurn 同步抛错：waking 必须清理、内容必须回填',
             return Promise.resolve({ok: true});
         },
     });
-    assert.throws(() => h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '会炸通知'}),
-        '同步抛错应当向上抛出（不静默吞掉）');
-    // 内容回填，不丢
+    const receipt = h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '会炸通知'});
+    assert.equal(receipt.ok, true, '同步异常由投递状态机兜底，不应向上抛');
     assert.equal(h.notices.pendingCount('s1'), 1, '同步抛错后内容必须回填队列');
-    // waking 已清理：下一次 flush 能真正起轮（不再返回 'waking'）
+    assert.equal(h.notices.isWaking('s1'), false, 'inFlight 必须清理');
     const second = h.notices.flushNotices('s1');
-    assert.notEqual(second.reason, 'waking', 'waking 残留会让该会话永久无法唤醒');
     assert.equal(second.woke, true, '清理干净后应当正常唤醒');
 });
 
@@ -281,17 +283,24 @@ test('忙时退回队列后，必须有重试源把消息送达（不依赖用�
     assert.equal(h.notices.pendingCount('s1'), 0, '送达后队列清空');
 });
 
-test('重试退避用尽后放弃（不做无限轮询）', async () => {
-    // 一直忙：重试 5 次后应当停止（NOTICE_RETRY_DELAYS 有 5 档）
-    const h = makeHarness({streamOf: () => ({sessionId: 's1'})});
-    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '永远忙'});
-    // 直接把内部定时器全跑完不现实（累计 38s）；这里只验证「不会无限增长」：
-    // 连续多次投递不会叠加出多个 timer（scheduleRetry 有 st.timer 去重）。
-    for (let i = 0; i < 20; i++) {
-        h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '永远忙' + i});
+test('重试超过五档后仍持续：忙期结束无需用户操作也能送达', async () => {
+    mock.timers.enable({apis: ['setTimeout']});
+    try {
+        const h = makeHarness({busy: true});
+        h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '长时间忙期到达'});
+        for (const delay of NOTICE_RETRY_DELAYS) mock.timers.tick(delay);
+        assert.equal(h.calls.turns.length, 0, '忙期不该起轮');
+        assert.equal(h.notices.pendingCount('s1'), 1, '通知必须留在信箱');
+
+        h.setBusy(false);
+        mock.timers.tick(30000);
+        await Promise.resolve();
+        await Promise.resolve();
+        assert.equal(h.calls.turns.length, 1, '五档用尽后仍须自动重试');
+        assert.equal(h.notices.pendingCount('s1'), 0, '转空闲后自动送达');
+    } finally {
+        mock.timers.reset();
     }
-    // 队列深度受 NOTICE_DEPTH_MAX 限制，不会因为重试而爆炸
-    assert.ok(h.notices.pendingCount('s1') <= 10, '重试不该让队列无限增长');
 });
 
 // 这是「要发消息才投递」的**真正根因**（子代理审查 #1）：
@@ -318,8 +327,248 @@ test('异步唤醒失败（startSessionTurn 返回 ok:false）也必须武装重
     assert.equal(h.notices.pendingCount('s1'), 0, '异步失败后必须由重试源送达，不能等用户发消息');
 });
 
-// 子代理审查 #3：`compactStarting` 是**全局**标记，压缩期间所有会话的通知都会排队。
-// 压缩结束只冲压缩目标 → 别的会话干等到退避耗尽。flushAllPending 负责补齐。
+test('压缩准备只阻塞目标会话，不串扰其他工作区', async () => {
+    const h = makeHarness({
+        canAutoStartTurn: (id) => id === 's1' ? {ok: false, reason: 'busy'} : {ok: true, reason: ''},
+    });
+    const s2 = {id: 's2', title: '其他工作区', messages: [], archivedAt: 0};
+    h.sessions.set('s2', s2);
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: 'A'});
+    const receipt = h.notices.deliverAgentNotice(s2, {kind: 'subagent', content: 'B'});
+    assert.equal(receipt.woke, true, 'B 不能被 A 的压缩准备阻塞');
+    await Promise.resolve();
+    assert.equal(h.calls.turns.length, 1);
+    assert.equal(h.calls.turns[0].sessionId, 's2');
+});
+
+test('清空信箱时唤醒仍在飞：取消信号生效且迟到结果不得复活', async () => {
+    let resolveTurn;
+    let turnOptions = null;
+    const h = makeHarness({startSessionTurn: (_s, _text, options) => {
+        turnOptions = options;
+        return new Promise((resolve) => { resolveTurn = resolve; });
+    }});
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '在飞通知'});
+    assert.equal(h.notices.pendingCount('s1'), 0);
+    assert.equal(h.notices.outstandingCount('s1'), 1);
+    assert.equal(h.notices.clearMailbox('s1'), 1);
+    assert.equal(turnOptions.isCancelled(), true, '清空后起轮内核必须看到取消信号');
+    resolveTurn({ok: false, reason: 'cancelled'});
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(h.notices.outstandingCount('s1'), 0, '清空后迟到结果不得回填');
+});
+
+test('在飞批次失败回填时，新到的 urgent 仍保持优先', async () => {
+    let resolveTurn;
+    const h = makeHarness({startSessionTurn: () => new Promise((resolve) => { resolveTurn = resolve; })});
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '普通在飞'});
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '紧急', urgent: true});
+    resolveTurn({ok: false, reason: 'busy'});
+    await Promise.resolve();
+    await Promise.resolve();
+    h.notices.foldNotices('s1');
+    const text = h.session.messages[0].content;
+    assert.ok(text.indexOf('紧急') >= 0 && text.indexOf('紧急') < text.indexOf('普通在飞'));
+});
+
+test('信箱满合并会重置重试预算并立即消费', async () => {
+    mock.timers.enable({apis: ['setTimeout']});
+    try {
+        const h = makeHarness({busy: true});
+        for (let i = 0; i < NOTICE_DEPTH_MAX; i++) {
+            h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: 'n' + i});
+        }
+        for (const delay of NOTICE_RETRY_DELAYS) mock.timers.tick(delay);
+        h.setBusy(false);
+        const merged = h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '溢出合并'});
+        assert.equal(merged.reason, 'merged');
+        await Promise.resolve();
+        await Promise.resolve();
+        assert.equal(h.notices.pendingCount('s1'), 0, '合并后必须自动投递，不能继续躺满箱');
+        assert.equal(h.calls.turns.length, 3, '10 个容器共 11 个原始分段，按每批 5 段送达');
+    } finally {
+        mock.timers.reset();
+    }
+});
+
+test('outstandingCount 与 listPending 包含投递中批次', async () => {
+    let resolveTurn;
+    const h = makeHarness({startSessionTurn: () => new Promise((resolve) => { resolveTurn = resolve; })});
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '投递中'});
+    assert.equal(h.notices.outstandingCount('s1'), 1);
+    assert.equal(h.notices.listPending()[0].items[0].state, 'in_flight');
+    resolveTurn({ok: true});
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(h.notices.outstandingCount('s1'), 0);
+});
+
+test('over_budget 只触发一次自动压缩，无法恢复时停泊可见', async () => {
+    const h = makeHarness({
+        turnResult: Promise.resolve({ok: false, reason: 'over_budget'}),
+        overBudgetResult: false,
+    });
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '超阈通知'});
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(h.calls.overBudget, ['s1']);
+    assert.equal(h.notices.pendingCount('s1'), 1);
+    assert.equal(h.notices.listPending()[0].items[0].state, 'parked');
+    assert.equal(h.notices.listPending()[0].items[0].parkedReason, 'over_budget');
+    assert.equal(h.calls.desktop.length, 1, '终态失败只提示一次');
+});
+
+test('单批 5 条消费后，余量自动续投不依赖下一轮用户操作', async () => {
+    const h = makeHarness({busy: true});
+    for (let i = 0; i < 6; i++) h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: 'n' + i});
+    h.setBusy(false);
+    h.notices.flushNotices('s1');
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(h.calls.turns.length, 2);
+    assert.equal(h.notices.pendingCount('s1'), 0);
+});
+
+test('已有起轮在飞时，新通知回执保持 queued 且不误报 woke', async () => {
+    let resolveTurn;
+    const h = makeHarness({startSessionTurn: () => new Promise((resolve) => { resolveTurn = resolve; })});
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '第一条'});
+    const second = h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '第二条'});
+    assert.equal(second.state, 'queued');
+    assert.equal(second.woke, false);
+    assert.equal(h.notices.listPending()[0].items.find((item) => item.content === '第二条').state, 'queued');
+    resolveTurn({ok: true});
+    await Promise.resolve();
+    await Promise.resolve();
+});
+
+test('too_long 是终态停泊，不进入无限重试', async () => {
+    mock.timers.enable({apis: ['setTimeout']});
+    try {
+        let attempts = 0;
+        const h = makeHarness({startSessionTurn: async () => {
+            attempts += 1;
+            return {ok: false, reason: 'too_long'};
+        }});
+        h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: 'x'.repeat(100001)});
+        await Promise.resolve();
+        await Promise.resolve();
+        mock.timers.tick(120000);
+        assert.equal(attempts, 1, '确定性输入错误不能反复重试');
+        assert.equal(h.notices.listPending()[0].items[0].state, 'parked');
+    } finally {
+        mock.timers.reset();
+    }
+});
+
+test('多条通知按字符预算拆批，不因合并超限原样重试', async () => {
+    const h = makeHarness({busy: true});
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: 'a'.repeat(60000)});
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: 'b'.repeat(60000)});
+    h.setBusy(false);
+    h.notices.flushNotices('s1');
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(h.calls.turns.length, 2);
+    assert.ok(h.calls.turns.every((turn) => turn.text.length <= 100000));
+    assert.equal(h.notices.pendingCount('s1'), 0);
+});
+
+test('other_window 使用 30 秒低频退避', async () => {
+    mock.timers.enable({apis: ['setTimeout']});
+    try {
+        let attempts = 0;
+        const h = makeHarness({startSessionTurn: async () => {
+            attempts += 1;
+            return attempts === 1 ? {ok: false, reason: 'other_window'} : {ok: true};
+        }});
+        h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '跨窗口等待'});
+        await Promise.resolve();
+        await Promise.resolve();
+        mock.timers.tick(29999);
+        assert.equal(attempts, 1);
+        mock.timers.tick(1);
+        await Promise.resolve();
+        await Promise.resolve();
+        assert.equal(attempts, 2);
+    } finally {
+        mock.timers.reset();
+    }
+});
+
+test('满箱同类大通知合并后按原始分段拆批，不产生 too_long 停泊', async () => {
+    const h = makeHarness({busy: true});
+    for (let i = 0; i < NOTICE_DEPTH_MAX; i++) {
+        h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: String(i).padStart(2, '0') + 'x'.repeat(59998)});
+    }
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '10' + 'x'.repeat(59998)});
+    h.setBusy(false);
+    h.notices.flushNotices('s1');
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    assert.equal(h.calls.turns.length, 11, '11 个原始分段都应独立送达');
+    assert.ok(h.calls.turns.every((turn) => turn.text.length <= 100000));
+    assert.equal(h.notices.pendingCount('s1'), 0);
+    assert.equal(h.notices.listPending().length, 0, '不能留下 too_long 停泊项');
+});
+
+test('合并项拆批起轮失败后回填不增深度、不重复身份', async () => {
+    mock.timers.enable({apis: ['setTimeout']});
+    try {
+        let attempts = 0;
+        const h = makeHarness({
+            busy: true,
+            startSessionTurn: async () => {
+                attempts += 1;
+                return attempts === 1 ? {ok: false, reason: 'busy'} : {ok: true};
+            },
+        });
+        for (let i = 0; i < NOTICE_DEPTH_MAX; i++) {
+            h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: String(i).padStart(2, '0') + 'x'.repeat(59998)});
+        }
+        h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '10' + 'x'.repeat(59998)});
+        h.setBusy(false);
+        h.notices.flushNotices('s1');
+        await Promise.resolve();
+        await Promise.resolve();
+        assert.equal(h.notices.pendingCount('s1'), NOTICE_DEPTH_MAX, '失败回填不能把分段拆成额外容器');
+        const ids = h.notices.listPending()[0].items.map((item) => item.messageId);
+        assert.equal(new Set(ids).size, NOTICE_DEPTH_MAX, '合并容器身份不得重复');
+        mock.timers.tick(800);
+        for (let i = 0; i < 40; i++) await Promise.resolve();
+        assert.equal(h.notices.pendingCount('s1'), 0);
+        assert.equal(attempts, 12, '一次失败 + 十一个原始分段各一次成功');
+    } finally {
+        mock.timers.reset();
+    }
+});
+
+test('编辑态回执与列表都显示 deferred', () => {
+    const h = makeHarness({pendingEdit: {index: 1, sessionId: 's1'}});
+    const receipt = h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: '编辑延后'});
+    assert.equal(receipt.state, 'deferred');
+    assert.equal(h.notices.listPending()[0].items[0].state, 'deferred');
+});
+
+test('满箱混合 kind 合并返回真实合并项身份并保留来源', () => {
+    const h = makeHarness({busy: true});
+    const ids = [];
+    for (let i = 0; i < NOTICE_DEPTH_MAX; i++) {
+        ids.push(h.notices.deliverAgentNotice(h.session, {kind: 'session', content: 'session-' + i}).messageId);
+    }
+    const receipt = h.notices.deliverAgentNotice(h.session, {
+        messageId: 'new-sub-id', kind: 'subagent', content: '子代理结算',
+    });
+    const item = h.notices.listPending()[0].items.at(-1);
+    assert.equal(receipt.messageId, item.messageId);
+    assert.notEqual(receipt.messageId, 'new-sub-id', '混合 kind 必须建立显式合并项');
+    assert.equal(item.kind, 'notice');
+    assert.ok(item.content.includes('子代理结算'));
+    assert.deepEqual(item.mergedIds, [ids.at(-1), 'new-sub-id']);
+    h.notices.clearMailbox('s1');
+});
+
+// 全局恢复事件：压缩结束/失败、回前台等必须一次冲刷所有尚未送达的会话。
 test('flushAllPending：一次冲刷所有有待投通知的会话（压缩结束用）', () => {
     const h = makeHarness({busy: true});
     const s2 = {id: 's2', title: '会话二', messages: [], archivedAt: 0};
@@ -386,11 +635,11 @@ test('session_send：逐目标回执——成功、自投递、不存在、归�
     // 让目标处于「忙」：投递只入队，便于断言信箱内容（空闲时会立刻唤醒并消费掉）
     h.setBusy(true);
     const text = h.notices.sendToSessions({targetSessionIds: ['s2', 's1', 'nope', 's3'], message: '看下这个结论'}, {session: h.a});
-    assert.ok(text.includes('1/4 成功'));
+    assert.ok(text.includes('1/4 已受理'));
     assert.ok(text.includes('s1：失败 · 不能投递给自己'));
     assert.ok(text.includes('nope：失败 · 会话不存在'));
     assert.ok(text.includes('s3：失败 · 目标会话已归档'));
-    assert.ok(text.includes('s2：已投递'));
+    assert.ok(text.includes('s2：已受理'));
     // 成功那条真的进了对方的信箱
     assert.equal(h.notices.pendingCount('s2'), 1);
 });
@@ -607,14 +856,17 @@ test('listPending：忙会话的子代理回执挂信箱可枚举，轮边界消
     assert.equal(changes, before + 1);
 });
 
-test('listPending：闲会话回执直接起轮消费，不挂信箱（胶囊不误报）', () => {
+test('listPending：闲会话投递中可见，成功后不残留角标', async () => {
     let changes = 0;
     const h = makeHarness({busy: false, onChanged: () => { changes += 1; }});
     h.notices.deliverAgentNotice(h.session, buildSettlementNotice({
         name: '批末-A', agentId: 'sub-3', state: 'done', summary: 'ok',
     }));
-    assert.deepEqual(h.notices.listPending(), [], '闲会话的回执直接起轮消费，胶囊不应计数');
+    assert.equal(h.notices.listPending()[0].items[0].state, 'in_flight', '投递中不得从用户视野消失');
     assert.equal(h.calls.turns.length, 1);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(h.notices.listPending(), [], '成功后胶囊必须清零');
     assert.ok(changes >= 1, 'enqueued→consumed 的每次增减都有 onChanged');
 });
 
@@ -627,4 +879,51 @@ test('接线：信箱胶囊自身显隐必须由 updateMailboxChip 摘除（setC
         /function updateMailboxChip\(\)[\s\S]{0,500}chipQueue\.classList\.toggle\('hidden', count <= 0\)/,
         'updateMailboxChip 必须按 count 摘/挂胶囊自身的 hidden',
     );
+});
+
+test('接线：自动起轮门禁同源，压缩退出路径统一收口', () => {
+    const src = readFileSync(new URL('../../../src/ai/ai-panel.js', import.meta.url), 'utf8');
+    assert.match(src, /function canAutoStartTurn\(sessionId\)[\s\S]{0,700}sessionReloading\.has\(id\)[\s\S]{0,300}startingTurns\.has\(id\)/);
+    assert.match(src, /compactStartingOf:\s*\(sessionId\)\s*=>\s*!!sessionId\s*&&\s*sessionId\s*===\s*compactStartingSessionId/);
+    assert.match(src, /function settleCompact\(current, options\)/);
+    assert.match(src, /settleCompact\(failed\)/);
+    assert.match(src, /function cancelOneShot\(\)[\s\S]{0,500}settleCompact\(current\)/);
+    assert.match(src, /const cancelledBeforeMessage = await abortIfCancelled\(\);[\s\S]{0,900}session\.messages\.push\(userMessage\)/,
+        '写消息前必须检查取消信号');
+    assert.match(src, /notice\.parkedReason/, '信箱弹层必须展示停泊原因');
+});
+
+test('接线：起轮单飞、准备态破坏性操作与异步输入快照保护', () => {
+    const src = readFileSync(new URL('../../../src/ai/ai-panel.js', import.meta.url), 'utf8');
+    assert.match(src, /function beginStartingTurn\(sessionId\)[\s\S]{0,260}if \(startingTurns\.has\(sessionId\)\) return 0;/);
+    assert.match(src, /const token = beginStartingTurn\(id\);\s*if \(!token\) return \{ok: false, reason: 'starting'\};/);
+    assert.match(src, /function discardVirginOnLeave\(session\)[\s\S]{0,900}startingTurns\.has\(session\.id\)/);
+    assert.match(src, /function archiveSession\(target, archived\)[\s\S]{0,900}compactStartingSessionId === session\.id/);
+    assert.match(src, /function deleteSession\(target\)[\s\S]{0,900}compactStartingSessionId === session\.id/);
+    assert.match(src, /const inputSnapshot = el\.input[\s\S]{0,2200}canClearComposer\(\)/);
+    // 会话身份判定用字符串比较（异步起轮期间对象可能被重读替换）；attachSeq 快照守卫仍在
+    assert.match(src, /String\(\(currentSession\(\) \|\| \{\}\)\.id \|\| ''\) === String\(sessionId \|\| ''\)[\s\S]{0,160}attachSeq === attachmentSeq/);
+    assert.match(src, /let cutAnchor = null;[\s\S]{0,900}cutAnchor = \{/);
+    assert.match(src, /if \(cutAnchor\) \{[\s\S]{0,1200}reason: 'stale_anchor'/);
+});
+
+test('接线：压缩异常安全、队列恢复、租约重试与溢出轮身份', () => {
+    const src = readFileSync(new URL('../../../src/ai/ai-panel.js', import.meta.url), 'utf8');
+    assert.match(src, /function finishCompact\(payload\)[\s\S]{0,5200}finally \{[\s\S]{0,260}settleCompact\(current, \{alreadyCleared: true\}\);/);
+    assert.match(src, /function settleCompact\(current, options\)[\s\S]{0,900}flushMessageQueue\(current\.sessionId\)/);
+    assert.match(src, /function settleCompactPreparation\(sessionId, token\)[\s\S]{0,700}flushMessageQueue\(sessionId\)/);
+    assert.match(src, /function releaseLeaseNow\(sessionId\)[\s\S]{0,900}releaseTurnLease\(id, \(\) => resolve\(true\)\)/);
+    assert.match(src, /const retryAnchor = userMessage \? \{[\s\S]{0,500}retryAfter: retryAnchor/);
+    assert.match(src, /const sameTurn = anchor\.mid[\s\S]{0,500}if \(!sameTurn\) return;/);
+    assert.match(src, /handleToolRound\(current, calls, argErrors\)[\s\S]{0,500}finishStreamError\(message, current\)/);
+    assert.match(src, /Promise\.resolve\(\)\.then\(\(\) => backend\.AISessionLeaseRelease\(id\)\)/);
+    assert.match(src, /function releaseTurnLease\(sessionId, onReleased\)/);
+    assert.match(src, /releaseTurnLease\(current\.sessionId, resumeTarget\)/);
+    assert.match(src, /if \(anyStreaming\(\) \|\| oneShot \|\| compactStartingSessionId\) return;/);
+    assert.match(src, /if \(sessionById\(session\.id\) !== session\) \{[\s\S]{0,300}abortPreparation/);
+    assert.match(src, /const compactPreparationAbort = new Map\(\)/);
+    assert.match(src, /const abortPreparation = \(\) => releasePreparationLease\(\)\.then/);
+    assert.match(src, /releaseTurnLease\(id, \(\) => resolve\(true\)\)/);
+    assert.match(src, /const leaseReleaseStates = new Map\(\)/);
+    assert.match(src, /if \(state\.running \|\| state\.timer\) return;/);
 });

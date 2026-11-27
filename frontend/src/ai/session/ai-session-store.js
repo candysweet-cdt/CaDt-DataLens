@@ -321,6 +321,74 @@ export function encodeMetaEvent(patch) {
     return {v: AI_SESSION_SCHEMA, t: 'meta', patch: patch && typeof patch === 'object' ? patch : {}};
 }
 
+// ── 审计事件（S5）：事件粒度从「消息」下探到「回合 / 工具 / 审批 / 子代理」──────────
+//
+// 为什么用独立事件而不是塞进 message payload：塞进 payload 的话，「这一轮到底崩了没有」
+// 「这个工具最终谁放行的」都要先解消息结构、再按 status 猜，外部插件与审计工具无法消费。
+// 独立事件是**注解型**：它们不参与 UI 渲染（UI 仍由 msgs 派生），只供「聚合查询」用，
+// 因此 vacuum 整理时允许它们失去与消息的交错顺序（见 internal/sessionstore/vacuum.go）。
+//
+// 形状约定：每条都带 `id`（回合 id / callId / agentId），缺 id 视为无效事件返回 null——
+// 与 encodeMessageEvent 同口径，宁可不写也不要写一条无法关联的孤儿事件。
+// 版本落后方（旧版应用）读到这些类型会计 issue 并跳过，不影响正文重放。
+
+/** 审计事件类型全集（前端重放、Go 真空整理、测试三处共用这一份口径）。 */
+export const SESSION_AUDIT_EVENT_TYPES = Object.freeze(['turn', 'tool', 'approval', 'agent']);
+
+// 事件溯源的核心不变量：一条事件一旦编码就不可再变（Cordis「一切状态 append 且深冻结」）。
+// 冻结只作用于内存对象，不改变 JSON 落盘格式，因此 Go 侧 vacuum / parity 无需同批修改。
+// 事件本身是扁平标量结构，递归冻结只为将来加嵌套字段时仍成立。
+function deepFreezeEvent(value) {
+    if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+    for (const child of Object.values(value)) deepFreezeEvent(child);
+    return Object.freeze(value);
+}
+
+function auditId(value) {
+    return textOf(value).trim();
+}
+
+/** 回合事件：phase=start 起轮，phase=close 收尾（reason 记录 done / stop / error / crash）。 */
+export function encodeTurnEvent(turnId, phase, reason) {
+    const id = auditId(turnId);
+    if (!id) return null;
+    const event = {v: AI_SESSION_SCHEMA, t: 'turn', id, phase: phase === 'close' ? 'close' : 'start'};
+    const why = textOf(reason).trim();
+    if (why) event.reason = why.slice(0, 32);
+    return deepFreezeEvent(event);
+}
+
+/** 工具事件：phase=start / end，end 带 ok。 */
+export function encodeToolEvent(callId, name, phase, ok) {
+    const id = auditId(callId);
+    if (!id) return null;
+    const event = {v: AI_SESSION_SCHEMA, t: 'tool', id, phase: phase === 'end' ? 'end' : 'start'};
+    const toolName = textOf(name).trim();
+    if (toolName) event.name = toolName.slice(0, 64);
+    if (phase === 'end') event.ok = ok !== false;
+    return deepFreezeEvent(event);
+}
+
+/** 审批事件：verdict = allow / deny / auto（分类器自动放行）。 */
+export function encodeApprovalEvent(callId, verdict, tool) {
+    const id = auditId(callId);
+    if (!id) return null;
+    const event = {v: AI_SESSION_SCHEMA, t: 'approval', id, verdict: textOf(verdict).trim() || 'allow'};
+    const toolName = textOf(tool).trim();
+    if (toolName) event.tool = toolName.slice(0, 64);
+    return deepFreezeEvent(event);
+}
+
+/** 子代理事件：phase = spawn / done / stopped。 */
+export function encodeAgentEvent(agentId, phase, state) {
+    const id = auditId(agentId);
+    if (!id) return null;
+    const event = {v: AI_SESSION_SCHEMA, t: 'agent', id, phase: textOf(phase).trim() || 'spawn'};
+    const value = textOf(state).trim();
+    if (value) event.state = value.slice(0, 24);
+    return deepFreezeEvent(event);
+}
+
 export function encodeSessionLines(events) {
     if (!Array.isArray(events) || !events.length) return '';
     const lines = [];
@@ -345,6 +413,9 @@ export function replaySessionLog(text) {
         issues: 0,
         torn: false,
         droppedTransient: 0,
+        // 审计事件（S5）：按类型分桶保留，供「这一轮崩没崩」「这个工具谁放行的」这类
+        // 聚合查询使用。它们不参与消息渲染，也不影响 truncate / archive 的 keep 语义。
+        audit: {turns: [], tools: [], approvals: [], agents: []},
     };
     const raw = textOf(text);
     if (!raw) return result;
@@ -413,6 +484,22 @@ export function replaySessionLog(text) {
                 }
                 break;
             }
+            case 'turn':
+            case 'tool':
+            case 'approval':
+            case 'agent': {
+                const id = textOf(event.id).trim();
+                if (!id) {
+                    result.issues++;
+                    break;
+                }
+                const bucket = event.t === 'turn' ? result.audit.turns
+                    : event.t === 'tool' ? result.audit.tools
+                        : event.t === 'approval' ? result.audit.approvals
+                            : result.audit.agents;
+                bucket.push(event);
+                break;
+            }
             default:
                 result.issues++;
                 break;
@@ -445,9 +532,49 @@ export function replaySessionLog(text) {
     return result;
 }
 
+// interruptedTurnIds：找出「有 start 没 close」的回合 id（S5）。
+//
+// 用途是崩溃尾部闭合：进程被杀 / 关窗时来不及写 close，下次载入由调用方据此补一条
+// `turn/close reason=crash`——这样日志本身就能回答「这一轮是正常结束还是崩的」，
+// 而不是只能靠「消息 status 还是 running」去猜。正常结束的回合在收尾时已写过 close，
+// 这里自然返回空数组。
+//
+// 口径：按出现顺序配对，同一 id 后一次 start 视为新一轮（清掉旧的未闭合态）；
+// 重复 close 幂等。没有 id 的事件在重放阶段已计 issue，不会进 audit。
+export function interruptedTurnIds(replay) {
+    const turns = (replay && replay.audit && Array.isArray(replay.audit.turns)) ? replay.audit.turns : [];
+    const open = new Set();
+    for (const event of turns) {
+        const id = textOf(event && event.id).trim();
+        if (!id) continue;
+        if (event.phase === 'close') open.delete(id);
+        else open.add(id);
+    }
+    return [...open];
+}
+
 // 会话自定义分组名归一：trim + 上限截断，空/脏值一律归 ''（= 未分组）。
 // 与 normalizeSession（读回）和 buildSessionMeta（写盘）共用单一口径，避免两处判定漂移。
 export const AI_SESSION_GROUP_MAX = 24;
+// 编排归属（会话 → 批次）：只存稳定的业务字段；执行票据 executionToken 绝不落盘，
+// 只活在当前进程内存里，重启后旧票据作废由 supervisor 按 stalled 重派。
+export function normalizeSessionOrchestration(value) {
+    const raw = value && typeof value === 'object' ? value : null;
+    if (!raw) return null;
+    const id = textOf(raw.id).trim();
+    const role = textOf(raw.role).trim();
+    if (!id || !['work', 'review', 'arbiter'].includes(role)) return null;
+    return {
+        id,
+        batchId: textOf(raw.batchId).trim(),
+        attempt: Math.max(0, Number(raw.attempt) || 0),
+        role,
+        parentSessionId: textOf(raw.parentSessionId).trim(),
+        generation: Math.max(0, Number(raw.generation) || 0),
+        owns: Array.isArray(raw.owns) ? raw.owns.filter((p) => typeof p === 'string' && p).slice(0, 64) : [],
+    };
+}
+
 export function normalizeSessionGroup(value) {
     return textOf(value).trim().slice(0, AI_SESSION_GROUP_MAX);
 }
@@ -505,6 +632,11 @@ export function buildSessionMeta(session) {
         // status:'pending'|'approved', ts, fileRel}。审批卡 / 落盘 / 回注 / 列表角标都读它，
         // 消息不承载计划内容。空计划归一成 null，不写空壳。
         activePlan: normalizeActivePlan(session && session.activePlan),
+        // 子代理运行态快照（S6）：跨进程续跑的唯一依据。写侧已归一 + 截断（ai-agent-resume），
+        // 这里只做形状兜底，空数组不写字段（旧会话保持字节不变）。
+        ...(Array.isArray(session && session.agentRuns) && session.agentRuns.length
+            ? {agentRuns: session.agentRuns}
+            : {}),
         browserTabId: textOf(session && session.browserTabId),
         // 用户交给 AI 的标签（禁止 AI 关闭）：与 browserTabId 一起持久化
         browserTabAdopted: (session && session.browserTabAdopted) === true,
@@ -543,6 +675,8 @@ export function buildSessionMeta(session) {
         readRoots: Array.isArray(session && session.readRoots) ? session.readRoots : [],
         // 支线对话：指向母会话 id（普通会话为空）。sideOf 不嵌套——创建时已扁平化到一层。
         sideOf: textOf(session && session.sideOf),
+        // 编排归属：只落稳定元数据（票据在 session._orchestrationToken，不序列化）。
+        orchestration: normalizeSessionOrchestration(session && session.orchestration),
         // OpenCode 稳定会话标识：随 meta 持久化，重启后沿用同一 ID（否则每次读盘都会重新生成）。
         opencodeSessionId: textOf(session && session.opencodeSessionId),
         // 隔离 worktree 会话态（唯一归属凭证；fork/支线/投递新建的会话没有该字段 → null，

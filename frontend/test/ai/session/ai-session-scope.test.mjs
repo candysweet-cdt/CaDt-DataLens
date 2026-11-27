@@ -210,16 +210,14 @@ test('isSessionBusy：只给 streamOf 时同样生效；什么依赖都没给时
     assert.equal(createSessionBusyProbe(null)('s1'), false, '缺省依赖时不能抛错');
 });
 
-// compactStarting 是**全局**的「压缩正在准备」窗口（startCompact 拿租约 / 按 stat 重读期间），
-// 不属于任何单个会话。默认不判：否则一个会话开始压缩会拦住所有会话的发送门禁。
-// 起轮内核与它同源的守卫显式传 includeCompactStarting。
-test('isSessionBusy：compactStarting 是全局标志，只有显式要求才算忙', () => {
-    const isBusy = createSessionBusyProbe({compactStartingOf: () => true});
-    assert.equal(isBusy('s-any'), false, '默认不把全局的压缩准备算到某个会话头上');
-    assert.equal(isBusy('s-any', {includeCompactStarting: true}), true);
-    assert.equal(createSessionBusyProbe({compactStartingOf: () => false})('s-any', {includeCompactStarting: true}), false);
-    // 装配方没有 getter 时也支持直接给值
-    assert.equal(createSessionBusyProbe({compactStarting: true})('s', {includeCompactStarting: true}), true);
+// 压缩准备按会话隔离：A 准备压缩只阻塞 A，不能拦住 B 工作区的后台通知。
+// 默认仍不判，只有起轮内核与同源守卫显式传 includeCompactStarting。
+test('isSessionBusy：compactStarting 按 sessionId 判定，只有显式要求才算忙', () => {
+    const isBusy = createSessionBusyProbe({compactStartingOf: (id) => id === 's-compact-starting'});
+    assert.equal(isBusy('s-compact-starting'), false, '默认不把压缩准备算到发送门禁头上');
+    assert.equal(isBusy('s-compact-starting', {includeCompactStarting: true}), true);
+    assert.equal(isBusy('s-other', {includeCompactStarting: true}), false, '另一个会话不能被串扰');
+    assert.equal(createSessionBusyProbe({compactStartingOf: () => false})('s', {includeCompactStarting: true}), false);
 });
 
 test('canStartTurn：内核的五个维度齐全，_stub 刻意不算拦截理由', () => {

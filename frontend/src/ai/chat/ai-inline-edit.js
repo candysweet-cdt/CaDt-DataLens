@@ -1,7 +1,7 @@
 // ai-inline-edit.js：用户消息原地编辑的纯数据层（快照归一 / 保存载荷组装）。
 // DOM 与控制器在 ai-panel.js；这里不碰 DOM，便于单测（test/ai/ai-inline-edit.test.mjs）。
 // 方案见 docs/finished-plans/inline-message-edit.md。
-import {AI_QUOTE_KIND, quoteMarkupFromAttachments} from './ai-quote.js';
+import {quoteMarkupFromAttachments, groupAttachmentsForTurn} from './ai-quote.js';
 
 // 快照里允许的附件种类：只收「文本类」附件。图片 / 视频继续走 message.images / videos
 // （落盘时已外置成文件引用），引用块继续从 content 前缀解析（旧消息也认），都不进快照。
@@ -55,16 +55,15 @@ export function normalizeMessageAttachments(raw) {
 }
 
 // 保存载荷：与输入区 submitText 的口径逐条对齐——
-// 引用 chip 拼回正文前缀（不进 <attachments>）、媒体单独分组、其余走文本附件。
+// 引用 chip 拼回正文前缀（不进 <attachments>），媒体/文本分组走 ai-quote.js 的
+// groupAttachmentsForTurn（三条发送路径共用，2026-11-27 收口）。
 export function inlineEditPayload(items, text) {
     const list = (Array.isArray(items) ? items : []).filter((item) => item && typeof item === 'object');
     const quoteMarkup = quoteMarkupFromAttachments(list);
     const body = textOf(text).trim();
     return {
         value: quoteMarkup ? (body ? quoteMarkup + '\n\n' + body : quoteMarkup) : body,
-        images: list.filter((item) => item.kind === 'image'),
-        videos: list.filter((item) => item.kind === 'video'),
-        texts: list.filter((item) => item.kind !== 'image' && item.kind !== 'video' && item.kind !== AI_QUOTE_KIND),
+        ...groupAttachmentsForTurn(list),
     };
 }
 

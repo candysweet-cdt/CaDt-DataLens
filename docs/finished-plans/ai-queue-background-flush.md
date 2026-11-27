@@ -1,6 +1,6 @@
 # 后台会话的排队消息不会自动续跑（已实施）
 
-> 状态：**已实施（方案 A）**（2026-11-19 评估成文，当日立项当日落地，已移入 `finished-plans/`；实施记录见 §9）
+> 状态：**已实施（方案 A 2026-11-19；方案 B 2026-11-27）**（2026-11-19 评估成文，当日立项当日落地方案 A；方案 B 于 2026-11-27 落地，见 §10）
 > 来源：排查「`currentSession()` 串会话」时的同源发现——队列消费入口把「UI 代发」当成了唯一通路。
 > 性质：原为只读评估。行号按 2026-11-19 工作区实测（实施后行号已漂移，以代码为准）；同批只做了一处无争议清理（`ai-subagents.parentSessionOfSub` 的 `currentSession()` 兜底已删，见 §7）。
 
@@ -140,6 +140,8 @@ async function dispatchQueuedItem(session, item) {
 
 把 `dispatchQueuedItem` 做成队列模块的对外 API，UI 与后台共用；`flushMessageQueue` 退化为薄壳。改动面更大（队列模块要注入 `submitText` / `startSessionTurn` / 会话查询，4 个调用点全要跟着改），收益是"以后加第三条发送路径不用再拆一次"。
 
+> **已落地（2026-11-27），见 §10。** 上面这段的成本估算是评估当时的：方案 A 落地后，`startSessionTurn` / `sessionById` / `setSessionUnread` 等依赖本来就已注入队列模块，所以真做起来不是「让后台补上代发的能力」，而是「删掉代发」——队列模块净减代码。
+
 ### 4.3 方案 C：不做，只加可见性
 
 - 会话列表给"有待发消息"的会话加徽标（`model.hasItems(sessionId)` 已有现成 API，`ai-session-list.js` 只需读它）；
@@ -154,8 +156,8 @@ async function dispatchQueuedItem(session, item) {
 | 解决语义 | 是 | 是 | 否 |
 | 改动面 | `ai-message-queue.js` 一个函数拆两段 + 两处死调用变活 | 队列模块 API + 4 调用点 | 列表 UI + 一条通知 |
 | 风险 | 低（复用 `wakeWith` 模式） | 中（跨模块依赖注入） | 极低 |
-| 估计 | 0.5 天 + 测试 | 1–1.5 天 | 0.1 天 |
-| 建议 | **先做 A**；B 作为后续重构，等第三条发送路径出现时再提 | | C 可与 A 叠加（徽标本身有用） |
+| 估计 | 0.5 天 + 测试 | 1–1.5 天（A 落地后实测 ≈ 半小时） | 0.1 天 |
+| 结论 | 已实施（2026-11-19） | **已实施（2026-11-27）** | 未做 |
 
 ## 5. 风险与不变量
 
@@ -203,3 +205,24 @@ async function dispatchQueuedItem(session, item) {
 **刻意不做的**（**2026-11-19 作者裁定：三条全部不做，不是遗留待办**）：① 连发（§6-2）——一轮一条就是正常语义，要合并成一串由用户自己组织那一条消息（排队不是「消息合并器」）；② 没有加「后台自动发送」开关（§6-1）——排队本来就是用户亲手按下发送，与 `wakeWith` 同性质，加开关等于给默认行为打折；③ 没有 `notifyDesktop`（§6-3）——后台成功发出本身就是结果，用状态栏只在**失败**时提示。
 
 **测试**：`test/ai/ai-message-queue.test.mjs` 新增 5 例（`queuedAttachmentsPayload` 分组 / 后台成功走内核且不碰输入区 / 失败回插队首 + 未读 + 红字提示 / 忙时不取项 / 当前会话仍走输入区）；`test/ai/ai-turn-steer-wiring.test.mjs` 的重试与 import 断言同步到新实现，并加断言「后台分支必须调 `startSessionTurn`」。均登记在 `npm test`。
+
+## 10. 实施记录（2026-11-27，方案 B：彻底解耦）
+
+方案 A 落地一年后再评估：**代发不提供任何发送语义**，它不是设计而是存量路径。理由链：
+
+1. 视图渲染本来就在内核里——`startSessionTurnInner` 用 `viewed = isOpen() && currentSession() === session` 守卫渲染（`ai-panel.js`），`setStreamingUI()` 内部已刷新发送按钮。当前会话起轮后气泡与流式光标由内核负责，代发没有贡献。
+2. 代发独有的只剩四样，三样是负担：`ctxGate` 快拦（内核权威预检 `over_budget` + `onQueueOverBudget` 已等价）、`allowPendingEdit: true`（冲刷不该截断用户正在编辑的那条）、`onStarted` 清输入框（只因为代发先往里写了东西）、一份**与后台路径并行的** reason → 人话映射表。
+3. 它带来一个真实隐患：`flushThroughComposer` 先 `el.input.value = item.text` 再 `await submitText(...)`；`await` 窗口里用户切走会话，那段文字就留在**别的会话**的输入框里——「冲刷入口 + 失败收尾都要 `dropComposerDraft`」这套补偿正是为它存在。
+4. 反证：`wakeWith`（后台通知唤醒）/ 定时任务 / 编排 / 群消息 / 原地编辑重发全部直连 `startSessionTurn`，从来没人给它们加代发；只剩「当前会话的队列冲刷」这一条例外，说明它是历史包袱。
+
+| 落点 | 内容 |
+|---|---|
+| `ai-message-queue.js` | 删 `flushThroughComposer`；`flushInBackground` → `dispatchQueuedItem`（所有会话唯一的发送路径）；`flushMessageQueue` 只做「取项 → dispatch」，不再按 `currentSession` 分叉 |
+| 依赖面 | 移除已无用的 `submitText` / `setAttachments` / `renderAttachments` / `resizeInput` / `updateSendState` / `dropComposerDraft`；新增 `describeTurnFailure`（失败文案单一来源）。`takeQueuedItem` 的守卫矩阵与草稿保护**一字未动** |
+| 失败文案 | `ai-panel.js` 的 `flashTurnStartFailure` 重构为 `turnStartFailureText(result, opts)` + 薄壳；`submitText` 不再自建分支表，`no_backend` / `no_profile` 的副作用（`showNote` / 重绘）留在原处；队列侧 `queued: true` 走「留在队列」措辞，非当前会话带会话名 |
+| 不变量 | 一轮一条、`fromRetry` 单次自愈、失败回插队首 + 未读 + 状态栏、`over_budget` 触发兜底压缩、`preserveScroll: true`、`allowPendingEdit: false` 全部保留 |
+| 测试 | `ai-message-queue.test.mjs`：把「当前会话仍走输入区代发」反转为「同样走内核」，两例草稿补偿测试换成**输入区零写入**回归守卫（`value` 用 getter/setter 计数，旧路径必然写 ≥1 次）；`ai-turn-steer-wiring.test.mjs` 断言合并为「唯一分派路径必须调 `startSessionTurn`」并禁字面量 `flushThroughComposer` / `flushInBackground`；`ai-draft-hygiene.test.mjs` 断言队列侧不再注入 `dropComposerDraft`；`ai-archived-readonly.test.mjs` 跟随文案来源迁移 |
+
+**验证**：`npm test` 全量（含 typecheck 前置门）退出码 0。
+
+**行为变化（用户可见）**：前台会话的排队消息不再在输入框里闪一下，直接出现在对话区；冲刷失败的提示措辞与手动发送统一。

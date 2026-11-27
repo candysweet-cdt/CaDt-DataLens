@@ -68,6 +68,25 @@ test('ai-composer.js：Enter 处理挡掉键盘重复（e.repeat），先于发�
     assert.ok(repeatAt < sendAt, 'repeat 判定必须先于发送');
 });
 
+test('ai-composer.js：异步附件准备与提交带会话亲和性，切会话后不落到新会话', () => {
+    const src = read('ai/chat/ai-composer.js');
+    assert.match(src, /function composerSessionId\(\)/);
+    assert.match(src, /function sameComposerSession\(sessionId\)/);
+    assert.match(src, /async function sendComposerMessage\(text, ev\) \{\s*if \(!el\.input\) return false;\s*const sessionId = composerSessionId\(\);[\s\S]{0,700}if \(!sameComposerSession\(sessionId\)\) return false;/);
+    assert.match(src, /async function attachPastedText\(text, opts\) \{\s*const sessionId = composerSessionId\(\);[\s\S]{0,900}if \(!sameComposerSession\(sessionId\)\) return false;/);
+    assert.match(src, /async function attachFilesDialog\(\) \{\s*const sessionId = composerSessionId\(\);[\s\S]{0,900}!sameComposerSession\(sessionId\)/);
+    assert.match(src, /async function attachPaths\(paths, opts\) \{\s*const sessionId = composerSessionId\(\);[\s\S]{0,1200}if \(!sameComposerSession\(sessionId\)\) break;/);
+    assert.match(src, /const item = await attachmentFromPath\(path, opts\);\s*if \(!sameComposerSession\(sessionId\)\) break;/);
+    assert.match(src, /for \(const path of paths\) \{[\s\S]{0,700}if \(!sameComposerSession\(sessionId\)\) break;/);
+});
+
+test('ai-panel.js：异步提交只清理提交时的输入与附件快照', () => {
+    const src = read('ai/ai-panel.js');
+    assert.match(src, /const inputSnapshot = el\.input[\s\S]{0,500}const canClearComposer =/);
+    assert.match(src, /if \(!canClearComposer\(\)\) return;/);
+    assert.match(src, /String\(\(currentSession\(\) \|\| \{\}\)\.id \|\| ''\) === String\(sessionId \|\| ''\) && attachSeq === attachmentSeq/);
+});
+
 test('ai-panel.js：输入框 keydown 只绑定一处，不做重复接线', () => {
     const src = read('ai/ai-panel.js');
     const hits = [...src.matchAll(/el\.input\.addEventListener\('keydown'/g)];

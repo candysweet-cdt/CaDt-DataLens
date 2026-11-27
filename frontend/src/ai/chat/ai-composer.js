@@ -180,6 +180,15 @@ export function createAIComposer(ctx) {
     const pasteStore = new Map();
     let pasteSeq = 0;
 
+    function composerSessionId() {
+        const session = typeof currentSession === 'function' ? currentSession() : null;
+        return session && session.id ? String(session.id) : '';
+    }
+
+    function sameComposerSession(sessionId) {
+        return !sessionId || composerSessionId() === sessionId;
+    }
+
     // 当前粘贴模式（每次读，设置改了下次粘贴即生效）。未注入 settings 时走默认 collapse。
     function pasteMode() {
         return normalizePasteMode(settings && settings.aiLongPaste);
@@ -276,13 +285,15 @@ export function createAIComposer(ctx) {
 
     // 超长文本转附件：≤ 单件上限走 content（随消息走），超过则落盘 + 路径引用。
     async function attachPastedText(text, opts) {
+        const sessionId = composerSessionId();
         const value = String(text == null ? '' : text);
         if (!value) return false;
         const label = (opts && opts.label) || '粘贴文本.txt';
         if (value.length <= PASTE_ATTACH_MAX_CHARS) {
-            return addAttachment({kind: 'file', label, content: value});
+            return sameComposerSession(sessionId) && addAttachment({kind: 'file', label, content: value});
         }
         const path = await writePasteTempFile(value);
+        if (!sameComposerSession(sessionId)) return false;
         if (path) {
             const name = path.split(/[\\/]/).pop() || label;
             return addAttachment({
@@ -497,9 +508,10 @@ export function createAIComposer(ctx) {
     }
 
     async function attachVideoPath(path) {
+        const sessionId = composerSessionId();
         try {
             const item = await attachmentVideoFromPath(path);
-            return item ? addAttachment(item) : false;
+            return sameComposerSession(sessionId) && item ? addAttachment(item) : false;
         } catch (e) {
             flash('附加视频失败：' + ((e && e.message) || e), true);
             return false;
@@ -567,7 +579,9 @@ export function createAIComposer(ctx) {
             // 文件优先：图片/视频仍走附件通道，不受三档设置影响。
             const fileText = data.getData('text/plain');
             if (!fileText) e.preventDefault();
+            const sessionId = composerSessionId();
             const added = await attachmentsFromDataTransfer(data);
+            if (!sameComposerSession(sessionId)) return;
             for (const item of added) addAttachment(item);
             return;
         }
@@ -608,9 +622,10 @@ export function createAIComposer(ctx) {
 
     async function attachPath(path, opts) {
         if (!path) return false;
+        const sessionId = composerSessionId();
         try {
             const item = await attachmentTextFromPath(path);
-            return item ? addAttachment(item) : false;
+            return sameComposerSession(sessionId) && item ? addAttachment(item) : false;
         } catch (e) {
             flash('附加文件失败：' + ((e && e.message) || e), true);
             return false;
@@ -647,9 +662,10 @@ export function createAIComposer(ctx) {
     }
 
     async function attachImagePath(path) {
+        const sessionId = composerSessionId();
         try {
             const item = await attachmentImageFromPath(path);
-            return item ? addAttachment(item) : false;
+            return sameComposerSession(sessionId) && item ? addAttachment(item) : false;
         } catch (e) {
             flash(e && e.sourceCheck ? e.message : '附加图片失败：' + ((e && e.message) || e), true);
             return false;
@@ -732,6 +748,7 @@ export function createAIComposer(ctx) {
     }
 
     async function attachFilesDialog() {
+        const sessionId = composerSessionId();
         if (!pickFiles) {
             flash('当前版本不支持选择附加文件', true);
             return;
@@ -743,13 +760,15 @@ export function createAIComposer(ctx) {
             flash('选择文件失败：' + ((e && e.message) || e), true);
             return;
         }
-        if (!paths || !paths.length) return;
+        if (!paths || !paths.length || !sameComposerSession(sessionId)) return;
         for (const path of paths) {
+            if (!sameComposerSession(sessionId)) break;
             // 按类型分派：视频走 base64 视频通道，图片走降采样图片通道，
             // 其余走文本读取（读不了正文的自动降级为路径引用）。
             if (isReadableVideoPath(path)) await attachVideoPath(path);
             else if (isReadableImagePath(path)) await attachImagePath(path);
             else await attachPath(path);
+            if (!sameComposerSession(sessionId)) break;
         }
     }
 
@@ -765,12 +784,14 @@ export function createAIComposer(ctx) {
     // 按拖入顺序逐个构造附件 → addAttachment；某类触发上限后同批同类静默跳过，
     // 结束只汇总一次提示（20 张图刷 20 条红字比不看提示更糟）。
     async function attachPaths(paths, opts) {
+        const sessionId = composerSessionId();
         const existing = attachments.filter((item) => item && item.path).map((item) => item.path);
         const batch = dedupeAttachPaths(paths, existing);
         const blocked = new Set(); // 'image' | 'video' | 'other'：已触上限，后续同类不再尝试
         let attached = 0;
         let skipped = batch.skipped;
         for (const path of batch.paths) {
+            if (!sameComposerSession(sessionId)) break;
             const kind = isReadableVideoPath(path) ? 'video' : (isReadableImagePath(path) ? 'image' : 'other');
             if (blocked.has(kind)) {
                 skipped++;
@@ -778,6 +799,7 @@ export function createAIComposer(ctx) {
             }
             try {
                 const item = await attachmentFromPath(path, opts);
+                if (!sameComposerSession(sessionId)) break;
                 if (!item || !addAttachment(item)) {
                     // 图片/视频的上限是「每条消息的张数/体积」，一旦触顶后续同类必然也失败，
                     // 记下来静默跳过；文本类是逐条判断（总量上限 / 重复），不封锁整类。
@@ -828,6 +850,7 @@ export function createAIComposer(ctx) {
     }
 
     async function showSkillPicker() {
+        const sessionId = composerSessionId();
         let skills;
         try {
             skills = await listSkills(true);
@@ -835,6 +858,7 @@ export function createAIComposer(ctx) {
             showNote('读取技能失败：' + ((e && e.message) || e), true);
             return;
         }
+        if (!sameComposerSession(sessionId)) return;
         if (!skills.length) {
             showNote('未找到技能。技能目录：工作区 .cadt/skills、.agents/skills，应用数据 ai-skills，用户 ~/.agents/skills，内置 builtin-skills。', true);
             return;
@@ -846,6 +870,7 @@ export function createAIComposer(ctx) {
         showContextMenu(skills.map((skill) => ({
             label: skill.name + ' — ' + skill.description,
             action: () => {
+                if (!sameComposerSession(sessionId)) return;
                 if (!addAttachment({kind: 'skill', label: skill.name, path: skill.path, content: skill.content})) return;
                 showNote('已附加技能：' + skill.name + '，可直接点发送（只发 skill），或继续输入需求。');
             },
@@ -853,6 +878,7 @@ export function createAIComposer(ctx) {
     }
 
     async function attachSkillByName(name) {
+        const sessionId = composerSessionId();
         let skills;
         try {
             skills = await listSkills(true);
@@ -865,6 +891,7 @@ export function createAIComposer(ctx) {
             showNote('未找到技能：' + name, true);
             return;
         }
+        if (!sameComposerSession(sessionId)) return;
         addAttachment({kind: 'skill', label: target.name, path: target.path, content: target.content});
         showNote('已附加技能：' + target.name + '，可直接点发送（只发 skill），或继续输入需求。');
     }
@@ -921,9 +948,11 @@ export function createAIComposer(ctx) {
     // 但已是待发消息，不能再转回 handleSlashText（会死循环）。
     async function sendComposerMessage(text, ev) {
         if (!el.input) return false;
+        const sessionId = composerSessionId();
         // 超长兜底：胶囊展开后正文仍超过单条消息上限（多段长文本叠加 / 手打过长）时整段转附件，
         // 正文换成一句占位。放在排队分派之前，排队路径也不会带着超长正文入队。
         const absorbed = await absorbOverflowText(text);
+        if (!sameComposerSession(sessionId)) return false;
         if (absorbed != null) {
             text = absorbed;
             el.input.value = text;
@@ -1327,6 +1356,27 @@ export function createAIComposer(ctx) {
         handlePasteMirrorClick,
         // 供虚拟标签页 onChange 回写：按 id 取/更新条目，并刷新胶囊 tooltip。
         getPasteEntry: (id) => pasteStore.get(id),
+        // 草稿持久化：胶囊全文必须随草稿走，否则重启后只剩标记文本。
+        exportPasteEntries: () => Array.from(pasteStore.entries()).map(([id, entry]) => ({
+            id,
+            text: String(entry && entry.text != null ? entry.text : ''),
+            summary: entry && entry.summary,
+            time: entry && entry.time,
+        })),
+        importPasteEntries: (entries) => {
+            pasteStore.clear();
+            for (const entry of Array.isArray(entries) ? entries : []) {
+                if (!entry) continue;
+                const id = Number(entry.id);
+                if (!Number.isInteger(id) || id <= 0) continue;
+                const normalized = makePasteEntry(entry.text);
+                normalized.summary = entry.summary || pasteSummary(normalized.text);
+                normalized.time = entry.time || formatPasteTime();
+                pasteStore.set(id, normalized);
+            }
+            pasteSeq = Math.max(pasteSeq, ...Array.from(pasteStore.keys(), Number));
+            refreshPasteMirror();
+        },
         updatePasteEntry: (id, text) => {
             const entry = pasteStore.get(id);
             if (!entry) return;

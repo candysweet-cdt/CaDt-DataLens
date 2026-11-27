@@ -8,7 +8,9 @@ import {
     encodeMetaEvent,
     encodeSessionHeader,
     encodeSessionLines,
+    encodeTurnEvent,
     encodeTruncateEvent,
+    interruptedTurnIds,
     messageFingerprint,
     metaSignature,
     replaySessionLog,
@@ -243,6 +245,14 @@ export function createSessionDiskStore(options) {
         session._needsRewrite = false;
         session._logMeta = {title: textOf(session.title), workspace: textOf(session.workspace)};
         if (session.summary) events.push(encodeMetaEvent({summary: session.summary}));
+        // 审计事件（S5）：整份重写是「按内存快照重建」，不显式搬过来的话历史会被物理删除
+        // （压缩 / 归档对齐 / 迁移都会走这里，与 Go vacuum 保留 extLines 必须同口径）。
+        // 顺序对齐 vacuum：header / meta 之后、消息之前。
+        if (session._audit) {
+            for (const kind of ['turns', 'tools', 'approvals', 'agents']) {
+                for (const event of session._audit[kind] || []) events.push(event);
+            }
+        }
         archived.forEach((message, index) => {
             // mids 条目可能被 invalidateMessage 清空：回退到消息自带的 _mid，整份重写时不能丢消息。
             const event = encodeMessageEvent(message, session._archivedMids[index] || textOf(message && message._mid), true);
@@ -869,6 +879,17 @@ export function createSessionDiskStore(options) {
         session.archived = replay.archived || [];
         if (!session.summary && replay.summary) session.summary = replay.summary;
         session._recovered = messages.some((message) => message && message._recovered);
+        // 崩溃尾部闭合（S5）：有 turn/start 没有 turn/close，说明上次没走完收尾（进程被杀 /
+        // 关窗 / 断电）。补一条 reason=crash 的 close，让日志自洽——「这一轮为什么没有结束
+        // 标记」不用再靠猜，回放侧也能直接统计崩溃次数。写失败只记诊断，下次载入会再补。
+        // 两条载入路径（reload / hydrate）都要补，重复补同一条是幂等的（close 覆盖 close）。
+        // 载入时记下审计事件，供下一次整份重写原样搬回去（否则重写即丢历史）。
+        session._audit = replay.audit || null;
+        if (replay.header) {
+            for (const turnId of interruptedTurnIds(replay)) {
+                appendAuditEvent(session.id, encodeTurnEvent(turnId, 'close', 'crash')).catch(() => {});
+            }
+        }
         // 归一化可能丢掉无效消息，_mids 必须按归一化后的顺序重建，否则索引错位会重复追加。
         session._mids = messages.map((message) => textOf(message && message._mid));
         session._archivedMids = session.archived.map((message) => textOf(message && message._mid));
@@ -1034,6 +1055,17 @@ export function createSessionDiskStore(options) {
         session.archived = replay.archived || [];
         if (replay.summary) session.summary = replay.summary;
         session._recovered = messages.some((message) => message && message._recovered);
+        // 崩溃尾部闭合（S5）：有 turn/start 没有 turn/close，说明上次没走完收尾（进程被杀 /
+        // 关窗 / 断电）。补一条 reason=crash 的 close，让日志自洽——「这一轮为什么没有结束
+        // 标记」不用再靠猜，回放侧也能直接统计崩溃次数。写失败只记诊断，下次载入会再补。
+        // 两条载入路径（reload / hydrate）都要补，重复补同一条是幂等的（close 覆盖 close）。
+        // 载入时记下审计事件，供下一次整份重写原样搬回去（否则重写即丢历史）。
+        session._audit = replay.audit || null;
+        if (replay.header) {
+            for (const turnId of interruptedTurnIds(replay)) {
+                appendAuditEvent(session.id, encodeTurnEvent(turnId, 'close', 'crash')).catch(() => {});
+            }
+        }
         // 归一化可能丢掉无效消息，_mids 必须按归一化后的顺序重建。
         session._mids = messages.map((message) => textOf(message && message._mid));
         session._archivedMids = session.archived.map((message) => textOf(message && message._mid));
@@ -1145,6 +1177,29 @@ export function createSessionDiskStore(options) {
         return readArchivedPage(id, offset, limit);
     }
 
+    // appendAuditEvent：单条审计事件直接追加（S5）。
+    //
+    // 与 persistSession 的区别：那条路走「整份快照对比 + 批量事件」，重且会带出消息改写；
+    // 审计事件是纯追加，不参与快照对比，所以单独一条通道，代价是一次 enqueue。
+    // 必须留在本作用域：它依赖这里的 enqueue（写队列串行化——否则审计行可能落在整份
+    // 重写之前被覆盖）与 onError（诊断出口）。
+    // allowCreate=false 只保证「不改桶归属」，不保证「不建文件」；调用方需自行确认会话
+    // 日志已存在（面板侧按 session._logCreated 判），否则可能出现没有 header 的日志文件。
+    function appendAuditEvent(sessionId, event) {
+        const id = textOf(sessionId);
+        if (!id || !event) return Promise.resolve();
+        const lines = encodeSessionLines([event]);
+        if (!lines) return Promise.resolve();
+        return enqueue(id, async () => {
+            try {
+                await backend.AISessionAppend(id, lines, false);
+            } catch (e) {
+                // 审计事件是尽力而为：写不进去不影响对话主流程，只记诊断。
+                onError(e);
+            }
+        });
+    }
+
     return {
         loadAll,
         loadMetas,
@@ -1168,6 +1223,7 @@ export function createSessionDiskStore(options) {
         sameLogStat,
         hydrateImages,
         newMid,
+        appendAuditEvent,
     };
 }
 
@@ -1371,6 +1427,9 @@ export function createAIConversationLog(ctx) {
             const markdown = buildConversationLogMarkdown(session, archived, omitted);
             await backend.SaveFile(joinPath(dir, session.logFile), markdown, 'lf', false, 'utf-8');
             session.logSavedAt = Date.now();
+            // 成功一次就复位：否则生命周期内第一次失败后，此后所有失败都静默，
+            // 用户会以为日志一直在写。
+            logSaveErrorShown = false;
             persistSessions();
         } catch (e) {
             if (!logSaveErrorShown) {

@@ -31,7 +31,7 @@ import {
     AI_MASCOT_PHRASES, mascotPhraseIndex, phrasesForPhase, randomMascotSalt,
 } from './core/ai-mascot-phrases.js';
 import {createModelCatalogStore} from './core/model-catalog.js';
-import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs, normalizeSessionGroup, resolveSessionGroupName, buildSessionMeta, normalizeArchivedUsage} from './session/ai-session-store.js';
+import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs, normalizeSessionGroup, resolveSessionGroupName, buildSessionMeta, normalizeArchivedUsage, encodeTurnEvent, encodeToolEvent, encodeApprovalEvent, normalizeSessionOrchestration} from './session/ai-session-store.js';
 import {mergeLoadedSessions} from './session/ai-session-merge.js';
 import {buildGuardNotice} from './security/ai-wipeguard.js';
 import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, isNoWorkspaceSession, isUnboundSession, isWorkspaceEligibleSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey, scopeRootOf, createSessionBusyProbe, canStartTurn, canSendMessage} from './session/ai-session-scope.js';
@@ -176,6 +176,7 @@ import {
     normalizeUsageConfig,
     parseTokenAmount,
     reasoningLevelInfo,
+    redactAIConfigMirror,
     resolveModelId,
     resolveModelRef,
     resolveModelRefTarget,
@@ -203,6 +204,7 @@ import {createInboxWaiters} from './chat/ai-inbox-wait.js';
 import {agentLevelText} from './group/ai-team-model.js';
 import {createAIGroupBridge} from './group/ai-group-bridge.js';
 import {normalizeAgents} from './agent/ai-agent-model.js';
+import {mergeAgentRun, normalizeAgentRuns} from './agent/ai-agent-resume.js';
 import {
     AI_CONFIG_KEY,
     AI_SESSIONS_KEY,
@@ -305,7 +307,7 @@ import {createAITimer} from './settings/ai-timer.js';
 import {createAISessionList} from './session/ai-session-list.js';
 import {createAIComposer, renderAttachmentChips} from './chat/ai-composer.js';
 import {normalizeMessageAttachments, inlineEditPayload, snapshotFromAttachments} from './chat/ai-inline-edit.js';
-import {quoteMarkupFromAttachments, splitQuotePrefix, quoteLabel, quoteChipLabel, quoteCardExcerpt, quoteFullDoc, AI_QUOTE_KIND} from './chat/ai-quote.js';
+import {quoteMarkupFromAttachments, splitQuotePrefix, quoteLabel, quoteChipLabel, quoteCardExcerpt, quoteFullDoc, groupAttachmentsForTurn, AI_QUOTE_KIND} from './chat/ai-quote.js';
 import {splitTurnReminderPrefix, wrapTurnReminder} from './chat/ai-turn-reminder.js';
 import {parseFileRef, pickOpenFileMatch, applyFileRefChip} from './tools/ai-file-refs.js';
 import {createAIToolCards} from './tools/ai-tool-cards.js';
@@ -341,9 +343,18 @@ export function createAIPanel(options) {
     const opts = options || {};
     const panel = opts.panel;
     if (!panel) throw new Error('AI 面板节点不存在');
+    // 插件钩子总线（S6 插桩点）：main.js 以 getter 注入，延迟求值——插件容器 / 总线在
+    // loadPlugins 后才初始化，创建期直接取会是 null。未注入时三个插桩点静默降级。
+    const hookBusOf = () => {
+        try { return (typeof opts.hookBus === 'function' ? opts.hookBus() : opts.hookBus) || null; }
+        catch (e) { return null; }
+    };
     const dockParent = opts.dockParent;
     const overlayParent = opts.overlayParent;
     const backend = opts.backend || {};
+    // 编排适配器（宿主注入）：工具表裁剪、执行分支、写闸与票据都由它统一处理。
+    // 面板不认识 App/会话列表之外的编排内部结构，这保证 ai/ 不反向依赖 orchestration/ 域实现。
+    const orchestration = opts.orchestration || null;
     const settings = opts.settings || {};
     // 工作区破坏防护控制器（main.js 创建传入，见 ai-wipeguard.js）：写前备份 / 指纹兜底 /
     // 熔断判定。备份与检测都尽力而为，任何失败只进调试日志，不阻断工具执行。
@@ -825,20 +836,22 @@ export function createAIPanel(options) {
     const streams = new Map();
     let stream = null;
     let oneShot = null;
-    // 压缩的租约获取是异步的：oneShot 还没挂上时用这个标志挡住重复发起。
-    let compactStarting = false;
+    // 压缩的租约获取是异步的：oneShot 还没挂上时用这个标志挡住同一会话重复发起。
+    // 按 sessionId 隔离，避免多工作区下 A 压缩准备时误阻塞 B 的后台通知。
+    let compactStartingSessionId = '';
+    let compactPreparationSeq = 0;
+    const compactPreparationAbort = new Map(); // sessionId -> 释放已取租约并收尾准备态
     // 资源 watch 正在整份重读的会话：重读期间禁止起新轮/压缩，避免覆盖刚 push 的消息。
     const sessionReloading = new Set();
     // 会话「忙不忙」（生成中 / 压缩中）的唯一口径：原先 20+ 处逐字重复
     // `streamOf(id) || compactOf(id)`（有的写 streams.has）。判定本体在 ai-session-scope.js，
     // 这里只把三个闭包状态注入进去（建在状态声明之后，任何调用点都能安全引用）。
-    // compactStarting 是**全局**的「压缩正在准备」窗口（startCompact 拿回合租约 / 按 stat
-    // 重读期间置位，不属于任何单个会话），默认不判——只有起轮内核与同源守卫显式传
-    // {includeCompactStarting: true}；否则一个会话开始压缩会拦住所有会话的发送门禁。
+    // compactStarting 默认不判——只有起轮内核与同源守卫显式传
+    // {includeCompactStarting: true}；且只阻塞正在准备压缩的那个会话。
     const isSessionBusy = createSessionBusyProbe({
         streamOf,
         compactOf,
-        compactStartingOf: () => compactStarting,
+        compactStartingOf: (sessionId) => !!sessionId && sessionId === compactStartingSessionId,
     });
     let titleJob = null;
     // 自动标题最多尝试 2 次：失败（4xx / 空回复 / 被取消）后下一轮还能补，但不会每轮白跑请求。
@@ -1116,6 +1129,8 @@ export function createAIPanel(options) {
             genModels: normalizeGenModels(stored.genModels, () => aiNowId('gen-')),
             // 智能体（群聊成员，方案 docs/finished-plans/ai-group-chat.md §6.1）：零迁移
             agents: normalizeAgents(stored.agents, () => aiNowId('agent-')),
+            // 子代理运行态快照（S6）：重启后据此重建「可续」记录。坏数据整条丢弃。
+            agentRuns: normalizeAgentRuns(stored.agentRuns),
         };
         if (Array.isArray(stored.prompts)) {
             stored.prompts.forEach((raw, index) => {
@@ -1245,6 +1260,10 @@ export function createAIPanel(options) {
     let lastConfigLoadAt = 0;
     let configWriteChain = Promise.resolve();
     let configStoreErrorAt = 0;
+    // 配置热重读与本地保存可能并发。读取世代保证旧请求不覆盖新请求；写入世代保证
+    // AIConfigRead 在飞的期间一旦发生本地保存、冲突合并或写盘失败，迟到快照整份丢弃。
+    let configReadSeq = 0;
+    let configMutationSeq = 0;
 
     function configUseDisk() {
         if (configFallback) return false;
@@ -1267,33 +1286,10 @@ export function createAIPanel(options) {
         return normalizeAIConfig(stored);
     }
 
-    // 镜像去密钥：不只 apiKey——extraHeaders（Authorization / x-api-key 的常见藏身处）、
-    // 额度脚本的 usage.extraFields（cookie / 账号字段）、genModels 的自定义 headers、
-    // 代理地址里的 user:pass@ 都是凭据，全部不留。text 就是上面刚 JSON.stringify 出来的
-    // 对象，正常不会解析失败；真失败时原样返回，宁可保留一份可用的镜像，也不要把镜像清成空对象。
-    function mirrorWithoutKeys(text) {
-        try {
-            const copy = JSON.parse(text);
-            for (const profile of copy.profiles || []) {
-                profile.apiKey = '';
-                if (profile.usage) {
-                    profile.usage.apiKey = '';
-                    if (profile.usage.extraFields) profile.usage.extraFields = {};
-                }
-                if (profile.extraHeaders) delete profile.extraHeaders;
-            }
-            for (const entry of copy.genModels || []) {
-                entry.apiKey = '';
-                if (entry.headers) delete entry.headers;
-            }
-            if (typeof copy.proxy === 'string' && copy.proxy) {
-                copy.proxy = copy.proxy.replace(/\/\/[^@/]*@/, '//');
-            }
-            return JSON.stringify(copy);
-        } catch (e) {
-            return text;
-        }
-    }
+    // 镜像去密钥：实现已下沉到 ai-config-model 的纯函数（可单测），这里只保留
+    // 调用点的语义说明——apiKey / extraHeaders / usage.extraFields / 代理 userinfo
+    // 一律不落 localStorage 镜像。
+    const mirrorWithoutKeys = redactAIConfigMirror;
 
     // 写盘形态：插件虚拟账号只在内存里，绝不写进磁盘配置 / localStorage 镜像。
     function configForSave() {
@@ -1331,6 +1327,7 @@ export function createAIPanel(options) {
             ownWorkspaceKey: aiWorkspaceKey(windowWorkspacePath()),
         });
         config = normalizeAIConfig(merged.config);
+        configMutationSeq += 1;
         syncPluginAIAccounts();
         // 内存配置变了：设置页 / 模型下拉 / 输入区状态一起刷新（与读盘成功后同一出口）。
         applyLoadedAIConfig();
@@ -1395,6 +1392,9 @@ export function createAIPanel(options) {
         // sealed 时同样按内容去重：基线在 bootstrap 的 sealed 分支里设好，配置没变就不写。
         // 去掉这条的话，发第一条消息触发的 persistSessions 就会把镜像覆写上去。
         if (!text || text === lastConfigText) return;
+        // 先使在飞的配置读取失效，再排队写盘。否则读取可能先拿到旧快照，却等本地写盘
+        // 完成后才返回，把用户刚切到的新会话覆盖回老会话（2026-11-27 实测竞态）。
+        configMutationSeq += 1;
         if (configSealedBroken) {
             // 旧文件是当前环境解不开的密文：先把原文件改名留档（ai-config.json.sealed-<时间>.bak），
             // 再写新配置。只尝试一次——先清标记，失败再把标记恢复，等用户下一次动作。
@@ -1412,6 +1412,7 @@ export function createAIPanel(options) {
                 .then(() => backend.AIConfigWrite(text))
                 .catch((e) => {
                     configSealedBroken = true;
+                    configMutationSeq += 1;
                     lastConfigText = '';
                     notifyConfigStoreError(e);
                 });
@@ -1421,6 +1422,8 @@ export function createAIPanel(options) {
             .then(() => writeConfigWithCas(text, cloneConfig(forSave)))
             .catch((e) => {
                 // 写盘失败：清掉基线，下一次 saveAIConfig 会按当前内存内容重试。
+                // 同时使正在等待写盘的热重读失效，避免随后读到旧快照把本地改动回滚。
+                configMutationSeq += 1;
                 lastConfigText = '';
                 notifyConfigStoreError(e);
             });
@@ -1557,12 +1560,23 @@ export function createAIPanel(options) {
     }
 
     async function reloadAIConfigFromDisk() {
+        const myReadSeq = ++configReadSeq;
         await whenConfigReady();
+        if (myReadSeq !== configReadSeq) return;
         if (!configUseDisk()) return;
         if (Date.now() - lastConfigLoadAt < 2000) return;
+        // 已有本地写盘时先等它排空，避免读到尚未落盘的新会话。等待期间又产生保存则
+        // 整次重读放弃：下一次打开 / 聚焦会按最新内存再读，不能拿旧磁盘快照回滚。
+        const mutationBeforeDrain = configMutationSeq;
+        await configWriteChain;
+        if (myReadSeq !== configReadSeq || mutationBeforeDrain !== configMutationSeq) return;
+        const mutationAtRead = configMutationSeq;
         try {
             const text = await backend.AIConfigRead();
             if (!text || !text.trim()) return;
+            // 读取期间用户切了会话或改了设置：这次快照已经过期，绝不能整体替换 config。
+            // 两个世代检查同时覆盖「旧读取后返回」与「并发读取乱序返回」。
+            if (myReadSeq !== configReadSeq || mutationAtRead !== configMutationSeq) return;
             const stored = JSON.parse(text);
             config = normalizeAIConfig(stored);
             lastConfigText = JSON.stringify(config);
@@ -1593,6 +1607,14 @@ export function createAIPanel(options) {
             if (!anyStreaming()) reloadAIConfigFromDisk();
         });
     }
+    // 后台定时器可能被 WebView 节流；回前台时立即恢复所有尚未送达的通知。
+    window.addEventListener('focus', () => {
+        try { flushAllAgentNotices(); } catch (e) { /* 投递尽力而为，不拦 focus */ }
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible') return;
+        try { flushAllAgentNotices(); } catch (e) { /* 投递尽力而为，不拦可见性恢复 */ }
+    });
 
     function inferApprovalActor(raw, state) {
         if (state !== 'approved') return '';
@@ -2121,6 +2143,8 @@ export function createAIPanel(options) {
             readRoots: normalizeReadRoots(raw.readRoots),
             // 支线对话：指向母会话 id（普通会话为空）。不嵌套——读盘时也压成一层的语义。
             sideOf: aiTextOf(raw.sideOf),
+            // 编排归属（批次/仲裁角色）：随 meta 持久化；票据不落盘。
+            orchestration: normalizeSessionOrchestration(raw.orchestration),
             // 隔离 worktree 会话态（唯一归属凭证；fork/支线/投递产生的新会话不继承——
             // 它们走 createSessionData 新建，raw 里没有这个字段就归一成 null）
             worktree: normalizeWorktreeState(raw.worktree),
@@ -2232,6 +2256,9 @@ export function createAIPanel(options) {
             browserScriptAllow: [],
             readRoots: [],
             sideOf: '',
+            // 编排归属（Worker / 审查者 / 仲裁者）；票据只存内存，不落盘。
+            orchestration: null,
+            _orchestrationToken: '',
             // OpenCode（Zen/Go）的稳定会话标识：整会话复用，用于 x-opencode-session 头。
             opencodeSessionId: newOpencodeSessionId(),
         };
@@ -2565,7 +2592,7 @@ export function createAIPanel(options) {
         if (session.id !== activeSessionId()) return false;
         // 支线有独立标签页承载：静默删掉会让那个标签页指向不存在的会话
         if (aiTextOf(session.sideOf)) return false;
-        if (isSessionBusy(session.id)) return false;
+        if (isSessionBusy(session.id) || startingTurns.has(session.id) || compactStartingSessionId === session.id) return false;
         stashWorkspaceDraft(session);
         sessions = sessions.filter((item) => item !== session);
         commandApprovalRules.delete(session.id);
@@ -2642,6 +2669,10 @@ export function createAIPanel(options) {
             refreshSessionUI();
             // 列表已经画出来了：正文只补「当前会话 + 最近若干条」，其余等点开/被唤醒时再读
             hydrateStartupSessions();
+            // 磁盘重读会整体替换 sessions，内存里的编排进度投影随之丢失；延后一拍重放。
+            if (orchestration && typeof orchestration.refreshProjections === 'function') {
+                setTimeout(() => { try { orchestration.refreshProjections(); } catch (e) {} }, 0);
+            }
         } catch (e) {
             storageFallback = true;
             sessionsLoaded = true;
@@ -2691,6 +2722,12 @@ export function createAIPanel(options) {
         }
         // 补完才算「真知道」哪些会话是空的：启动时的去重跳过占位，这里补一次
         dedupeVirginSessions();
+        // 子代理跨进程续跑（S6）：把上次没跑完的子代理重建成「可续」记录。只重建不启动——
+        // 自动起轮会在用户不知情时消耗 token，也可能重复上次未完成的写操作。
+        for (const session of targets) {
+            if (!session) continue;
+            try { subagentsMod.restoreAgentRuns(session); } catch (e) {}
+        }
         // 上次进程在生成/工具执行中被杀过：正文补上后尽早把收尾状态写回（等价 dsh 的 recovery closer）
         for (const session of targets) {
             // 对象身份守卫：dedupeVirginSessions 可能刚把它从内存表剔除（空会话去重只剔内存、
@@ -2866,8 +2903,60 @@ export function createAIPanel(options) {
         persistSessions();
     }
 
-    function notifyStorageFailed() {
-        const now = Date.now();
+    // 审计事件（S5）：回合边界往会话日志追加一条 turn 事件，让日志本身能回答
+    // 「这一轮是正常结束、被停止、报错还是崩溃」。崩溃时进程没机会写，由载入侧
+    // （ai-session-store 的 interruptedTurnIds）识别未闭合回合后补 reason=crash。
+    // 尽力而为：存储缺失 / 写失败只记诊断，绝不影响对话主流程。
+    // 审计事件统一追加口：turn / tool / approval 三类共用（agent 由子代理桥的 auditEvent 走同一通道）。
+    // 日志尚未建立时不写：append 的 allowCreate=false 挡不住「目录在、文件不在」，
+    // 提前写会造出一个首行不是 header 的日志文件（Go 侧分桶归属会错）。
+    // 尽力而为：写失败只记诊断，绝不影响对话主流程。
+    function auditEventOf(sessionId, event) {
+        if (!sessionStore || !sessionId || !event) return;
+        const target = sessionById(sessionId);
+        if (!target || target._logCreated !== true) return;
+        try {
+            sessionStore.appendAuditEvent(sessionId, event).catch(() => {});
+        } catch (e) {}
+    }
+
+    function auditTurnEvent(sessionId, turnId, phase, reason) {
+        if (!turnId) return;
+        auditEventOf(sessionId, encodeTurnEvent(turnId, phase, reason));
+    }
+
+    // 插件插桩点（S6）：三个 waterfall 点对齐 Cordis 的 agent/pre-step、agent/request、
+    // agent/request-error。钩子可短路/改写值，但绝不能让插件异常打断回合——单点失败记诊断后
+    // 原值继续。未注入总线（无插件 / 旧宿主）时零开销返回原值。
+    function fireHook(name, value, payload) {
+        const bus = hookBusOf();
+        if (!bus || typeof bus.waterfall !== 'function') return value;
+        try { return bus.waterfall(name, value, payload); }
+        catch (e) {
+            if (typeof logFrontend === 'function') {
+                try { logFrontend('[hook] ' + name + ' 抛错：' + ((e && e.message) || e)); } catch (e2) {}
+            }
+            return value;
+        }
+    }
+
+    // 工具调用审计（S5 事件粒度下探）：start / end 各一条，与 turn 事件共用追加通道。
+    function auditToolEvent(session, callId, name, phase, ok) {
+        if (!session) return;
+        auditEventOf(session.id, encodeToolEvent(callId, name, phase, ok));
+    }
+
+    // 审批裁定审计：verdict 取 approval.actor（auto / user），未定则按 state 推。
+    function auditApprovalEvent(session, callId, approval, toolName) {
+        if (!session || !approval) return;
+        const verdict = approval.actor === 'auto' ? 'auto'
+            : approval.state === 'denied' ? 'deny'
+                : approval.state === 'approved' ? 'allow' : '';
+        if (!verdict) return;
+        auditEventOf(session.id, encodeApprovalEvent(callId, verdict, toolName || approval.tool));
+    }
+
+    function notifyStorageFailed() {        const now = Date.now();
         if (now - storageFailAt < AI_FAILURE_NOTICE_COOLDOWN_MS) return;
         storageFailAt = now;
         try {
@@ -2937,7 +3026,7 @@ export function createAIPanel(options) {
     // 拿到 lease 才能改会话/落盘；终态写盘完成后才释放。写盘失败时保持租约并
     // 定时重试释放，宁可让资源暂时不可写，也不交接半成品（详见 multi-instance-sync.md）。
     const leaseWarned = new Set();
-    const leaseReleaseTimers = new Map();
+    const leaseReleaseStates = new Map(); // sessionId -> {timer, running, callbacks}
 
     function leaseOwnerLabel() {
         try {
@@ -2950,24 +3039,72 @@ export function createAIPanel(options) {
 
     function releaseLeaseNow(sessionId) {
         const id = String(sessionId || '').trim();
-        if (!id || !backend.AISessionLeaseRelease) return Promise.resolve();
-        return Promise.resolve(backend.AISessionLeaseRelease(id)).catch(() => {});
+        if (!id || !backend.AISessionLeaseRelease) return Promise.resolve(true);
+        // 早期取消/失败路径也要可靠释放；瞬时错误先快速重试，仍失败则交给统一租约重试器。
+        return new Promise((resolve) => {
+            let attempts = 0;
+            const attempt = () => {
+                Promise.resolve().then(() => backend.AISessionLeaseRelease(id)).then(() => resolve(true)).catch((e) => {
+                    attempts += 1;
+                    if (attempts < 4) {
+                        setTimeout(attempt, 200);
+                        return;
+                    }
+                    try { console.warn('AISessionLeaseRelease 提前释放失败，转统一重试', id, e); } catch (err) {}
+                    // 不提前 resolve(false)：调用方必须等租约真正释放后才能继续冲队列或重试。
+                    releaseTurnLease(id, () => resolve(true));
+                });
+            };
+            attempt();
+        });
     }
 
-    function releaseTurnLease(sessionId) {
+    function releaseTurnLease(sessionId, onReleased) {
         const id = String(sessionId || '').trim();
-        if (!id || !backend.AISessionLeaseRelease) return;
+        if (!id || !backend.AISessionLeaseRelease) {
+            if (typeof onReleased === 'function') onReleased();
+            return;
+        }
+        let state = leaseReleaseStates.get(id);
+        if (!state) {
+            state = {timer: 0, running: false, callbacks: new Set()};
+            leaseReleaseStates.set(id, state);
+        }
+        if (typeof onReleased === 'function') state.callbacks.add(onReleased);
+        // 已有释放循环或待执行重试时只登记回调，绝不取消旧调用仍需执行的释放。
+        if (state.running || state.timer) return;
+        state.running = true;
+
+        const finish = () => {
+            if (leaseReleaseStates.get(id) !== state) return;
+            leaseReleaseStates.delete(id);
+            state.running = false;
+            if (state.timer) clearTimeout(state.timer);
+            state.timer = 0;
+            const callbacks = Array.from(state.callbacks);
+            state.callbacks.clear();
+            for (const callback of callbacks) {
+                try { callback(); } catch (e) { /* 单个恢复回调失败不影响其他回调 */ }
+            }
+            try { flushAgentNotices(id); } catch (e) { /* 投递尽力而为，不拦租约收尾 */ }
+        };
+        const schedule = () => {
+            if (leaseReleaseStates.get(id) !== state || state.timer) return;
+            state.timer = setTimeout(() => {
+                state.timer = 0;
+                if (leaseReleaseStates.get(id) === state) attempt();
+            }, 3000);
+        };
         const attempt = () => {
-            leaseReleaseTimers.delete(id);
+            if (leaseReleaseStates.get(id) !== state) return;
             const wait = (sessionStore && typeof sessionStore.whenIdle === 'function')
                 ? sessionStore.whenIdle(id)
                 : Promise.resolve({ok: true});
             Promise.resolve(wait).then((res) => {
                 if (res && res.ok === false) {
                     if (String(res.error || '').includes('session-gone')) {
-                        // 会话已被另一窗口删除：释放锁并停止重试，列表刷新会移除它。
                         leaseWarned.delete(id);
-                        return Promise.resolve(backend.AISessionLeaseRelease(id)).catch(() => {});
+                        return Promise.resolve().then(() => backend.AISessionLeaseRelease(id)).then(finish).catch(schedule);
                     }
                     const session = sessionById(id);
                     if (session && sessionStore && typeof sessionStore.persistSession === 'function') {
@@ -2977,21 +3114,15 @@ export function createAIPanel(options) {
                         leaseWarned.add(id);
                         try { showNote('会话保存失败，已阻止其他窗口写入：' + (res.error || '未知错误'), true); } catch (e) {}
                     }
-                    if (!leaseReleaseTimers.has(id)) {
-                        leaseReleaseTimers.set(id, setTimeout(attempt, 3000));
-                    }
+                    schedule();
                     return;
                 }
                 leaseWarned.delete(id);
-                return Promise.resolve(backend.AISessionLeaseRelease(id)).catch((e) => {
-                    // 释放失败保持锁，进程退出兜底；只记诊断，不制造重试风暴。
+                return Promise.resolve().then(() => backend.AISessionLeaseRelease(id)).then(finish).catch((e) => {
                     try { console.warn('AISessionLeaseRelease 失败', id, e); } catch (err) {}
+                    schedule();
                 });
-            }).catch(() => {
-                if (!leaseReleaseTimers.has(id)) {
-                    leaseReleaseTimers.set(id, setTimeout(attempt, 3000));
-                }
-            });
+            }).catch(schedule);
         };
         attempt();
     }
@@ -3078,47 +3209,93 @@ export function createAIPanel(options) {
                     return sessionStore.reloadSession(session).then(() => {
                         if (isOpen() && currentSession() === session) renderMessages(true);
                         renderSessionList();
-                    }).finally(() => { sessionReloading.delete(id); });
+                    }).finally(() => {
+                        sessionReloading.delete(id);
+                        try { flushAgentNotices(id); } catch (e) { /* 投递尽力而为，不拦重读收尾 */ }
+                    });
                 });
             }).catch(() => {});
         };
         check(4);
     }
 
-    // 起轮失败的用户提示：多实例的 busy 与普通同进程 busy 分开说。
-    function flashTurnStartFailure(result) {
-        if (!result || result.ok) return;
-        if (result.reason === 'archived') {
-            flash('该会话已归档，取消归档后再发送', true);
-            return;
+    // 起轮失败 → 用户人话：**单一来源**由手动发送（submitText）/ 原地编辑 / 排队冲刷共用，
+    // 加新 reason 或改措辞只改这里，不要再在调用点各写一份（历史上 submitText 与队列冲刷
+    // 各有一张表，同一失败两套说法且覆盖的 reason 不一致）。
+    // opts.queued：消息已退回队列——措辞要带「留在队列」的语境，用户才不会以为消息丢了；
+    // opts.sessionTitle：非当前会话时带上会话名，让用户认出是哪个会话的队列；
+    // opts.context: 'inline-edit'：原地编辑保存的语境——只有 busy / empty 两条文案不同
+    //   （「稍后再保存」/「消息不能为空」），其余 reason 全部复用主表（2026-11-27 收口）。
+    // 返回空串表示这条失败不产文案（no_backend / no_profile 由调用方各自处理）。
+    function turnStartFailureText(result, opts) {
+        if (!result || result.ok) return '';
+        const o = opts || {};
+        const title = o.sessionTitle ? '「' + o.sessionTitle + '」' : '';
+        const editing = o.context === 'inline-edit';
+        switch (result.reason) {
+        case 'archived':
+            return o.queued ? title + '已归档：排队消息未发送' : '该会话已归档，取消归档后再发送';
+        case 'other_window':
+            if (o.queued) return title + '正被另一个窗口使用：排队消息留队稍后重试';
+            {
+                const pid = result.owner && result.owner.pid;
+                return '该会话正在另一窗口运行' + (pid ? '（PID ' + pid + '）' : '') + '，请稍后再试';
+            }
+        case 'session_deleted':
+            return '该会话已被删除，请从列表重新打开';
+        case 'stale_reload':
+            return '会话已被其他窗口更新，重读失败：' + (result.error || '未知错误');
+        case 'stale_anchor':
+            return '会话已被其他窗口更新，编辑目标已不存在，请刷新后重试';
+        case 'starting':
+            return '正在准备发送，请稍候';
+        case 'busy':
+            return editing ? '该会话刚开始新一轮，稍后再保存' : '该会话正忙，请稍后再试';
+        case 'empty':
+            return editing ? '消息不能为空' : '消息为空，无法发送';
+        case 'cancelled':
+            return '';
+        case 'save_failed':
+            return '上一次会话保存失败，暂不能开始新回合：' + (result.error || '未知错误');
+        case 'lease_failed':
+            return o.queued ? title + '正被另一个窗口使用：排队消息留队稍后重试'
+                : '无法获取会话写权：' + (result.error || '另一窗口正在使用');
+        // 这几个是用户可自行解决的原因：给可读文案，不要把 reason 码摆给用户
+        case 'images_too_large':
+            return result.message || '图片总量超过上限，请减少图片';
+        case 'too_long':
+            return '消息过长（上限 ' + AI_CHAT_INPUT_LIMIT + ' 字符）';
+        case 'sessions_pending':
+            return '正在读取会话，稍等一下再发送';
+        case 'load_failed':
+            return '会话正文读取失败，请检查 ai-sessions 目录';
+        case 'video_protocol':
+            return '当前模型或协议不支持视频输入：需 OpenAI 兼容协议且模型条目勾选了「视频输入」，请换模型或移除视频附件';
+        case 'over_budget': {
+            const overWindow = Number(result.tokens) >= Number(result.windowSize);
+            const head = result.tokens && result.windowSize
+                ? (overWindow
+                    ? '上下文预计约 ' + result.tokens + ' tokens，已超过窗口 ' + result.windowSize
+                    : '上下文预计约 ' + result.tokens + ' tokens，超过发送上限（窗口 ' + result.windowSize +
+                        ' 的 ' + Math.round(AI_CTX_SEND_BLOCK_RATIO * 100) + '%）')
+                : '上下文已超阈';
+            if (o.queued) return title + head + '：消息已留在队列，压缩后自动重发';
+            return overWindow
+                ? head + '：可压缩上下文（/compact，摘要略粗），或切换更大上下文的模型'
+                : head + '，请先 /compact 压缩上下文或减少附加内容';
         }
-        if (result.reason === 'other_window') {
-            const pid = result.owner && result.owner.pid;
-            flash('该会话正在另一窗口运行' + (pid ? '（PID ' + pid + '）' : '') + '，请稍后再试', true);
-            return;
+        default:
+            return o.queued
+                ? title + '的排队消息未能发出（' + (result.reason || 'unknown') + '），已留在队列'
+                : '发送失败：' + (result.reason || 'unknown');
         }
-        if (result.reason === 'session_deleted') {
-            flash('该会话已被删除，请从列表重新打开', true);
-            return;
-        }
-        if (result.reason === 'stale_reload') {
-            flash('会话已被其他窗口更新，重读失败：' + (result.error || '未知错误'), true);
-            return;
-        }
-        if (result.reason === 'save_failed') {
-            flash('上一次会话保存失败，暂不能开始新回合：' + (result.error || '未知错误'), true);
-            return;
-        }
-        if (result.reason === 'lease_failed') {
-            flash('无法获取会话写权：' + (result.error || '另一窗口正在使用'), true);
-            return;
-        }
-        // 图片超限是用户可自行解决的原因，直接给可读文案，不要把 reason 码摆给用户
-        if (result.reason === 'images_too_large') {
-            flash(result.message || '图片总量超过上限，请减少图片', true);
-            return;
-        }
-        flash('发送失败：' + (result.reason || 'unknown'), true);
+    }
+
+    // 起轮失败的用户提示（薄壳）：文案本体在 turnStartFailureText，写状态栏 + 标红。
+    // opts 透传给文案函数（编辑保存传 context:'inline-edit'）。
+    function flashTurnStartFailure(result, opts) {
+        const text = turnStartFailureText(result, opts);
+        if (text) flash(text, true);
     }
 
     // ---------- 每会话系统提示词缓存 ----------
@@ -3574,13 +3751,26 @@ export function createAIPanel(options) {
         openSideChat: (...args) => sidechatMod.openSideChat(...args),
         promoteSideChat: (...args) => sidechatMod.promoteSideChat(...args),
         clearMailbox: (...args) => noticesMod.clearMailbox(...args),
-        pendingNoticeCount: (...args) => noticesMod.pendingCount(...args),
+        pendingNoticeCount: (...args) => noticesMod.outstandingCount(...args),
         // 后台轮次的停止入口（§4.14.2）：streams 按会话隔离，停谁都不用切视图
         flash,
         copyText,
         stopSessionTurn: (sessionId) => {
             const target = streamOf(sessionId);
-            if (target) stopGeneration(target);
+            if (target) {
+                stopGeneration(target);
+                return;
+            }
+            if (cancelStartingTurn(sessionId)) {
+                if (inboxWaiters && typeof inboxWaiters.cancel === 'function') inboxWaiters.cancel(sessionId);
+                flash('已取消准备中的发送');
+                return;
+            }
+            if (compactOf(sessionId)) {
+                cancelOneShot();
+                return;
+            }
+            if (cancelCompactPreparation(sessionId)) flash('已取消准备中的压缩');
         },
         aiWorkspaceKey,
         aiWorkspaceName,
@@ -4457,6 +4647,7 @@ export function createAIPanel(options) {
             flash('重试整理失败：' + msg, true);
         } finally {
             sessionReloading.delete(session.id);
+            try { flushAgentNotices(session.id); } catch (e) { /* 投递尽力而为，不拦整理收尾 */ }
         }
     }
 
@@ -4480,6 +4671,7 @@ export function createAIPanel(options) {
             flash('临时加载失败：' + String((e && e.message) || e), true);
         } finally {
             sessionReloading.delete(session.id);
+            try { flushAgentNotices(session.id); } catch (e) { /* 投递尽力而为，不拦加载收尾 */ }
         }
     }
 
@@ -4534,6 +4726,7 @@ export function createAIPanel(options) {
             flash('瘦身归档失败：' + String((e && e.message) || e), true);
         }).finally(() => {
             sessionReloading.delete(session.id);
+            try { flushAgentNotices(session.id); } catch (e) { /* 投递尽力而为，不拦归档收尾 */ }
         });
     }
 
@@ -7520,14 +7713,16 @@ export function createAIPanel(options) {
         return dirs;
     }
 
-    async function readTextFile(path, maxChars) {
+    async function readTextFile(path, maxChars, allowLarge) {
         if (!backend.OpenFile) throw new Error('当前版本不支持读取文件');
         const data = await backend.OpenFile(path, 'auto');
         if (!data) throw new Error('读取失败');
         if (data.isDir) throw new Error('这是目录，不是文件');
         // code 供附件入口区分「读不了正文但路径有效」的情况（降级为路径引用），
         // 其余调用方只读 message，加 code 不影响它们。
-        if (data.large) throw Object.assign(new Error('文件过大（>10 MB）'), {code: 'large'});
+        // allowLarge 仅供 get_file_outline 这类「不返回正文、只输出结构化摘要」的调用放开 10MB 闸；
+        // 后端 >100MB 硬闸与二进制拒绝不受此参数影响，照常生效。
+        if (data.large && !allowLarge) throw Object.assign(new Error('文件过大（>10 MB）'), {code: 'large'});
         if (data.binary) throw Object.assign(new Error('二进制文件不可作为文本读取'), {code: 'binary'});
         let text = aiTextOf(data.content);
         if (maxChars && text.length > maxChars) text = text.slice(0, maxChars) + '\n…（已截断）';
@@ -7888,6 +8083,10 @@ export function createAIPanel(options) {
         genModelsOn: () => (config.genModels || []).some((item) => item && item.enabled !== false),
         // 认知索引三件：启用（settings.aiCognition）才下发（默认关，§5.2）
         cognitionOn: () => cognitionMod.isEnabled(),
+        // 编排归属：Worker/审查者按会话硬裁剪工具表，仲裁者才拿到 control。
+        orchestrationInfoOf: (session) => (orchestration && typeof orchestration.infoOf === 'function'
+            ? orchestration.infoOf(session)
+            : null),
         // 外部工具：按能力的实际来源（off/provider/mcp/builtin）与权限档决定是否下发
         externalToolsOn: (capability, scope, planMode) =>
             externalCapabilityUsable(capability, externalModeOf(capability), scope, planMode),
@@ -8216,6 +8415,10 @@ export function createAIPanel(options) {
         // 超时——不通知就等于让这一轮挂在用户看不见的输入区里永不结束。**不自动放行**，
         // 只做「可见 + 可跳转」：桌面通知带 sessionId（消息中心点击即跳），条目打未读。
         markWaitingOnUser(session, approval, 'AI 待审批', notifyBody);
+        // 编排 Worker 的截止时限要冻结在审批上：审批是正常等待，不是 stalled。
+        if (orchestration && typeof orchestration.onTurnWaiting === 'function') {
+            try { orchestration.onTurnWaiting(session, true); } catch (e) {}
+        }
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });
@@ -9121,6 +9324,9 @@ async function requestApproval(session, toolMessage, info) {
         }
         persistApprovalMutation(entry.session, toolMessage);
         refreshToolWrap(entry.session, toolMessage);
+        if (orchestration && typeof orchestration.onTurnWaiting === 'function' && !toolHalted(toolMessage)) {
+            try { orchestration.onTurnWaiting(entry.session, false); } catch (e) {}
+        }
         entry.resolve({approved: !!approved, remember: remember || ''});
         updateComposerTakeover(true);
         // 用户已经在处理这个会话了，「未查看」圆点顺手清掉。
@@ -9136,6 +9342,8 @@ async function requestApproval(session, toolMessage, info) {
             entry.toolMessage.status = 'done';
             entry.toolMessage.content = reason || '审批已取消';
             pendingApprovals.delete(key);
+            // 停止路径不在这里发“回合恢复”：随后 finishStream 会发 turn_failed(user_stopped)，
+            // 迟到的 turn_started 会把已 blocked 的批次重新挂上 deadline。
             entry.resolve({approved: false, cancelled: true});
             if (sessionStore && entry.session) {
                 try { sessionStore.invalidateMessage(entry.session, entry.toolMessage); } catch (e) {}
@@ -9696,6 +9904,18 @@ async function requestApproval(session, toolMessage, info) {
                 return answer.cancelled
                     ? '用户已停止生成，写操作已取消。'
                     : '用户放弃了本次更改，文件未修改。';
+            }
+        }
+        // 编排写闸放在所有权限/审批之后、真正落盘之前：writeLog 只记录确实放行的写入，
+        // 被用户拒绝或规则拦下的尝试不会污染上游摘要与审查依据。失败即拒绝（fail-closed）。
+        if (orchestration && typeof orchestration.authorizeWrite === 'function') {
+            const verdict = await orchestration.authorizeWrite(session, info.path);
+            if (verdict && verdict.allowed === false) {
+                toolMessage.status = 'done';
+                toolMessage.activityStatus = 'denied';
+                toolMessage.content = '编排写闸拒绝';
+                refreshToolWrap(session, toolMessage);
+                return verdict.message || '路径不在本批 owns 内，写入被拒绝';
             }
         }
         try {
@@ -10684,8 +10904,9 @@ async function requestApproval(session, toolMessage, info) {
                 const path = resolved.path;
                 let read;
                 try {
-                    // 不设 maxChars：大纲要覆盖全文符号，readTextFile 的 >10MB / 二进制护栏照常生效。
-                    read = await readTextFile(path, null);
+                    // 大纲只输出分节/函数/行号，不返回正文，故放开 10MB 闸（allowLarge）；
+                    // 后端 >100MB 硬闸与二进制拒绝仍由 readTextFile / OpenFile 照常拦截。
+                    read = await readTextFile(path, null, true);
                 } catch (err) {
                     const hint = await missingFileHint(err, input.path, path, ctx);
                     if (hint) return hint;
@@ -12681,6 +12902,17 @@ async function requestApproval(session, toolMessage, info) {
                 if (typeof agentToolHandler !== 'function') throw new Error('当前版本不支持工具：' + name);
                 return agentToolHandler(name, input, ctx);
             }
+            // 多会话编排：计划审批 / 结构化回报 / 只读状态 / 仲裁控制。执行体在宿主的
+            // orchestration 域（票据、审批卡、会话派发都归它），ai/ 只做薄分发。
+            case 'orchestration_plan':
+            case 'orchestration_report':
+            case 'orchestration_status':
+            case 'orchestration_control': {
+                if (!orchestration || typeof orchestration.runTool !== 'function') {
+                    throw new Error('当前版本不支持编排工具（宿主未接线）');
+                }
+                return orchestration.runTool(name, input, ctx);
+            }
             default:
                 throw new Error('未知工具：' + name);
         }
@@ -12992,21 +13224,65 @@ async function requestApproval(session, toolMessage, info) {
     // sessions 数组，起轮流程会继续往被淘汰的对象上写用户消息与 assistant 占位（界面看不
     // 见、persistSessions 也遍历不到）。登记后由 applyLoadedSessions 保留内存版本。
     const startingTurns = new Set();
+    const startingTurnTokens = new Map();
+    let startingTurnSeq = 0;
+
+    function beginStartingTurn(sessionId) {
+        if (startingTurns.has(sessionId)) return 0;
+        const token = ++startingTurnSeq;
+        startingTurns.add(sessionId);
+        startingTurnTokens.set(sessionId, token);
+        return token;
+    }
+
+    function endStartingTurn(sessionId, token) {
+        if (startingTurnTokens.get(sessionId) !== token) return;
+        startingTurnTokens.delete(sessionId);
+        startingTurns.delete(sessionId);
+    }
+
+    function cancelStartingTurn(sessionId) {
+        const token = startingTurnTokens.get(sessionId) || 0;
+        startingTurnTokens.delete(sessionId);
+        startingTurns.delete(sessionId);
+        return token;
+    }
+
+    // 后台通知 / 定时任务等“外部自动起轮”的统一门禁。比普通 isSessionBusy 多两层：
+    // 资源重读中不能写；已有起轮流程在飞时不能并行再起一个。startSessionTurn 自己不能使用
+    // 本函数，因为它在入口就会把当前 id 加进 startingTurns，否则会把自己判成忙。
+    function canAutoStartTurn(sessionId) {
+        const id = String(sessionId || '');
+        if (!id || !sessionById(id)) return {ok: false, reason: 'no_session'};
+        if (isSessionBusy(id, {includeCompactStarting: true})) return {ok: false, reason: 'busy'};
+        if (sessionReloading.has(id)) return {ok: false, reason: 'reloading'};
+        if (startingTurns.has(id)) return {ok: false, reason: 'starting'};
+        return {ok: true, reason: ''};
+    }
 
     async function startSessionTurn(session, text, options) {
         const id = session && session.id ? String(session.id) : '';
         if (!id) return {ok: false, reason: 'no_session'};
-        startingTurns.add(id);
+        const token = beginStartingTurn(id);
+        if (!token) return {ok: false, reason: 'starting'};
         try {
-            return await startSessionTurnInner(session, text, options);
+            return await startSessionTurnInner(session, text, options, token);
         } finally {
             // attachStream 之后由 anyStreaming 接管；失败/早退路径在这里兜底清理。
-            startingTurns.delete(id);
+            endStartingTurn(id, token);
+            // 解除“起轮中”占位后立即恢复后台投递；失败路径也不能等用户手动发消息。
+            try { flushAgentNotices(id); } catch (e) { /* 投递尽力而为，不拦起轮收尾 */ }
         }
     }
 
-    async function startSessionTurnInner(session, text, options) {
+    async function startSessionTurnInner(session, text, options, turnToken) {
         const opts = options || {};
+        // 后台信箱可取消尚未写入消息的起轮；请求真正发出后不撤回，边界由写消息前的检查保证。
+        const isCancelled = () => {
+            if (startingTurnTokens.get(session && session.id) !== turnToken) return true;
+            return typeof opts.isCancelled === 'function' && !!opts.isCancelled();
+        };
+        const cancelledResult = () => ({ok: false, reason: 'cancelled'});
         // 磁盘重读（applyLoadedSessions）会**整体替换** sessions 数组：调用方拿进来的可能是
         // 已被淘汰的旧对象（消息写进没人渲染的副本 = 界面看着像丢了，虽然可能已落盘）。
         // 进函数就用 id 重新解析到当前对象；解析不到说明会话已被删，按删除处理。
@@ -13015,6 +13291,7 @@ async function requestApproval(session, toolMessage, info) {
             if (!live) return {ok: false, reason: 'session_deleted'};
             session = live;
         }
+        if (isCancelled()) return cancelledResult();
         let value = String(text == null ? '' : text).trim();
         const source = opts.attachments || {};
         const imageAttachments = (source.images || []).map(aiNormalizeImage).filter(Boolean);
@@ -13046,6 +13323,7 @@ async function requestApproval(session, toolMessage, info) {
             const ok = await ensureSessionLoaded(session);
             if (!ok || session._stub) return {ok: false, reason: 'load_failed'};
         }
+        if (isCancelled()) return cancelledResult();
         // 正文读取失败 / 忙 / 归档：这三条与 UI 发送门禁、原地编辑保存、队列冲刷共用同一个
         // 判定（ai-session-scope.js 的 canStartTurn）。改造前四处各缺一截——原地编辑保存漏
         // _loadError，用户会先被问「将丢弃之后的 N 条对话」，点确定后才被告知发不出去。
@@ -13078,9 +13356,23 @@ async function requestApproval(session, toolMessage, info) {
         let cut = opts.truncateAt == null ? null : opts.truncateAt;
         if (cut == null && opts.allowPendingEdit && pendingEdit && pendingEdit.index != null &&
             (!pendingEdit.sessionId || pendingEdit.sessionId === session.id)) cut = pendingEdit.index;
+        // 租约交接可能整份重读 messages，数字下标会漂移；保存稳定锚点，重读后重新定位。
+        let cutAnchor = null;
+        if (cut != null && cut > 0) {
+            const anchorMessage = session.messages[cut - 1];
+            if (anchorMessage) {
+                cutAnchor = {
+                    mid: anchorMessage._mid || '',
+                    turnStartedAt: Number(anchorMessage.turnStartedAt) || 0,
+                    role: anchorMessage.role || '',
+                    content: String(anchorMessage.content || ''),
+                };
+            }
+        }
         const windowSize = contextWindowOf(session);
         try {
             const previewBundle = await assembleSystemContext(session, textAttachments);
+            if (isCancelled()) return cancelledResult();
             const previewMessages = buildApiMessages(session, cut != null && cut >= 0 ? cut : null, previewBundle.text);
             // 上下文占用用实测 usage 锚点 + 增量估算（与提醒条、auto-compact 同口径）
             let previewTokens = estimateApiMessagesContext(previewMessages, lastBuildAnchor).tokens +
@@ -13097,6 +13389,7 @@ async function requestApproval(session, toolMessage, info) {
                 return {ok: false, reason: 'over_budget', tokens: previewTokens, windowSize};
             }
         } catch (e) {}
+        if (isCancelled()) return cancelledResult();
         // 预检的 assembleSystemContext 是异步点：两次极快连发可能都通过了上面的忙检查（此时
         // 双方都还没注册流），各自起轮后后者顶掉前者的流注册，落败方在下方守卫处退出——
         // 它的 assistant 占位没人收尾，永远停在流式「…」。真正落消息前再查一次忙，
@@ -13117,10 +13410,12 @@ async function requestApproval(session, toolMessage, info) {
         // 否则会把上一轮尚未落盘的消息从内存里重读掉，随后队列按新内存写盘。
         if (sessionUseDisk() && sessionStore && typeof sessionStore.whenIdle === 'function') {
             let idle = await sessionStore.whenIdle(session.id);
+            if (isCancelled()) return cancelledResult();
             if (idle && idle.ok === false) {
                 // 上一次写盘失败：给一次重试机会（磁盘瞬时错误/占用），仍失败才拒绝起轮。
                 try { await sessionStore.persistSession(session); } catch (e) {}
                 idle = await sessionStore.whenIdle(session.id);
+                if (isCancelled()) return cancelledResult();
                 if (idle && idle.ok === false) {
                     return {ok: false, reason: 'save_failed', error: idle.error};
                 }
@@ -13130,6 +13425,14 @@ async function requestApproval(session, toolMessage, info) {
         // 多实例：拿到回合租约才能继续。锁后先做交接检查——另一个窗口在上次回合后
         // 写过日志时，内存里的 _mids 已过期，retry/edit 的 truncate 会截掉对方消息。
         let leaseHeld = false;
+        const abortIfCancelled = async () => {
+            if (!isCancelled()) return null;
+            if (leaseHeld) {
+                leaseHeld = false;
+                await releaseLeaseNow(session.id);
+            }
+            return cancelledResult();
+        };
         if (backend.AISessionLeaseAcquire && sessionUseDisk()) {
             let lease = null;
             try {
@@ -13145,6 +13448,8 @@ async function requestApproval(session, toolMessage, info) {
                 };
             }
             leaseHeld = true;
+            const cancelledAfterLease = await abortIfCancelled();
+            if (cancelledAfterLease) return cancelledAfterLease;
             const leaseStat = lease.stat || null;
             const known = session._logStat || null;
             if (leaseStat && !leaseStat.exists && session._logCreated) {
@@ -13160,10 +13465,29 @@ async function requestApproval(session, toolMessage, info) {
                     await releaseLeaseNow(session.id);
                     return {ok: false, reason: 'stale_reload', error: (e && e.message) || String(e)};
                 }
+                const cancelledAfterReload = await abortIfCancelled();
+                if (cancelledAfterReload) return cancelledAfterReload;
+                if (cutAnchor) {
+                    const anchorIndex = session.messages.findIndex((message) => {
+                        if (!message) return false;
+                        if (cutAnchor.mid) return message._mid === cutAnchor.mid;
+                        return message.role === cutAnchor.role &&
+                            (Number(message.turnStartedAt) || 0) === cutAnchor.turnStartedAt &&
+                            String(message.content || '') === cutAnchor.content;
+                    });
+                    if (anchorIndex < 0) {
+                        await releaseLeaseNow(session.id);
+                        leaseHeld = false;
+                        return {ok: false, reason: 'stale_anchor'};
+                    }
+                    cut = anchorIndex + 1;
+                }
                 if (isOpen() && currentSession() === session) renderMessages(true);
             }
             if (leaseStat) session._logStat = leaseStat;
         }
+        const cancelledBeforeHooks = await abortIfCancelled();
+        if (cancelledBeforeHooks) return cancelledBeforeHooks;
 
         // whenIdle / 租约获取两个 await 把“最终忙检查”到落用户消息之间拉开了窗口：
         // 双发或压缩准备期撞车时，释放刚拿到的租约并返回 busy（队列会重新入队）。
@@ -13191,9 +13515,13 @@ async function requestApproval(session, toolMessage, info) {
                 });
             } catch (e) {} // 尽力而为路径：钩子失败不阻塞起轮（控制器内部已兜错，这里双保险）
         }
+        const cancelledAfterSessionHook = await abortIfCancelled();
+        if (cancelledAfterSessionHook) return cancelledAfterSessionHook;
         // UserPromptSubmit：每一轮起轮前阻塞执行（与 session-start 的区别是每轮都触发，
         // 不只空会话第一轮）；订阅通知唤醒的空会话也走这里，与「提交用户输入」语义一致。
         await runLifecycle('user-prompt-submit', {session, blocking: true});
+        const cancelledBeforeWrite = await abortIfCancelled();
+        if (cancelledBeforeWrite) return cancelledBeforeWrite;
 
         let run = null;
         try {
@@ -13222,6 +13550,8 @@ async function requestApproval(session, toolMessage, info) {
         } catch (e) {
             // 尽力而为路径：环境块生成失败时按无块发送，下一轮会重建
         }
+        const cancelledBeforeMessage = await abortIfCancelled();
+        if (cancelledBeforeMessage) return cancelledBeforeMessage;
         const userMessage = {
             role: 'user',
             content: turnBlock ? turnBlock + '\n\n' + value : value,
@@ -13348,6 +13678,11 @@ async function requestApproval(session, toolMessage, info) {
         run.baseSystemPrompt = bundle.text;
         run.systemPrompt = bundle.text;
         startRound(run);
+        // 编排宿主：起轮已注册流（不是“等整轮跑完”）。Worker 的 deadline 判定仍以 Go 账本为准，
+        // 这条事实只用于区分“自然结束没回报”和“卡住”。
+        if (orchestration && typeof orchestration.onTurnStarted === 'function') {
+            try { orchestration.onTurnStarted(session); } catch (e) {}
+        }
         return {ok: true, run};
     }
 
@@ -13369,61 +13704,52 @@ async function requestApproval(session, toolMessage, info) {
             return false;
         }
         const session = currentSession();
+        const sessionId = session && session.id;
+        const inputSnapshot = el.input ? String(el.input.value || '') : '';
+        const attachmentSeq = attachSeq;
+        const canClearComposer = () => !!sessionId && String((currentSession() || {}).id || '') === String(sessionId) &&
+            (!el.input || String(el.input.value || '') === inputSnapshot) && attachSeq === attachmentSeq;
         const result = await startSessionTurn(session, value, {
             truncateAt,
             allowPendingEdit: true,
             app: extra && extra.app,
             // 排队消息轮末冲刷等代发路径：用户可能正上翻阅读，不抢滚动位置（贴底态照常跟随）
             preserveScroll: !!(extra && extra.preserveScroll),
-            attachments: {
-                images: attached.filter((item) => item.kind === 'image'),
-                videos: attached.filter((item) => item.kind === 'video'),
-                texts: attached.filter((item) => item.kind !== 'image' && item.kind !== 'video' && item.kind !== 'message_quote'),
-            },
+            // 附件分组与排队冲刷 / 原地编辑共用 ai-quote.js 的 groupAttachmentsForTurn
+            attachments: groupAttachmentsForTurn(attached),
             // 起轮成功、落盘之后立刻清输入区（与原实现同一时点）；附件要等系统提示组装完再清，
             // 因为 assembleSystemContext 会读它们。
             onStarted: () => {
+                // 只清理提交时的会话与输入快照；异步起轮期间用户切会话或继续输入时不能误清。
+                if (!canClearComposer()) return;
                 if (el.input) {
                     el.input.value = '';
                     resizeInput();
                 }
                 hideSlash();
-                // 发送已消费输入内容：会话草稿同步作废（直发 / 排队冲刷同口径）。否则冲刷期间
-                // 的瞬态回填被「切走时的草稿保存」沉淀后，切回本会话会复活出已发出的文本
-                //（2026-11-22 排队消息回流输入框实测）。
-                dropComposerDraft(session.id);
+                dropComposerDraft(sessionId);
             },
         });
         if (!result.ok) {
-            if (result.reason === 'too_long') flash('消息过长（上限 ' + AI_CHAT_INPUT_LIMIT + ' 字符）', true);
-            else if (result.reason === 'sessions_pending') flash('正在读取会话，稍等一下再发送', true);
-            else if (result.reason === 'load_failed') flash('会话正文读取失败，请检查 ai-sessions 目录', true);
-            else if (result.reason === 'archived') flash('该会话已归档，请先在会话菜单中取消归档', true);
-            else if (result.reason === 'images_too_large') flash(result.message || '图片总量超过上限，请减少图片', true);
-            else if (result.reason === 'no_backend') showNote('当前版本不支持 AI 对话（后端方法缺失）。', true);
-            else if (result.reason === 'no_profile') {
+            // 文案与副作用分开：文案统一走 turnStartFailureText（与排队冲刷同一份表），
+            // 这里只保留必须就地发生的一次性动作（补丁重绘 / 触发兜底压缩）。
+            if (result.reason === 'no_backend') {
+                showNote('当前版本不支持 AI 对话（后端方法缺失）。', true);
+            } else if (result.reason === 'no_profile') {
                 renderMessages();
                 updateSendState();
-            } else if (result.reason === 'over_budget') {
-                flash(result.tokens >= result.windowSize
-                    ? '上下文预计约 ' + result.tokens + ' tokens，已超过窗口 ' + result.windowSize +
-                        '：可压缩上下文（/compact，摘要略粗），或切换更大上下文的模型'
-                    : '上下文预计约 ' + result.tokens + ' tokens，超过发送上限（窗口 ' + result.windowSize +
-                        ' 的 ' + Math.round(AI_CTX_SEND_BLOCK_RATIO * 100) + '%），请先 /compact 压缩上下文或减少附加内容', true);
-                // 权威预检拦下的也是「轮永远完不成」的场景，同样触发一次兜底压缩
-                autoCompactOnGateBlocked();
-            } else if (result.reason === 'video_protocol') {
-                flash('当前模型或协议不支持视频输入：需 OpenAI 兼容协议且模型条目勾选了「视频输入」，请换模型或移除视频附件', true);
-            } else if (result.reason === 'other_window' || result.reason === 'session_deleted' ||
-                       result.reason === 'stale_reload' || result.reason === 'lease_failed' ||
-                       result.reason === 'save_failed') {
+            } else {
                 flashTurnStartFailure(result);
+                // 权威预检拦下的也是「轮永远完不成」的场景，同样触发一次兜底压缩
+                if (result.reason === 'over_budget') autoCompactOnGateBlocked();
             }
             return false;
         }
-        setAttachments([]);
-        attachSeq = 0;
-        renderAttachments();
+        if (String((currentSession() || {}).id || '') === String(sessionId || '') && attachSeq === attachmentSeq) {
+            setAttachments([]);
+            attachSeq = 0;
+            renderAttachments();
+        }
         return true;
     }
 
@@ -13458,6 +13784,19 @@ async function requestApproval(session, toolMessage, info) {
         }
         s.roundNo += 1;
         s.roundId = session.id + '#' + s.baseRound + '-' + s.roundNo;
+        // 插桩点 agent/pre-step（Cordis waterfall）：回合起点，插件可改写 scopeRoot / 返回
+        // 短路标记。只在首轮触发（续轮是同一回合内的工具循环），失败不影响回合。
+        if (s.roundNo === 1) {
+            fireHook('agent/pre-step', undefined, {
+                sessionId: s.sessionId,
+                session,
+                scopeRoot: scopeRootOf(session),
+                stream: s,
+            });
+        }
+        // 只在回合的首个请求记 turn/start：roundNo>1 是同一回合内的工具续轮，
+        // 重复记会让「未闭合回合」的判定把所有续轮都算成新回合。
+        if (s.roundNo === 1) auditTurnEvent(s.sessionId, s.sessionId + '#' + s.baseRound, 'start', '');
         s.thinkStartedAt = 0;
         s.roundStartedAt = Date.now();
         s.firstTokenAt = 0;
@@ -13527,6 +13866,14 @@ async function requestApproval(session, toolMessage, info) {
             if (wrap) updateAssistantElement(wrap, s.assistant, true, {session});
         }
         let apiMessages = buildApiMessages(session, index, s.systemPrompt);
+        // 插桩点 agent/request（Cordis waterfall）：请求发出前，插件可改写 apiMessages；
+        // 返回非数组时忽略（防止插件把请求换成垃圾导致整轮崩）。
+        {
+            const hooked = fireHook('agent/request', apiMessages, {
+                sessionId: s.sessionId, session, tools: s.tools, roundId: s.roundId,
+            });
+            if (Array.isArray(hooked)) apiMessages = hooked;
+        }
         // steer 会增加请求体积：超过窗口 90% 时把这批插话改回排队（不中断本轮，也不强塞超限请求）。
         if (drainedSteerMessages && drainedSteerMessages.length) {
             const windowSize = contextWindowOf(session);
@@ -13585,7 +13932,13 @@ async function requestApproval(session, toolMessage, info) {
     function finishStreamError(message, target) {
         const current = target || syncStreamView();
         if (!current) return;
-        const text = String(message || '请求失败');
+        // 插桩点 agent/request-error（Cordis waterfall）：请求失败时，插件可改写错误文案；
+        // 返回非字符串时忽略原文继续。
+        let text = String(message || '请求失败');
+        const hooked = fireHook('agent/request-error', text, {
+            sessionId: current.sessionId, session: sessionById(current.sessionId), roundId: current.roundId,
+        });
+        if (typeof hooked === 'string') text = hooked;
         const session = sessionById(current.sessionId);
         // 上下文溢出：先收尾这一轮（释放租约 / 落盘），再强制压缩 + 重发本轮，
         // 不把「错误卡」留成死路（六份参照 harness 都有这条恢复分支）。
@@ -13638,7 +13991,15 @@ async function requestApproval(session, toolMessage, info) {
             }
         }
         whenSessionLeaseFree(session.id, () => {
-            const started = startCompact({auto: true, force: true, session, retryAfter: true});
+            const userIndex = lastUserIndex(session);
+            const userMessage = userIndex >= 0 ? session.messages[userIndex] : null;
+            const retryAnchor = userMessage ? {
+                mid: userMessage._mid || '',
+                turnStartedAt: Number(userMessage.turnStartedAt) || 0,
+                role: userMessage.role || '',
+                content: String(userMessage.content || ''),
+            } : {};
+            const started = startCompact({auto: true, force: true, session, retryAfter: retryAnchor});
             if (!started && tries < 3) setTimeout(() => recoverContextOverflow(session, tries + 1), 400);
         }, 8);
     }
@@ -13863,6 +14224,11 @@ async function requestApproval(session, toolMessage, info) {
         // 只收尾指定的那条流：别的会话可能还在生成，不能碰它们的注册与 UI。
         const current = target || syncStreamView();
         if (!current) return;
+        // 回合收尾：日志里落一条 turn/close。崩溃路径走不到这里（进程已死），
+        // 由载入时的未闭合回合检测补 crash。
+        auditTurnEvent(current.sessionId, current.sessionId + '#' + current.baseRound, 'close',
+            current.stopped ? 'stop'
+                : (current.assistant && current.assistant.status === 'error' ? 'error' : 'done'));
         // 流已结束：挂起的循环确认卡直接收敛，避免用户对着已结束的轮次点停止。
         cancelLoopGuardPrompt(current, 'stream-ended');
         if (current.renderTimer) {
@@ -13884,6 +14250,17 @@ async function requestApproval(session, toolMessage, info) {
             }
         }
         notifyTurnFinished(session, current.assistant, current.stopped);
+        // 编排宿主：回合生命周期事实（自然结束 / 失败 / 用户停止）主动推送，供 Go 区分
+        // no_report / turn_failed；不参与 deadline 计算。
+        if (orchestration && typeof orchestration.onTurnFinished === 'function' && session) {
+            try {
+                orchestration.onTurnFinished(session, {
+                    stopped: !!current.stopped,
+                    status: current.assistant && current.assistant.status,
+                    error: (current.assistant && current.assistant.error) || '',
+                });
+            } catch (e) {}
+        }
         reportUsageFact(current.sessionId, current.assistant);
         // 计划模式的最终计划不在这里落盘：未批准不落盘（对话区入口卡 + 虚拟只读预览），
         // 用户点「执行计划」时才写 <工作区>/.cadt/plan/plan-<会话id>.md（见 acceptPlan 包装）。
@@ -13891,7 +14268,8 @@ async function requestApproval(session, toolMessage, info) {
         // 自然结束 → 降级为排队，由下面的 shouldFlush 冲刷（不丢消息，也不需要额外续轮路径）。
         if (current.stopped) queueMod.clearSteer(current.sessionId);
         else queueMod.fallbackSteerToQueue(current.sessionId);
-        const shouldFlush = queueMod.hasInterject(current.sessionId) || (!current.stopped && current.assistant.status === 'done');
+        const shouldFlush = queueMod.hasInterject(current.sessionId) ||
+            queueMod.itemsForSession(current.sessionId).length > 0;
         queueMod.clearInterject(current.sessionId);
         detachStream(current);
         if (!anyStreaming()) {
@@ -13968,7 +14346,7 @@ async function requestApproval(session, toolMessage, info) {
                 overflowRecoveryCount.delete(session.id);
             }
             setTimeout(() => {
-                if (!anyStreaming() && !oneShot && !compactStarting && !currentQueueItems().length) {
+                if (!anyStreaming() && !oneShot && !compactStartingSessionId && !currentQueueItems().length) {
                     maybeAutoCompact(session);
                 }
             }, 0);
@@ -14056,6 +14434,8 @@ async function requestApproval(session, toolMessage, info) {
             };
             session.messages.push(toolMessage);
             if (isOpen() && currentSession() === session) appendToolCard(session, toolMessage);
+            // 工具调用审计（S5）：start / end 各一条，与 turn 事件共用追加通道。
+            auditToolEvent(session, call.id, call.name, 'start');
             // 参数彻底无法修复：不执行工具，把错误作为工具结果回给模型，让它重新发起调用。
             const invalidArgs = argErrors && argErrors.get(call.id);
             if (invalidArgs) {
@@ -14063,6 +14443,7 @@ async function requestApproval(session, toolMessage, info) {
                 toolMessage.content = invalidArgs;
                 // 操作留痕：参数非法未执行。
                 logActivity('ai.tool', call.name + ' ' + toolArgsSummary(call.arguments), {status: 'error', ms: 0, error: invalidArgs.slice(0, 120)});
+                auditToolEvent(session, call.id, call.name, 'end', false);
                 persistSessions();
                 refreshToolWrap(session, toolMessage);
                 return;
@@ -14137,6 +14518,9 @@ async function requestApproval(session, toolMessage, info) {
                 error: toolMessage.status === 'error' ? String(toolMessage.content || '').slice(0, 120) : undefined,
                 ...(toolMessage.sandbox ? {sandbox: toolMessage.sandbox} : {}),
             });
+            // 工具 end 事件 + 审批裁定事件：ok 以工具消息终态为准（sandbox 拒绝等覆盖态算失败）。
+            auditToolEvent(session, call.id, call.name, 'end', toolMessage.status !== 'error');
+            if (toolMessage.approval) auditApprovalEvent(session, call.id, toolMessage.approval, call.name);
             persistSessions();
             refreshToolWrap(session, toolMessage);
         };
@@ -14576,14 +14960,8 @@ async function requestApproval(session, toolMessage, info) {
                 const failed = oneShot;
                 const compactedId = failed.sessionId;
                 const viewed = !!(currentSession() && currentSession().id === compactedId);
-                oneShot = null;
-                setStreamingUI();
-                updateSendState();
-                // 事件路径也必须归还回合租约；否则其他窗口永久 session-busy。
-                if (failed.leaseHeld) {
-                    failed.leaseHeld = false;
-                    releaseTurnLease(compactedId);
-                }
+                // 事件路径也必须统一释放租约并恢复信箱，否则其他窗口永久 session-busy。
+                settleCompact(failed);
                 if (viewed) showNote('压缩失败：' + message, true);
             }
             return;
@@ -14708,10 +15086,10 @@ async function requestApproval(session, toolMessage, info) {
                     if (wrap) updateAssistantElement(wrap, current.assistant, false, {session});
                     handleToolRound(current, calls, argErrors)
                         .catch((e) => {
-                            // 批次外的意外（组装/收尾阶段抛错）：至少让用户知道对话停在哪
-                            try {
-                                notify('工具批次执行异常：' + String((e && e.message) || e), true);
-                            } catch (e2) {}
+                            // 批次外的意外（组装/收尾阶段抛错）：必须走统一错误收尾，释放流与租约。
+                            const message = '工具批次执行异常：' + String((e && e.message) || e);
+                            finishStreamError(message, current);
+                            try { notify(message, true); } catch (e2) {}
                         });
                     return;
                 }
@@ -14836,6 +15214,11 @@ async function requestApproval(session, toolMessage, info) {
         const current = target || syncStreamView();
         if (!current) {
             const viewing = currentSession();
+            if (viewing && cancelStartingTurn(viewing.id)) {
+                if (inboxWaiters && typeof inboxWaiters.cancel === 'function') inboxWaiters.cancel(viewing.id);
+                flash('已取消准备中的发送');
+                return;
+            }
             if (compactOf(viewing && viewing.id)) cancelOneShot();
             return;
         }
@@ -16144,9 +16527,9 @@ async function requestApproval(session, toolMessage, info) {
         const target = session || currentSession();
         if (!target) return;
         // 生成中 / 压缩中都不许回退（裁剪历史会与在飞的写入打架）。判定用统一构件；
-        // compactStarting 也一并算上（它是「压缩正在准备」的全局窗口，回退同样不能抢跑）。
+        // compactStarting 也一并算上（只阻塞正在准备压缩的那个会话）。
         if (isSessionBusy(target.id, {includeCompactStarting: true})) {
-            flash(compactOf(target.id) || compactStarting
+            flash(compactOf(target.id) || compactStartingSessionId === target.id
                 ? '该会话正在压缩上下文，请先停止'
                 : '请先停止当前会话的生成', true);
             return;
@@ -16683,24 +17066,11 @@ async function requestApproval(session, toolMessage, info) {
             state.saveBtn.disabled = false;
             state.saveBtn.textContent = '发送';
         }
-        const reason = result && result.reason;
-        if (reason === 'archived') {
-            flash('该会话已归档，取消归档后再发送', true);
-        } else if (reason === 'over_budget') {
-            flash('上下文预计超过发送上限，请先 /compact 压缩上下文或减少附件', true);
-        } else if (reason === 'busy') {
-            flash('该会话刚开始新一轮，稍后再保存', true);
-        } else if (reason === 'too_long') {
-            flash('消息过长（上限 ' + AI_CHAT_INPUT_LIMIT + ' 字符）', true);
-        } else if (reason === 'images_too_large') {
-            flash((result && result.message) || '图片总量超过上限，请减少图片', true);
-        } else if (reason === 'video_protocol') {
-            flash('当前模型或协议不支持视频输入：请换模型或移除视频附件', true);
-        } else if (reason === 'empty') {
-            flash('消息不能为空', true);
-        } else {
-            flashTurnStartFailure(result);
-        }
+        // 文案统一走 turnStartFailureText（与手动发送 / 排队冲刷同一张表），编辑态专属的
+        // busy / empty 由 context 区分。刻意不并「自动压缩」那个副作用：编辑保存的 session
+        // 可能不是当前会话（支线 / 后台编辑），而 autoCompactOnGateBlocked 压的是当前会话；
+        // 且压缩后不会自动重发这次编辑，与手动路径不同——这是独立的行为决策，留待单做。
+        flashTurnStartFailure(result, {context: 'inline-edit'});
     }
 
     // sessionOverride：内容区支线对话标签页里的点击（宿主不是面板，不能用「当前会话」反查）。
@@ -16838,14 +17208,16 @@ async function requestApproval(session, toolMessage, info) {
         if (!sessionId) return;
         const text = el.input ? String(el.input.value || '') : '';
         const items = getAttachments().slice();
-        if (!text.trim() && !items.length) {
+        const paste = typeof composerMod !== 'undefined' && composerMod.exportPasteEntries
+            ? composerMod.exportPasteEntries() : [];
+        if (!text.trim() && !items.length && !paste.length) {
             // 输入框已被清空（用户主动清空 / 发送后清空）：删除该会话草稿，而不是存一条空的。
             drafts.delete(sessionId);
             kvRemove(draftLSKey(sessionId));
             return;
         }
-        drafts.set(sessionId, {text, attachments: items});
-        if (text.trim()) kvSetJson(draftLSKey(sessionId), {text});
+        drafts.set(sessionId, {text, attachments: items, paste});
+        if (text.trim()) kvSetJson(draftLSKey(sessionId), {text, paste});
         else kvRemove(draftLSKey(sessionId));
     }
 
@@ -16855,8 +17227,9 @@ async function requestApproval(session, toolMessage, info) {
             // 内存里没有（重开面板 / 重启后的首次切换）：从 localStorage 兜底恢复文本草稿
             const parsed = kvGetJson(draftLSKey(sessionId), null);
             const text = parsed && typeof parsed.text === 'string' ? parsed.text : '';
-            if (text.trim()) {
-                draft = {text, attachments: []};
+            const paste = parsed && Array.isArray(parsed.paste) ? parsed.paste : [];
+            if (text.trim() || paste.length) {
+                draft = {text, attachments: [], paste};
                 drafts.set(sessionId, draft);
             }
         }
@@ -16868,6 +17241,9 @@ async function requestApproval(session, toolMessage, info) {
         }
         setAttachments(draft ? draft.attachments.slice() : []);
         if (el.input) el.input.value = draft ? draft.text : '';
+        if (typeof composerMod !== 'undefined' && composerMod.importPasteEntries) {
+            composerMod.importPasteEntries(draft ? draft.paste : []);
+        }
         resizeInput();
         renderAttachments();
         hideSlash();
@@ -16886,10 +17262,11 @@ async function requestApproval(session, toolMessage, info) {
         if (!draft) return;
         const text = String(draft.text == null ? '' : draft.text);
         const attachments = Array.isArray(draft.attachments) ? draft.attachments.slice() : [];
-        if (!text.trim() && !attachments.length) return;
+        const paste = Array.isArray(draft.paste) ? draft.paste : [];
+        if (!text.trim() && !attachments.length && !paste.length) return;
         const key = aiWorkspaceKey(sessionWorkspacePath(session));
-        workspaceDrafts.set(key, {text, attachments});
-        if (text.trim()) kvSetJson(wsDraftLSKey(key), {text});
+        workspaceDrafts.set(key, {text, attachments, paste});
+        if (text.trim() || paste.length) kvSetJson(wsDraftLSKey(key), {text, paste});
         else kvRemove(wsDraftLSKey(key));
     }
 
@@ -16901,7 +17278,8 @@ async function requestApproval(session, toolMessage, info) {
             // 重开面板 / 重启后内存槽没了：只剩文本能从 localStorage 恢复（附件本就不落盘）
             const parsed = kvGetJson(wsDraftLSKey(key), null);
             const text = parsed && typeof parsed.text === 'string' ? parsed.text : '';
-            if (text.trim()) draft = {text, attachments: []};
+            const paste = parsed && Array.isArray(parsed.paste) ? parsed.paste : [];
+            if (text.trim() || paste.length) draft = {text, attachments: [], paste};
         }
         if (!draft) return null;
         workspaceDrafts.delete(key);
@@ -17505,9 +17883,11 @@ async function requestApproval(session, toolMessage, info) {
         const session = target && target.id ? target : currentSession();
         if (!session) return;
         // 生成中 / 压缩中都不许归档（归档会清队列、改指当前会话）。判定用统一构件，
-        // 压缩的提示更具体所以单列；compactStarting 不算——它是全局准备窗口，归档不写会话正文。
-        if (isSessionBusy(session.id)) {
-            flash(compactOf(session.id) ? '该会话正在压缩上下文，请先停止' : '请先停止当前会话的生成', true);
+        // 压缩的提示更具体所以单列；compactStarting 不算——它是目标会话的准备窗口，归档不写会话正文。
+        if (isSessionBusy(session.id) || startingTurns.has(session.id) || compactStartingSessionId === session.id) {
+            flash(compactOf(session.id) || compactStartingSessionId === session.id
+                ? '该会话正在压缩上下文，请先停止'
+                : '请先停止当前会话的生成', true);
             return;
         }
         session.archivedAt = archived ? Date.now() : 0;
@@ -17567,11 +17947,18 @@ async function requestApproval(session, toolMessage, info) {
         const session = target && target.id ? target : currentSession();
         if (!session) return;
         // 与 archiveSession 同一口径（见那里的注释）：生成中 / 压缩中都不许删。
-        if (isSessionBusy(session.id)) {
-            flash(compactOf(session.id) ? '该会话正在压缩上下文，请先停止' : '请先停止当前会话的生成', true);
+        if (isSessionBusy(session.id) || startingTurns.has(session.id) || compactStartingSessionId === session.id) {
+            flash(compactOf(session.id) || compactStartingSessionId === session.id
+                ? '该会话正在压缩上下文，请先停止'
+                : '请先停止当前会话的生成', true);
             return;
         }
         askConfirm('删除会话「' + (session.title || '新会话') + '」及其全部消息？', () => {
+            // 确认框停留期间会话可能开始起轮/压缩，落地前必须重新校验。
+            if (isSessionBusy(session.id) || startingTurns.has(session.id) || compactStartingSessionId === session.id) {
+                flash('会话正在运行或准备发送，已取消删除', true);
+                return;
+            }
             sessions = sessions.filter((s) => s.id !== session.id);
             commandApprovalRules.delete(session.id);
             pendingModelSwitches.delete(session.id);
@@ -17949,6 +18336,69 @@ async function requestApproval(session, toolMessage, info) {
         return compactTranscriptOf(session);
     }
 
+    function cancelCompactPreparation(sessionId) {
+        if (compactStartingSessionId !== sessionId) return false;
+        compactStartingSessionId = '';
+        compactPreparationSeq += 1;
+        const abort = compactPreparationAbort.get(sessionId);
+        compactPreparationAbort.delete(sessionId);
+        if (abort) abort();
+        else settleCompactPreparation(sessionId);
+        return true;
+    }
+
+    function isCurrentCompactPreparation(sessionId, token) {
+        return compactStartingSessionId === sessionId && compactPreparationSeq === token;
+    }
+
+    // 压缩生命周期收口：成功 / 空摘要 / ai-error / reject / 同步异常 / 取消都必须走到这里。
+    // clearCompactRuntime 只清运行态；租约释放与信箱恢复由 settleCompact 统一完成。
+    function clearCompactRuntime(current) {
+        if (!current) return;
+        if (oneShot && oneShot.id === current.id) oneShot = null;
+        if (compactStartingSessionId === current.sessionId) compactStartingSessionId = '';
+        setStreamingUI(false);
+        updateSendState();
+    }
+
+    function resumeAgentNoticesAfterCompact(sessionId) {
+        // 其他会话没有压缩租约，可立即恢复；压缩目标若仍在释放租约，由信箱状态机重试。
+        flushAllAgentNotices({excludeId: sessionId});
+        flushAgentNotices(sessionId);
+    }
+
+    function settleCompact(current, options) {
+        if (!current) return;
+        const opts = options || {};
+        if (!opts.alreadyCleared) clearCompactRuntime(current);
+        // 其他会话没有压缩租约，可立即恢复；压缩目标必须等租约真正释放后再冲队列与信箱，
+        // 否则排队消息连续撞两次旧租约后可能永久留在队列。
+        flushAllAgentNotices({excludeId: current.sessionId});
+        const resumeTarget = () => {
+            flushMessageQueue(current.sessionId);
+            flushAgentNotices(current.sessionId);
+        };
+        if (!opts.deferRelease && current.leaseHeld) {
+            current.leaseHeld = false;
+            releaseTurnLease(current.sessionId, resumeTarget);
+        } else {
+            resumeTarget();
+        }
+    }
+
+    // oneShot 尚未挂上时的准备阶段失败：没有租约可释放，但仍必须解除按会话阻塞并恢复信箱。
+    function settleCompactPreparation(sessionId, token) {
+        // 旧准备流程的迟到收尾不能清掉同会话新一轮准备；已取消（无 active id）则仍需恢复队列。
+        if (token != null && compactStartingSessionId === sessionId && !isCurrentCompactPreparation(sessionId, token)) return;
+        if (compactStartingSessionId === sessionId) {
+            compactStartingSessionId = '';
+            compactPreparationSeq += 1;
+        }
+        compactPreparationAbort.delete(sessionId);
+        flushMessageQueue(sessionId);
+        resumeAgentNoticesAfterCompact(sessionId);
+    }
+
     // options.auto = true：自动压缩。不弹窗打断、用状态栏提示，且不要求用户在当前会话。
     function startCompact(options) {
         const auto = !!(options && options.auto);
@@ -18015,18 +18465,42 @@ async function requestApproval(session, toolMessage, info) {
                     : '上下文已超过模型上限：本次压缩只喂入最近的部分转录，摘要会略粗。');
             }
         }
-        if (compactStarting) {
+        if (compactStartingSessionId) {
             if (!auto) notify('正在准备压缩…', true);
             return false;
         }
-        compactStarting = true;
+        const preparationToken = ++compactPreparationSeq;
+        compactStartingSessionId = session.id;
+        let preparationLeaseHeld = false;
+        const releasePreparationLease = () => {
+            if (!preparationLeaseHeld) return Promise.resolve(true);
+            preparationLeaseHeld = false;
+            return releaseLeaseNow(session.id);
+        };
+        const abortPreparation = () => releasePreparationLease().then(() => {
+            settleCompactPreparation(session.id, preparationToken);
+        });
+        compactPreparationAbort.set(session.id, abortPreparation);
         const begin = () => {
-            compactStarting = false;
+            if (!isCurrentCompactPreparation(session.id, preparationToken)) {
+                abortPreparation();
+                return;
+            }
+            if (sessionById(session.id) !== session) {
+                abortPreparation();
+                return;
+            }
+            // 租约所有权转交 oneShot；后续失败由 settleCompact 统一释放。
+            preparationLeaseHeld = false;
+            compactPreparationAbort.delete(session.id);
+            compactStartingSessionId = '';
             oneShot = {
                 id, kind: 'compact', sessionId: session.id, buffer: '', startedAt: Date.now(), auto,
                 leaseHeld: true,
-                // 溢出恢复：压缩成功后自动重发本轮（finishCompact 末尾消费）
-                retryAfter: !!(options && options.retryAfter),
+                // 溢出恢复：压缩成功后只重发原来溢出的那一轮，不能重发期间新增的用户消息。
+                retryAfter: options && options.retryAfter
+                    ? (typeof options.retryAfter === 'object' ? {...options.retryAfter} : {})
+                    : null,
                 trigger: {
                     kind: auto ? 'auto' : 'manual',
                     force: !!(options && options.force),
@@ -18048,13 +18522,7 @@ async function requestApproval(session, toolMessage, info) {
                 const message = (e && e.message) || String(e);
                 const failed = oneShot;
                 const wasAuto = failed.auto;
-                oneShot = null;
-                setStreamingUI(false);
-                updateSendState();
-                if (failed.leaseHeld) {
-                    failed.leaseHeld = false;
-                    releaseTurnLease(failed.sessionId);
-                }
+                settleCompact(failed);
                 if (wasAuto) {
                     try {
                         if (typeof flash === 'function') flash('自动压缩失败：' + message, true);
@@ -18064,39 +18532,41 @@ async function requestApproval(session, toolMessage, info) {
                 }
             });
             } catch (e) {
-                // 起压缩前半段抛错：oneShot 已挂上但请求没发出去，释放租约避免泄漏。
+                // 起压缩前半段抛错：oneShot 已挂上但请求没发出去，统一释放租约并恢复信箱。
                 const failed = oneShot;
-                oneShot = null;
-                setStreamingUI(false);
-                updateSendState();
-                if (failed && failed.leaseHeld) {
-                    failed.leaseHeld = false;
-                    releaseLeaseNow(session.id);
-                }
+                settleCompact(failed);
                 try { notify('压缩未开始：' + ((e && e.message) || e), true); } catch (err) {}
             }
         };
         const startLease = () => {
+            if (!isCurrentCompactPreparation(session.id, preparationToken)) return;
             if (!sessionUseDisk() || !backend.AISessionLeaseAcquire) {
                 begin();
                 return;
             }
             let leaseAcquired = false;
             Promise.resolve(backend.AISessionLeaseAcquire(session.id, 'compact', leaseOwnerLabel(), 0)).then((lease) => {
+                if (!isCurrentCompactPreparation(session.id, preparationToken)) {
+                    if (lease && lease.acquired) releaseLeaseNow(session.id);
+                    return;
+                }
                 if (!lease || !lease.acquired) {
-                    compactStarting = false;
+                    settleCompactPreparation(session.id, preparationToken);
                     notify(lease && lease.busy
                         ? '该会话正在另一窗口运行，稍后再压缩。'
                         : '无法获取会话写权，压缩未开始。', true);
                     return;
                 }
                 leaseAcquired = true;
+                preparationLeaseHeld = true;
                 const stat = lease.stat || null;
                 const known = session._logStat || null;
                 if (stat && !stat.exists && session._logCreated) {
-                    compactStarting = false;
                     notify('该会话已被删除，压缩未开始。', true);
-                    return releaseLeaseNow(session.id).then(() => { leaseAcquired = false; });
+                    return releasePreparationLease().then(() => {
+                        leaseAcquired = false;
+                        settleCompactPreparation(session.id, preparationToken);
+                    });
                 }
                 if (!session._logCreated && (!stat || !stat.exists)) {
                     session._logStat = stat;
@@ -18110,16 +18580,25 @@ async function requestApproval(session, toolMessage, info) {
                 }
                 // 与回合同一交接协议：另一个窗口写过 -> 先整份重读再压缩。
                 return sessionStore.reloadSession(session).then((ok) => {
+                    if (!isCurrentCompactPreparation(session.id, preparationToken) || sessionById(session.id) !== session) {
+                        abortPreparation();
+                        return;
+                    }
                     if (!ok) throw new Error('会话重读失败');
                     session._logStat = stat;
                     if (isOpen() && currentSession() === session) renderMessages(true);
                     begin();
                 });
             }).catch((e) => {
-                compactStarting = false;
-                if (leaseAcquired && (!oneShot || oneShot.id !== id)) {
+                if (!isCurrentCompactPreparation(session.id, preparationToken)) {
+                    if (preparationLeaseHeld) abortPreparation();
+                    return;
+                }
+                if (preparationLeaseHeld && (!oneShot || oneShot.id !== id)) {
                     leaseAcquired = false;
-                    releaseLeaseNow(session.id);
+                    abortPreparation();
+                } else {
+                    settleCompactPreparation(session.id, preparationToken);
                 }
                 notify('压缩未开始：' + ((e && e.message) || e), true);
             });
@@ -18129,6 +18608,7 @@ async function requestApproval(session, toolMessage, info) {
             ? sessionStore.whenIdle(session.id)
             : Promise.resolve({ok: true});
         Promise.resolve(idle).then((res) => {
+            if (!isCurrentCompactPreparation(session.id, preparationToken)) return;
             if (!res || res.ok !== false) {
                 startLease();
                 return;
@@ -18137,15 +18617,17 @@ async function requestApproval(session, toolMessage, info) {
             return Promise.resolve(sessionStore.persistSession(session))
                 .then(() => sessionStore.whenIdle(session.id))
                 .then((retry) => {
+                    if (!isCurrentCompactPreparation(session.id, preparationToken)) return;
                     if (retry && retry.ok === false) {
-                        compactStarting = false;
+                        settleCompactPreparation(session.id, preparationToken);
                         notify('上一次保存失败，暂不能压缩：' + (retry.error || '未知错误'), true);
                         return;
                     }
                     startLease();
                 });
         }).catch(() => {
-            compactStarting = false;
+            if (!isCurrentCompactPreparation(session.id, preparationToken)) return;
+            settleCompactPreparation(session.id, preparationToken);
             notify('压缩未开始：等待会话写盘失败', true);
         });
         return true;
@@ -18203,88 +18685,74 @@ async function requestApproval(session, toolMessage, info) {
         const current = oneShot;
         if (!current || current.kind !== 'compact') return;
         const session = sessionById(current.sessionId);
-        const releaseOneShot = () => {
-            if (current && current.leaseHeld) {
-                current.leaseHeld = false;
-                releaseTurnLease(current.sessionId);
+        clearCompactRuntime(current);
+        try {
+            if (!session) return;
+            const viewed = !!(currentSession() && currentSession().id === session.id);
+            const text = String(current.buffer || '').trim();
+            if (!text) {
+                if (viewed) showNote('压缩失败：模型没有返回摘要。', true);
+                else notifyDesktop({kind: 'error', title: '自动压缩失败', body: (session.title || '会话') + ' · 模型没有返回摘要', sessionId: session.id});
+                return;
             }
-        };
-        oneShot = null;
-        setStreamingUI(false);
-        updateSendState();
-        if (!session) {
-            releaseOneShot();
-            return;
-        }
-        const viewed = !!(currentSession() && currentSession().id === session.id);
-        const text = String(current.buffer || '').trim();
-        if (!text) {
-            if (viewed) showNote('压缩失败：模型没有返回摘要。', true);
-            else notifyDesktop({kind: 'error', title: '自动压缩失败', body: (session.title || '会话') + ' · 模型没有返回摘要', sessionId: session.id});
-            // 压缩失败也要解除「全局阻塞」：compactStarting 期间所有会话的通知都排队了，
-            // 只是冲压缩目标是不够的（子代理审查 #3）。
-            flushAllAgentNotices();
-            releaseOneShot();
-            return;
-        }
-        // cutoff / summary 形状 / 裁剪内核在 ai-compact.js（子代理压缩共用同一份）。
-        // 保留预算按 token 计（窗口−输出预留 的 16%，与 dsh 的 retainRatio 对齐）：
-        // 按条数保留会被「很多条短消息」或「几条超长工具结果」两头坑到。
-        const retainBudget = compactRetainBudget(contextWindowOf(session), outputReserveOf(session));
-        const cutoff = computeCompactCutoffByBudget(
-            session.messages, retainBudget, estimateMessageTokens, COMPACT_KEEP_TAIL);
-        const archived = session.messages.slice(0, cutoff);
-        const summary = buildCompactSummary(text, cutoff, current.trigger, archived.length + session.messages.length);
-        // 归档事件要在裁剪内存之前登记：内部捕获的是裁剪前的消息快照。
-        if (sessionUseDisk()) sessionStore.archiveSession(session, cutoff, summary);
-        applyCompactToSession(session, summary, cutoff);
-        pushArchivedMessages(session, archived);
-        persistSessions();
-        queueLogSave(session);
-        // 会话在支线标签页里被压缩：面板没显示它，单独通知宿主重绘（否则消息区停在压缩前）
-        notifySideChatHosts(session.id);
-        if (isOpen() && currentSession() === session) renderMessages(true);
-        if (viewed) {
-            updateContextCount();
-            updateComposerTakeover(true);
-            showNote('已压缩上下文：摘要 ' + text.length + ' 字符，保留最近 ' + session.messages.length +
-                ' 条（预留预算约 ' + retainBudget + ' tokens），归档 ' + archived.length + ' 条。');
-        }
-        flushMessageQueue(session.id);
-        // 通知队列也要冲：压缩期间 `compactStarting` 是**全局**的（不属于任何会话），
-        // 所有会话的 wakeWith 都会被 startSessionTurn 判 busy 而退回队列。压缩一结束，
-        // 这些排队的后台通知（子代理结算 / 定时任务 / 计时器）必须立刻重试，
-        // 否则要等用户下次发消息触发 foldBeforeTurn——实测就是「通知只在我发消息后才到」。
-        // 顺序在消息队列之后，保持「用户排队消息优先于后台通知」。
-        // 压缩目标单独冲（保证顺序），其余会话用批量冲刷补上。
-        flushAgentNotices(session.id);
-        flushAllAgentNotices({excludeId: session.id});
-        releaseOneShot();
-        // 上下文溢出恢复：压缩完成后自动重发本轮（六份参照 harness 的「压缩 → 重试」分支）。
-        // 队列里还有待发消息时不抢：flushMessageQueue 已经起了一轮，重试交给用户。
-        if (current.retryAfter) {
-            // 压缩租约同样是异步释放的：等空闲再重发，否则会被判成「租约失败」
-            whenSessionLeaseFree(session.id, () => {
-                if (session.archivedAt) return;
-                regenerateLast(session);
-            }, 8);
+            // cutoff / summary 形状 / 裁剪内核在 ai-compact.js（子代理压缩共用同一份）。
+            const retainBudget = compactRetainBudget(contextWindowOf(session), outputReserveOf(session));
+            const cutoff = computeCompactCutoffByBudget(
+                session.messages, retainBudget, estimateMessageTokens, COMPACT_KEEP_TAIL);
+            const archived = session.messages.slice(0, cutoff);
+            const summary = buildCompactSummary(text, cutoff, current.trigger, archived.length + session.messages.length);
+            if (sessionUseDisk()) sessionStore.archiveSession(session, cutoff, summary);
+            applyCompactToSession(session, summary, cutoff);
+            pushArchivedMessages(session, archived);
+            persistSessions();
+            queueLogSave(session);
+            notifySideChatHosts(session.id);
+            if (isOpen() && currentSession() === session) renderMessages(true);
+            if (viewed) {
+                updateContextCount();
+                updateComposerTakeover(true);
+                showNote('已压缩上下文：摘要 ' + text.length + ' 字符，保留最近 ' + session.messages.length +
+                    ' 条（预留预算约 ' + retainBudget + ' tokens），归档 ' + archived.length + ' 条。');
+            }
+            if (current.retryAfter) {
+                // 只重发原来溢出的那一轮；压缩期间用户又发了消息时，最新消息不能被顺带重发。
+                whenSessionLeaseFree(session.id, () => {
+                    if (session.archivedAt) return;
+                    const userIndex = lastUserIndex(session);
+                    const userMessage = userIndex >= 0 ? session.messages[userIndex] : null;
+                    if (!userMessage) return;
+                    const anchor = current.retryAfter;
+                    const sameTurn = anchor.mid
+                        ? userMessage._mid === anchor.mid
+                        : (userMessage.role === anchor.role &&
+                            (Number(userMessage.turnStartedAt) || 0) === anchor.turnStartedAt &&
+                            String(userMessage.content || '') === anchor.content);
+                    if (!sameTurn) return;
+                    regenerateLast(session);
+                }, 8);
+            }
+        } catch (e) {
+            const message = '压缩收尾失败：' + ((e && e.message) || e);
+            if (session && currentSession() === session) showNote(message, true);
+            else if (typeof flash === 'function') flash(message, true);
+        } finally {
+            // 任何成功/失败/异常路径都必须释放租约，并恢复用户队列与信箱。
+            settleCompact(current, {alreadyCleared: true});
         }
     }
 
     function cancelOneShot() {
         const current = oneShot;
-        if (!current) return;
-        oneShot = null;
+        if (!current) {
+            const viewing = currentSession();
+            if (viewing) cancelCompactPreparation(viewing.id);
+            return;
+        }
         try {
             if (backend.AIStop) backend.AIStop(current.id);
         } catch (e) {}
-        setStreamingUI(false);
-        updateSendState();
+        settleCompact(current);
         showNote('已取消压缩。');
-        if (current.leaseHeld) {
-            current.leaseHeld = false;
-            releaseTurnLease(current.sessionId);
-        }
     }
 
     // 用户手点的隔离区操作（pill / 菜单 / /worktree / 胶囊丢弃）没有 AI 工具调用可落历史，
@@ -18702,7 +19170,7 @@ async function requestApproval(session, toolMessage, info) {
         // 生成中绝不替换 sessions 数组：新会话的 user/占位 assistant 只存在内存里（磁盘可能还是空会话），
         // 替换后 stream 指向被丢弃的对象，后续 ai-chunk/ai-done 全部落空，消息丢失。
         // 典型触发：定时任务 open() 触发的磁盘重读恰好在 submitText 之后完成。
-        if (anyStreaming() || oneShot) return;
+        if (anyStreaming() || oneShot || compactStartingSessionId) return;
         // 读盘期间用户改过的元数据（改名 / 置顶 / 归档 / 分组 / 未读 / 待办）不能被更早的
         // 磁盘快照回滚：只把「本轮读盘开始之后被本窗口写过 meta」的会话按 meta 字段保留
         // 内存版本，正文基线仍用磁盘的（见 ai-session-merge.js）。
@@ -19549,7 +20017,7 @@ async function requestApproval(session, toolMessage, info) {
         });
     };
 
-    const composerMod = createAIComposer({
+    let composerMod = createAIComposer({
         el,
         backend,
         compactOf,
@@ -19672,28 +20140,31 @@ async function requestApproval(session, toolMessage, info) {
         captureComposerMessage,
         handleSlashText,
         stopGeneration,
-        renderAttachments,
-        resizeInput,
-        submitText,
-        updateSendState,
         currentPendingAskEntry,
         getAttachments: () => composerMod.getAttachments(),
-        setAttachments: (value) => composerMod.setAttachments(value),
         getDismissedPlanApproval: () => dismissedPlanApproval,
         setDismissedPlanApproval: (value) => { dismissedPlanApproval = value; },
         getStream: () => stream,
         // 视频 steer 的协议门禁与正常发送同源（startSessionTurn 的 video_protocol 预检）。
         videoSteerAllowed: (session) => modelVideoInputEnabled(profileOf(session), entryOf(session)),
-        // 后台会话的排队消息走会话级内核起轮（不碰输入区 / 不刷前台视图）：
-        // 目标会话、起轮内核与未读标记三个依赖见 ai-message-queue.js 的 flushInBackground。
+        // 排队消息走会话级内核起轮（所有会话同一条路径）：目标会话 / 起轮内核 / 未读标记
+        // / 失败文案单一来源，见 ai-message-queue.js 的 dispatchQueuedItem。
         sessionById,
         startSessionTurn,
         setSessionUnread,
-        // 后台队列消息被内核预检拦下（over_budget）时兜底触发一次自动压缩腾地方——
+        // 起轮失败的文案（与手动发送同一张表）：队列冲刷在 queued 语境下说「留在队列」，
+        // 非当前会话再带上会话名，让用户认出是哪个会话的队列。
+        describeTurnFailure: (result, session) => {
+            const cur = currentSession();
+            const isCurrent = !!(cur && session && cur.id === session.id);
+            return turnStartFailureText(result, {
+                queued: true,
+                sessionTitle: isCurrent ? '' : (session && session.title),
+            });
+        },
+        // 队列消息被内核预检拦下（over_budget）时兜底触发一次自动压缩腾地方——
         // 与手动路径 autoCompactOnGateBlocked 对称；压缩完成后 flushMessageQueue 自动重发。
         onQueueOverBudget: (session) => { maybeAutoCompact(session); },
-        // 冲刷代发消费输入后作废会话草稿（防瞬态回填沉淀成草稿、切回时复活）
-        dropComposerDraft: (sessionId) => dropComposerDraft(sessionId),
     });
     const renderMessageQueue = () => { queueMod.renderMessageQueue(); updateMailboxChip(); };
     // ---------- 信箱胶囊（头部 #ai-chip-queue，类计时器胶囊）----------
@@ -19754,7 +20225,16 @@ async function requestApproval(session, toolMessage, info) {
         const kindEl = document.createElement('span');
         kindEl.className = 'ai-mailbox-kind';
         kindEl.textContent = knownKind ? MAILBOX_KIND_LABEL[knownKind] : '通知';
-        meta.append(session, kindEl);
+        const state = notice.state || 'queued';
+        const stateText = state === 'in_flight' ? '投递中' : (state === 'parked' ? '已停泊' : '待投递');
+        const reasonText = state === 'parked' && notice.parkedReason
+            ? ({no_profile: '无模型', no_backend: '后端不可用', load_failed: '加载失败', too_long: '内容过长', over_budget: '上下文超阈'}[notice.parkedReason] || notice.parkedReason)
+            : '';
+        const stateEl = document.createElement('span');
+        stateEl.className = 'ai-mailbox-kind';
+        stateEl.textContent = reasonText ? stateText + ' · ' + reasonText : stateText;
+        if (state === 'queued' && notice.blockReason) stateEl.dataset.tip = '等待原因：' + notice.blockReason;
+        meta.append(session, kindEl, stateEl);
         const text = document.createElement('div');
         text.className = 'ai-mailbox-text';
         text.textContent = head;
@@ -19890,9 +20370,8 @@ async function requestApproval(session, toolMessage, info) {
         sessionById,
         streamOf,
         compactOf,
-        // 全局「压缩正在准备」标记：notices 的忙判定要能看见它（与起轮内核同口径），
-        // 否则压缩窗口内的后台通知会被误唤醒再被拒，报「投递失败：busy」。
-        compactStartingOf: () => compactStarting,
+        // 后台自动起轮的唯一门禁：流 / 压缩 / 压缩准备 / 资源重读 / 起轮占位同源。
+        canAutoStartTurn,
         startSessionTurn,
         currentSession,
         isOpen,
@@ -19901,10 +20380,12 @@ async function requestApproval(session, toolMessage, info) {
         setSessionUnread,
         notifyDesktop,
         flash,
-        // busy 退回队列这类「预期内的等待」只留诊断日志，不弹系统通知（见 wakeWith 注释）
+        // busy 退回队列这类「预期内的等待」只留诊断日志，不弹系统通知。
         logFrontend,
         persistSessions,
         getPendingEdit: () => pendingEdit,
+        // 上下文超阈时触发一次自动压缩；压缩统一收口后再恢复信箱。
+        onOverBudget: (session) => maybeAutoCompact(session),
         // 会话间投递（阶段 H）：选址列表按工作区过滤，默认只列同工作区
         getSessions: () => sessions,
         workspaceKeyOf: (session) => aiWorkspaceKey(sessionWorkspacePath(session)),
@@ -19914,12 +20395,12 @@ async function requestApproval(session, toolMessage, info) {
     const deliverAgentNotice = (...args) => noticesMod.deliverAgentNotice(...args);
     const foldAgentNotices = (...args) => noticesMod.foldNotices(...args);
     const flushAgentNotices = (...args) => noticesMod.flushNotices(...args);
-    // 冲刷**所有**待投通知的会话：压缩结束/失败、回前台、切会话等全局事件用。
-    // compactStarting 是全局标记，压缩期间**所有**会话的通知都被判忙排队，
-    // 只冲压缩目标会让别的会话干等到重试退避耗尽（子代理审查 #3）。
+    // 冲刷所有尚未送达的通知会话：压缩结束/失败、回前台等全局事件用。
+    // 正确性由信箱状态机的持续低频重试保证，这里只负责即时恢复。
     const flushAllAgentNotices = (opts) => noticesMod.flushAllPending(opts);
     const foldNoticesBeforeTurn = (...args) => noticesMod.foldBeforeTurn(...args);
-    const pendingNoticeCount = (...args) => noticesMod.pendingCount(...args);
+    // 会话列表/角标统计“尚未进入模型上下文”的总数，包含投递中批次。
+    const pendingNoticeCount = (...args) => noticesMod.outstandingCount(...args);
 
     // 会话投递的选择器 UI（ai-session-send.js）：多选 + 搜索 + 键盘 + 内容预览。
     // 传输仍走上面的信箱（deliverToSessions），本模块只管「选谁、写什么、回执怎么说」。
@@ -20009,6 +20490,23 @@ async function requestApproval(session, toolMessage, info) {
         currentSession,
         persistSessions,
         sessionById,
+        // 子代理生命周期写审计事件（S6 切片）：与回合事件共用同一条追加通道，尽力而为。
+        auditEvent: (sessionId, event) => {
+            if (!sessionStore || !sessionId || !event) return;
+            const target = sessionById(sessionId);
+            if (!target || target._logCreated !== true) return;
+            try { sessionStore.appendAuditEvent(sessionId, event).catch(() => {}); } catch (e) {}
+        },
+        // 子代理运行态快照（S6）：按根会话归集，写进 session.agentRuns 随 meta 落盘。
+        // 嵌套子代理的 parentSessionId 是上层子代理的会话 id，所以优先用 rootSessionId——
+        // 否则删根会话时快照清不掉，且重启后找不到归属。
+        saveAgentRun: (snapshot) => {
+            if (!snapshot) return;
+            const owner = sessionById(snapshot.rootSessionId) || sessionById(snapshot.parentSessionId);
+            if (!owner) return;
+            owner.agentRuns = mergeAgentRun(owner.agentRuns, snapshot);
+            persistSessions();
+        },
         // wait_agent 的两条车道快照 {queue, steer}：只有插话（steer）算「待消费输入」——
         // 排队不打扰等待（本轮结束后由 flushMessageQueue 送达，唤醒也读不到内容），
         // queue 只供超时文案提示「输入框有排队消息」。
@@ -20616,6 +21114,184 @@ async function requestApproval(session, toolMessage, info) {
         refreshGitEntry,
         sendAppMessage,
         getScope: currentScope,
+        // ---- 编排宿主桥（orchestration/ 域通过 main.js 注入使用）----
+        bridgeOrchestrationInfoOf: (sessionOrId) => {
+            const session = typeof sessionOrId === 'string' ? sessionById(sessionOrId) : sessionOrId;
+            return session && session.orchestration ? Object.assign({}, session.orchestration) : null;
+        },
+        bridgeCreateOrchestrationSession: async (opts2) => {
+            const o = opts2 || {};
+            const callerId = String(o.callerSessionId || '').trim();
+            const baseSession = (callerId ? sessionById(callerId) : null) || currentSession();
+            const baseScope = currentScopeOf(baseSession) || 'read';
+            const SCOPE_RANK = {full: 0, auto: 1, edit: 2, read: 3};
+            const wanted = String(o.scope || baseScope).trim();
+            if (!AI_SCOPES.includes(wanted)) throw new Error('非法权限档：' + wanted);
+            if ((SCOPE_RANK[wanted] || 0) < (SCOPE_RANK[baseScope] || 0)) {
+                throw new Error('编排执行会话不能比发起会话更宽（只能继承或更严）');
+            }
+            let modelTarget = o.modelRef
+                ? resolveModelRefTarget(String(o.modelRef), config.profiles)
+                : (o.model ? subAgentModelPick(o.model) : null);
+            if (o.modelRef && !modelTarget) throw new Error('编排指定的模型 ref 已失效：' + o.modelRef);
+            // 编排未指定模型且调用方在后台时，继承调用方的模型而不是面板当前会话的模型。
+            if (!modelTarget && baseSession && baseSession !== currentSession()) {
+                const p = profileOf(baseSession);
+                const e = entryOf(baseSession);
+                if (p && e) modelTarget = {account: p, entry: e};
+            }
+            const baseKey = aiWorkspaceKey(sessionWorkspacePath(baseSession));
+            const existingGroups = [];
+            for (const s of sessions) {
+                if (s.group && aiWorkspaceKey(sessionWorkspacePath(s)) === baseKey && !existingGroups.includes(s.group)) {
+                    existingGroups.push(s.group);
+                }
+            }
+            const group = o.group ? resolveSessionGroupName(o.group, existingGroups) : '';
+            const session = makeSessionWithRoot(String(o.title || '编排批次').slice(0, 60), {
+                scope: wanted,
+                ...(modelTarget ? {model: modelTarget} : {}),
+                group,
+            }, baseSession);
+            // 编排的归属工作区是硬约束：不能因为父会话被删就回落到面板当前仓库。
+            if (o.workspace) session.workspace = String(o.workspace);
+            if (o.orchestration) session.orchestration = normalizeSessionOrchestration(o.orchestration);
+            session._orchestrationToken = String(o.executionToken || '');
+            session._orchestrationDiscardable = true;
+            sessions.push(session);
+            persistSessions();
+            renderSessionList();
+            return {
+                id: session.id, title: session.title, scope: currentScopeOf(session), group: session.group || '',
+            };
+        },
+        bridgeAttachOrchestrationSession: (sessionId, info, executionToken) => {
+            const session = sessionById(String(sessionId || ''));
+            if (!session) throw new Error('编排执行会话不存在：' + sessionId);
+            session.orchestration = normalizeSessionOrchestration(info);
+            session._orchestrationToken = String(executionToken || '');
+            persistSessions();
+            renderSessionList();
+            return true;
+        },
+        // 起轮前基础设施失败：刚建、尚未起轮的占位会话直接摘掉，避免列表里留垃圾。
+        bridgeDiscardOrchestrationSession: (sessionId) => {
+            const id = String(sessionId || '');
+            const at = sessions.findIndex((s) => s.id === id);
+            if (at < 0) return false;
+            const session = sessions[at];
+            if (!session._orchestrationDiscardable) return false;
+            sessions.splice(at, 1);
+            persistSessions();
+            renderSessionList();
+            return true;
+        },
+        bridgeOrchestrationStartTurn: async (sessionId, prompt) => {
+            const session = sessionById(String(sessionId || ''));
+            if (!session) throw new Error('编排执行会话不存在：' + sessionId);
+            if (session._stub && !(await ensureSessionLoaded(session))) {
+                throw new Error('执行会话正文读取失败：' + (session._loadError || '未知原因'));
+            }
+            return startSessionTurn(session, String(prompt || ''));
+        },
+        bridgeOrchestrationTokenOf: (sessionId) => {
+            const session = sessionById(String(sessionId || ''));
+            return session ? String(session._orchestrationToken || '') : '';
+        },
+        // 编排 awaiting_user 的超时默认值与 ask_user 同源（设置里的 askTimeout / askTimeoutAction）。
+        bridgeAskTimeoutDefaults: () => ({
+            timeoutSec: Number(config.askTimeout) || 0,
+            timeoutAction: String(config.askTimeoutAction || ''),
+        }),
+        // 编排状态投影到会话列表：父会话显示进度，批次子项显示自己的批次状态。
+        // 只改内存态，不落盘（看板才是真源；重启后下一次事件会重新投影）。
+        bridgeApplyOrchestrationSnapshot: (orchestrationId, parentSessionId, summary, batches) => {
+            const id = String(orchestrationId || '');
+            const parentId = String(parentSessionId || '');
+            const byBatch = new Map((Array.isArray(batches) ? batches : []).map((b) => [b.id, b]));
+            let touched = false;
+            for (const s of sessions) {
+                if (!s) continue;
+                if (s.id === parentId || (s.orchestration && s.orchestration.id === id && s.orchestration.role === 'arbiter')) {
+                    // 完成事件的 summary 可能先/后于 changed 事件到达：缺省时保留旧值，
+                    // 不能用 null 把已经投影好的进度徽标清空。
+                    if (summary) s._orchestrationSummary = summary;
+                    else if (!s._orchestrationSummary) s._orchestrationSummary = null;
+                    touched = true;
+                }
+                if (s.orchestration && s.orchestration.id === id && s.orchestration.batchId) {
+                    const b = byBatch.get(s.orchestration.batchId);
+                    s._orchestrationBatchStatus = b ? {
+                        status: b.status || '', failureReason: b.failureReason || '',
+                        attempts: Number(b.attempts) || 0, title: b.title || '',
+                    } : null;
+                    touched = true;
+                }
+            }
+            if (touched) renderSessionList();
+            return touched;
+        },
+        // 编排看板「子代理」区：复用 HUD 的同源列表（不重写树构建）。
+        bridgeOrchestrationAgents: (sessionId) => {
+            try {
+                return subagentsMod.listAgentsForHud(String(sessionId || '')) || [];
+            } catch (e) {
+                return [];
+            }
+        },
+        bridgeSessionModelRef: (sessionId) => {
+            const session = sessionById(String(sessionId || ''));
+            const p = session ? profileOf(session) : null;
+            const e = session ? entryOf(session) : null;
+            if (!p || !e) return null;
+            return {
+                ref: (aiTextOf(p.id) || '') + '|' + (aiTextOf(e.id) || ''),
+                label: modelRefLabel(p, e),
+                model: aiTextOf(e.model),
+                contextWindow: Number(e.contextWindow) || 0,
+            };
+        },
+        // 编排 L2 事件：进信箱并唤醒当前仲裁者；正文自带批次上下文与可执行动作。
+        bridgeDeliverOrchestrationEvent: (sessionId, text, eventId) => {
+            const session = sessionById(String(sessionId || ''));
+            if (!session) return {ok: false, reason: 'not_found'};
+            return deliverAgentNotice(session, {
+                kind: 'orchestration',
+                label: '编排事件',
+                content: String(text || ''),
+                messageId: eventId ? 'orch-' + eventId : undefined,
+                urgent: true,
+            });
+        },
+        // 统一停止：停的是会话当前回合；子代理子树 / 命令进程树由宿主停止接口另接。
+        bridgeStopOrchestrationSessions: (sessionIds) => {
+            const out = [];
+            for (const id of (Array.isArray(sessionIds) ? sessionIds : [])) {
+                const target = streamOf(String(id));
+                if (target) {
+                    try { stopGeneration(target); out.push({id, stopped: true}); } catch (e) { out.push({id, stopped: false}); }
+                } else {
+                    out.push({id, stopped: false});
+                }
+            }
+            return out;
+        },
+        // 仲裁者上下文使用量（用于预判式交接）：由宿主按 usage 事实 + 当前模型窗口计算。
+        bridgeSessionUsage: (sessionId) => {
+            const session = sessionById(String(sessionId || ''));
+            if (!session) return {used: 0, window: 0};
+            let used = 0;
+            try {
+                for (const message of (session.messages || [])) {
+                    const u = message && message.usage;
+                    if (u) used += Number(u.totalTokens || u.promptTokens || 0) || 0;
+                }
+            } catch (e) {}
+            const profile = profileOf(session);
+            const entry = entryOf(session);
+            const window = Number(entry && entry.contextWindow) || Number(profile && profile.contextWindow) || 0;
+            return {used, window};
+        },
         bridgeNewSession: async (opts2) => {
             const title = String((opts2 && opts2.title) || '').trim();
             const message = String((opts2 && opts2.message) || '').trim();
@@ -21007,6 +21683,7 @@ async function requestApproval(session, toolMessage, info) {
                 group: s.group || '',
                 workspace: s.workspace || '',
                 planMode: !!s.planMode,
+                orchestration: s.orchestration ? Object.assign({}, s.orchestration) : null,
                 messages: sessionMessageCount(s),
                 active: s.id === (activeSessionId()),
                 // 「哪一个是我」：active 只是面板当前查看的会话，后台会话调用时 caller 才是自己

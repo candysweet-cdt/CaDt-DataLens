@@ -80,6 +80,10 @@ type vacuumEntry struct {
 type vacuumPlan struct {
 	headerLine  []byte   // 最后一条 header 的原始行（最后一头为准，与前端重放一致）
 	metaLines   [][]byte // 按序保留的 meta 事件原始行
+	// extLines：审计事件（turn / tool / approval / agent，前端 S5）的原始行，按序保留。
+	// 它们不参与消息物化（既不是 live 也不是 archived），但**必须原样留在主文件**——
+	// 旧实现把未知类型计 issue 后整条丢掉，等于整理一次就把审计记录抹平。
+	extLines [][]byte
 	live        []vacuumEntry
 	archived    []vacuumEntry // 重放序（= 时间序）：先 a:1 直归档、后 archive 标记移入
 	summaryJSON []byte        // 最终 summary 的原始 JSON（nil = 无）
@@ -479,6 +483,15 @@ func (p *vacuumPlan) processLine(lineNo int, content []byte) {
 				p.summaryJSON = nil
 			}
 		}
+	case "turn", "tool", "approval", "agent":
+		// 审计事件（前端 S5）：注解型，不参与消息流物化。校验只认「id 是非空字符串」，
+		// 与前端 replaySessionLog 同口径；形状不合规仍计 issue（与坏行同等待遇）。
+		id, idOk := jsString(fields["id"])
+		if !idOk || strings.TrimSpace(id) == "" {
+			p.issues++
+			return
+		}
+		p.extLines = append(p.extLines, append([]byte(nil), content...))
 	default:
 		p.issues++
 	}
@@ -527,6 +540,16 @@ func (s *Store) writeVacuumedMain(mainPath string, plan *vacuumPlan) (string, er
 		}
 		for _, meta := range plan.metaLines {
 			if _, err := writer.Write(meta); err != nil {
+				return err
+			}
+			if err := writer.WriteByte('\n'); err != nil {
+				return err
+			}
+		}
+		// 审计事件紧随 meta 之后：它们与消息的交错顺序在整理后不再保持（见 vacuumPlan.extLines
+		// 注释），所以不按 lineNo 混排，避免与 copyLinesByNumber 的第二遍扫描抢顺序。
+		for _, ext := range plan.extLines {
+			if _, err := writer.Write(ext); err != nil {
 				return err
 			}
 			if err := writer.WriteByte('\n'); err != nil {

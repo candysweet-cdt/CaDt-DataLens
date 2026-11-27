@@ -241,6 +241,10 @@ export function createAIGroupRuntime(deps) {
     }
 
     async function deleteGroup(id) {
+        // 先收尾在飞请求与讨论/接力循环：删掉 map 之后，运行中的循环仍持有局部引用
+        //（`const g = groups.get(...)`），会继续烧模型额度；relays.delete 还会让它们
+        // 彻底失联，之后想停也取不到。
+        stopAll(id);
         try {
             await store.remove(id);
         } catch (e) {

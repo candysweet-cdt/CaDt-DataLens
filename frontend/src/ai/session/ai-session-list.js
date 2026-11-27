@@ -76,6 +76,37 @@ export function orderSessionsWithSides(list) {
     return out;
 }
 
+// 编排批次会话紧跟发起会话（parentSessionId 永不变；仲裁者交接不影响这里）。
+// 只按业务归属分组，不复用 sideOf——批次会话要独立打开，不是分叉快照。
+export function orderSessionsWithOrchestration(list) {
+    const source = Array.isArray(list) ? list : [];
+    const byId = new Map(source.map((session) => [session.id, session]));
+    const children = new Map();
+    const roots = [];
+    for (const session of source) {
+        const orc = session && session.orchestration;
+        const parentId = orc && orc.parentSessionId;
+        const parent = parentId ? byId.get(parentId) : null;
+        if (parent && parent !== session && (orc.role === 'work' || orc.role === 'review')) {
+            if (!children.has(parent.id)) children.set(parent.id, []);
+            children.get(parent.id).push(session);
+        } else {
+            roots.push(session);
+        }
+    }
+    const out = [];
+    const seen = new Set();
+    const walk = (session) => {
+        if (!session || seen.has(session.id)) return;
+        seen.add(session.id);
+        out.push(session);
+        for (const child of children.get(session.id) || []) walk(child);
+    };
+    for (const session of roots) walk(session);
+    for (const session of source) walk(session);
+    return out;
+}
+
 // 会话过滤命中（纯函数，配 ai-session-list.test.mjs）：按标题或会话 ID 子串匹配，
 // 大小写不敏感、去首尾空白；空串 = 不过滤（全命中）。标题取列表里实际显示的文案
 //（无标题会话显示「新会话」，输入「新」也要能命中它们）。
@@ -356,6 +387,9 @@ export function createAISessionList(ctx) {
     // 用户显式切换过的分组展开状态：key → boolean。无记录的分组走默认判定
     //（只展开当前工作区，其余收起，见 workspaceGroupExpanded），切换后记住选择。
     const workspaceGroupOverrides = new Map();
+    // 编排批次子项的折叠态（orchestrationId → true=展开）。内存态、不持久化，与工作区分组同款；
+    // 默认折叠，有 failed / blocked 批次时默认展开（用户显式操作后尊重用户）。
+    const orchestrationExpanded = new Map();
     // 自定义子分组的折叠状态：分页键 → true 表示用户显式折叠。默认展开，见 subgroupFolded。
     const subgroupFoldedKeys = new Set();
 
@@ -578,7 +612,7 @@ export function createAISessionList(ctx) {
             sessionListEl.appendChild(loading);
             return;
         }
-        const ordered = orderSessionsWithSides(getSessions().slice().sort((a, b) => sessionActivity(b) - sessionActivity(a)));
+        const ordered = orderSessionsWithOrchestration(orderSessionsWithSides(getSessions().slice().sort((a, b) => sessionActivity(b) - sessionActivity(a))));
         if (!ordered.length) {
             const empty = document.createElement('div');
             empty.className = 'ai-session-empty';
@@ -598,9 +632,38 @@ export function createAISessionList(ctx) {
         }
         // 过滤（标题 / 会话 ID 子串）：命中集为空时给独立空态，不把「还没有会话」的
         // 新建按钮顶出来——会话明明在，只是不匹配。
-        const filtered = sessionFilterText
-            ? ordered.filter((session) => sessionFilterHit(session, sessionFilterText))
-            : ordered;
+        const orchChildren = new Map();
+        const orchChildOf = new Map();
+        for (const session of ordered) {
+            const orc = session && session.orchestration;
+            if (!orc || (orc.role !== 'work' && orc.role !== 'review')) continue;
+            const parent = getSessions().find((s) => s.id === orc.parentSessionId);
+            if (!parent) continue;
+            orchChildOf.set(session.id, parent.id);
+            if (!orchChildren.has(parent.id)) orchChildren.set(parent.id, []);
+            orchChildren.get(parent.id).push(session);
+        }
+        const orchExpanded = (parent) => {
+            const id = (parent.orchestration && parent.orchestration.id) || parent.id;
+            const explicit = orchestrationExpanded.get(id);
+            if (typeof explicit === 'boolean') return explicit;
+            const summary = parent._orchestrationSummary;
+            if (summary && Number(summary.failedWork || 0) > 0) return true;
+            return (orchChildren.get(parent.id) || []).some((s) => {
+                const st = s._orchestrationBatchStatus && s._orchestrationBatchStatus.status;
+                return st === 'failed' || st === 'blocked' || st === 'awaiting_user';
+            });
+        };
+        const filtered = ordered.filter((session) => {
+            if (sessionFilterText && !sessionFilterHit(session, sessionFilterText)) return false;
+            if (sessionFilterText) return true;
+            const parentId = orchChildOf.get(session.id);
+            if (!parentId) return true;
+            // 当前正在看的批次会话不能被折叠藏掉（用户点折叠后仍在对话区）。
+            if (current && current.id === session.id) return true;
+            const parent = getSessions().find((s) => s.id === parentId);
+            return !parent || orchExpanded(parent);
+        });
         if (!filtered.length) {
             const empty = document.createElement('div');
             empty.className = 'ai-session-empty';
@@ -621,6 +684,8 @@ export function createAISessionList(ctx) {
             item.className = 'ai-session-item' + (current && current.id === session.id ? ' active' : '') + (archived ? ' archived' : '');
             // 支线：缩进 + 「支线」徽标，视觉上从属母会话（排序已保证紧跟其后）
             if (sideBadgeOn(session)) item.classList.add('ai-session-branch');
+            // 编排批次会话：缩进（同支线），保留独立点击与独立标签页行为。
+            if (orchChildOf.has(session.id)) item.classList.add('ai-session-orch-batch');
             item.dataset.aiSessionId = session.id;
             item.tabIndex = 0;
             item.setAttribute('role', 'button');
@@ -642,6 +707,46 @@ export function createAISessionList(ctx) {
                 const badge = document.createElement('span');
                 badge.className = 'ai-session-badge';
                 badge.textContent = '支线';
+                titleRow.appendChild(badge);
+            }
+            // 编排：父会话显示进度汇总（同时是折叠开关）；批次子项显示自己的批次状态。
+            const isOrchParent = orchChildren.has(session.id);
+            if (isOrchParent) {
+                const summary = session._orchestrationSummary || {};
+                const failed = Number(summary.failedWork || 0);
+                const badge = document.createElement('span');
+                badge.className = 'ai-session-badge orch' + (failed || summary.hasAttention ? ' attention' : '');
+                const done = Number(summary.doneWork || 0);
+                const total = Number(summary.totalWork || (orchChildren.get(session.id) || []).length);
+                badge.textContent = total ? `编排 ${done}/${total}` : '编排';
+                badge.dataset.tip = '编排批次会话（点击右侧箭头展开/收起）';
+                titleRow.appendChild(badge);
+                const toggle = document.createElement('button');
+                toggle.type = 'button';
+                toggle.className = 'ai-session-orch-toggle';
+                toggle.setAttribute('aria-label', orchExpanded(session) ? '收起编排批次' : '展开编排批次');
+                toggle.dataset.tip = '展开/收起编排批次';
+                toggle.innerHTML = iconSvg(orchExpanded(session) ? 'chevron-up' : 'chevron-down', 12);
+                toggle.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const id = (session.orchestration && session.orchestration.id) || session.id;
+                    orchestrationExpanded.set(id, !orchExpanded(session));
+                    renderSessionList();
+                });
+                titleRow.appendChild(toggle);
+            }
+            if (session.orchestration && (session.orchestration.role === 'work' || session.orchestration.role === 'review')) {
+                const orc = session.orchestration || {};
+                const st = session._orchestrationBatchStatus || {};
+                const badge = document.createElement('span');
+                badge.className = 'ai-session-badge orch-batch' + (
+                    st.status === 'failed' || st.status === 'blocked' || st.status === 'awaiting_user' ? ' attention' : '');
+                const labels = {
+                    pending: '待派发', dispatched: '已广播', running: '执行中', verifying: '验收中',
+                    reviewing: '审查中', done: '完成', failed: '失败', blocked: '卡住',
+                    awaiting_user: '等用户', cancelled: '取消', skipped: '跳过',
+                };
+                badge.textContent = (orc.batchId || '批次') + (st.status ? ' · ' + (labels[st.status] || st.status) : '');
                 titleRow.appendChild(badge);
             }
             // 临时会话：一次性对话（默认只读 / 不绑工作区 / 不注入工作区与记忆）。

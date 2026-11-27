@@ -31,6 +31,21 @@ test('enqueue：attachments 原样保存，text 归一为字符串', () => {
     assert.deepEqual(queued.attachments, attachments);
 });
 
+test('enqueue：同毫秒入队按单调 seq 定序，persistSafeItem 保留 seq', () => {
+    const originalNow = Date.now;
+    Date.now = () => 1700000000000;
+    try {
+        const model = createQueueModel();
+        const a = model.enqueue(item({text: 'a'}));
+        const b = model.enqueue(item({text: 'b'}));
+        assert.equal(a.ts, b.ts, '构造同毫秒场景');
+        assert.ok(b.seq > a.seq, 'seq 必须单调递增，不能依赖 Date.now');
+        assert.equal(persistSafeItem(a).seq, a.seq, '快照保留 seq');
+    } finally {
+        Date.now = originalNow;
+    }
+});
+
 test('drainSteer：只取该会话的 steer、按 FIFO、取后移除；queue 条目不受影响', () => {
     const model = createQueueModel();
     const q1 = model.enqueue(item({text: 'q1'}));
@@ -115,6 +130,39 @@ test('restoreItems：同会话没有更晚项时落到队尾，跨会话不影�
     assert.deepEqual(model.forSession('s1').map((it) => it.text), ['a']);
     assert.equal(model.forSession('s2').length, 1);
     assert.equal(a.delivery, 'queue');
+});
+
+test('restoreItems：同毫秒按 seq 顺序回插，ts 不参与新条目排序', () => {
+    const model = createQueueModel();
+    const a = model.enqueue(item({text: 'a', delivery: 'steer'}));
+    const b = model.enqueue(item({text: 'b', delivery: 'steer'}));
+    const drained = model.drainSteer('s1');
+    const later = model.enqueue(item({text: 'later'}));
+    a.ts = b.ts = later.ts = 1700000000000;
+    // 故意打回 drain 顺序：恢复必须按 seq 还原，而不是按 ts 或传入顺序。
+    model.restoreItems(drained.slice().reverse(), 'queue');
+    assert.deepEqual(model.forSession('s1').map((it) => it.text), ['a', 'b', 'later']);
+});
+
+test('restoreItems：交错队列逐条归位，旧插话不能越过较新的排队消息', () => {
+    const model = createQueueModel();
+    const q1 = model.enqueue({sessionId: 's1', text: 'q1', delivery: 'queue'});
+    const a = model.enqueue({sessionId: 's1', text: 'steer-a', delivery: 'steer'});
+    const q2 = model.enqueue({sessionId: 's1', text: 'q2', delivery: 'queue'});
+    const b = model.enqueue({sessionId: 's1', text: 'steer-b', delivery: 'steer'});
+    model.drainSteer('s1');
+    model.restoreItems([a, b]);
+    assert.deepEqual(model.forSession('s1').map((item) => item.id), [q1.id, a.id, q2.id, b.id]);
+});
+
+test('restoreItems：旧快照没有 seq 时回落 ts，保持旧数据可恢复', () => {
+    const model = createQueueModel();
+    const existing = {id: 'old-existing', sessionId: 's1', text: 'existing', ts: 20};
+    model.restore([existing]);
+    const old = {id: 'old-item', sessionId: 's1', text: 'old', ts: 10};
+    model.restoreItems([old], 'queue');
+    assert.deepEqual(model.forSession('s1').map((it) => it.text), ['old', 'existing']);
+    assert.equal(old.delivery, 'queue');
 });
 
 test('reorderSession：只重排目标会话的槽位，其它会话位置不动', () => {
@@ -298,7 +346,8 @@ test('formatSteerMessage：ZCode 文案合同（改文案要同步接线护栏�
     assert.equal(formatSteerMessage(null).includes('null'), false);
 });
 
-// ---------- 后台会话的排队冲刷（docs/unfinished-plans/ai-queue-background-flush.md 方案 A） ----------
+// ---------- 排队冲刷：所有会话同一条路径（docs/finished-plans/ai-queue-background-flush.md
+// 方案 A 2026-11-19 → 方案 B 2026-11-27 统一） ----------
 
 function shellCtx(over) {
     const calls = {start: [], flash: [], unread: [], submit: []};
@@ -316,16 +365,30 @@ function shellCtx(over) {
         setSessionUnread: (session, kind) => calls.unread.push([session.id, kind]),
         flash: (text, isError) => calls.flash.push([text, isError]),
         getAttachments: () => [],
-        setAttachments: () => {},
-        renderAttachments: () => {},
-        resizeInput: () => {},
-        updateSendState: () => {},
+        // 失败文案的来源（真实现是 panel 的 turnStartFailureText，queued 语境）。
+        // 这里模拟它的契约：over_budget 必须带「留在队列」，其余带 reason。
+        describeTurnFailure: (result, session) => {
+            if (!result || result.ok) return '';
+            if (result.reason === 'over_budget') return '上下文已超阈：消息已留在队列';
+            return '「' + (session && session.title) + '」的排队消息未能发出（' + result.reason + '），已留在队列';
+        },
+        // 代发路径已删：留着桩，用来断言它**不再**被调用
         submitText: async (text) => {
             calls.submit.push(text);
             return true;
         },
     };
     return {ctx: {...ctx, ...(over || {})}, calls};
+}
+
+function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return {promise, resolve, reject};
 }
 
 test('queuedAttachmentsPayload：图片 / 视频分组，引用块不进文本附件', () => {
@@ -342,7 +405,7 @@ test('queuedAttachmentsPayload：图片 / 视频分组，引用块不进文本�
     assert.deepEqual(queuedAttachmentsPayload(null), {images: [], videos: [], texts: []});
 });
 
-test('后台会话：轮末冲刷走内核起轮，不碰输入区', async () => {
+test('轮末冲刷走内核起轮，不碰输入区', async () => {
     const {ctx, calls} = shellCtx();
     const shell = createAIMessageQueue(ctx);
     shell.enqueueItem({
@@ -351,8 +414,8 @@ test('后台会话：轮末冲刷走内核起轮，不碰输入区', async () =>
         attachments: [{kind: 'image', data: 'x'}, {kind: 'file', label: 'a.js', content: 'x'}],
     });
     await shell.flushMessageQueue('s1');
-    assert.equal(calls.submit.length, 0, '后台会话不该灌输入区再代发');
-    assert.equal(calls.start.length, 1, '后台会话要走 startSessionTurn 内核');
+    assert.equal(calls.submit.length, 0, '不该灌输入区再代发');
+    assert.equal(calls.start.length, 1, '要走 startSessionTurn 内核');
     assert.equal(calls.start[0].text, '排队的 2');
     assert.deepEqual(calls.start[0].opts.attachments.images.map((a) => a.kind), ['image']);
     assert.deepEqual(calls.start[0].opts.attachments.texts.map((a) => a.kind), ['file']);
@@ -361,7 +424,7 @@ test('后台会话：轮末冲刷走内核起轮，不碰输入区', async () =>
     assert.equal(shell.itemsForSession('s1').length, 0, '发出后队列清空');
 });
 
-test('后台会话：起轮失败回插队首、打未读并提示，不丢消息', async () => {
+test('起轮失败回插队首、打未读并提示，不丢消息', async () => {
     const {ctx, calls} = shellCtx({
         startSessionTurn: async () => ({ok: false, reason: 'over_budget', tokens: 9, windowSize: 8}),
     });
@@ -376,7 +439,61 @@ test('后台会话：起轮失败回插队首、打未读并提示，不丢消�
     assert.match(calls.flash[0][0], /上下文/);
 });
 
-test('后台会话：忙（生成中）时不取项，消息留在队列', async () => {
+test('并发 flush：同会话只取一个，重入直接返回', async () => {
+    const pending = deferred();
+    const {ctx, calls} = shellCtx({
+        startSessionTurn: (session, text, opts) => {
+            calls.start.push({sessionId: session.id, text, opts});
+            return pending.promise;
+        },
+    });
+    const shell = createAIMessageQueue(ctx);
+    shell.enqueueItem({sessionId: 's1', text: 'first'});
+    shell.enqueueItem({sessionId: 's1', text: 'second'});
+
+    const first = shell.flushMessageQueue('s1');
+    const reentrant = shell.flushMessageQueue('s1');
+    await reentrant;
+    assert.equal(calls.start.length, 1, '重入 flush 不取第二条');
+    assert.equal(calls.start[0].text, 'first');
+    assert.deepEqual(shell.itemsForSession('s1').map((it) => it.text), ['second']);
+
+    pending.resolve({ok: true});
+    await first;
+    assert.equal(calls.start.length, 1);
+    assert.deepEqual(shell.itemsForSession('s1').map((it) => it.text), ['second']);
+
+    await shell.flushMessageQueue('s1');
+    assert.equal(calls.start.length, 2, '锁释放后下一条可继续冲刷');
+    assert.equal(calls.start[1].text, 'second');
+    assert.equal(shell.itemsForSession('s1').length, 0);
+});
+
+test('并发 flush：首条失败回插仍按原顺序，且不会抢发第二条', async () => {
+    const pending = deferred();
+    const {ctx, calls} = shellCtx({
+        startSessionTurn: (session, text, opts) => {
+            calls.start.push({sessionId: session.id, text, opts});
+            return pending.promise;
+        },
+    });
+    const shell = createAIMessageQueue(ctx);
+    shell.enqueueItem({sessionId: 's1', text: 'first'});
+    shell.enqueueItem({sessionId: 's1', text: 'second'});
+
+    const first = shell.flushMessageQueue('s1', {fromRetry: true});
+    const reentrant = shell.flushMessageQueue('s1', {fromRetry: true});
+    await reentrant;
+    assert.deepEqual(calls.start.map((call) => call.text), ['first']);
+
+    pending.resolve({ok: false, reason: 'lease_failed'});
+    await first;
+    assert.deepEqual(calls.start.map((call) => call.text), ['first'], '第二条不能在首条 in-flight 时发出');
+    assert.deepEqual(shell.itemsForSession('s1').map((it) => it.text), ['first', 'second'],
+        '失败项回到原队首先，后续项顺序不变');
+});
+
+test('忙（生成中）时不取项，消息留在队列', async () => {
     const live = {sessionId: 's1', stopped: false, finished: false, roundId: 'r'};
     const {ctx, calls} = shellCtx({streams: new Map([['s1', live]])});
     const shell = createAIMessageQueue(ctx);
@@ -386,14 +503,17 @@ test('后台会话：忙（生成中）时不取项，消息留在队列', async
     assert.equal(shell.itemsForSession('s1').length, 1);
 });
 
-test('当前会话：冲刷仍走输入区代发，不调用内核', async () => {
+test('当前会话：同样走内核起轮，不再经过输入区代发', async () => {
+    // 方案 B：所有会话一条发送路径。代发（灌输入区 → submitText）已删，视图渲染由内核
+    // 按 viewed 判定负责，队列侧不再写 UI。
     const current = {id: 's1', title: '当前会话', messages: []};
     const {ctx, calls} = shellCtx({currentSession: () => current, sessionById: () => current});
     const shell = createAIMessageQueue(ctx);
     shell.enqueueItem({sessionId: 's1', text: '排队 5'});
     await shell.flushMessageQueue('s1');
-    assert.deepEqual(calls.submit, ['排队 5']);
-    assert.equal(calls.start.length, 0, '当前会话不该绕开输入区');
+    assert.equal(calls.start.length, 1, '当前会话也要走内核');
+    assert.equal(calls.start[0].text, '排队 5');
+    assert.equal(calls.submit.length, 0, '不许再走输入区代发');
     assert.equal(shell.itemsForSession('s1').length, 0);
 });
 
@@ -416,7 +536,7 @@ test('计划审批卡正显示时冲刷被拦：消息留队等计划处理', as
     const shell = createAIMessageQueue(ctx);
     shell.enqueueItem({sessionId: 's1', text: '排队 6'});
     await shell.flushMessageQueue('s1');
-    assert.equal(calls.submit.length, 0, '审批卡正显示，不代发');
+    assert.equal(calls.start.length, 0, '审批卡正显示，不起轮');
     assert.equal(shell.itemsForSession('s1').length, 1);
 });
 
@@ -428,7 +548,8 @@ test('计划卡收起（继续规划 / 抢占收起）后冲刷照常发送', as
     const shell = createAIMessageQueue(ctx);
     shell.enqueueItem({sessionId: 's1', text: '排队 7'});
     await shell.flushMessageQueue('s1');
-    assert.deepEqual(calls.submit, ['排队 7']);
+    assert.equal(calls.start.length, 1);
+    assert.equal(calls.start[0].text, '排队 7');
     assert.equal(shell.itemsForSession('s1').length, 0);
 });
 
@@ -494,6 +615,22 @@ test('restorableQueueItems：剔失效、按已有 id 去重、lookup 不过的�
     assert.deepEqual(restorableQueueItems(null, [], null), []);
 });
 
+test('restorableQueueItems：纯文本类附件可恢复，媒体附件仍按 persistSafeItem 规则剔除', () => {
+    const attachmentOnly = {
+        id: 'q_att', sessionId: 's1', text: '',
+        attachments: [{kind: 'file', label: 'a.js', content: 'x'}],
+    };
+    const mediaOnly = {
+        id: 'q_media', sessionId: 's1', text: '',
+        attachments: [{kind: 'image', data: 'AAAA'}, {kind: 'video', data: 'BBBB'}],
+    };
+    const out = restorableQueueItems([attachmentOnly, mediaOnly], [], null);
+    assert.deepEqual(out.map((it) => it.id), ['q_att'], '空正文 + 可恢复附件有效；纯媒体附件不可恢复');
+    const safe = persistSafeItem(attachmentOnly);
+    assert.deepEqual(safe.attachments, [{kind: 'file', label: 'a.js', content: 'x'}]);
+    assert.deepEqual(persistSafeItem(mediaOnly).attachments, [], '媒体附件仍被剥离');
+});
+
 test('model.restore：原样收回快照条目（id 保留），坏条目过滤，不触发 onChange', () => {
     let fired = 0;
     const model = createQueueModel({onChange: () => { fired += 1; }});
@@ -513,14 +650,46 @@ test('model.restore：原样收回快照条目（id 保留），坏条目过滤�
     assert.equal(model.all().length, 2);
 });
 
+test('model.restore：新快照按 seq 恢复，旧快照无 seq 保持原数组顺序', () => {
+    const fresh = createQueueModel();
+    fresh.restore([
+        {id: 'q_2', sessionId: 's1', text: 'second', ts: 1, seq: 2},
+        {id: 'q_1', sessionId: 's1', text: 'first', ts: 2, seq: 1},
+    ]);
+    assert.deepEqual(fresh.forSession('s1').map((it) => it.text), ['first', 'second']);
 
-// ---- 冲刷代发的草稿作废（2026-11-22 排队消息回流输入框实测）----
-// flushThroughComposer 会把消息瞬态回填进输入区再起轮：期间用户切走会把回填文本
-// 「保存」成会话草稿，切回时复活出已发出的消息。冲刷入口与失败收尾都必须作废草稿。
-function makeFlushShell({submitOk, dropSpy}) {
-    const session = {id: 's1', title: 'A'};
-    const inputEl = {value: ''};
-    const calls = {submit: [], inputAfterSubmit: null};
+    const legacy = createQueueModel();
+    legacy.restore([
+        {id: 'old_2', sessionId: 's1', text: 'legacy-second', ts: 2},
+        {id: 'old_1', sessionId: 's1', text: 'legacy-first', ts: 1},
+    ]);
+    assert.deepEqual(legacy.forSession('s1').map((it) => it.text), ['legacy-second', 'legacy-first'],
+        '旧快照没有 seq 时沿用原数组顺序，不按 ts 重排');
+});
+
+test('model.restore：seq 基线续接，重启后新 steer 回滚不能插到旧消息之前', () => {
+    const model = createQueueModel();
+    model.restore([{id: 'old', sessionId: 's1', text: 'old', ts: 1, seq: 100, delivery: 'queue'}]);
+    const steer = model.enqueue({sessionId: 's1', text: 'new-steer', delivery: 'steer'});
+    model.drainSteer('s1');
+    model.restoreItems([steer]);
+    assert.deepEqual(model.forSession('s1').map((item) => item.id), ['old', steer.id]);
+});
+
+
+// ---- 方案 B：冲刷不再经过输入区（2026-11-27）----
+// 代发路径会把消息瞬态回填进输入区、起轮成功后再清掉；`await` 窗口里用户切走会话，
+// 那段文字就留在**别的会话**的输入框里——「冲刷入口 + 失败收尾都要 dropComposerDraft」
+// 这套补偿正是为它存在。统一走内核后，队列侧对输入区**零读写**、草稿无需作废。
+function makeDispatchShell({turnResult}) {
+    const session = {id: 's1', title: 'A', messages: []};
+    // value 写成 getter/setter 计数：旧代发路径会写一次「消息文本」，新路径一次都不该写
+    let valueWrites = 0;
+    const inputEl = {
+        get value() { return ''; },
+        set value(_v) { valueWrites += 1; },
+    };
+    const calls = {start: [], submit: [], drops: 0};
     const q = createAIMessageQueue({
         el: {input: inputEl, queue: null},
         streams: new Map(),
@@ -530,39 +699,37 @@ function makeFlushShell({submitOk, dropSpy}) {
         currentQueueItems: () => [],
         sessionById: (id) => (id === 's1' ? session : null),
         flash: () => {},
+        describeTurnFailure: () => '起轮失败：消息已留在队列',
+        startSessionTurn: async (s, text, opts) => {
+            calls.start.push({text, opts});
+            return turnResult;
+        },
         submitText: async (text) => {
             calls.submit.push(text);
-            // 模拟真 submitText 的契约：起轮成功即清输入区（onStarted）
-            if (submitOk) inputEl.value = '';
-            return submitOk;
+            return true;
         },
-        setAttachments: () => {},
-        renderAttachments: () => {},
-        resizeInput: () => {},
-        updateSendState: () => {},
         getAttachments: () => [],
-        dropComposerDraft: (id) => dropSpy.push(id),
+        dropComposerDraft: () => { calls.drops += 1; },
     });
-    return {q, session, inputEl, calls};
+    return {q, session, calls, valueWrites: () => valueWrites};
 }
 
-test('flushThroughComposer：冲刷入口作废会话草稿（成功路径）', async () => {
-    const drops = [];
-    const {q, inputEl, calls} = makeFlushShell({submitOk: true, dropSpy: drops});
+test('冲刷不读不写输入区：成功路径不调 submitText、不作废草稿', async () => {
+    const {q, calls, valueWrites} = makeDispatchShell({turnResult: {ok: true}});
     q.enqueueItem({sessionId: 's1', text: '排队的话', attachments: []});
     await q.flushMessageQueue('s1');
-    assert.deepEqual(calls.submit, ['排队的话']);
-    assert.equal(inputEl.value, '', '成功后输入区为空（submitText onStarted 清空）');
-    assert.deepEqual(drops, ['s1'], '冲刷入口 dropComposerDraft 一次');
+    assert.equal(calls.start.length, 1, '走内核起轮');
+    assert.equal(calls.submit.length, 0, '不再代发');
+    assert.equal(valueWrites(), 0, '输入区零写入（旧代发会先把文本灌进去）');
+    assert.equal(calls.drops, 0, '没有瞬态回填，就不需要作废草稿');
     assert.equal(q.itemsForSession('s1').length, 0, '消息已发出，队列清空');
 });
 
-test('flushThroughComposer：失败回插队列，入口与失败收尾各作废一次草稿', async () => {
-    const drops = [];
-    const {q, inputEl} = makeFlushShell({submitOk: false, dropSpy: drops});
+test('冲刷失败：回插队列、提示一次，输入区仍零写入', async () => {
+    const {q, calls, valueWrites} = makeDispatchShell({turnResult: {ok: false, reason: 'lease_failed'}});
     q.enqueueItem({sessionId: 's1', text: '排队的话', attachments: []});
-    await q.flushMessageQueue('s1');
-    assert.equal(inputEl.value, '', '失败后输入区被清空');
+    await q.flushMessageQueue('s1', {fromRetry: true});
     assert.equal(q.itemsForSession('s1').length, 1, '失败消息回到队列不丢');
-    assert.deepEqual(drops, ['s1', 's1'], '入口 + 失败收尾各 drop 一次');
+    assert.equal(valueWrites(), 0, '失败也不许碰输入区');
+    assert.equal(calls.drops, 0, '不需要草稿补偿');
 });

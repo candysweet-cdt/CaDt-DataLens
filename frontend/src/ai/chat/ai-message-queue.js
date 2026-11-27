@@ -5,19 +5,13 @@ import {iconSvg} from '../../core/icons.js';
 import {kvGetJson, kvRemove, kvSet} from '../../core/kv-store.js';
 import {AI_MSG_QUEUE_KEY} from '../../core/storage-keys.js';
 import {createSessionBusyProbe, canStartTurn} from '../session/ai-session-scope.js';
-import {AI_QUOTE_KIND, quoteMarkupFromAttachments} from './ai-quote.js';
+import {AI_QUOTE_KIND, quoteMarkupFromAttachments, groupAttachmentsForTurn} from './ai-quote.js';
 import {shouldAnimateLayout, heightKeyframes, LAYOUT_MOTION_OPTIONS} from './ai-layout-motion.js';
 
-// 队列条目 → startSessionTurn 的附件载荷（与 submitText 的手动发送同一口径）：
-// 图片 / 视频各自成组，其余（文件 / 选区 / 技能）走文本附件；对话引用已在正文前缀里，
-// 不能再当附件送一遍（否则 <attachments> 块会重复）。
+// 队列条目 → startSessionTurn 的附件载荷：分组本体在 ai-quote.js 的 groupAttachmentsForTurn
+// （手动发送 / 排队冲刷 / 原地编辑三条路共用）。保留这个导出名给测试桩与旧调用方。
 export function queuedAttachmentsPayload(attachments) {
-    const list = Array.isArray(attachments) ? attachments : [];
-    return {
-        images: list.filter((att) => att && att.kind === 'image'),
-        videos: list.filter((att) => att && att.kind === 'video'),
-        texts: list.filter((att) => att && att.kind !== 'image' && att.kind !== 'video' && att.kind !== AI_QUOTE_KIND),
-    };
+    return groupAttachmentsForTurn(attachments);
 }
 
 // 插话（steer）请求模板：只作用于发给模型的请求，落盘与气泡仍是用户原文（见 ai-panel.js buildApiMessages）。
@@ -30,9 +24,25 @@ export function formatSteerMessage(text) {
 
 // 队列 item id 用字符串：跨端合并按 id 去重（自增数字在两端会撞号）。
 let queueItemSeq = 0;
+let queueItemOrderSeq = 0;
 function nextQueueItemId() {
     queueItemSeq += 1;
     return 'q_' + Date.now() + '_' + queueItemSeq;
+}
+function nextQueueItemOrder() {
+    queueItemOrderSeq += 1;
+    return queueItemOrderSeq;
+}
+function queueItemOrder(item) {
+    const seq = Number(item && item.seq);
+    return Number.isFinite(seq) && seq > 0 ? seq : 0;
+}
+function compareQueueItemOrder(a, b) {
+    const aSeq = queueItemOrder(a);
+    const bSeq = queueItemOrder(b);
+    // 新条目用 seq 定序；旧快照没有 seq 时回落 ts，保证旧数据仍可恢复。
+    if (aSeq && bSeq) return aSeq - bSeq;
+    return (Number(a && a.ts) || 0) - (Number(b && b.ts) || 0);
 }
 
 // ---------- 重启恢复（localStorage 轻量快照） ----------
@@ -57,18 +67,23 @@ export function persistSafeItem(item) {
         attachments: (item.attachments || []).filter((att) => att && att.kind !== 'image' && att.kind !== 'video'),
         delivery: item.delivery === 'steer' ? 'steer' : 'queue',
         ts: Number(item.ts) || 0,
+        seq: Number(item.seq) || 0,
         roundId: item.roundId || '',
     };
 }
 
-// 从快照列表挑出可恢复的条目：剔除失效（无 id / 无会话 / 空正文、会话已删除或归档）
+// 从快照列表挑出可恢复的条目：剔除失效（无 id / 无会话 / 无正文且无可恢复附件、会话已删除或归档）
 // 与内存里已有的（双窗口先后恢复同一批时按 id 去重）。纯函数，便于单测。
 export function restorableQueueItems(list, existingIds, sessionLookup) {
     const seen = existingIds instanceof Set ? existingIds : new Set(existingIds || []);
     const out = [];
     for (const item of Array.isArray(list) ? list : []) {
         if (!item || !item.id || seen.has(item.id)) continue;
-        if (!item.sessionId || typeof item.text !== 'string' || !item.text.trim()) continue;
+        if (!item.sessionId) continue;
+        const hasText = typeof item.text === 'string' && item.text.trim().length > 0;
+        const hasRestorableAttachment = Array.isArray(item.attachments) && item.attachments.some(
+            (att) => att && att.kind !== 'image' && att.kind !== 'video');
+        if (!hasText && !hasRestorableAttachment) continue;
         if (typeof sessionLookup === 'function' && !sessionLookup(item.sessionId)) continue;
         seen.add(item.id);
         out.push(item);
@@ -104,6 +119,7 @@ export function createQueueModel(options) {
             attachments: (payload.attachments || []).slice(),
             delivery: payload.delivery === 'steer' ? 'steer' : 'queue',
             ts: Date.now(),
+            seq: nextQueueItemOrder(),
             roundId: payload.roundId || '',
         };
     }
@@ -185,24 +201,33 @@ export function createQueueModel(options) {
             items = items.filter((item) => !taken.includes(item));
             return taken;
         },
-        // drain 后预算超限的回滚：按时间顺序放回同会话队列项之间（保持 FIFO），并改投 queue。
+        // drain 后预算超限的回滚：按入队顺序放回同会话队列项之间（保持 FIFO），并改投 queue。
         restoreItems(list, delivery = 'queue') {
             const next = delivery === 'steer' ? 'steer' : 'queue';
             const restored = (list || []).slice();
             if (!restored.length) return;
             for (const item of restored) item.delivery = next;
             const sessionId = restored[0].sessionId;
-            const lastTs = restored.reduce((max, item) => Math.max(max, Number(item.ts) || 0), 0);
-            // 放到「同会话第一条更晚入队的消息」之前；没有更晚的就落到队尾。
-            // 不同会话之间的相对位置不影响消费（flush 按会话取队首）。
-            let insertAt = items.length;
-            for (let i = 0; i < items.length; i++) {
-                if (items[i].sessionId === sessionId && (Number(items[i].ts) || 0) > lastTs) {
-                    insertAt = i;
-                    break;
+            // 新条目按 seq 定序，避免同毫秒 ts 相同时误插；旧快照没有 seq 时保持原回落逻辑。
+            const useSeq = restored.every((item) => queueItemOrder(item) > 0);
+            if (useSeq) restored.sort((a, b) => queueItemOrder(a) - queueItemOrder(b));
+            // 逐条归位，不能把整批插到最后一个回滚项之前——否则 q1,steerA,q2,steerB
+            // drain 后会变成 q1,q2,steerA,steerB，破坏原始交错顺序。
+            for (const item of restored) {
+                let insertAt = items.length;
+                for (let i = 0; i < items.length; i++) {
+                    if (items[i].sessionId !== sessionId) continue;
+                    const existingSeq = queueItemOrder(items[i]);
+                    const later = useSeq && existingSeq > 0
+                        ? existingSeq > queueItemOrder(item)
+                        : (Number(items[i].ts) || 0) > (Number(item.ts) || 0);
+                    if (later) {
+                        insertAt = i;
+                        break;
+                    }
                 }
+                items.splice(insertAt, 0, item);
             }
-            items.splice(insertAt, 0, ...restored);
         },
         fallbackSteerToQueue(sessionId) {
             let changed = false;
@@ -231,7 +256,14 @@ export function createQueueModel(options) {
         restore(restored) {
             const list = (Array.isArray(restored) ? restored : []).filter((item) => item && item.id && item.sessionId);
             if (!list.length) return false;
-            for (const item of list) items.push(item);
+            // 新快照带 seq，恢复时按 seq 排序；旧快照没有 seq 时保留原数组顺序，避免破坏旧数据。
+            const ordered = list.every((item) => queueItemOrder(item) > 0)
+                ? list.slice().sort(compareQueueItemOrder)
+                : list;
+            for (const item of ordered) {
+                items.push(item);
+                queueItemOrderSeq = Math.max(queueItemOrderSeq, queueItemOrder(item));
+            }
             return true;
         },
         // 跨端同步快照（深拷贝：改快照不影响队列本体）。
@@ -263,6 +295,7 @@ export function createAIMessageQueue(ctx) {
         },
     });
     const interjectPending = new Set();  // sessionId：该会话有一条「抢占」消息待优先发送
+    const flushingSessions = new Set();  // sessionId：该会话正在冲刷，重入直接返回，避免并发取队首
     let draggingQueueId = '';            // 队列行拖动排序中的 item id（仅本模块内使用）
     let queueHeightAnim = null;          // 当前队列高度补间动画：新渲染先 cancel 旧的，避免状态竞态
     const streams = ctx.streams;
@@ -282,28 +315,23 @@ export function createAIMessageQueue(ctx) {
     const captureComposerMessage = ctx.captureComposerMessage;
     const handleSlashText = ctx.handleSlashText;
     const stopGeneration = ctx.stopGeneration;
-    const renderAttachments = ctx.renderAttachments;
-    const resizeInput = ctx.resizeInput;
-    const submitText = ctx.submitText;
-    const updateSendState = ctx.updateSendState;
     const currentPendingAskEntry = ctx.currentPendingAskEntry;
     const getAttachments = ctx.getAttachments;
-    const setAttachments = ctx.setAttachments;
     const getDismissedPlanApproval = ctx.getDismissedPlanApproval;
     const setDismissedPlanApproval = ctx.setDismissedPlanApproval;
     const getStream = ctx.getStream;
     const videoSteerAllowed = ctx.videoSteerAllowed;
-    // 后台冲刷依赖（2026-11-19 起）：会话查询 / 起轮内核 / 未读标记。
-    // 旧调用方（测试桩）没传 startSessionTurn 时后台路径降级为「不发送、留队」。
+    // 起轮依赖（所有会话共用一条路径）：会话查询 / 内核起轮 / 未读标记 / 失败文案。
+    // 旧调用方（测试桩）没传 startSessionTurn 时降级为「不发送、留队」。
     const sessionById = typeof ctx.sessionById === 'function' ? ctx.sessionById : null;
     const startSessionTurn = typeof ctx.startSessionTurn === 'function' ? ctx.startSessionTurn : null;
     const setSessionUnread = typeof ctx.setSessionUnread === 'function' ? ctx.setSessionUnread : null;
-    // 后台队列消息被内核预检拦下（over_budget）时的兜底钩子：panel 注入 maybeAutoCompact，
-    // 让「后台会话 + 队列消息塞不下」也能自动腾地方（与手动路径 autoCompactOnGateBlocked 对称）。
+    // 失败文案单一来源在 panel（turnStartFailureText），queued=true 时它负责「留在队列」措辞；
+    // 队列侧不另写一套 reason → 人话映射。
+    const describeTurnFailure = typeof ctx.describeTurnFailure === 'function' ? ctx.describeTurnFailure : null;
+    // 内核预检拦下（over_budget）时的兜底钩子：panel 注入 maybeAutoCompact，
+    // 让「队列消息塞不下」也能自动腾地方（与手动路径 autoCompactOnGateBlocked 对称）。
     const onQueueOverBudget = typeof ctx.onQueueOverBudget === 'function' ? ctx.onQueueOverBudget : null;
-    // 冲刷走输入区代发时会瞬态回填文本：起轮收口 / 失败收尾都要作废会话草稿，防止「切走时的
-    // 草稿保存」把瞬态文本沉淀成草稿、切回时复活出已发出的消息（2026-11-22 实测）。未注入时跳过。
-    const dropComposerDraft = typeof ctx.dropComposerDraft === 'function' ? ctx.dropComposerDraft : null;
 
     // 会话查询：显式 id 优先；没注入 sessionById 时退回 currentSession（单会话测试桩）。
     function sessionOf(sessionId) {
@@ -583,8 +611,14 @@ export function createAIMessageQueue(ctx) {
             const anim = el.queue.animate(heightKeyframes(oldHeight, newHeight), LAYOUT_MOTION_OPTIONS);
             queueHeightAnim = anim;
             const finish = () => {
-                if (queueHeightAnim === anim) queueHeightAnim = null;
-                if (nowHidden) el.queue.classList.add('hidden');
+                const stale = queueHeightAnim !== anim;
+                if (!stale) queueHeightAnim = null;
+                // cancel 事件是异步排队的：闭包里的 nowHidden 可能已经过期
+                //（期间删空又快速入队）。只有「仍是当前动画」且「此刻队列真的为空」
+                // 才补 hidden，否则会把有消息的队列一起藏掉。
+                if (nowHidden && !stale && !el.queue.querySelector('[data-queue-id]')) {
+                    el.queue.classList.add('hidden');
+                }
                 positionOverlays();
             };
             anim.addEventListener('finish', finish, {once: true});
@@ -824,40 +858,19 @@ export function createAIMessageQueue(ctx) {
         setTimeout(() => { flushMessageQueue(sessionId, {fromRetry: true}); }, 2500);
     }
 
-    // 当前会话：仍走输入区（用户看得见地发），失败回插队列。
-    async function flushThroughComposer(session, item, opts) {
-        // 排队项已离开草稿语义：冲刷入口先作废该会话草稿，之后瞬态回填的文本不再被
-        // 「切走时的草稿保存」沉淀（成功路径由 submitText 的 onStarted 再兜一次）。
-        if (dropComposerDraft) dropComposerDraft(session.id);
-        setAttachments((item.attachments || []).map((att) => ({...att})));
-        renderAttachments();
-        if (el.input) el.input.value = item.text || '';
-        resizeInput();
-        // preserveScroll：冲刷可能发生在用户上翻阅读时（本轮结束的瞬间），不抢滚动位置；
-        // 用户本来贴底的话 stickBottom 仍为 true，keepScroll 渲染照常贴底跟随。
-        const ok = await submitText(item.text || '', null, {preserveScroll: true});
-        if (ok) return;
-        restoreQueuedItem(session, item);
-        if (el.input) el.input.value = '';
-        setAttachments([]);
-        renderAttachments();
-        resizeInput();
-        // 失败收尾：输入区已清空、消息回到队列——期间被切走保存下来的草稿一并作废
-        if (dropComposerDraft) dropComposerDraft(session.id);
-        renderMessageQueue();
-        updateSendState();
-        scheduleFlushRetry(session.id, opts);
-    }
-
-    // 后台会话（用户切走了）：走会话级内核起轮，不碰输入区、不刷前台视图。
-    // 2026-11-19 修：此处原先是「目标不是当前会话就直接 return」，后台排队消息要等用户
-    // 切回来才发（方案 docs/unfinished-plans/ai-queue-background-flush.md 方案 A）。
-    async function flushInBackground(session, item, opts) {
+    // 排队项 → 内核起轮：**所有会话只有这一条发送路径**（当前会话与后台会话完全等价）。
+    // 历史上这里分两条：当前会话先把文字灌回输入区再 submitText 代发，后台会话直接起轮
+    // （方案 A，2026-11-19）。代发没提供任何发送语义——视图渲染在内核里按 viewed 判定
+    // （ai-panel.js startSessionTurnInner），它只多做了「写 UI → 发 → 自己擦掉」的自偿还，
+    // 并留下「await 窗口里切走会话 → 文字留在别的会话输入框」的隐患。已按方案 B 统一，
+    // 依据 docs/finished-plans/ai-queue-background-flush.md §4.2 / §10。
+    async function dispatchQueuedItem(session, item, opts) {
         if (!startSessionTurn) {
             // 没接内核（测试桩 / 旧装配）：不发送也不丢，留队等下次触发
             restoreQueuedItem(session, item);
             return;
         }
+        // 引用前缀与附件载荷和手动发送同一口径：引用已进正文，不能再当附件送一遍。
         const quoteMarkup = quoteMarkupFromAttachments(item.attachments || []);
         let text = String(item.text || '');
         if (quoteMarkup) text = text ? quoteMarkup + '\n\n' + text : quoteMarkup;
@@ -865,6 +878,7 @@ export function createAIMessageQueue(ctx) {
         try {
             result = await startSessionTurn(session, text, {
                 attachments: queuedAttachmentsPayload(item.attachments),
+                // 冲刷不是用户主动发送：绝不拿它去截断用户正在原地编辑的那条（§5 唤醒防护）
                 allowPendingEdit: false,
                 truncateAt: null,
                 preserveScroll: true,
@@ -879,43 +893,37 @@ export function createAIMessageQueue(ctx) {
             // flushMessageQueue 会自动重发（panel 侧压缩完成路径已有冲刷，闭环不丢消息）。
             onQueueOverBudget(session);
         }
-        reportBackgroundFlushFailure(session, result);
+        reportFlushFailure(session, result);
         // 失败都排一次重试（fromRetry 防无限打转）：busy 是流注册 / 压缩的时序差，
         // 其余是租约 / 写盘的瞬态失败，2.5s 后一次自愈窗口足够。
         scheduleFlushRetry(session.id, opts);
     }
 
-    // 后台发送失败要让用户看得见：状态栏一句话 + 会话未读标记（内容仍留在队列，不丢）。
-    function reportBackgroundFlushFailure(session, result) {
+    // 发送失败要让用户看得见：状态栏一句话 + 会话未读标记（内容仍留在队列，不丢）。
+    // 文案由 panel 的 describeTurnFailure 给（与手动发送同一张表），队列侧不再另维护一份。
+    function reportFlushFailure(session, result) {
         const reason = (result && result.reason) || 'error';
         if (reason === 'busy') return; // 纯时序差：不打扰用户，等重试
-        const title = session.title || '后台会话';
-        let detail;
-        if (reason === 'over_budget') {
-            detail = '上下文已超阈：消息仍留在「' + title + '」的队列，切回压缩后再发送';
-        } else if (reason === 'archived') {
-            detail = '「' + title + '」已归档：排队消息未发送';
-        } else if (reason === 'other_window' || reason === 'lease_failed') {
-            detail = '「' + title + '」正被另一个窗口使用：排队消息留队稍后重试';
-        } else {
-            detail = '「' + title + '」的排队消息未能发出（' + reason + '），已留在队列';
-        }
+        const detail = (describeTurnFailure ? describeTurnFailure(result, session) : '')
+            || '排队消息未能发出（' + reason + '），已留在队列';
         flash(detail, true);
-        // B 级：后台会话的排队消息没发出去，用户不看状态栏就会漏掉（内容仍在队列，不丢）。
+        // B 级：排队消息没发出去，用户不看状态栏就会漏掉（内容仍在队列，不丢）。
         notifyFailure('排队消息未发送', detail, {key: 'queue-flush-' + reason, kind: 'error', sessionId: session.id});
         if (setSessionUnread) setSessionUnread(session, 'done');
     }
 
-    // 冲刷排队消息（一轮一条，队首优先）。当前会话走输入区代发，后台会话走内核起轮。
+    // 冲刷排队消息（一轮一条，队首优先）：取项 → 内核起轮，没有第二套发送路径。
     // opts.fromRetry：失败自动重试的那次调用——防止重试自身失败后再排下一次。
     async function flushMessageQueue(sessionId, opts) {
-        const taken = takeQueuedItem(sessionId);
-        if (!taken) return;
-        const viewing = typeof currentSession === 'function' ? currentSession() : null;
-        if (viewing && viewing.id === sessionId) {
-            return flushThroughComposer(taken.session, taken.item, opts);
+        if (!sessionId || flushingSessions.has(sessionId)) return;
+        flushingSessions.add(sessionId);
+        try {
+            const taken = takeQueuedItem(sessionId);
+            if (!taken) return;
+            return await dispatchQueuedItem(taken.session, taken.item, opts);
+        } finally {
+            flushingSessions.delete(sessionId);
         }
-        return flushInBackground(taken.session, taken.item, opts);
     }
 
 

@@ -1,18 +1,17 @@
-// ai-agent-notices.js：会话信箱（后台注入的唯一通道）。
-// 一条管道 N 个发送方：子代理结算 / 提问（B/D）、支线结论带回（F2）、会话间投递（H）、
-// 定时任务与计时器（I，复用同一注入内核）。三态投递对齐 dsh 的 notifySettlement：
-//   目标忙（流式 / 压缩中）→ 入队，下一轮边界由消费点注入；
-//   目标空闲 → startSessionTurn 唤醒新轮（不切用户视图、不强开面板）；
-//   唤醒被拒（无模型配置 / 预算超阈）→ 降级为未读卡片，内容不清空。
-// 唤醒单飞：并发通知只有第一个真正执行唤醒，后来者发现已有流即转排队（§4.4）。
+// ai-agent-notices.js：会话信箱（后台注入的唯一通道）与可靠投递状态机。
+// 一条管道 N 个发送方：子代理结算 / 提问、支线结论、会话投递、定时任务 / 计时器。
+// 每会话维护 pending / inFlight / timer / generation：忙则排队，闲则起轮；异步失败回填后
+// 持续低频重试，终态失败停泊可见；清空/删除作废在飞结果，绝不依赖用户手动发送兜底。
 import {normalizeAppMessage} from '../security/ai-app-message.js';
 import {newId} from '../../core/id.js';
-import {createSessionBusyProbe} from '../session/ai-session-scope.js';
+import {AI_CHAT_INPUT_LIMIT} from '../core/ai-constants.js';
 
-// 信箱深度（未消费条数）上限：满则拒收回执——会话投递可丢，结算 / 提问只合并不丢弃（§4.12.4）。
+// 信箱深度（pending 条数）上限：满则拒收回执——会话投递可丢，结算 / 提问只合并不丢弃（§4.12.4）。
 export const NOTICE_DEPTH_MAX = 10;
 // 单次边界最多消费几条：多条合并为一条注入，避免一轮上下文被通知刷屏。
 export const NOTICE_FOLD_MAX = 5;
+// 可恢复失败的持续低频重试：前五次快速退避，之后保持 30 秒间隔。
+export const NOTICE_RETRY_DELAYS = [800, 2000, 5000, 10000, 30000];
 // 会话间投递的扇出上限（工具与用户选择器同限）：闲目标投递即唤醒，通配等于唤醒风暴。
 export const SESSION_SEND_MAX = 10;
 
@@ -132,18 +131,8 @@ export function createAIAgentNotices(ctx) {
     const sessionById = ctx.sessionById;
     const streamOf = ctx.streamOf;
     const compactOf = ctx.compactOf;
-    // 「忙」判定与面板同源（ai-session-scope.js 的探针）。sessionStateOf 仍分开报
-    // 'streaming' / 'compacting'：投递回执要区分这两种状态，不能合并成一个 busy。
-    //
-    // compactStartingOf 必须接进来：`compactStarting` 是**全局**的「压缩正在准备」窗口
-    // （不属于任何单会话），起轮内核会因它拒轮。不接的话，deliverAgentNotice 传
-    // `{includeCompactStarting: true}` 也读不到它 → 仍会误判空闲 → 唤醒被拒 → 报
-    // 「投递失败：busy」（实测 2026-11-27）。
-    const isSessionBusy = createSessionBusyProbe({
-        streamOf,
-        compactOf,
-        compactStartingOf: typeof ctx.compactStartingOf === 'function' ? ctx.compactStartingOf : () => false,
-    });
+    // 后台自动起轮的唯一门禁由 panel 注入：流 / 压缩 / 压缩准备 / 资源重读 / 起轮占位同源。
+    const canAutoStartTurn = ctx.canAutoStartTurn;
     const startSessionTurn = ctx.startSessionTurn;
     const currentSession = ctx.currentSession;
     const isOpen = ctx.isOpen;
@@ -152,49 +141,82 @@ export function createAIAgentNotices(ctx) {
     const setSessionUnread = ctx.setSessionUnread;
     const notifyDesktop = ctx.notifyDesktop;
     const flash = ctx.flash;
-    // 诊断日志（可缺省）：busy 退回队列这类「预期内的等待」只留痕不打扰用户。
+    const onOverBudget = typeof ctx.onOverBudget === 'function' ? ctx.onOverBudget : null;
+    // 诊断日志（可缺省）：只在投递状态变化时留痕，不记录每次重试 tick。
     const logFrontend = typeof ctx.logFrontend === 'function' ? ctx.logFrontend : null;
     const persistSessions = ctx.persistSessions;
     const getPendingEdit = ctx.getPendingEdit || (() => null);
     const getSessions = ctx.getSessions || (() => []);
     const workspaceKeyOf = ctx.workspaceKeyOf || (() => '');
-    // 信箱增减通知（头部「信箱」胶囊角标）：入队 / 消费 / 清空都调，可缺省（测试桩不传）。
     const onChanged = typeof ctx.onChanged === 'function' ? ctx.onChanged : null;
     function notifyChanged() {
         if (onChanged) onChanged();
     }
-    // 等待原语（ai-inbox-wait.js）：入队即唤醒正在 wait_agent 的调用方。
-    // 只表示「有新东西排队」，不在这里注入——注入仍在轮边界（foldNotices / wakeWith）。
     const inboxWaiters = ctx.inboxWaiters;
 
-    // sessionId -> notice[]（入队顺序即消费顺序；urgent 插队首，见 §4.12.2）
-    const notices = new Map();
-    // 唤醒单飞：正在执行 startSessionTurn 的会话（并发通知不再重复唤醒）
-    const waking = new Set();
+    // sessionId -> DeliveryRecord。pending 与 inFlight 都是“尚未进入模型上下文”的通知。
+    const deliveries = new Map();
+    let sequence = 0;
 
-    function listOf(sessionId) {
-        return notices.get(sessionId) || [];
+    function getRecord(sessionId) {
+        let record = deliveries.get(sessionId);
+        if (!record) {
+            record = {
+                pending: [],
+                inFlight: null,
+                timer: 0,
+                attempt: 0,
+                generation: 0,
+                token: 0,
+                lastBlock: '',
+                parkedReason: '',
+                lastNotifiedReason: '',
+                overBudgetTriggered: false,
+                nextRetryAt: 0,
+            };
+            deliveries.set(sessionId, record);
+        }
+        return record;
     }
 
     function pendingCount(sessionId) {
-        const list = notices.get(sessionId);
-        return list ? list.length : 0;
+        const record = deliveries.get(sessionId);
+        return record ? record.pending.length : 0;
     }
 
-    // 全局枚举：每个有挂起通知的会话一组（头部「信箱」胶囊 / 弹层的展示源）。
-    // Map 迭代顺序即入队顺序；content 原样给出，弹层自行截断。
+    function outstandingCount(sessionId) {
+        const record = deliveries.get(sessionId);
+        if (!record) return 0;
+        return record.pending.length + (record.inFlight ? record.inFlight.batch.length : 0);
+    }
+
+    function itemView(item, state, record) {
+        return {
+            messageId: item.messageId,
+            kind: item.kind || '',
+            label: item.label || '',
+            content: item.content || '',
+            state,
+            parkedReason: state === 'parked' ? (record.parkedReason || '') : '',
+            blockReason: state === 'queued' ? (record.lastBlock || '') : '',
+            mergedIds: Array.isArray(item.mergedIds) ? item.mergedIds.slice() : [],
+        };
+    }
+
+    // 信箱角标/弹层统计尚未送达的总数；inFlight 也可见，不再从用户视野里短暂消失。
     function listPending() {
         const out = [];
-        for (const [sessionId, list] of notices) {
-            if (!list || !list.length) continue;
-            out.push({
-                sessionId,
-                items: list.map((item) => ({
-                    kind: item.kind || '',
-                    label: item.label || '',
-                    content: item.content || '',
-                })),
-            });
+        for (const [sessionId, record] of deliveries) {
+            if (!record) continue;
+            const pendingState = record.parkedReason
+                ? 'parked'
+                : (!record.inFlight && record.lastBlock === 'editing' ? 'deferred' : 'queued');
+            const items = record.pending.map((item) => itemView(item, pendingState, record));
+            if (record.inFlight) {
+                items.push(...record.inFlight.batch.map((item) => itemView(item, 'in_flight', record)));
+            }
+            if (!items.length) continue;
+            out.push({sessionId, items});
         }
         return out;
     }
@@ -210,34 +232,135 @@ export function createAIAgentNotices(ctx) {
         return normalizeAppMessage({kind: 'subagent', label: '后台通知 · ' + batch.length + ' 条'});
     }
 
-    // 入队。urgent=true 插队首（下一边界最先消费），否则追加队尾。
-    function enqueue(sessionId, notice, urgent) {
-        let list = notices.get(sessionId);
-        if (!list) {
-            list = [];
-            notices.set(sessionId, list);
+    // 合并项保留原始分段，拆批时可在分段边界重组，避免把两条合法通知粘成一条超限停泊项。
+    function ensureParts(item) {
+        if (!Array.isArray(item.parts) || !item.parts.length) {
+            item.parts = [{
+                messageId: item.messageId,
+                content: item.content,
+                ts: item.ts,
+            }];
         }
-        if (urgent) list.unshift(notice);
-        else list.push(notice);
-        notifyChanged();
-        return list.length;
+        return item.parts;
     }
 
-    // 唤醒正在这一会话上 wait_agent 的调用方（它多半就是在等这条）。
+    function itemFromPart(item, part) {
+        return Object.assign({}, item, {
+            content: part.content,
+            ts: part.ts || item.ts,
+            parts: undefined,
+            containerId: item.messageId,
+            part: {messageId: part.messageId, content: part.content, ts: part.ts || item.ts},
+        });
+    }
+
+    function compareNotices(a, b) {
+        if (!!a.urgent !== !!b.urgent) return a.urgent ? -1 : 1;
+        return (Number(a.seq) || 0) - (Number(b.seq) || 0);
+    }
+
+    function sortPending(record) {
+        record.pending.sort(compareNotices);
+    }
+
+    // 入队。urgent 只改变排序，不中断在飞起轮；seq 保证同优先级稳定顺序。
+    function enqueue(sessionId, notice, urgent) {
+        const record = getRecord(sessionId);
+        const item = Object.assign({}, notice, {
+            urgent: !!urgent,
+            seq: Number.isFinite(notice.seq) ? notice.seq : ++sequence,
+        });
+        record.pending.push(item);
+        sortPending(record);
+        notifyChanged();
+        return record.pending.length;
+    }
+
     function notifyWaiters(sessionId) {
         if (inboxWaiters && typeof inboxWaiters.notify === 'function') inboxWaiters.notify(sessionId, 'notice');
     }
 
-    // 把通知折叠成会话里的 user 消息（工具轮边界用：此刻流还在跑，不能起新轮）。
-    // skipRender：起轮前折叠时调用方紧接着会整面渲染，这里再刷一次纯属重复重建。
+    function takeBatch(record, limit, maxChars) {
+        sortPending(record);
+        const budget = Number.isFinite(maxChars) ? maxChars : AI_CHAT_INPUT_LIMIT;
+        const maxItems = limit || NOTICE_FOLD_MAX;
+        const batch = [];
+        const remaining = [];
+        let full = false;
+
+        for (const item of record.pending) {
+            if (full) {
+                remaining.push(item);
+                continue;
+            }
+            const parts = ensureParts(item);
+            const rest = [];
+            for (let i = 0; i < parts.length; i++) {
+                if (batch.length >= maxItems) {
+                    full = true;
+                    rest.push(...parts.slice(i));
+                    break;
+                }
+                const partItem = itemFromPart(item, parts[i]);
+                const candidate = batch.length ? noticeText(batch.concat(partItem)) : partItem.content;
+                // 单段本身超限时仍整段交付，由起轮内核以 too_long 明确拒收并停泊；
+                // 多条/多段则减少本批条数，绝不把原本合法的分段粘成超限单条。
+                if (batch.length && candidate.length > budget) {
+                    full = true;
+                    rest.push(...parts.slice(i));
+                    break;
+                }
+                batch.push(partItem);
+            }
+            if (rest.length) {
+                if (rest.length === parts.length) {
+                    remaining.push(item);
+                } else {
+                    remaining.push(Object.assign({}, item, {
+                        content: rest.map((part) => part.content).join('\n\n———\n\n'),
+                        parts: rest,
+                        containerId: item.messageId,
+                    }));
+                }
+            }
+        }
+        record.pending = remaining;
+        return batch;
+    }
+
+    function clearRecordTimer(record) {
+        if (!record || !record.timer) return;
+        clearTimeout(record.timer);
+        record.timer = 0;
+        record.nextRetryAt = 0;
+    }
+
+    function resetRetryState(record) {
+        clearRecordTimer(record);
+        record.attempt = 0;
+        record.lastBlock = '';
+        record.nextRetryAt = 0;
+    }
+
+    function maybeDropRecord(sessionId, record) {
+        if (record.pending.length || record.inFlight || record.timer) return;
+        if (deliveries.get(sessionId) === record) deliveries.delete(sessionId);
+    }
+
+    function logDelivery(sessionId, state, reason, record) {
+        if (!logFrontend) return;
+        logFrontend('debug', '[通知] sessionId=' + sessionId + ' state=' + state +
+            ' reason=' + (reason || '') + ' pending=' + record.pending.length +
+            ' inFlight=' + (record.inFlight ? 1 : 0) + ' attempt=' + record.attempt);
+    }
+
+    // 把 pending 通知折叠成会话里的 user 消息。工具轮边界 / 用户起轮前共用。
     function foldIntoMessages(session, limit, skipRender) {
-        const list = listOf(session.id);
-        if (!list.length) return 0;
-        const batch = list.splice(0, Math.min(limit || NOTICE_FOLD_MAX, list.length));
-        if (!list.length) notices.delete(session.id);
-        // 队列被消费：清掉重试状态。否则残留的 timer 会在稍后再跑一次空 flush，
-        // 且 attempt 计数会让下一条新通知少拿重试预算（子代理审查 #2）。
-        if (!list.length) clearRetry(session.id);
+        const record = deliveries.get(session.id);
+        if (!record || !record.pending.length) return 0;
+        const batch = takeBatch(record, limit);
+        if (record.pending.length) armRetry(session.id);
+        else clearRetry(session.id);
         notifyChanged();
         const ts = Date.now();
         session.messages.push({
@@ -246,98 +369,217 @@ export function createAIAgentNotices(ctx) {
             ts,
             turnStartedAt: ts,
             app: noticeApp(batch),
-            // notice 标记：注入类消息，buildApiMessages 可按需折叠；目前只用于识别与统计
             notice: true,
         });
+        maybeDropRecord(session.id, record);
         if (!skipRender && isOpen() && currentSession() === session) renderMessages(true);
         persistSessions();
         return batch.length;
     }
 
-    // 唤醒新轮：空闲会话的唯一注入方式（不切用户视图、不强开面板）。
-    function wakeWith(session, limit, meta) {
-        if (waking.has(session.id)) return {woke: false, reason: 'waking'};
-        const list = listOf(session.id);
-        if (!list.length) return {woke: false, reason: 'empty'};
-        const batch = list.splice(0, Math.min(limit || NOTICE_FOLD_MAX, list.length));
-        if (!list.length) notices.delete(session.id);
+    const QUIET_FAILURE_REASONS = new Set(['busy', 'waking', 'starting', 'reloading', 'other_window', 'cancelled']);
+    const TERMINAL_FAILURE_REASONS = new Set([
+        'no_profile', 'no_backend', 'archived', 'load_failed',
+        'too_long', 'images_too_large', 'video_protocol',
+    ]);
+
+    function failureText(session, reason) {
+        const title = (session && session.title) || '新会话';
+        if (reason === 'over_budget') return '上下文已超阈，后台通知暂存在信箱：' + title;
+        if (reason === 'other_window') return '后台通知等待另一窗口释放会话：' + title;
+        return '后台通知未能唤醒会话「' + title + '」：' + reason;
+    }
+
+    function notifyFailureOnce(sessionId, session, reason, record) {
+        if (QUIET_FAILURE_REASONS.has(reason)) return;
+        if (record.lastNotifiedReason === reason) return;
+        record.lastNotifiedReason = reason;
+        const text = failureText(session, reason);
+        if (typeof flash === 'function') flash(text, true);
+        if (typeof notifyDesktop === 'function') {
+            notifyDesktop({kind: 'error', title: 'AI 后台通知投递失败', body: text, sessionId});
+        }
+    }
+
+    function parkDelivery(sessionId, session, reason, record) {
+        clearRecordTimer(record);
+        record.parkedReason = reason;
+        record.lastBlock = reason;
+        notifyFailureOnce(sessionId, session, reason, record);
         notifyChanged();
-        waking.add(session.id);
-        // 同步抛错保护：batch 已被 splice 出队列（上面若删过 entry 也算丢了），
-        // 而 `waking` 若不清就**永久**残留——该会话之后每次唤醒都被第 256 行挡成
-        // 'waking'，通知全部滞留到用户手动发消息为止。startSessionTurn 是 async
-        // （throw 会变 rejection 被下面兜住），但参数求值（noticeText / noticeApp）
-        // 发生在调用之前，属于同步段。
+        logDelivery(sessionId, 'parked', reason, record);
+    }
+
+    function restoreBatch(record, batch) {
+        const groups = new Map();
+        for (const item of batch) {
+            if (!item.containerId || !item.part) {
+                record.pending.push(item);
+                continue;
+            }
+            let group = groups.get(item.containerId);
+            if (!group) {
+                group = {template: item, parts: []};
+                groups.set(item.containerId, group);
+            }
+            group.parts.push(item.part);
+        }
+        for (const [containerId, group] of groups) {
+            const existing = record.pending.find((item) => item.messageId === containerId && Array.isArray(item.parts));
+            if (existing) {
+                existing.parts = group.parts.concat(existing.parts);
+                existing.content = existing.parts.map((part) => part.content).join('\n\n———\n\n');
+            } else {
+                record.pending.push(Object.assign({}, group.template, {
+                    content: group.parts.map((part) => part.content).join('\n\n———\n\n'),
+                    parts: group.parts,
+                    containerId,
+                }));
+            }
+        }
+        sortPending(record);
+    }
+
+    function settleFailure(sessionId, token, result, error) {
+        const record = deliveries.get(sessionId);
+        if (!record || !record.inFlight || record.inFlight.token !== token) return;
+        const session = sessionById(sessionId);
+        const batch = record.inFlight.batch;
+        record.inFlight = null;
+        const reason = String((result && result.reason) || (error ? 'rejected' : 'unknown'));
+
+        if (reason === 'cancelled') {
+            notifyChanged();
+            maybeDropRecord(sessionId, record);
+            return;
+        }
+        if (reason === 'session_deleted' || reason === 'gone' || !session) {
+            record.generation += 1;
+            deliveries.delete(sessionId);
+            notifyChanged();
+            return;
+        }
+
+        restoreBatch(record, batch);
+        record.lastBlock = reason;
+        if (typeof setSessionUnread === 'function') setSessionUnread(session, 'done');
+        notifyChanged();
+
+        if (reason === 'over_budget') {
+            if (onOverBudget && !record.overBudgetTriggered) {
+                record.overBudgetTriggered = true;
+                let started = false;
+                try { started = !!onOverBudget(session); } catch (e) { started = false; }
+                if (started) {
+                    armRetry(sessionId);
+                    logDelivery(sessionId, 'pending', 'over_budget_compacting', record);
+                    return;
+                }
+            }
+            parkDelivery(sessionId, session, reason, record);
+            return;
+        }
+
+        if (TERMINAL_FAILURE_REASONS.has(reason)) {
+            parkDelivery(sessionId, session, reason, record);
+            return;
+        }
+
+        record.parkedReason = '';
+        armRetry(sessionId);
+        logDelivery(sessionId, 'pending', reason, record);
+    }
+
+    function settleSuccess(sessionId, token) {
+        const record = deliveries.get(sessionId);
+        if (!record || !record.inFlight || record.inFlight.token !== token) return;
+        record.inFlight = null;
+        resetRetryState(record);
+        record.parkedReason = '';
+        record.lastNotifiedReason = '';
+        record.overBudgetTriggered = false;
+        notifyChanged();
+        logDelivery(sessionId, 'delivered', '', record);
+        if (record.pending.length) kick(sessionId);
+        else maybeDropRecord(sessionId, record);
+    }
+
+    // 唯一投递状态机入口：入队、轮末、压缩结束、切会话、重试 timer 都调用它。
+    function kick(sessionId) {
+        const id = String(sessionId || '');
+        const record = getRecord(id);
+        const session = sessionById(id);
+        if (!session) {
+            deliveries.delete(id);
+            return {ok: false, accepted: false, state: 'rejected', reason: 'gone', woke: false};
+        }
+        if (!record.pending.length && !record.inFlight) {
+            clearRetry(id);
+            maybeDropRecord(id, record);
+            return {ok: false, accepted: false, state: 'empty', reason: 'empty', woke: false};
+        }
+        if (record.inFlight) {
+            return {ok: true, accepted: true, state: 'in_flight', reason: 'waking', woke: false};
+        }
+
+        let gate = {ok: false, reason: 'gate_error'};
+        try { gate = canAutoStartTurn(id); } catch (e) { gate = {ok: false, reason: 'gate_error'}; }
+        if (!gate || !gate.ok) {
+            const reason = (gate && gate.reason) || 'busy';
+            record.lastBlock = reason;
+            armRetry(id);
+            return {ok: true, accepted: true, state: 'queued', reason, blockReason: reason, woke: false};
+        }
+
+        const editing = getPendingEdit();
+        if (editing && editing.index != null && currentSession() === session) {
+            record.lastBlock = 'editing';
+            armRetry(id);
+            return {ok: true, accepted: true, state: 'deferred', reason: 'editing', blockReason: 'editing', woke: false};
+        }
+
+        const batch = takeBatch(record, NOTICE_FOLD_MAX);
+        const token = ++record.token;
+        record.inFlight = {batch, token, startedAt: Date.now()};
+        record.parkedReason = '';
+        clearRecordTimer(record);
+        notifyChanged();
+        logDelivery(id, 'in_flight', '', record);
+
         let run;
         try {
             run = startSessionTurn(session, noticeText(batch), {
                 app: noticeApp(batch),
                 allowPendingEdit: false,
                 truncateAt: null,
-                // 后台唤醒不抢用户滚动位置：贴底照常跟随，上翻阅读时保持原位（否则滚动条突然置底）
                 preserveScroll: true,
+                // 清空/删除/归档使 DeliveryRecord 失效后，起轮内核在写消息前必须中止。
+                isCancelled: () => deliveries.get(id) !== record || !record.inFlight || record.inFlight.token !== token,
             });
         } catch (e) {
-            waking.delete(session.id);
-            for (let i = batch.length - 1; i >= 0; i--) enqueue(session.id, batch[i], true);
-            notifyChanged();
-            throw e;
+            settleFailure(id, token, {ok: false, reason: 'sync_error'}, e);
+            return {ok: true, accepted: true, state: 'in_flight', reason: 'woke', woke: true};
         }
         Promise.resolve(run).then((result) => {
-            waking.delete(session.id);
-            if (!result || !result.ok) {
-                // 唤醒被拒：内容不清空，退回队列最前，降级为未读卡片，绝不静默丢弃（§4.14.3）。
-                for (let i = batch.length - 1; i >= 0; i--) enqueue(session.id, batch[i], true);
-                setSessionUnread(session, 'done');
-                const reason = (result && result.reason) || 'unknown';
-                // **关键：这里必须武装重试。**
-                // wakeWith 是**同步**返回 `{woke:true}`（startSessionTurn 异步），所以调用方
-                // 的 `if (!woke.woke) scheduleRetry()` 永远不会命中——真正的失败只发生在
-                // 这个异步回调里。不回填后重试 = 消息退回队列后**再没人试**，只能等用户
-                // 手动发消息（实测 bug：「要我给你发消息才会投递」）。
-                scheduleRetry(session.id);
-                // **busy 不是失败**：目标在判定之后、起轮之前开始了新一轮（竞态），消息已退回
-                // 队列且会在下一边界投递。报「投递失败」会让用户以为消息丢了——实测就是这条
-                // 噪音掩盖了真正的问题。这里只留诊断日志，不弹系统通知。
-                if (reason === 'busy' || reason === 'waking') {
-                    if (typeof logFrontend === 'function') {
-                        logFrontend('info', '[通知] 目标正忙，已退回队列并安排重试：' + (session.title || '新会话'));
-                    }
-                    return;
-                }
-                // over_budget / no_profile 这类是**终态失败**：重试用尽也不会好，
-                // 但还是给一次退避机会（比如用户刚补上模型配置），之后放弃并提示。
-                const text = reason === 'over_budget'
-                    ? '上下文已超阈，后台通知暂存在信箱：' + session.title
-                    : '后台通知未能唤醒会话「' + (session.title || '新会话') + '」：' + reason;
-                if (typeof flash === 'function') flash(text, true);
-                notifyDesktop({
-                    kind: 'error',
-                    title: 'AI 后台通知投递失败',
-                    body: text,
-                    sessionId: session.id,
-                });
-            }
-        }).catch((e) => {
-            waking.delete(session.id);
-            // reject 同样会丢 batch：与 .then 的失败分支做同样的回填，绝不静默丢消息。
-            // （子代理报告 #1：这里原先只清 waking，startSessionTurn 任何 reject 都会让
-            //  最多 NOTICE_FOLD_MAX 条通知蒸发，而调用方早已收到 ok:true/woke。）
-            for (let i = batch.length - 1; i >= 0; i--) enqueue(session.id, batch[i], true);
-            notifyChanged();
-            scheduleRetry(session.id);
-            if (typeof logFrontend === 'function') {
-                logFrontend('warn', '[通知] 唤醒异常，已回填队列：' + ((e && e.message) || e));
-            }
-        });
-        return {woke: true, deferred: false, meta};
+            if (result && result.ok) settleSuccess(id, token);
+            else settleFailure(id, token, result, null);
+        }).catch((e) => settleFailure(id, token, null, e));
+        return {ok: true, accepted: true, state: 'in_flight', reason: 'woke', woke: true};
     }
 
     // 唯一投递入口。返回 {ok, reason, woke, messageId}——回执形状与 §4.12.2 的会话投递一致。
     // 同步返回（唤醒在后台跑）：调用方（finalizeSubAgent / 工具执行）不因此阻塞。
+    function receiptStateFor(record, messageId, fallback) {
+        const inFlight = !!(record.inFlight && record.inFlight.batch.some((item) => item.messageId === messageId));
+        return {
+            state: inFlight ? 'in_flight' : (fallback === 'deferred' ? 'deferred' : 'queued'),
+            woke: inFlight,
+        };
+    }
+
     function deliverAgentNotice(session, notice) {
-        if (!session) return {ok: false, reason: 'gone', woke: false};
-        if (session.archivedAt) return {ok: false, reason: 'archived', woke: false};
+        if (!session) return {ok: false, accepted: false, state: 'rejected', reason: 'gone', woke: false};
+        if (session.archivedAt) return {ok: false, accepted: false, state: 'rejected', reason: 'archived', woke: false};
         const item = {
             messageId: notice.messageId || newId('msg-', {sep: '-', suffixLength: 5}),
             kind: String(notice.kind || 'notice'),
@@ -346,142 +588,129 @@ export function createAIAgentNotices(ctx) {
             sender: notice.sender || null,
             ts: Date.now(),
         };
-        if (!item.content.trim()) return {ok: false, reason: 'empty', woke: false};
-        const depth = pendingCount(session.id);
-        if (depth >= NOTICE_DEPTH_MAX) {
-            // 溢出策略区分：会话间投递可拒收（发送方拿回执）；结算 / 提问只合并不丢弃。
-            // session-user 是用户自己写的投递，与模型投递同属「有回执」的一类。
-            if (item.kind === 'session' || item.kind === 'session-user') return {ok: false, reason: 'full', woke: false};
-            const list = listOf(session.id);
-            const last = list[list.length - 1];
-            if (last) {
-                last.content = last.content + '\n\n———\n\n' + item.content;
-                last.merged = (Number(last.merged) || 1) + 1;
-            } else {
-                enqueue(session.id, item, false);
+        if (!item.content.trim()) return {ok: false, accepted: false, state: 'rejected', reason: 'empty', woke: false};
+
+        const record = getRecord(session.id);
+        if (record.pending.length >= NOTICE_DEPTH_MAX) {
+            // 会话投递满箱可拒收；子代理结算/提问只合并不丢弃。
+            if (item.kind === 'session' || item.kind === 'session-user') {
+                return {ok: false, accepted: false, state: 'rejected', reason: 'full', woke: false};
             }
+            let target = null;
+            for (let i = record.pending.length - 1; i >= 0; i--) {
+                if (record.pending[i].kind === item.kind) {
+                    target = record.pending[i];
+                    break;
+                }
+            }
+            let messageId = item.messageId;
+            if (target) {
+                const parts = ensureParts(target);
+                parts.push({messageId: item.messageId, content: item.content, ts: item.ts});
+                target.content = parts.map((part) => part.content).join('\n\n———\n\n');
+                target.merged = (Number(target.merged) || 1) + 1;
+                target.mergedIds = (target.mergedIds || [target.messageId]).concat(item.messageId);
+                messageId = target.messageId;
+            } else {
+                // 满箱且没有同类项：把末项与新通知合成显式合并项，深度不增长，身份可追踪。
+                const index = record.pending.length - 1;
+                const last = record.pending[index];
+                if (last) {
+                    const parts = ensureParts(last).slice().concat({
+                        messageId: item.messageId, content: item.content, ts: item.ts,
+                    });
+                    const merged = Object.assign({}, last, {
+                        messageId: newId('msg-', {sep: '-', suffixLength: 5}),
+                        kind: 'notice',
+                        label: '后台通知 · 合并',
+                        content: parts.map((part) => part.content).join('\n\n———\n\n'),
+                        parts,
+                        sender: null,
+                        ts: Date.now(),
+                        merged: (Number(last.merged) || 1) + 1,
+                        mergedIds: (last.mergedIds || [last.messageId]).concat(item.messageId),
+                    });
+                    record.pending[index] = merged;
+                    messageId = merged.messageId;
+                } else {
+                    enqueue(session.id, item, false);
+                }
+            }
+            // 合并也是新内容：重置预算并立即 kick，不能继续躺在满箱里等用户。
+            record.attempt = 0;
+            record.parkedReason = '';
             notifyWaiters(session.id);
+            const result = kick(session.id);
+            const receipt = receiptStateFor(record, messageId, result.state);
             renderSessionList();
-            return {ok: true, reason: 'merged', messageId: item.messageId, woke: false};
+            return {
+                ok: true, accepted: true,
+                state: receipt.state,
+                reason: 'merged', blockReason: result.blockReason || '',
+                messageId, woke: receipt.woke,
+            };
         }
+
         enqueue(session.id, item, !!notice.urgent);
-        // 新消息入队：重置该会话的重试预算（否则一旦退避用尽，这条新消息也失去自动投递）。
-        // 只在「没有在跑的 timer」时复位，避免打断正在等待中的一次尝试。
-        {
-            const st = retryState.get(session.id);
-            if (!st || !st.timer) scheduleRetry(session.id, {fresh: true});
-        }
-        // 入队即唤醒 wait_agent：内容仍在下面的轮边界注入，这里只让等待方别再睡。
+        record.parkedReason = '';
+        if (!record.timer) record.attempt = 0;
         notifyWaiters(session.id);
-        // 目标忙 → 排队等下一边界；目标空闲 → 立刻唤醒（单飞，冲突则留在队列里）。
-        // **必须带 includeCompactStarting**：起轮内核判忙的条件是
-        // `streamOf || compactOf || compactStarting`，少判 compactStarting 会在「压缩刚启动、
-        // compactOf 还没注册」的窗口里误判成空闲 → 调用 wakeWith → startSessionTurn 返回 busy
-        // → 报「后台通知投递失败：busy」+ 消息退回队列，而之后没人再唤醒它（实测）。
-        if (isSessionBusy(session.id, {includeCompactStarting: true})) {
-            renderSessionList();
-            // 忙：消息已在队列，安排重试（不能只等下一次 finishStream——见重试触发器注释）
-            scheduleRetry(session.id);
-            return {ok: true, reason: 'queued', messageId: item.messageId, woke: false};
-        }
-        // 用户在目标会话处于重发 / 编辑态：本次唤醒改挂队列，避免破坏编辑流（§4.4 唤醒防护）。
-        const editing = getPendingEdit();
-        if (editing && editing.index != null && currentSession() === session) {
-            renderSessionList();
-            // 编辑态是**用户自己的**操作，等用户结束编辑即可；但仍安排重试作为兜底
-            //（用户可能把编辑态放着不管），退避用尽后放弃。
-            scheduleRetry(session.id);
-            return {ok: true, reason: 'deferred', messageId: item.messageId, woke: false};
-        }
-        const woke = wakeWith(session, NOTICE_FOLD_MAX);
-        // 唤醒没成（waking 竞态 / 起轮内核判忙 / 租约被占）→ 消息已回填队列，
-        // 必须有重试源，否则要等用户下次发消息（实测 bug）。
-        if (!woke.woke) scheduleRetry(session.id);
+        const result = kick(session.id);
+        const receipt = receiptStateFor(record, item.messageId, result.state);
         renderSessionList();
-        return {ok: true, reason: woke.woke ? 'woke' : 'queued', messageId: item.messageId, woke: !!woke.woke};
+        return {
+            ok: true, accepted: true,
+            state: receipt.state,
+            reason: receipt.state === 'in_flight' ? 'woke' : (receipt.state === 'deferred' ? 'deferred' : 'queued'),
+            blockReason: result.blockReason || '',
+            messageId: item.messageId,
+            woke: receipt.woke,
+        };
     }
 
     // 消费点 1/2：工具轮边界。流还在跑 → 只折叠进消息，由随后的 startRound 带上。
     function foldNotices(sessionId) {
         const session = sessionById(sessionId);
         if (!session) {
-            notices.delete(sessionId);
+            dropSession(sessionId);
             return 0;
         }
         return foldIntoMessages(session, NOTICE_FOLD_MAX);
     }
 
-    // ---- 重试触发器（2026-11-27）------------------------------------------------
-    // 实测 bug：通知投递时判「忙」→ 消息退回队列 → **再没有任何事件触发投递**，
-    // 只能等用户手动发消息（foldBeforeTurn）才送达。
-    // 根源是「队列里有消息」这件事本身没有唤醒源：finishStream 只在**有流结束**时冲刷，
-    // 而判忙的时刻往往根本没有流（waking 竞态 / 压缩准备窗口 / 起轮内核第二道忙检查）。
-    //
-    // 这里给非空队列补一个自带的重试源：退避重试，用尽后放弃（留未读卡片等用户处理）。
-    // 不做无限轮询——那会把「等一会儿就好」变成持续 CPU 与日志噪音。
-    const NOTICE_RETRY_DELAYS = [800, 2000, 5000, 10000, 20000]; // 累计约 38s
-    const retryState = new Map(); // sessionId -> {attempt, timer}
-
+    // 持续低频重试：可恢复失败不因尝试次数耗尽而永久滞留。每个会话最多一个 timer。
     function clearRetry(sessionId) {
-        const st = retryState.get(sessionId);
-        if (!st) return;
-        if (st.timer) clearTimeout(st.timer);
-        retryState.delete(sessionId);
+        const record = deliveries.get(sessionId);
+        if (record) resetRetryState(record);
     }
 
-    function scheduleRetry(sessionId, opts) {
-        if (!sessionId) return;
-        const st = retryState.get(sessionId) || {attempt: 0, timer: 0};
-        if (st.timer) return;                       // 已有排程，不叠加
-        // 退避用尽：**不能永久毒化**。新消息到达时（opts.fresh）必须重新获得预算，
-        // 否则该会话一旦耗尽 5 次，之后所有通知都失去自动投递能力（子代理审查 #2）。
-        if (st.attempt >= NOTICE_RETRY_DELAYS.length) {
-            if (!(opts && opts.fresh)) return;
-            st.attempt = 0;
-        }
-        const delay = NOTICE_RETRY_DELAYS[st.attempt];
-        st.attempt += 1;
-        st.timer = setTimeout(() => {
-            st.timer = 0;
-            retryState.set(sessionId, st);
+    function armRetry(sessionId) {
+        const id = String(sessionId || '');
+        const record = deliveries.get(id);
+        if (!record || !record.pending.length || record.inFlight || record.parkedReason || record.timer) return;
+        const delay = record.lastBlock === 'other_window'
+            ? 30000
+            : NOTICE_RETRY_DELAYS[Math.min(record.attempt, NOTICE_RETRY_DELAYS.length - 1)];
+        record.attempt += 1;
+        record.nextRetryAt = Date.now() + delay;
+        record.timer = setTimeout(() => {
+            if (deliveries.get(id) !== record) return;
+            record.timer = 0;
+            record.nextRetryAt = 0;
             try {
-                flushNotices(sessionId);
+                kick(id);
             } catch (e) {
-                // 单次重试失败不抛出（下一次 flush 或用户操作还会再来）
-                if (typeof logFrontend === 'function') {
-                    logFrontend('warn', '[通知] 重试投递异常：' + ((e && e.message) || e));
-                }
+                // 单次重试异常不抛出；pending 仍在，下一次事件或 timer 会继续。
+                if (logFrontend) logFrontend('warn', '[通知] 重试投递异常：' + ((e && e.message) || e));
+                armRetry(id);
             }
         }, delay);
-        // Node 环境（单测）里不让这个定时器吊住进程退出；浏览器没有 unref，可选调用。
-        if (st.timer && typeof st.timer.unref === 'function') st.timer.unref();
-        retryState.set(sessionId, st);
+        if (record.timer && typeof record.timer.unref === 'function') record.timer.unref();
     }
 
-    // 消费点 2：finishStream 收尾（流已注销）。残余通知交给空闲唤醒逻辑。
+    // 消费点 2：finishStream 收尾。所有恢复事件统一走 kick。
     function flushNotices(sessionId) {
-        const session = sessionById(sessionId);
-        if (!session) {
-            notices.delete(sessionId);
-            clearRetry(sessionId);
-            return {woke: false, reason: 'gone'};
-        }
-        if (!pendingCount(sessionId)) {
-            clearRetry(sessionId);
-            return {woke: false, reason: 'empty'};
-        }
-        // 与起轮内核同口径（见 deliverAgentNotice 的注释）：少判 compactStarting 会让
-        // 「压缩刚启动」的窗口被当成空闲，唤醒了再被 startSessionTurn 拒，白报一次错。
-        if (isSessionBusy(sessionId, {includeCompactStarting: true})) {
-            // 忙：消息留在队列，安排重试。**不依赖**下一次 finishStream——它只在有流结束时
-            // 才触发，而判忙的时刻往往没有流（见上面重试触发器的注释）。
-            scheduleRetry(sessionId);
-            return {woke: false, reason: 'busy'};
-        }
-        const result = wakeWith(session, NOTICE_FOLD_MAX);
-        // waking（上一次唤醒还在等租约 / 等盘）或瞬时失败：同样需要重试源。
-        if (!result.woke) scheduleRetry(sessionId);
-        return result;
+        return kick(sessionId);
     }
 
     // 消费点 3：startSessionTurn 起轮前（用户手动发送与通知同时到达的滞留竞态，§4.14.4）。
@@ -491,38 +720,37 @@ export function createAIAgentNotices(ctx) {
         return foldIntoMessages(session, NOTICE_FOLD_MAX, true);
     }
 
-    // 冲刷**所有**有待投通知的会话。给「全局阻塞解除」的时刻用：压缩结束 / 失败、
-    // 应用回前台、切会话等——这些事件不是某个会话独有的，只冲一个会让别的会话干等。
-    // 返回 {flushed: 实际尝试的会话数, woke: 成功唤醒数}。
+    // 全局恢复事件（压缩结束、回前台等）即时冲刷所有尚未送达的会话。
     function flushAllPending(options) {
         const opts = options || {};
-        const ids = Array.from(notices.keys());
+        const ids = Array.from(deliveries.keys());
         let flushed = 0;
         let woke = 0;
         for (const id of ids) {
-            if (!pendingCount(id)) continue;
-            // excludeId：压缩结束时压缩目标已经单独冲过，避免重复
+            if (!outstandingCount(id)) continue;
             if (opts.excludeId && id === opts.excludeId) continue;
             flushed += 1;
             try {
-                const r = flushNotices(id);
-                if (r && r.woke) woke += 1;
+                const result = kick(id);
+                if (result && result.woke) woke += 1;
             } catch (e) {
-                // 单个会话失败不影响其他会话
-                if (typeof logFrontend === 'function') {
-                    logFrontend('warn', '[通知] 批量冲刷单个会话失败：' + ((e && e.message) || e));
-                }
+                if (logFrontend) logFrontend('warn', '[通知] 批量冲刷单个会话失败：' + ((e && e.message) || e));
             }
         }
         return {flushed, woke};
     }
 
-    // 会话删除：信箱随之丢弃（既有 Map.delete 惯例）。
+    // 清空/删除使在飞结果失效：旧 Promise 回调看到 record 已不存在，不能再回填。
     function dropSession(sessionId) {
-        notices.delete(sessionId);
-        waking.delete(sessionId);
-        // 重试状态一起收：残留的 timer 会在会话删除后再跑一次空 flush，属于内存/日志泄漏。
-        clearRetry(sessionId);
+        const record = deliveries.get(sessionId);
+        if (record) {
+            record.generation += 1;
+            record.token += 1;
+            clearRecordTimer(record);
+            record.pending = [];
+            record.inFlight = null;
+        }
+        deliveries.delete(sessionId);
         notifyChanged();
     }
 
@@ -533,6 +761,12 @@ export function createAIAgentNotices(ctx) {
     function sessionStateOf(session) {
         if (streamOf(session.id)) return 'streaming';
         if (compactOf(session.id)) return 'compacting';
+        // 起轮中 / 资源重读中也属于不可自动起轮的忙态，不能对模型误报 idle。
+        try {
+            if (!canAutoStartTurn(session.id).ok) return 'streaming';
+        } catch (e) {
+            return 'streaming';
+        }
         return 'idle';
     }
 
@@ -650,8 +884,11 @@ export function createAIAgentNotices(ctx) {
             });
             results.push({
                 targetSessionId: id, ok: !!(receipt && receipt.ok),
+                accepted: !!(receipt && receipt.accepted),
+                state: receipt && receipt.state,
                 messageId: receipt && receipt.messageId,
                 reason: receipt && receipt.reason,
+                blockReason: receipt && receipt.blockReason,
                 woke: !!(receipt && receipt.woke),
             });
         }
@@ -677,16 +914,18 @@ export function createAIAgentNotices(ctx) {
             session: ctx && ctx.session,
             urgent: input && input.urgent === true,
         });
-        const lines = ['投递回执：' + out.okCount + '/' + out.results.length + ' 成功' +
-            (out.woke ? '，唤醒 ' + out.woke + ' 个会话' : '') + '。'];
+        const lines = ['受理回执：' + out.okCount + '/' + out.results.length + ' 已受理' +
+            (out.woke ? '，已尝试唤醒 ' + out.woke + ' 个会话' : '') + '。'];
         for (const item of out.results) {
             if (item.ok) {
-                lines.push('- ' + item.targetSessionId + '：已投递（' + (item.reason || 'queued') + '，messageId=' + item.messageId + '）');
+                const state = item.state || (item.reason === 'woke' ? 'in_flight' : 'queued');
+                const block = item.blockReason ? '，等待原因=' + item.blockReason : '';
+                lines.push('- ' + item.targetSessionId + '：已受理（' + state + block + '，messageId=' + item.messageId + '）');
             } else {
                 lines.push('- ' + item.targetSessionId + '：失败 · ' + (REASON_TEXT[item.reason] || item.reason));
             }
         }
-        lines.push('不保证对方回复；收到「信箱已满」就停止继续投递。');
+        lines.push('受理不等于对方已看到；不保证回复。收到「信箱已满」就停止继续投递。');
         return lines.join('\n');
     }
 
@@ -698,17 +937,17 @@ export function createAIAgentNotices(ctx) {
         busy: '目标忙碌（已排队，下轮可见）',
     };
 
-    // 「清空信箱」用户动作
+    // 「清空信箱」用户动作：pending 与 inFlight 一起作废，迟到结果不得复活。
     function clearMailbox(sessionId) {
-        const had = pendingCount(sessionId);
-        notices.delete(sessionId);
-        notifyChanged();
+        const had = outstandingCount(sessionId);
+        dropSession(sessionId);
         renderSessionList();
         return had;
     }
 
     function isWaking(sessionId) {
-        return waking.has(sessionId);
+        const record = deliveries.get(sessionId);
+        return !!(record && record.inFlight);
     }
 
     return {
@@ -720,6 +959,8 @@ export function createAIAgentNotices(ctx) {
         dropSession,
         clearMailbox,
         pendingCount,
+        outstandingCount,
+        kick,
         listPending,
         isWaking,
         listSessionsForSend,

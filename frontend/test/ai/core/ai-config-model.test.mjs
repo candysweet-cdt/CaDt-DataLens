@@ -21,6 +21,7 @@ import {
     normalizeModelEntry,
     parseTokenAmount,
     reasoningLevelInfo,
+    redactAIConfigMirror,
     resolveModelId,
     resolveModelRef,
     resolveModelRefTarget,
@@ -486,3 +487,36 @@ test('withOpencodeSessionHeader：自动注入 / 用户值优先 / 无会话不�
     assert.equal(bare.extraHeaders['x-opencode-session'], undefined);
 });
 
+
+test('redactAIConfigMirror：镜像不落任何凭据（含 profile.proxy 的 userinfo）', () => {
+    const cfg = {
+        profiles: [{
+            id: 'p1',
+            apiKey: 'sk-top',
+            proxy: 'http://user:p%40ss@proxy.host:8080',
+            extraHeaders: {Authorization: 'Bearer sk-h'},
+            usage: {apiKey: 'sk-usage', extraFields: {cookie: 'sid=1'}},
+        }],
+        genModels: [{id: 'g1', apiKey: 'sk-gen', headers: {'x-api-key': 'sk-x'}}],
+    };
+    const mirror = JSON.parse(redactAIConfigMirror(JSON.stringify(cfg)));
+    const p = mirror.profiles[0];
+    assert.equal(p.apiKey, '');
+    assert.equal(p.extraHeaders, undefined);
+    assert.equal(p.usage.apiKey, '');
+    assert.deepEqual(p.usage.extraFields, {});
+    // 代理口令必须去掉，host/port 保留（否则镜像里的代理地址没法用于回退）
+    assert.equal(p.proxy, 'http://proxy.host:8080');
+    assert.equal(mirror.genModels[0].apiKey, '');
+    assert.equal(mirror.genModels[0].headers, undefined);
+    // 整体确认没有残留明文
+    assert.ok(!JSON.stringify(mirror).includes('p%40ss'));
+});
+
+test('redactAIConfigMirror：无 proxy / 非字符串 proxy 不炸；坏 JSON 原样返回', () => {
+    const noProxy = JSON.parse(redactAIConfigMirror(JSON.stringify({profiles: [{id: 'p', apiKey: 'k', proxy: ''}]})));
+    assert.equal(noProxy.profiles[0].proxy, '');
+    const odd = JSON.parse(redactAIConfigMirror(JSON.stringify({profiles: [{id: 'p', proxy: null}]})));
+    assert.equal(odd.profiles[0].proxy, null);
+    assert.equal(redactAIConfigMirror('not-json'), 'not-json');
+});

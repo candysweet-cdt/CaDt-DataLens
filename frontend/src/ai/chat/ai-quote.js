@@ -48,6 +48,22 @@ export function quoteMarkupFromAttachments(attachments) {
     })));
 }
 
+// 附件 → startSessionTurn 的载荷分组（**单一来源**，2026-11-27 收口）：
+// 图片 / 视频各自成组，其余（文件 / 选区 / 技能）走文本附件；对话引用已在正文
+// <quote> 前缀里，不能再当附件送一遍（否则 <attachments> 块重复）。
+// 手动发送（submitText）/ 排队冲刷（queuedAttachmentsPayload）/ 原地编辑（inlineEditPayload）
+// 三条路曾各写一份，口径一致但改一处必漏两处；现在统一到这里。
+// 注意：null 项要滤掉——三处旧实现的 texts 谓词对 null 会读到 undefined.kind 而抛错，
+// 这里统一安全处理。
+export function groupAttachmentsForTurn(attachments) {
+    const list = Array.isArray(attachments) ? attachments : [];
+    return {
+        images: list.filter((att) => att && att.kind === 'image'),
+        videos: list.filter((att) => att && att.kind === 'video'),
+        texts: list.filter((att) => att && att.kind !== 'image' && att.kind !== 'video' && att.kind !== AI_QUOTE_KIND),
+    };
+}
+
 export function splitQuotePrefix(content) {
     const text = aiTextOf(content);
     const quotes = [];

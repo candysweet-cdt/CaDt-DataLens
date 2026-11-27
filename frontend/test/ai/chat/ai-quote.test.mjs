@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
     AI_QUOTE_KIND, AI_QUOTE_EXCERPT_LIMIT,
-    buildQuoteMarkup, quoteMarkupFromAttachments, splitQuotePrefix,
+    buildQuoteMarkup, quoteMarkupFromAttachments, groupAttachmentsForTurn, splitQuotePrefix,
     neutralizeQuoteText, quoteExcerpt, quoteChipLabel, quoteLabel, quoteCardExcerpt, quoteFullDoc,
 } from '../../../src/ai/chat/ai-quote.js';
 
@@ -118,7 +118,9 @@ test('接线护栏：引用只进 user content，气泡截断 + title 全文，�
     const composer = read('../../../src/ai/chat/ai-composer.js');
     const context = read('../../../src/ai/core/ai-system-context.js');
     assert.ok(panel.includes('quoteMarkupFromAttachments(attached)'));
-    assert.ok(panel.includes("item.kind !== 'message_quote'"));
+    // 引用不进 <attachments> 的过滤已收口到 ai-quote.js 的 groupAttachmentsForTurn
+    // （2026-11-27），panel 只调共享函数；分组函数排除 message_quote 由上面的纯函数测试锁住
+    assert.ok(panel.includes('groupAttachmentsForTurn(attached)'));
     assert.ok(panel.includes('!value && !imageAttachments.length && !videoAttachments.length && !textAttachments.length'));
     assert.ok(panel.includes('!hasText && !hasImages && !hasVideos && !hasTextAttachments'));
     // 气泡 / 编辑重发 / 支线编辑三条路径：先剥开头的 <system-reminder> 环境块，再拆 <quote>
@@ -156,6 +158,34 @@ test('接线护栏：气泡与输入区引用都能点击开只读全文虚拟�
     assert.ok(composer.includes('onQuoteClick: (item) =>'));
     assert.ok(panel.includes('onQuoteClick: (item) =>'));
     assert.ok(panel.includes('openVirtualDoc,') && panel.includes('nextAttachSeq: () => ++attachSeq'));
+});
+
+test('groupAttachmentsForTurn：媒体分组、引用与 null 不进文本附件（三条发送路径共用）', () => {
+    const payload = groupAttachmentsForTurn([
+        {kind: 'image', data: 'x'},
+        {kind: 'video', data: 'y'},
+        {kind: 'file', label: 'a.js', content: 'z'},
+        {kind: AI_QUOTE_KIND, source: 'q', text: '引用'},
+        null,
+    ]);
+    assert.deepEqual(payload.images.map((a) => a.kind), ['image']);
+    assert.deepEqual(payload.videos.map((a) => a.kind), ['video']);
+    assert.deepEqual(payload.texts.map((a) => a.kind), ['file'], '引用 / 媒体 / null 都不进文本附件');
+    assert.deepEqual(groupAttachmentsForTurn(null), {images: [], videos: [], texts: []});
+    assert.deepEqual(groupAttachmentsForTurn('bad'), {images: [], videos: [], texts: []});
+});
+
+test('接线护栏：三条发送路径都复用 groupAttachmentsForTurn，不再各写一份分组', () => {
+    const queue = read('../../../src/ai/chat/ai-message-queue.js');
+    const inline = read('../../../src/ai/chat/ai-inline-edit.js');
+    const panel = read('../../../src/ai/ai-panel.js');
+    for (const [name, src] of [['queue', queue], ['inline', inline], ['panel', panel]]) {
+        assert.match(src, /groupAttachmentsForTurn\(/, name + ' 必须复用单一分组函数');
+    }
+    // 分组谓词只允许出现在 ai-quote.js 里（steer 准入的 any 判定语义不同，不算分组）
+    assert.doesNotMatch(queue, /images: list\.filter/);
+    assert.doesNotMatch(inline, /images: list\.filter/);
+    assert.doesNotMatch(panel, /images: attached\.filter/);
 });
 
 test('接线护栏：编辑器右键代码截图复用剪贴板与保存链路', () => {

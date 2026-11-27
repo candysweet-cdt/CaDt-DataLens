@@ -240,7 +240,8 @@ export function decideSessionOpen(state) {
 
 // 忙探针。source 可给 streamOf（id → 流|null）/ streams（有 has() 的 Map/Set）/ compactOf
 // （id → 压缩中的 oneShot|null），三者任给其一即可，全部缺省时恒 false（测试桩场景）。
-// compactStartingOf：全局「压缩正在准备」标记的读取器（见下）。
+// compactStartingOf(id)：返回该会话是否正在准备压缩。压缩准备按会话隔离——startCompact
+// 在置位前已经知道目标会话，不能因为 A 工作区准备压缩而拦住 B 工作区的后台通知。
 export function createSessionBusyProbe(source) {
     const src = source || {};
     const streamOf = typeof src.streamOf === 'function' ? src.streamOf : null;
@@ -248,17 +249,15 @@ export function createSessionBusyProbe(source) {
     const compactOf = typeof src.compactOf === 'function' ? src.compactOf : null;
     const compactStartingOf = typeof src.compactStartingOf === 'function'
         ? src.compactStartingOf
-        : () => !!src.compactStarting;
-    // opts.includeCompactStarting：把「压缩正在准备」也算忙。该标记是**全局**的——startCompact
-    // 在拿回合租约 / 按 stat 重读的那段异步窗口里置位，它不属于任何一个会话（期间还不知道谁
-    // 会成为压缩目标之外的受害者）。所以默认**不判**：否则任一会话开始压缩就会拦住所有会话的
-    // 发送门禁。只有「宁严勿松」的起轮内核与同源守卫（重发 / 恢复中断回合 / 等租约空闲）显式传 true。
+        : () => false;
+    // opts.includeCompactStarting：把「该会话正在准备压缩」也算忙。默认不判，保持 UI /
+    // 普通发送门禁的既有口径；只有起轮内核与同源守卫显式传 true。
     return function isSessionBusy(sessionId, opts) {
         if (!sessionId) return false;
         if (streamOf && streamOf(sessionId)) return true;
         if (streams && streams.has(sessionId)) return true;
         if (compactOf && compactOf(sessionId)) return true;
-        return !!(opts && opts.includeCompactStarting) && !!compactStartingOf();
+        return !!(opts && opts.includeCompactStarting) && !!compactStartingOf(sessionId);
     };
 }
 

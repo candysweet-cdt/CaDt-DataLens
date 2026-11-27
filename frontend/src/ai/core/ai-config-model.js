@@ -424,3 +424,35 @@ export function normalizeUsageConfig(raw) {
         autoIntervalMin: clampNumber(src.autoIntervalMin, 0, USAGE_INTERVAL_MAX_MIN, USAGE_INTERVAL_DEFAULT_MIN),
     };
 }
+
+// redactAIConfigMirror：写入 localStorage 的配置镜像要去掉所有凭据——
+// apiKey、extraHeaders（Authorization / x-api-key 的常见藏身处）、额度脚本的
+// usage.extraFields（cookie / 账号字段）、genModels 的自定义 headers，
+// 以及**代理地址里的 user:pass@**。
+//
+// 注意 proxy 只存在于 profile 上（normalizeProfile 产出），配置没有顶层 proxy
+// 字段——曾经只对顶层 copy.proxy 做替换，等于从未生效，代理口令明文进了镜像。
+// text 正常不会解析失败；真失败时原样返回（宁可留一份可用镜像，也不清成空对象）。
+export function redactAIConfigMirror(text) {
+    try {
+        const copy = JSON.parse(text);
+        for (const profile of copy.profiles || []) {
+            profile.apiKey = '';
+            if (typeof profile.proxy === 'string' && profile.proxy) {
+                profile.proxy = profile.proxy.replace(/\/\/[^@/]*@/, '//');
+            }
+            if (profile.usage) {
+                profile.usage.apiKey = '';
+                if (profile.usage.extraFields) profile.usage.extraFields = {};
+            }
+            if (profile.extraHeaders) delete profile.extraHeaders;
+        }
+        for (const entry of copy.genModels || []) {
+            entry.apiKey = '';
+            if (entry.headers) delete entry.headers;
+        }
+        return JSON.stringify(copy);
+    } catch (e) {
+        return text;
+    }
+}

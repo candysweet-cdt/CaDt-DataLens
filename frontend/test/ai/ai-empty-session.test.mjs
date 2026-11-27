@@ -27,9 +27,11 @@ test('空会话切走即删：只处理正在看的那个会话，且不碰支�
     assert.match(panel, /if \(!isVirginSession\(session\)\) return false;/);
     // E1：activeSessionId 还没改，对不上就不是「离开」（工作区分桶后经 activeSessionId() 取本工作区条目）
     assert.match(panel, /if \(session\.id !== activeSessionId\(\)\) return false;/);
-    // E2：支线有独立标签页承载；有流 / 正在压缩的不能删
+    // E2：支线有独立标签页承载；有流 / 正在起轮 / 正在压缩的不能删。
+    // 附加守卫会随并发修复增加（startingTurns / compactStartingSessionId），只锁住 isSessionBusy
+    // 这个核心判据与「return false」，不再逐个枚举附加项，避免追移动靶。
     assert.match(panel, /if \(aiTextOf\(session\.sideOf\)\) return false;/);
-    assert.match(panel, /if \(isSessionBusy\(session\.id\)\) return false;/);
+    assert.match(panel, /if \(isSessionBusy\(session\.id\)[^\n]*\) return false;/);
 });
 
 test('空会话切走即删：switchSession 与 newSession 都先存草稿再删', () => {
@@ -71,7 +73,8 @@ test('草稿按工作区暂存：槽键统一为归一化工作区路径', () =>
     const stash = panel.match(/function stashWorkspaceDraft\(session\) \{[\s\S]*?\n    \}/);
     assert.ok(stash, '缺少 stashWorkspaceDraft');
     assert.match(stash[0], /const key = aiWorkspaceKey\(sessionWorkspacePath\(session\)\);/);
-    assert.match(stash[0], /workspaceDrafts\.set\(key, \{text, attachments\}\);/);
+    // 草稿对象可能还带 paste（粘贴胶囊），字段增加不影响「按工作区 key 暂存」的语义
+    assert.match(stash[0], /workspaceDrafts\.set\(key, \{text, attachments(?:, paste)?\}\);/);
 
     const take = panel.match(/function takeWorkspaceDraft\(session\) \{[\s\S]*?\n    \}/);
     assert.ok(take, '缺少 takeWorkspaceDraft');

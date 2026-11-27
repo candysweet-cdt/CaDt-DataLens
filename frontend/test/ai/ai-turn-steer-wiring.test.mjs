@@ -122,19 +122,25 @@ test('wait_agent 唤醒语义：排队不打扰等待，只有 steer 唤醒并�
     assert.match(enqueue, /!liveSteerableStream\(session\.id\)\) interjectPending\.add\(session\.id\)/);
 });
 
-test('flushMessageQueue：起轮失败自动重试一次（瞬态失败自愈，不无限打转）', () => {
-    // 重试逻辑收在 scheduleFlushRetry（两条发送路径共用），fromRetry 是防无限打转的标记
+test('flushMessageQueue：唯一分派路径走内核起轮，失败自动重试一次（瞬态失败自愈，不无限打转）', () => {
+    // 重试逻辑收在 scheduleFlushRetry（唯一发送路径共用），fromRetry 是防无限打转的标记
     const retry = sliceFunction(queue, 'function scheduleFlushRetry(sessionId, opts) {');
     assert.match(retry, /opts && opts\.fromRetry/, '重试那次调用必须带标记');
     assert.match(retry, /setTimeout\(\(\) => \{ flushMessageQueue\(sessionId, \{fromRetry: true\}\); \}, 2500\)/);
-    const ui = sliceFunction(queue, 'async function flushThroughComposer(session, item, opts) {');
-    assert.match(ui, /scheduleFlushRetry\(session\.id, opts\)/, '当前会话失败要排重试');
-    const bg = sliceFunction(queue, 'async function flushInBackground(session, item, opts) {');
-    assert.match(bg, /scheduleFlushRetry\(session\.id, opts\)/, '后台会话失败也要排重试');
-    // 后台会话必须真的走内核起轮，不能退回「不是当前会话就 return」的旧死路
-    assert.match(bg, /startSessionTurn\(session, text, \{/);
-    assert.match(bg, /allowPendingEdit: false/);
-    assert.match(bg, /truncateAt: null/);
+    const dispatch = sliceBetween(queue, 'async function dispatchQueuedItem(session, item, opts) {',
+        '// 发送失败要让用户看得见');
+    assert.match(dispatch, /scheduleFlushRetry\(session\.id, opts\)/, '起轮失败要排重试');
+    // 所有会话（含当前会话）都走内核起轮，不能退回「当前会话灌输入区代发」的第二条路
+    assert.match(dispatch, /startSessionTurn\(session, text, \{/);
+    assert.match(dispatch, /allowPendingEdit: false/);
+    assert.match(dispatch, /truncateAt: null/);
+    assert.match(dispatch, /preserveScroll: true/);
+    // 冲刷只有一条分派：不许再按 currentSession 分叉、也不许再碰 submitText
+    const flush = sliceBetween(queue, 'async function flushMessageQueue(sessionId, opts) {',
+        'function clearQueueForSession');
+    assert.match(flush, /dispatchQueuedItem\(taken\.session, taken\.item, opts\)/);
+    assert.equal(flush.includes('submitText'), false, '冲刷不再经过输入区代发');
+    assert.equal(/flushThroughComposer|flushInBackground/.test(queue), false, '两条旧发送路径已合并');
 });
 
 test('队列行按钮：按 delivery 切换插话 / 排队，改投是同步 setDelivery', () => {
@@ -261,9 +267,8 @@ test('finishStream / stopGeneration：自然结束降级排队，停止或抢占
     assert.match(finish, /if \(current\.stopped\) queueMod\.clearSteer\(current\.sessionId\);/);
     assert.match(finish, /else queueMod\.fallbackSteerToQueue\(current\.sessionId\);/);
     assert.ok(finish.indexOf('queueMod.clearSteer') < finish.indexOf('const shouldFlush'));
-    // 自然结束（模型没被停止）必须有冲刷：降级来的插话靠这一行发出；只认 hasInterject
-    // 会让「模型直接停止、插话没赶上本轮」的在后台会话里永远躺在队列（2026-11-19 实测场景）
-    assert.match(finish, /const shouldFlush = queueMod\.hasInterject\(current\.sessionId\) \|\| \(!current\.stopped && current\.assistant\.status === 'done'\);/);
+    // 只有本会话确实有排队项时才跳过信箱即时冲刷；自然完成但队列为空时必须冲通知。
+    assert.match(finish, /const shouldFlush = queueMod\.hasInterject\(current\.sessionId\) \|\|\s*queueMod\.itemsForSession\(current\.sessionId\)\.length > 0;/);
     assert.ok(finish.indexOf('const shouldFlush') < finish.indexOf('flushMessageQueue(session.id)'),
         '冲刷必须在 shouldFlush 判定之后');
     // plan 模式抢占：冲刷前收起待批准的计划卡，否则 takeQueuedItem 静默拦下、
@@ -321,6 +326,6 @@ test('接线：composer 拿到 preempt，队列壳导出 steer 车道与手势 A
     }
     // 纯模型现在接受可选的 {onChange}（steer 入队即唤醒 wait_agent 的调用方），签名不再是无参
     assert.match(queue, /export function createQueueModel\(options\)/);
-    // 引用 kind 的单一来源（对话引用前缀也从同一模块取，队列与手动发送一条口径）
-    assert.match(queue, /import \{AI_QUOTE_KIND, quoteMarkupFromAttachments\} from '\.\/ai-quote\.js';/);
+    // 引用 kind 与附件分组的单一来源（对话引用前缀、起轮载荷分组都从同一模块取）
+    assert.match(queue, /import \{AI_QUOTE_KIND, quoteMarkupFromAttachments, groupAttachmentsForTurn\} from '\.\/ai-quote\.js';/);
 });

@@ -115,6 +115,8 @@ export function createAIGenJobs(ctx) {
         if (!backend.AIGenSaveProducts) throw new Error('生成产物落盘通道不可用（请重新构建或更新应用）');
         // url 型产物在独立端点上、常需鉴权（如 /v1/videos/{id}/content）：下载时带同一条
         // 渲染好的请求头（Authorization: Bearer {{apiKey}} 已落地）。
+        // endpoint 让 Go 侧能判断产物 URL 是否与生成端点同 host——只有同 host 才转发
+        // 鉴权头，避免服务端返回的恶意/抢注 URL 把 API Key 带走。
         const result = await backend.AIGenSaveProducts(JSON.stringify({
             workspace,
             outputPath: params.outputPath || '',
@@ -122,6 +124,7 @@ export function createAIGenJobs(ctx) {
             proxy: entry.proxy,
             timeoutSec: entry.kind === 'video' ? 300 : 120,
             headers: genHeaderMap(entry, buildGenVars(entry, params)),
+            endpoint: genJoinURL(entry.baseURL, genRequestPath(entry, params)),
             items,
         }));
         if (result && result.error) throw new Error(result.error);
