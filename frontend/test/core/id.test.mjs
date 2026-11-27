@@ -7,12 +7,29 @@ import {newId, randomIdSuffix} from '../../src/core/id.js';
 
 const BASE36 = /^[0-9a-z]*$/;
 
-test('randomIdSuffix：只产出 base36 字符，长度不超过请求位数', () => {
+test('randomIdSuffix：只产出 base36 字符，长度恒等于请求位数', () => {
     for (const len of [0, 1, 4, 6, 8]) {
         for (let i = 0; i < 50; i++) {
             const s = randomIdSuffix(len);
             assert.ok(BASE36.test(s), `非 base36 字符：${JSON.stringify(s)}`);
-            assert.ok(s.length <= len, `长度 ${s.length} 超过 ${len}`);
+            assert.equal(s.length, len, `长度 ${s.length} ≠ ${len}（后缀不足位会放大同毫秒撞 id 概率）`);
+        }
+    }
+});
+
+test('randomIdSuffix：Math.random 退化值（有限小数 / 0）仍保证足位', () => {
+    // 0.5、0.25 这类有限小数的 base36 表示很短，尾零还会被 toString 吃掉——
+    // 旧实现 slice(2, 2 + len) 会退化成 1–2 位后缀，同一毫秒内两次生成直接撞 id。
+    const degenerates = [0, 0.5, 0.25, 0.125, 1 / 3, 0.0000001];
+    for (const value of degenerates) {
+        const original = Math.random;
+        Math.random = () => value;
+        try {
+            const s = randomIdSuffix(6);
+            assert.equal(s.length, 6, `value=${value} 后缀 ${JSON.stringify(s)}`);
+            assert.ok(BASE36.test(s), `value=${value} 非法字符`);
+        } finally {
+            Math.random = original;
         }
     }
 });

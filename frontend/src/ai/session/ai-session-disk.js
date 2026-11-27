@@ -3,6 +3,7 @@
 // 排队、写入、图片落盘、meta 同步与错误上报（依赖注入 backend，不碰 DOM）。
 import {
     buildSessionMeta,
+    dedupeMessageMids,
     encodeArchiveEvent,
     encodeMessageEvent,
     encodeMetaEvent,
@@ -101,7 +102,11 @@ export function createSessionDiskStore(options) {
         return genId('m-');
     }
 
-    // 已落盘消息的指纹表（mid → 指纹）。按 mid 存，不随消息下标变化而错位。
+    // 已落盘消息的指纹表。**按下标存，不按 mid**（2026-11-28 事故）：两条消息共用一个
+    // mid 时，mid 键 Map 里永远只剩后一条的指纹，前缀比对在第一条上永假 → 每次落盘都
+    // truncate + 整段重追加，日志无界膨胀（实测一个会话涨到 300 MB）。按下标存不会错位：
+    // 前缀循环在 mid 或指纹的第一处失配就断，错位只可能发生在断点之后，而断点之后会
+    // 整段重建指纹。前缀通过后两者必然对齐。
     function fingerprintsOf(session) {
         if (!(session._fps instanceof Map)) session._fps = new Map();
         return session._fps;
@@ -109,10 +114,8 @@ export function createSessionDiskStore(options) {
 
     function resetFingerprints(session, list) {
         const fps = new Map();
-        for (const message of list || []) {
-            const mid = textOf(message && message._mid);
-            if (mid) fps.set(mid, messageFingerprint(message));
-        }
+        const messages = list || [];
+        for (let i = 0; i < messages.length; i++) fps.set(i, messageFingerprint(messages[i]));
         session._fps = fps;
         return fps;
     }
@@ -208,22 +211,30 @@ export function createSessionDiskStore(options) {
 
     function syncMids(session, list, archivedList) {
         const mids = Array.isArray(session._mids) ? session._mids : [];
+        // mid 占用检查：同一条 mid 只许一个位置持有（重复 mid 会卡死前缀比对，见
+        // fingerprintsOf 注释）。消息自带 mid 被前面占过、或旧账本 mids[index] 已被占
+        // 时，分配新 mid，不继承。
+        const used = new Set();
         const next = list.map((message, index) => {
             let mid = textOf(message && message._mid);
-            if (!mid) {
-                mid = mids[index] || newMid();
+            if (!mid || used.has(mid)) {
+                const legacy = mids[index];
+                mid = legacy && !used.has(legacy) ? legacy : newMid();
                 if (message && typeof message === 'object') message._mid = mid;
             }
+            used.add(mid);
             return mid;
         });
         session._mids = next;
+        const archivedUsed = new Set(next);
         const archivedMids = [];
         for (const message of archivedList || []) {
             let mid = textOf(message && message._mid);
-            if (!mid) {
+            if (!mid || archivedUsed.has(mid)) {
                 mid = newMid();
                 if (message && typeof message === 'object') message._mid = mid;
             }
+            archivedUsed.add(mid);
             archivedMids.push(mid);
         }
         session._archivedMids = archivedMids;
@@ -397,28 +408,33 @@ export function createSessionDiskStore(options) {
         let common = 0;
         const fps = fingerprintsOf(session);
         // 前缀要 mid 与指纹都对上才算「已落盘」：就地改过状态的消息会让前缀在这里断开，
-        // 下面 truncate 后按当前内容重追加（见 messageFingerprint 的说明）。
+        // 下面 truncate 后按当前内容重追加（见 messageFingerprint 的说明）。指纹按位置取
+        // （fps.get(common)），重复 mid 不能像 mid 键表那样把前缀永久卡在一条上。
         while (common < mids.length && common < messages.length &&
                textOf(messages[common] && messages[common]._mid) === mids[common] &&
-               fps.get(mids[common]) === messageFingerprint(messages[common])) {
+               fps.get(common) === messageFingerprint(messages[common])) {
             common++;
         }
         if (common < mids.length) {
             events.push(encodeTruncateEvent(common));
-            for (let i = common; i < mids.length; i++) if (mids[i]) fps.delete(mids[i]);
+            for (let i = common; i < mids.length; i++) fps.delete(i);
             mids.length = common;
         }
+        // 追加段的 mid 占用检查：前缀段已持有的 mid 不许再被后面的消息继承
+        // （重复 mid 会同时污染重放对账与前缀比对，见 fingerprintsOf 注释）。
+        const usedMids = new Set(mids.slice(0, common).filter(Boolean));
         for (let i = common; i < messages.length; i++) {
             const message = messages[i];
             if (!message || typeof message !== 'object') continue;
             if (message.status === 'streaming') break;
             let mid = textOf(message._mid);
-            if (!mid) {
+            if (!mid || usedMids.has(mid)) {
                 mid = newMid();
                 message._mid = mid;
             }
+            usedMids.add(mid);
             mids[i] = mid;
-            fps.set(mid, messageFingerprint(message));
+            fps.set(i, messageFingerprint(message));
             const event = encodeMessageEvent(message, mid, false);
             if (event) events.push(event);
         }
@@ -503,24 +519,26 @@ export function createSessionDiskStore(options) {
             let common = 0;
             while (common < mids.length && common < snapshot.length &&
                    textOf(snapshot[common] && snapshot[common]._mid) === mids[common] &&
-                   fps.get(mids[common]) === messageFingerprint(snapshot[common])) {
+                   fps.get(common) === messageFingerprint(snapshot[common])) {
                 common++;
             }
             if (common < mids.length) {
                 events.push(encodeTruncateEvent(common));
-                for (let i = common; i < mids.length; i++) if (mids[i]) fps.delete(mids[i]);
+                for (let i = common; i < mids.length; i++) fps.delete(i);
                 mids.length = common;
             }
+            const usedMids = new Set(mids.slice(0, common).filter(Boolean));
             for (let i = common; i < snapshot.length; i++) {
                 const message = snapshot[i];
                 if (!message || typeof message !== 'object') continue;
                 let mid = textOf(message._mid);
-                if (!mid) {
+                if (!mid || usedMids.has(mid)) {
                     mid = newMid();
                     message._mid = mid;
                 }
+                usedMids.add(mid);
                 mids[i] = mid;
-                fps.set(mid, messageFingerprint(message));
+                fps.set(i, messageFingerprint(message));
                 const event = encodeMessageEvent(message, mid, false);
                 if (event) events.push(event);
             }
@@ -702,6 +720,9 @@ export function createSessionDiskStore(options) {
         });
         const session = normalizeSession ? normalizeSession(combined) : combined;
         if (!session) return null;
+        // 载入自愈：重复 mid 改配新 mid（历史脏数据就地收敛），并标记整份重写把磁盘上的
+        // 冗余复印行物理清掉——不标记的话日志永远瘦不回来（2026-11-28 事故，300 MB 会话）。
+        const midDupes = dedupeMessageMids(session.messages, newMid);
         // 归一化可能丢掉无效消息，_mids 必须按归一化后的消息顺序重建，否则索引错位会触发重复追加。
         session._mids = (session.messages || []).map((message) => textOf(message && message._mid));
         session._archivedMids = (session.archived || []).map((message) => textOf(message && message._mid));
@@ -711,7 +732,7 @@ export function createSessionDiskStore(options) {
         session._logCreated = !!replay.header;
         // 重放折叠掉的同类 dedupeKey 旧注入（droppedTransient>0）也要整份重写：
         // 内存已不含这些条目，不重写的话磁盘 JSONL 里的冗余行永远清不掉。
-        session._needsRewrite = !!session._recovered || (session.messages || []).length !== replay.messages.length || replay.droppedTransient > 0;
+        session._needsRewrite = !!session._recovered || midDupes > 0 || (session.messages || []).length !== replay.messages.length || replay.droppedTransient > 0;
         session.updatedAt = Number(meta.updatedAt) || Number(meta.createdAt) || 0;
         session._loadError = loadError;
         session._tidyFailed = !!(loadErrorFlags && loadErrorFlags.tidyFailed);
@@ -890,6 +911,8 @@ export function createSessionDiskStore(options) {
                 appendAuditEvent(session.id, encodeTurnEvent(turnId, 'close', 'crash')).catch(() => {});
             }
         }
+        // 载入自愈：重复 mid 改配新 mid 并标记重写（同 loadOne，2026-11-28 事故收敛）。
+        const midDupes = dedupeMessageMids(messages, newMid);
         // 归一化可能丢掉无效消息，_mids 必须按归一化后的顺序重建，否则索引错位会重复追加。
         session._mids = messages.map((message) => textOf(message && message._mid));
         session._archivedMids = session.archived.map((message) => textOf(message && message._mid));
@@ -897,7 +920,7 @@ export function createSessionDiskStore(options) {
         session._logMeta = {title: textOf(session.title), workspace: textOf(session.workspace)};
         session._logCreated = !!replay.header;
         // 重放折叠掉的同类 dedupeKey 旧注入也要整份重写（与 loadOne 同理，清磁盘冗余）。
-        session._needsRewrite = !!session._recovered || messages.length !== replay.messages.length || replay.droppedTransient > 0;
+        session._needsRewrite = !!session._recovered || midDupes > 0 || messages.length !== replay.messages.length || replay.droppedTransient > 0;
         session._metaSig = metaSignature(buildSessionMeta(session));
         delete session._stub;
         delete session._msgCount;
@@ -1066,6 +1089,8 @@ export function createSessionDiskStore(options) {
                 appendAuditEvent(session.id, encodeTurnEvent(turnId, 'close', 'crash')).catch(() => {});
             }
         }
+        // 载入自愈：重复 mid 改配新 mid 并标记重写（同 loadOne，2026-11-28 事故收敛）。
+        const midDupes = dedupeMessageMids(messages, newMid);
         // 归一化可能丢掉无效消息，_mids 必须按归一化后的顺序重建。
         session._mids = messages.map((message) => textOf(message && message._mid));
         session._archivedMids = session.archived.map((message) => textOf(message && message._mid));
@@ -1073,7 +1098,7 @@ export function createSessionDiskStore(options) {
         session._logMeta = {title: textOf(session.title), workspace: textOf(session.workspace)};
         session._logCreated = !!replay.header;
         // 重放折叠掉的同类 dedupeKey 旧注入也要整份重写（与 loadOne 同理，清磁盘冗余）。
-        session._needsRewrite = !!session._recovered || messages.length !== replay.messages.length || replay.droppedTransient > 0;
+        session._needsRewrite = !!session._recovered || midDupes > 0 || messages.length !== replay.messages.length || replay.droppedTransient > 0;
         session._metaSig = metaSignature(buildSessionMeta(session));
         delete session._stub;
         delete session._msgCount;

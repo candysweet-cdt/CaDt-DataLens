@@ -403,6 +403,26 @@ export function encodeSessionLines(events) {
 
 // ---------- 重放 ----------
 
+// 载入自愈：同一 mid 只许一条消息持有，重复者改配新 mid（newMidFn 注入，保持本模块纯函数）。
+// 历史 mid 键指纹表下，重复 mid 会让 persist 公共前缀在首条上永假，每次落盘都 truncate +
+// 整段重追加（2026-11-28 事故：一个会话 300 MB，其中九成是复印）。返回改配数量，0 = 无重复。
+// 消息一条不丢，只动后出现者的 _mid；先到先得，与「重放按位置追加」的口径一致。
+export function dedupeMessageMids(messages, newMidFn) {
+    if (!Array.isArray(messages)) return 0;
+    const seen = new Set();
+    let healed = 0;
+    for (const message of messages) {
+        if (!message || typeof message !== 'object') continue;
+        const mid = textOf(message._mid);
+        if (!mid || seen.has(mid)) {
+            message._mid = typeof newMidFn === 'function' ? newMidFn() : mid + '-dup' + (++healed);
+            healed++;
+        }
+        seen.add(textOf(message._mid));
+    }
+    return healed;
+}
+
 export function replaySessionLog(text) {
     const result = {
         header: null,

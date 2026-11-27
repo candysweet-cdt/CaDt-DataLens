@@ -8,15 +8,23 @@ const BASE36 = 36;
 const DEFAULT_SUFFIX_LENGTH = 6;
 
 /**
- * randomIdSuffix 生成 base36 随机后缀，最多 len 位。
- * 与原先 `Math.random().toString(36).slice(2, 2 + len)` 逐字等价（含「不足 len 位时更短」的边界）。
- * @param {number} [len] 后缀位数上限，默认 6
+ * randomIdSuffix 生成 base36 随机后缀，恒定 len 位。
+ * 不能直接用 `Math.random().toString(36).slice(2, 2 + len)`：有限小数（0.5、0.25…）
+ * 与尾零会被 toString 截短，后缀退化到 1–2 位，同一毫秒内两次生成就会撞出相同 id
+ * （2026-11-28 实测：AI 会话两条相邻消息同 mid，落盘前缀比对被永久卡死，日志膨胀到
+ * 300 MB）。这里拼到足位为止，保证形状恒定。
+ * @param {number} [len] 后缀位数，默认 6
  * @returns {string}
  */
 export function randomIdSuffix(len = DEFAULT_SUFFIX_LENGTH) {
-    const n = Math.max(0, Math.round(Number(len) || 0));
+    const n = Math.max(0, Math.round(Number(len)) || 0);
     if (!n) return '';
-    return Math.random().toString(BASE36).slice(2, 2 + n);
+    let out = '';
+    while (out.length < n) {
+        const chunk = Math.random().toString(BASE36).slice(2);
+        out += chunk || '0'; // Math.random()===0 的退化路径：补位保证前进，不让循环卡死
+    }
+    return out.slice(0, n);
 }
 
 /**
