@@ -79,6 +79,14 @@ export function mountOrchestrationSettings(host, deps) {
     review.control.id = 'orch-opt-review-default';
     card.appendChild(row('审查门', '验收通过后派独立只读审查会话；可在审批卡上逐次关闭。默认开。', review.element));
 
+    const finalReview = createCheckbox({
+        checked: settings().orchFinalReview === true,
+        label: '全部完成后默认开终审',
+        onChange: (e) => patch('orchFinalReview', e.target.checked),
+    });
+    finalReview.control.id = 'orch-opt-final-review-default';
+    card.appendChild(row('子代理终审', '全部批次完成后派 1–3 个只读终审，检查整体目标与跨批接线；可在审批卡上逐次关闭。', finalReview.element));
+
     host.appendChild(card);
     host.appendChild(el('div', 'set-desc',
         '模型白名单、自主执行与开始前快照是单次授权，只在编排审批卡上出现；不写入全局设置。'));

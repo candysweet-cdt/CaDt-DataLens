@@ -7,7 +7,7 @@
 // 各绑各的固定根，页面内显示所属工作区路径。
 //
 // 本测试锁三件事：
-//   1. 哪几个页面是 perWorkspace（只有真正工作区级的两个）；
+//   1. 哪几个页面是 perWorkspace（编排与认知索引 / 补丁库都是工作区级数据）；
 //   2. 标签页去重按 (pageId, 根) —— 不同根必须各开一份；
 //   3. 标签名在多工作区下带仓库名、单工作区不带。
 import test from 'node:test';
@@ -22,9 +22,9 @@ const read = (rel) => readFileSync(join(here, '../..', rel), 'utf8');
 
 test('perWorkspace 只标真正工作区级的页面', () => {
     const perWs = APP_PAGES.filter((p) => p.perWorkspace).map((p) => p.id).sort();
-    assert.deepEqual(perWs, ['cognition', 'patches'],
-        '只有认知索引与补丁库的数据在各工作区里；其余页（使用统计 / 定时任务 / 操作记录 / '
-        + '外部工具 / 智能体）是全局数据，标成 perWorkspace 会让同一份数据被拆成多个标签页');
+    assert.deepEqual(perWs, ['cognition', 'orchestration', 'patches'],
+        '编排的批次/看板按工作区隔离，与认知索引、补丁库同属工作区级数据；其余页（使用统计 / '
+        + '定时任务 / 操作记录 / 外部工具 / 智能体）是全局数据，标成 perWorkspace 会让同一份数据被拆成多个标签页');
     // 每个 perWorkspace 页都要在 desc 里说清是工作区级数据，否则用户不明白为什么会开多份
     for (const id of perWs) {
         const page = appPageOf(id);

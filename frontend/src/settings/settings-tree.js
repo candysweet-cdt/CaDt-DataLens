@@ -19,14 +19,14 @@ const HIGH_RISK_IDS = new Set([
     'ai-opt-subagent-max', 'ai-opt-subagent-depth', 'ai-opt-subagent-model',
     'ai-opt-mcp-enabled', 'ai-opt-export-keys',
     'plugin-path-mode',
-    'orch-opt-review-default',
+    'orch-opt-review-default', 'orch-opt-final-review-default',
     'opt-file-assoc', 'opt-context-menu', 'opt-agent-skill', 'opt-path-cmd', 'opt-developer-mode',
 ]);
 
 // 中风险：资源 / 保留 / 执行行为 / 上下文注入量。
 const MEDIUM_RISK_IDS = new Set([
     'ai-opt-threshold', 'ai-opt-autocompact', 'ai-opt-context-slim',
-    'ai-opt-subagent-rounds',
+    'ai-opt-tool-failure-max', 'ai-opt-subagent-rounds',
     'ai-opt-idle-timeout', 'ai-opt-retry-max', 'ai-opt-ask-timeout', 'ai-opt-ask-action',
     'ai-opt-log-enabled', 'ai-opt-log-path',
     'ai-opt-skill-index-max', 'ai-opt-inject-agents', 'ai-opt-inject-memory', 'ai-opt-inject-envvars',
@@ -63,6 +63,7 @@ const RISK_REASONS = {
     'ai-opt-threshold': '上下文压缩阈值，调高可能让模型在超窗前仍不收口',
     'ai-opt-autocompact': '自动压缩会改写会话上下文（摘要 + 截止点）',
     'ai-opt-context-slim': '实时瘦身会剔除旧轮思考与大输出',
+    'ai-opt-tool-failure-max': '工具熔断阈值，调高或关闭会让工具失败循环持续更久',
     'ai-opt-subagent-rounds': '子代理默认轮次，放宽会增加调用与耗时',
     'ai-opt-inject-agents': 'AGENTS.md 全文注入会增加每轮上下文与费用',
     'ai-opt-inject-memory': 'MEMORY.md 索引注入会增加每轮上下文',
@@ -74,6 +75,7 @@ const RISK_REASONS = {
     'envvar-encrypted': '环境变量存储与加密方式',
     'lifecycle-enabled': '总开关控制「生命周期钩子自动执行」：覆盖打开/关闭工作区、会话起轮、工具前后、权限请求、停止生成等 9 个事件',
     'orch-opt-review-default': '编排默认关闭独立审查门会少一道质量关卡',
+    'orch-opt-final-review-default': '编排默认关闭终审会少最后一道整体质量关卡',
     'orch-opt-max-parallel': '编排默认并发越高，同时改文件与消耗 token 的速度越快',
     'orch-opt-max-attempts': '编排自动重试次数影响返工成本',
     'orch-opt-batch-timeout': '编排单批超时影响卡住批次占用时间',

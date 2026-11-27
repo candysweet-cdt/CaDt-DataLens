@@ -133,6 +133,9 @@ func ValidatePlan(req PlanRequest) (*PlanRequest, []string) {
 	if policy.ReviewModel != "" && policy.AllowWorkerModels && !allowedModels[policy.ReviewModel] {
 		add("审查模型 %s 不在白名单内", policy.ReviewModel)
 	}
+	if policy.FinalReviewModel != "" && policy.AllowWorkerModels && !allowedModels[policy.FinalReviewModel] {
+		add("终审模型 %s 不在白名单内", policy.FinalReviewModel)
+	}
 	if policy.AllowWorkerModels {
 		for _, b := range req.Batches {
 			if b.Model.First != "" && !allowedModels[b.Model.First] {
@@ -147,7 +150,9 @@ func ValidatePlan(req PlanRequest) (*PlanRequest, []string) {
 		for i := range req.Batches {
 			req.Batches[i].Model = ModelSpec{}
 		}
-		req.Policy.ReviewModel = ""
+		// 清在 policy 副本上：下面 req.Policy = policy 会覆盖 req.Policy 上的清空。
+		policy.ReviewModel = ""
+		policy.FinalReviewModel = ""
 	}
 	req.Policy = policy
 	return &req, errs
@@ -247,6 +252,35 @@ func aggregateStatus(o *Orchestration) string {
 		}
 	}
 	if allDone {
+		if !o.Policy.FinalReview {
+			return StatusDone
+		}
+		finals := finalReviewBatches(o)
+		if len(finals) == 0 {
+			// 巡检会创建终审批次；在此之前不能先报 done。
+			return StatusRunning
+		}
+		finalsDone := true
+		finalsBlocked := false
+		for _, b := range finals {
+			switch b.Status {
+			case BatchDone, BatchSkipped:
+			case BatchFailed, BatchBlocked:
+				finalsDone = false
+				finalsBlocked = true
+			default:
+				finalsDone = false
+			}
+		}
+		if !finalsDone {
+			if finalsBlocked {
+				if hasUnresolvedArbitration(o) {
+					return StatusAwaitingArbitration
+				}
+				return StatusBlocked
+			}
+			return StatusRunning
+		}
 		return StatusDone
 	}
 	if anyUser {
@@ -285,6 +319,15 @@ func aggregateStatus(o *Orchestration) string {
 		return StatusBlocked
 	}
 	return StatusBlocked
+}
+
+func hasUnresolvedArbitration(o *Orchestration) bool {
+	for i := range o.ArbitrationQueue {
+		if !o.ArbitrationQueue[i].Resolved {
+			return true
+		}
+	}
+	return false
 }
 
 // readyBatchIDs 返回当前可派发的批次（按计划顺序）。includeReviews=false 时只看 work。
@@ -334,7 +377,16 @@ func readyBatchIDs(o *Orchestration, includeReviews bool) []string {
 		if b.Attempts >= limit {
 			continue
 		}
-		if b.Kind == KindReview {
+		if b.Kind == KindReview && b.FinalReview {
+			if !includeReviews || !b.Activated {
+				continue
+			}
+			// 终审是“全部 work 收尾后”的独立阶段：逐批审查也必须已经收尾，
+			// 否则会审到仍在返工的移动目标。
+			if !allWorkDoneOrSkipped(o) || !normalReviewsTerminal(o) {
+				continue
+			}
+		} else if b.Kind == KindReview {
 			if !includeReviews || !b.Activated {
 				continue
 			}
@@ -558,7 +610,9 @@ func buildDispatchPrompt(o *Orchestration, b *Batch) string {
 	if b.UserAnswer != "" {
 		fmt.Fprintf(&sb, "\n【用户回答】%s\n", b.UserAnswer)
 	}
-	if b.Kind == KindReview {
+	if b.FinalReview {
+		fmt.Fprintf(&sb, "\n【终审约束】\n- 只读；不得修改任何文件。\n- 审查范围：全部工作批次的 writeLog 与工作区当前内容的组合结果；不要把既有未提交改动归到本次编排。\n- 必须做反向验证：对「已修的接线类断言」，说明如果把实现删掉，这条测试会不会红。\n- 收尾必须调用 orchestration_report，并用 review 字段给出 blocking / shouldFix / suggestions。\n")
+	} else if b.Kind == KindReview {
 		fmt.Fprintf(&sb, "\n【审查约束】\n- 只读；不得修改任何文件。\n- 审查范围：被审查批次的 writeLog 与本轮工作区 diff；不要把既有未提交改动归到本批。\n- 必须做反向验证：对「已修的接线类断言」，说明如果把实现删掉，这条测试会不会红。\n- 收尾必须调用 orchestration_report，并用 review 字段给出 blocking / shouldFix / suggestions。\n")
 	} else {
 		if len(b.Owns) == 0 {
@@ -573,7 +627,10 @@ func buildDispatchPrompt(o *Orchestration, b *Batch) string {
 // ===== 预演与批次工具 =====
 // PlanDryRun 纯内存模拟：不写状态、不发事件、不建会话。只断言不变量，不追求与人工顺序一致。
 func PlanDryRun(plan *PlanRequest) PlanPreview {
-	preview := PlanPreview{Valid: true, Plan: plan, ReviewEnabled: plan.Policy.Review}
+	preview := PlanPreview{
+		Valid: true, Plan: plan, ReviewEnabled: plan.Policy.Review,
+		FinalReviewEnabled: plan.Policy.FinalReview, FinalReviewCount: plan.Policy.FinalReviewCount,
+	}
 	clone := &Orchestration{
 		Status:    StatusRunning,
 		Policy:    plan.Policy,

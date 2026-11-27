@@ -134,6 +134,19 @@ func TestValidatePlanAndDryRun(t *testing.T) {
 	if _, errs := ValidatePlan(req); len(errs) == 0 {
 		t.Fatal("应拒绝 shell 包装器")
 	}
+	// 未授权模型时，审查/终审模型必须真的被清掉（不能只清 req.Policy 再被 policy 覆盖）。
+	req = basePlan(ws, "B1")
+	req.Policy.AllowWorkerModels = false
+	req.Policy.ReviewModel = "a|b"
+	req.Policy.FinalReview = true
+	req.Policy.FinalReviewModel = "c|d"
+	cleaned, errs := ValidatePlan(req)
+	if len(errs) > 0 {
+		t.Fatalf("未授权模型应忽略而不是报错：%v", errs)
+	}
+	if cleaned.Policy.ReviewModel != "" || cleaned.Policy.FinalReviewModel != "" {
+		t.Fatalf("未授权模型未被清掉：%+v", cleaned.Policy)
+	}
 }
 
 func TestOwnsPathGate(t *testing.T) {
@@ -244,6 +257,155 @@ func TestReviewBatchIsIndependentAndNoDeadlock(t *testing.T) {
 	if o.Batches[0].Status != BatchDone {
 		t.Fatalf("审查通过后 work 应 done：%s", o.Batches[0].Status)
 	}
+}
+
+func TestFinalReviewGatesDoneAndInheritsParentModel(t *testing.T) {
+	ws := testWorkspace(t)
+	engine := testEngine(t, Deps{})
+	plan := basePlan(ws, "B1")
+	plan.Batches[0].Verify = nil
+	plan.Policy.Review = false
+	plan.Policy.ReviewExplicit = true
+	plan.Policy.MaxParallel = 2
+	plan.Policy.FinalReview = true
+	plan.Policy.FinalReviewCount = 2
+	plan.Policy.FinalReviewModel = "" // 留空 = 继承母会话
+	res, err := engine.Create(plan, "win-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDispatched })
+	work := claimAndStart(t, engine, ws, res.ID, "B1", 1)
+	if _, err := engine.Report(work.ExecutionToken, `{"batchId":"B1","reportId":"r1","status":"done","notes":"ok"}`); err != nil {
+		t.Fatal(err)
+	}
+	o := waitFor(t, engine, res.ID, func(o *Orchestration) bool {
+		finals := finalReviewBatches(o)
+		return len(finals) == 2 && finals[0].Status == BatchDispatched && finals[1].Status == BatchDispatched
+	})
+	finals := finalReviewBatches(o)
+	if finals[0].ReviewOf != "" || !finals[0].FinalReview {
+		t.Fatalf("终审批次结构错误：%+v", finals[0])
+	}
+	for _, b := range finals {
+		start := claimAndStart(t, engine, ws, res.ID, b.ID, 1)
+		if start.Model != "" {
+			t.Fatalf("留空模型应继承母会话（模型串为空），实际 %q", start.Model)
+		}
+		if _, err := engine.Report(start.ExecutionToken,
+			`{"batchId":"`+b.ID+`","reportId":"fr-`+b.ID+`","status":"done","notes":"通过","review":{"blocking":[],"shouldFix":[],"suggestions":[]}}`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Status == StatusDone })
+}
+
+func TestFinalReviewFindingsNeedHumanAcceptance(t *testing.T) {
+	ws := testWorkspace(t)
+	engine := testEngine(t, Deps{})
+	plan := basePlan(ws, "B1")
+	plan.Batches[0].Verify = nil
+	plan.Policy.Review = false
+	plan.Policy.ReviewExplicit = true
+	plan.Policy.FinalReview = true
+	plan.Policy.FinalReviewCount = 1
+	res, err := engine.Create(plan, "win-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDispatched })
+	work := claimAndStart(t, engine, ws, res.ID, "B1", 1)
+	if _, err := engine.Report(work.ExecutionToken, `{"batchId":"B1","reportId":"r1","status":"done","notes":"ok"}`); err != nil {
+		t.Fatal(err)
+	}
+	o := waitFor(t, engine, res.ID, func(o *Orchestration) bool {
+		finals := finalReviewBatches(o)
+		return len(finals) == 1 && finals[0].Status == BatchDispatched
+	})
+	final := finalReviewBatches(o)[0]
+	start := claimAndStart(t, engine, ws, res.ID, final.ID, 1)
+	if _, err := engine.Report(start.ExecutionToken,
+		`{"batchId":"`+final.ID+`","reportId":"fr1","status":"done","notes":"有阻断","review":{"blocking":[{"path":"a.js","problem":"没接上"}],"shouldFix":[],"suggestions":[]}}`); err != nil {
+		t.Fatal(err)
+	}
+	o = waitFor(t, engine, res.ID, func(o *Orchestration) bool {
+		return o.Status == StatusAwaitingArbitration && len(o.ArbitrationQueue) > 0
+	})
+	ev := o.ArbitrationQueue[0]
+	if ev.Reason != ReasonFinalReview {
+		t.Fatalf("终审阻断应进入 L2：%+v", ev)
+	}
+	if _, err := engine.UserControl(ControlRequest{
+		OrchestrationID: res.ID, Action: "resolve_arbitration",
+		ExpectedEventID: ev.EventID, Answer: "接受终审意见，后续人工修",
+	}, ws); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Status == StatusDone })
+}
+
+func TestFinalReviewResetAfterWorkRetry(t *testing.T) {
+	ws := testWorkspace(t)
+	engine := testEngine(t, Deps{})
+	plan := basePlan(ws, "B1")
+	plan.Batches[0].Verify = nil
+	plan.Policy.Review = false
+	plan.Policy.ReviewExplicit = true
+	plan.Policy.FinalReview = true
+	plan.Policy.FinalReviewCount = 1
+	res, err := engine.Create(plan, "win-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDispatched })
+	work := claimAndStart(t, engine, ws, res.ID, "B1", 1)
+	if _, err := engine.Report(work.ExecutionToken, `{"batchId":"B1","reportId":"r1","status":"done","notes":"旧结果"}`); err != nil {
+		t.Fatal(err)
+	}
+	o := waitFor(t, engine, res.ID, func(o *Orchestration) bool {
+		f := finalReviewBatches(o)
+		return len(f) == 1 && f[0].Status == BatchDispatched
+	})
+	final := finalReviewBatches(o)[0]
+	fs := claimAndStart(t, engine, ws, res.ID, final.ID, 1)
+	if _, err := engine.Report(fs.ExecutionToken,
+		`{"batchId":"`+final.ID+`","reportId":"fr1","status":"done","notes":"通过","review":{"blocking":[],"shouldFix":[],"suggestions":[]}}`); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Status == StatusDone })
+
+	// done 之后重派 work：旧终审必须作废，不能拿旧结论直接再次 done。
+	if _, err := engine.UserControl(ControlRequest{
+		OrchestrationID: res.ID, Action: "retry", BatchID: "B1",
+	}, ws); err != nil {
+		t.Fatal(err)
+	}
+	o = waitFor(t, engine, res.ID, func(o *Orchestration) bool {
+		f := finalReviewBatches(o)
+		return f[0].Status == BatchPending && f[0].Attempts == 0 && o.Status != StatusDone
+	})
+	if o.Status == StatusDone {
+		t.Fatal("重派 work 后编排不应保持 done")
+	}
+	// 新 work 结果必须进入下一次终审的 spec，而不是旧的“旧结果”。
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDispatched })
+	work2 := claimAndStart(t, engine, ws, res.ID, "B1", 1)
+	if _, err := engine.Report(work2.ExecutionToken, `{"batchId":"B1","reportId":"r2","status":"done","notes":"新结果"}`); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool {
+		f := finalReviewBatches(o)
+		return f[0].Status == BatchDispatched
+	})
+	fs2 := claimAndStart(t, engine, ws, res.ID, final.ID, 1)
+	if !strings.Contains(fs2.Prompt, "新结果") {
+		t.Fatalf("终审派单 prompt 应包含新结果，实际：%s", fs2.Prompt)
+	}
+	if _, err := engine.Report(fs2.ExecutionToken,
+		`{"batchId":"`+final.ID+`","reportId":"fr2","status":"done","notes":"通过","review":{"blocking":[],"shouldFix":[],"suggestions":[]}}`); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Status == StatusDone })
 }
 
 // ===== 尝试耗尽与状态区分 =====
@@ -422,6 +584,39 @@ func TestServiceWorkspaceIsolation(t *testing.T) {
 		t.Fatal("B 工作区不应看到 A 的编排")
 	}
 	// Create 会异步触发一次派发巡检；等它落盘完再让 TempDir 清理，避免 Windows 删目录竞态。
+	engine.waitTicks()
+}
+
+func TestServiceHarnessUsesExplicitWorkspace(t *testing.T) {
+	ws := testWorkspace(t)
+	engine := testEngine(t, Deps{})
+	old := Default
+	oldDeps := callDeps
+	Default = engine
+	callDeps = CallDeps{
+		WorkspaceForCall:  func(context.Context) string { return "" },
+		WindowForCall:     func(context.Context) string { return "harness" },
+		MainWindowForCall: func(context.Context) bool { return true },
+	}
+	defer func() { Default = old; callDeps = oldDeps }()
+	svc := &Service{}
+	plan := basePlan(ws, "B1")
+	plan.Batches[0].Verify = nil
+	if _, err := svc.OrchestrationCreate(context.Background(), mustJSON(t, plan)); err != nil {
+		t.Fatalf("多工作区主窗口应能按会话 workspace 提交：%v", err)
+	}
+	list, err := svc.OrchestrationList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || cleanAbs(list[0].Workspace) != cleanAbs(ws) {
+		t.Fatalf("harness 列表应包含该工作区编排：%+v", list)
+	}
+	// 浮窗/调试窗没有单一 workspace 且不是主窗口：仍 fail-closed。
+	callDeps.MainWindowForCall = func(context.Context) bool { return false }
+	if _, err := svc.OrchestrationList(context.Background()); err == nil {
+		t.Fatal("辅助窗没有 workspace 时必须拒绝")
+	}
 	engine.waitTicks()
 }
 

@@ -24,6 +24,8 @@ test('buildPlanRequest：默认审查门开、审计阈值随最长批次放大�
     assert.equal(req.policy.maxParallel, 8, '并发夹到 1–8');
     assert.equal(req.policy.review, true, '未显式关审查时应默认开');
     assert.equal(req.policy.reviewExplicit, false);
+    assert.equal(req.policy.finalReview, false, '终审默认关，由审批卡/设置显式开启');
+    assert.equal(req.policy.finalReviewCount, 0);
     assert.ok(req.policy.auditIdleMs >= 2 * 2 * 60 * 60 * 1000, '审计阈值必须 ≥ 2 × 最长批次超时');
     assert.deepEqual(req.batches[0].owns, ['src/**']);
 });
@@ -41,6 +43,17 @@ test('buildPlanRequest：显式关审查 + 白名单 + 自主模式都如实保�
     assert.equal(req.policy.autoRun, true);
     assert.equal(req.policy.scope, 'read');
     assert.deepEqual(req.batches[0].owns, []);
+});
+
+test('buildPlanRequest：终审开关、数量与模型留空（继承母会话）如实保留', () => {
+    const req = buildPlanRequest({
+        title: 't', goal: 'g',
+        policy: {finalReview: true, finalReviewCount: 9, finalReviewModel: ''},
+        batches: [{id: 'B1', title: 't', spec: 's', owns: []}],
+    }, {workspace: 'D:/repo', sessionId: 'p', scope: 'read'});
+    assert.equal(req.policy.finalReview, true);
+    assert.equal(req.policy.finalReviewCount, 3, '终审数量夹到 1–3');
+    assert.equal(req.policy.finalReviewModel, '', '留空表示继承母会话');
 });
 
 test('stricterScope：只能继承或更严', () => {

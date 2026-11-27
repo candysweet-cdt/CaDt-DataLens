@@ -6,11 +6,13 @@ import {createCheckbox, createInput, createTextarea} from '../core/form-controls
 import {copyTextToClipboard} from '../core/clipboard.js';
 import {iconSvg} from '../core/icons.js';
 import {overlayStack} from '../core/overlay-stack.js';
+import {isMultiWorkspace} from '../core/root-scope.js';
 import {
     acceptsWorkspace, batchDoneRatio, batchStatusLabel, buildPlanRequest, computeAuditIdleMs, failureLabel,
-    formatElapsed, formatVerifyEditor, isTerminalStatus, normalizeBatch, ownsFromInput, ownsToInput,
-    parseVerifyEditor, statusLabel, summarizeView,
+    formatElapsed, isTerminalStatus, ownsFromInput, ownsToInput,
+    statusLabel, summarizeView,
 } from './orchestration-model.js';
+import {buildExecutionGraph, renderExecutionGraph} from './orchestration-graph.js';
 
 function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -169,48 +171,451 @@ export function createOrchestrationDomain(deps) {
         return {mask, dialog, head, body, foot, close: closeDialog};
     }
 
-    function buildBatchEditor(batch, index, onChange) {
+    // 计划结构由母会话生成：标题/描述/依赖/范围/验收只读，用户只调参数（超时/模型）。
+    function advancedSummary(hint) {
+        const summary = el('summary', 'orch-advanced-summary');
+        summary.appendChild(el('span', 'orch-advanced-name', '高级设置'));
+        if (hint) summary.appendChild(el('span', 'orch-advanced-hint', hint));
+        const chev = el('span', 'orch-advanced-chevron');
+        chev.innerHTML = iconSvg('chevron-right', 12);
+        summary.appendChild(chev);
+        return summary;
+    }
+
+    function readOnlyRow(text, value, mono) {
+        const row = el('div', 'orch-field orch-field-read');
+        row.appendChild(el('span', 'orch-field-label', text));
+        const valueNode = el('div', 'orch-read-value' + (mono ? ' orch-read-mono' : ''),
+            value == null || value === '' ? '—' : String(value));
+        row.appendChild(valueNode);
+        return row;
+    }
+
+    function buildBatchEditor(batch, index) {
         const card = el('div', 'orch-batch-card');
-        const top = el('div', 'orch-batch-top');
-        const badge = el('span', 'orch-badge', batch.id || ('B' + (index + 1)));
-        const title = createInput({value: batch.title || '', placeholder: '批次标题'}).control;
-        title.className += ' orch-batch-title';
-        const del = iconButton('删除', 'trash', 'orch-btn orch-btn-ghost', () => {
-            card.remove();
-            onChange();
-        });
-        top.append(badge, title, del);
-        const spec = createTextarea({value: batch.spec || '', rows: 4, placeholder: '本批完整任务说明（派单时原样注入）'}).control;
-        const owns = createInput({value: ownsToInput(batch.owns), placeholder: '可写 glob，逗号分隔；留空 = 只读'}).control;
-        const depends = createInput({value: ownsToInput(batch.dependsOn), placeholder: '依赖的 work 批次 id，逗号分隔；留空 = 无依赖'}).control;
-        const verify = createTextarea({value: formatVerifyEditor(batch.verify), rows: 2, placeholder: 'verify JSON（exe + argv），留空 = 无自动验收'}).control;
-        const modelInput = createInput({value: (batch.model && (batch.model.first || batch.model.retry)) || '', placeholder: '模型 ref（仅用户授权白名单后生效）；留空 = 仲裁模型'}).control;
-        card.append(
-            top,
-            labelRow('任务说明', spec),
-            labelRow('可写路径', owns),
-            labelRow('依赖批次', depends),
-            labelRow('模型', modelInput),
-            labelRow('验收命令', verify),
+        const head = el('div', 'orch-batch-head');
+        head.append(
+            el('span', 'orch-badge', batch.id || ('B' + (index + 1))),
+            el('div', 'orch-batch-title', batch.title || ('批次 ' + (index + 1))),
         );
-        Object.assign(card, {__id: batch.id, __title: title, __spec: spec, __owns: owns, __verify: verify});
-        card.__read = () => {
-            const parsed = parseVerifyEditor(verify.value);
-            const modelRef = String(modelInput.value || '').trim();
+        const specText = batch.spec || '（无描述）';
+        const spec = el('div', 'orch-batch-spec', specText);
+        const bits = [];
+        bits.push(batch.owns && batch.owns.length
+            ? '范围 ' + ownsToInput(batch.owns) : '只读');
+        if (batch.dependsOn && batch.dependsOn.length) bits.push('依赖 ' + ownsToInput(batch.dependsOn));
+        bits.push(batch.verify && batch.verify.length ? '验收 ' + batch.verify.length + ' 条' : '无自动验收');
+        const meta = el('div', 'orch-batch-meta', bits.join(' · '));
+        card.append(head, spec);
+        if (specText.length > 140) {
+            const toggle = el('button', 'orch-desc-toggle', '展开描述');
+            toggle.type = 'button';
+            toggle.addEventListener('click', () => {
+                const expanded = card.classList.toggle('expanded');
+                toggle.textContent = expanded ? '收起描述' : '展开描述';
+            });
+            card.appendChild(toggle);
+        }
+        card.appendChild(meta);
+        return card;
+    }
+
+    // 审批卡编辑器：渲染在 composer 接管区（失败时退回弹窗），DOM 只构建一次，
+    // 折叠/展开复用同一份节点，避免收起再展开丢掉用户编辑。
+    function createPlanEditor(basePlan, opts) {
+        const session = opts.session;
+        const parentModel = opts.model;
+        const call = opts.call;
+        const notify = opts.notify;
+        const openBoard = opts.openBoard;
+        const bodyNode = el('div', 'orch-plan-editor');
+        const footNodes = [];
+        const continueText = '用户选择继续编排（尚未执行）。请等待用户补充意见；收到后用 orchestration_plan 重新提交完整修订版，不要直接执行或重复创建。';
+        let built = false;
+        let api = null;
+        let submitting = false;
+        let cancelled = false;
+        let continueRequested = false;
+        let resultText = '';
+        let lastError = '';
+        let submitPromise = null;
+        let list = null;
+        let errorBox = null;
+        let graphSvg = null;
+        let graphError = null;
+        let graphNote = null;
+        let graphRetry = null;
+        let lastPreview = null;
+        let continueBtn = null;
+        let submitBtn = null;
+        let review = null;
+        let finalReview = null;
+        let finalCount = null;
+        let finalCountRow = null;
+        let autoRun = null;
+        let snapshot = null;
+        let allowModels = null;
+        let modelList = null;
+        let reviewModel = null;
+        let finalReviewModel = null;
+        let modelRows = [];
+
+        const showError = (message) => {
+            if (!errorBox) return;
+            errorBox.textContent = String(message || '');
+            if (errorBox.textContent) {
+                try { errorBox.scrollIntoView({block: 'nearest'}); } catch (e) {}
+            }
+        };
+
+        const showGraphError = (message) => {
+            if (graphError) {
+                graphError.textContent = String(message || '执行顺序预览失败');
+                graphError.hidden = false;
+            }
+            if (graphRetry) graphRetry.hidden = false;
+            if (graphSvg) graphSvg.style.display = 'none';
+            if (graphNote) graphNote.textContent = '';
+        };
+
+        const renderGraph = () => {
+            if (!graphSvg || !lastPreview) return;
+            const layout = buildExecutionGraph(basePlan, lastPreview, {
+                finalReview: !!(finalReview && finalReview.checked),
+                finalReviewCount: Number(finalCount && finalCount.value) || 1,
+                maxParallel: basePlan.policy.maxParallel,
+            });
+            renderExecutionGraph(graphSvg, layout);
+            graphSvg.style.display = '';
+            if (graphError) {
+                graphError.textContent = '';
+                graphError.hidden = true;
+            }
+            if (graphRetry) graphRetry.hidden = true;
+            if (graphNote) {
+                const notes = ['同列可并行，实际派发受并发上限（' + layout.maxParallel
+                    + '）与 owns 交集约束；跨列按依赖推进。'];
+                if ((lastPreview.forcedSerial || []).length) {
+                    notes.push('串行约束：' + lastPreview.forcedSerial.join('；'));
+                }
+                if ((lastPreview.warnings || []).length) {
+                    notes.push('提示：' + lastPreview.warnings.join('；'));
+                }
+                graphNote.textContent = notes.join('\n');
+            }
+        };
+
+        const preview = async () => {
+            if (!list) return null;
+            const plan = readPlan();
+            try {
+                const res = await call('OrchestrationPlanPreview', JSON.stringify(plan));
+                if (!res || !res.valid) {
+                    showGraphError(res && res.errors ? res.errors.join('；') : '计划校验失败');
+                    return null;
+                }
+                showError('');
+                lastPreview = res;
+                renderGraph();
+                return {plan, preview: res};
+            } catch (e) {
+                showGraphError((e && e.message) || String(e));
+                return null;
+            }
+        };
+
+        const setBusy = (busy) => {
+            submitting = !!busy;
+            if (submitBtn) submitBtn.disabled = submitting;
+            if (continueBtn) continueBtn.disabled = submitting;
+        };
+
+        const submit = () => {
+            if (submitting) return Promise.resolve();
+            submitPromise = (async () => {
+                const got = await preview();
+                if (!got || cancelled) return;
+                setBusy(true);
+                lastError = '';
+                try {
+                    const created = await call('OrchestrationCreate', JSON.stringify(got.plan));
+                    if (cancelled) {
+                        // 创建请求已发出后用户停止生成：不能把整条编排留在后台跑。
+                        try {
+                            await call('OrchestrationUserControl', JSON.stringify({
+                                orchestrationId: created.id, action: 'stop',
+                            }));
+                        } catch (e) {}
+                        resultText = '编排已创建，但用户停止了生成，已请求停止：' + created.id;
+                        return;
+                    }
+                    const ai2 = aiPanel();
+                    if (ai2 && ai2.bridgeAttachOrchestrationSession && session) {
+                        ai2.bridgeAttachOrchestrationSession(session.id, {
+                            id: created.id, role: 'arbiter', generation: 1, parentSessionId: session.id,
+                        }, '');
+                    }
+                    if (created.warning) notify(created.warning, false);
+                    openBoard(got.plan.workspace);
+                    resultText = '编排已创建并启动：' + created.id + '（' + got.plan.title + '）'
+                        + (created.warning ? '\n注意：' + created.warning : '');
+                    if (api) api.finish(true);
+                } catch (e) {
+                    lastError = (e && e.message) || String(e);
+                    notify('编排创建失败：' + lastError, true);
+                    showError(lastError);
+                } finally {
+                    setBusy(false);
+                }
+            })();
+            return submitPromise;
+        };
+
+        const readPlan = () => {
+            const batches = basePlan.batches.map((batch) => ({...batch}));
+            const allowed = ownsFromInput(modelList ? modelList.value : '');
+            const finalReviewOn = !!(finalReview && finalReview.checked);
+            const policy = {
+                ...basePlan.policy,
+                review: !!(review && review.checked),
+                reviewExplicit: true,
+                allowWorkerModels: !!(allowModels && allowModels.checked),
+                allowedWorkerModels: (allowModels && allowModels.checked) ? allowed.slice(0, 5) : [],
+                reviewModel: allowModels && allowModels.checked && reviewModel ? reviewModel.value.trim() : '',
+                finalReview: finalReviewOn,
+                finalReviewCount: finalReviewOn
+                    ? Math.max(1, Math.min(3, Number(finalCount && finalCount.value) || 1)) : 0,
+                finalReviewModel: allowModels && allowModels.checked && finalReviewModel
+                    ? finalReviewModel.value.trim() : '',
+                autoRun: !!(autoRun && autoRun.checked),
+                snapshotBeforeStart: !!(snapshot && snapshot.checked),
+            };
+            policy.auditIdleMs = computeAuditIdleMs(basePlan.policy.auditIdleMs, policy, batches);
             return {
-                ...normalizeBatch({
-                    ...batch,
-                    title: title.value,
-                    spec: spec.value,
-                    owns: ownsFromInput(owns.value),
-                    dependsOn: ownsFromInput(depends.value),
-                    model: modelRef ? {first: modelRef} : {},
-                    verify: parsed.ok ? parsed.value : batch.verify,
-                }, index),
-                __verifyError: parsed.ok ? '' : parsed.error,
+                ...basePlan, policy,
+                batches,
             };
         };
-        return card;
+
+        const syncModelInputs = () => {
+            const allowed = !!(allowModels && allowModels.checked);
+            const reviewOn = !!(review && review.checked);
+            const finalOn = !!(finalReview && finalReview.checked);
+            if (modelList) modelList.disabled = !allowed;
+            if (reviewModel) reviewModel.disabled = !allowed;
+            if (finalReviewModel) finalReviewModel.disabled = !allowed || !finalOn;
+            for (const row of modelRows) {
+                if (!row) continue;
+                if (row.dataset.role === 'allowed') row.style.display = allowed ? '' : 'none';
+                else if (row.dataset.role === 'review') row.style.display = allowed && reviewOn ? '' : 'none';
+                else if (row.dataset.role === 'final') row.style.display = allowed && finalOn ? '' : 'none';
+            }
+        };
+
+        const updateFinalCountVisibility = () => {
+            const on = !!(finalReview && finalReview.checked);
+            if (finalCountRow) finalCountRow.style.display = on ? '' : 'none';
+            if (finalCount) finalCount.disabled = !on;
+            syncModelInputs();
+        };
+
+        const build = () => {
+            built = true;
+            bodyNode.textContent = '';
+            const intro = el('div', 'orch-intro');
+            intro.append(
+                el('div', 'orch-title', basePlan.title),
+                el('div', 'orch-goal', basePlan.goal || '（未填写目标）'),
+                el('div', 'orch-muted',
+                    '预估 ' + basePlan.batches.length + ' 批 · 约 ' + (basePlan.batches.length * 5)
+                    + ' 轮；批准后只在计划边界内自动重试。'),
+            );
+            bodyNode.appendChild(intro);
+
+            // 执行顺序是审批的第一信息：波次列 + dependsOn 边常驻展示，不再藏在按钮后面。
+            const graphCard = el('div', 'orch-graph-card');
+            const graphHead = el('div', 'orch-graph-head');
+            graphHead.appendChild(el('div', 'orch-graph-title', '执行顺序'));
+            const graphLegend = el('div', 'orch-graph-legend');
+            const legendItem = (cls, text) => {
+                const item = el('span', 'orch-legend-item');
+                item.append(el('i', cls), document.createTextNode(text));
+                return item;
+            };
+            graphLegend.append(
+                legendItem('orch-legend-line', '依赖'),
+                legendItem('orch-legend-dash', '审查门'),
+                legendItem('orch-legend-parallel', '∥ 同列并行'),
+            );
+            graphRetry = iconButton('重试', 'refresh', 'orch-link-btn', () => { preview().catch(() => {}); });
+            graphRetry.hidden = true;
+            graphHead.append(graphLegend, graphRetry);
+            graphSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            graphSvg.setAttribute('class', 'orch-graph-svg');
+            const graphScroll = el('div', 'orch-graph-scroll');
+            graphScroll.appendChild(graphSvg);
+            graphError = el('div', 'orch-graph-error');
+            graphError.hidden = true;
+            graphNote = el('div', 'orch-graph-note', '正在生成执行顺序…');
+            graphCard.append(graphHead, graphScroll, graphError, graphNote);
+            bodyNode.appendChild(graphCard);
+
+            // 审批选项与高级设置同一张卡：结构参数只读展示，用户只调审批选项与模型/执行参数。
+            const policyCard = el('div', 'orch-policy-card');
+            const chips = el('div', 'orch-policy-chips');
+            const chip = (label, value) => {
+                const c = el('span', 'orch-chip');
+                c.append(el('b', '', label), document.createTextNode(' ' + value));
+                return c;
+            };
+            chips.append(
+                chip('权限', String(basePlan.policy.scope || 'read')),
+                chip('并发', String(basePlan.policy.maxParallel)),
+                chip('单批尝试', String(basePlan.policy.maxAttemptsPerBatch)),
+                chip('单批超时', formatElapsed(Number(basePlan.policy.batchTimeoutMs) || 0)),
+                chip('token 预算', Number(basePlan.policy.budgetTokens) > 0
+                    ? String(basePlan.policy.budgetTokens) : '不限'),
+            );
+            policyCard.appendChild(chips);
+
+            const toggles = el('div', 'orch-policy-toggles');
+            const reviewBox = createCheckbox({checked: basePlan.policy.review !== false, label: '逐批审查门'});
+            const finalReviewBox = createCheckbox({
+                checked: basePlan.policy.finalReview === true,
+                label: '全部完成后开子代理终审',
+            });
+            review = reviewBox.control;
+            finalReview = finalReviewBox.control;
+            finalCount = createInput({
+                type: 'number', min: 1, max: 3,
+                value: String(basePlan.policy.finalReviewCount || 1),
+            }).control;
+            finalCountRow = labelRow('终审数量', finalCount);
+            finalCountRow.classList.add('orch-final-count-row');
+            toggles.append(reviewBox.element, finalReviewBox.element, finalCountRow);
+            policyCard.appendChild(toggles);
+
+            const advanced = el('details', 'orch-advanced orch-plan-advanced');
+            advanced.appendChild(advancedSummary('模型 · 自主执行 · 快照'));
+            const advGrid = el('div', 'orch-advanced-grid');
+            const allowModelsBox = createCheckbox({checked: false, label: '允许为批次/审查/终审指定模型'});
+            allowModels = allowModelsBox.control;
+            modelList = createInput({placeholder: '模型 ref（账号id|模型id），逗号分隔，最多 5 条'}).control;
+            reviewModel = createInput({placeholder: '留空 = 继承母会话'}).control;
+            finalReviewModel = createInput({placeholder: '留空 = 继承母会话'}).control;
+            const autoRunBox = createCheckbox({checked: false, label: '全程由 agent 自主执行（禁止 awaiting_user）'});
+            autoRun = autoRunBox.control;
+            const snapshotBox = createCheckbox({checked: false, label: '编排开始前创建快照（大项目可能几百 MB）'});
+            snapshot = snapshotBox.control;
+            const allowedRow = labelRow('允许的模型', modelList);
+            const reviewModelRow = labelRow('审查模型', reviewModel);
+            const finalModelRow = labelRow('终审模型', finalReviewModel);
+            allowedRow.dataset.role = 'allowed';
+            reviewModelRow.dataset.role = 'review';
+            finalModelRow.dataset.role = 'final';
+            modelRows = [allowedRow, reviewModelRow, finalModelRow];
+            advGrid.append(
+                allowModelsBox.element,
+                allowedRow,
+                reviewModelRow,
+                finalModelRow,
+                autoRunBox.element,
+                snapshotBox.element,
+            );
+            advanced.appendChild(advGrid);
+            policyCard.appendChild(advanced);
+            policyCard.appendChild(el('div', 'orch-plan-note',
+                '当前母会话模型：' + (parentModel
+                    ? parentModel.label + '（' + parentModel.ref + '）'
+                    : '继承发起会话')));
+            bodyNode.appendChild(policyCard);
+
+            finalReview.addEventListener('change', () => {
+                updateFinalCountVisibility();
+                renderGraph();
+            });
+            finalCount.addEventListener('input', renderGraph);
+            review.addEventListener('change', syncModelInputs);
+            allowModels.addEventListener('change', syncModelInputs);
+            updateFinalCountVisibility();
+
+            // 快照代价提示：有历史快照时显示上一次体积，让用户对耗时与磁盘有预期。
+            try {
+                Promise.resolve(call('WipeGuardSnapshotList', getWorkspace())).then((snapList) => {
+                    const latest = (Array.isArray(snapList) ? snapList : [])
+                        .slice().sort((a, b) => Number(b.at) - Number(a.at))[0];
+                    if (!latest || !(Number(latest.bytes) > 0)) return;
+                    const hint = el('span', 'orch-muted',
+                        '（上次快照 ' + Math.round(Number(latest.bytes) / (1024 * 1024)) + ' MB）');
+                    snapshotBox.element.appendChild(hint);
+                }).catch(() => {});
+            } catch (e) {}
+
+            bodyNode.appendChild(el('div', 'orch-section-title', '批次'));
+            list = el('div', 'orch-batch-list');
+            for (let i = 0; i < basePlan.batches.length; i++) {
+                list.appendChild(buildBatchEditor(basePlan.batches[i], i));
+            }
+            bodyNode.appendChild(list);
+
+            errorBox = el('div', 'orch-error');
+            bodyNode.appendChild(errorBox);
+
+            const footHint = el('span', 'orch-foot-hint',
+                '计划结构由母会话生成；需要改结构请继续编排并说明。');
+            continueBtn = iconButton('继续编排', '', 'dlg-btn', () => {
+                if (submitting) return;
+                cancelled = true;
+                continueRequested = true;
+                notify('已继续编排，请补充意见后再提交修订版', false);
+                if (api && typeof api.continue === 'function') api.continue();
+                else if (api) api.finish(false);
+            });
+            submitBtn = iconButton('执行编排', 'check', 'dlg-btn primary', () => { submit().catch(() => {}); });
+            footNodes.push(footHint, el('span', 'orch-spacer'), continueBtn, submitBtn);
+            preview().catch(() => {});
+        };
+
+        return {
+            get title() { return '编排计划审批'; },
+            get subtitle() { return basePlan.title; },
+            get resultText() { return resultText; },
+            get lastError() { return lastError; },
+            get continueRequested() { return continueRequested; },
+            get continueText() { return continueText; },
+            waitForSubmit: () => submitPromise || Promise.resolve(),
+            submit: () => submit(),
+            cancel: () => {
+                cancelled = true;
+                if (api && !submitting) api.finish(false);
+            },
+            // 停止生成时 AI 面板会直接撤掉 pendingApprovals；这里只标记取消，
+            // 让仍在飞的创建请求落地后自行停止编排。
+            cancelFromHost: () => { cancelled = true; },
+            mount(bodyHost, footHost, nextApi) {
+                if (!built) build();
+                api = nextApi || null;
+                bodyHost.appendChild(bodyNode);
+                for (const node of footNodes) footHost.appendChild(node);
+            },
+        };
+    }
+
+    function openModalPlanEditor(editor) {
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = (approved) => {
+                if (settled) return;
+                settled = true;
+                const text = approved
+                    ? (editor.resultText || '编排已创建。')
+                    : '用户取消了编排计划，未创建。';
+                dlg.close();
+                resolve(text);
+            };
+            const dlg = buildDialog('编排计划审批', () => finish(false));
+            editor.mount(dlg.body, dlg.foot, {finish});
+        });
     }
 
     function openApproval(input, ctx) {
@@ -220,12 +625,10 @@ export function createOrchestrationDomain(deps) {
         const model = ai && ai.bridgeSessionModelRef ? ai.bridgeSessionModelRef(session.id) : null;
         const windowWs = getWorkspace();
         const sessionWs = String(session.workspace || '').trim();
-        if (sessionWs && windowWs && !acceptsWorkspace({root: sessionWs}, windowWs)) {
-            return Promise.reject(new Error('会话属于工作区 ' + sessionWs + '，当前窗口是 '
-                + windowWs + '；请在会话所属工作区的窗口里发起编排'));
-        }
+        const planWs = sessionWs || windowWs;
+        if (!planWs) return Promise.reject(new Error('当前会话没有绑定工作区，无法发起编排'));
         const basePlan = buildPlanRequest(input, {
-            workspace: sessionWs || windowWs,
+            workspace: planWs,
             sessionId: session.id,
             group: session.group || '',
             scope: session.scope || 'read',
@@ -249,209 +652,34 @@ export function createOrchestrationDomain(deps) {
         if (rawPolicy.review == null) {
             basePlan.policy.review = defaults.orchReview !== false;
         }
+        if (rawPolicy.finalReview == null) {
+            basePlan.policy.finalReview = defaults.orchFinalReview === true;
+        }
         basePlan.policy.auditIdleMs = computeAuditIdleMs(
             Number(defaults.orchAuditIdleSec) > 0 ? Number(defaults.orchAuditIdleSec) * 1000 : 2 * 60 * 60 * 1000,
             basePlan.policy, basePlan.batches,
         );
-        return new Promise((resolve) => {
-            let settled = false;
-            let submitting = false;
-            let dismissedWhileSubmitting = false;
-            const finish = (text) => {
-                if (settled) return;
-                settled = true;
-                resolve(text);
-            };
-            const dlg = buildDialog('编排计划审批', () => {
-                if (submitting) {
-                    // 创建请求已在飞：不能先回“未创建”，否则模型可能重复创建。
-                    dismissedWhileSubmitting = true;
-                    return;
-                }
-                finish('用户取消了编排计划，未创建。');
+        const editor = createPlanEditor(basePlan, {
+            session, model, call, notify, openBoard,
+        });
+        const bridge = ai && ai.bridgeRequestOrchestrationPlanApproval;
+        if (typeof bridge !== 'function' || !ctx.toolMessage) {
+            return openModalPlanEditor(editor).then(async (text) => {
+                await editor.waitForSubmit();
+                if (editor.continueRequested) return editor.continueText;
+                return editor.resultText || text;
             });
-            const body = dlg.body;
-            const intro = el('div', 'orch-intro');
-            intro.append(
-                el('div', 'orch-title', basePlan.title),
-                el('div', 'orch-goal', basePlan.goal || '（未填写目标）'),
-                el('div', 'orch-muted',
-                    '你批准的是「已批准边界内的自动重试」；越过 owns / 模型 / 预算 / 计划边界的动作仍会再确认。'
-                    + ' Worker 拿不到命令、终端与 MCP，验收命令由编排器自己复跑。'),
-                el('div', 'orch-muted',
-                    '预估规模：' + basePlan.batches.length + ' 个批次；单批约 3–8 轮，总计约 '
-                    + (basePlan.batches.length * 5) + ' 轮（预估，不是承诺）。'),
-            );
-            body.appendChild(intro);
-
-            const policyRow = el('div', 'orch-policy');
-            const concurrent = createInput({type: 'number', min: 1, max: 8, value: String(basePlan.policy.maxParallel)}).control;
-            const attempts = createInput({type: 'number', min: 1, max: 2, value: String(basePlan.policy.maxAttemptsPerBatch)}).control;
-            const budget = createInput({type: 'number', min: 0, value: String(basePlan.policy.budgetTokens || '')}).control;
-            const timeoutSec = createInput({type: 'number', min: 60, value: String(Math.round(basePlan.policy.batchTimeoutMs / 1000))}).control;
-            const review = createCheckbox({checked: basePlan.policy.review, label: '审查门（默认开；验收通过后派独立只读审查会话）'}).control;
-            const autoRun = createCheckbox({checked: false, label: '全程由 agent 自主执行（禁止 awaiting_user）'}).control;
-            const snapshot = createCheckbox({checked: false, label: '编排开始前创建快照（大项目可能几百 MB）'}).control;
-            policyRow.append(
-                labelRow('并发批次', concurrent), labelRow('单批尝试', attempts),
-                labelRow('token 预算（事后熔断）', budget), labelRow('单批超时（秒）', timeoutSec),
-                review.parentElement || review, autoRun.parentElement || autoRun, snapshot.parentElement || snapshot,
-            );
-            body.appendChild(policyRow);
-            // 快照代价提示：有历史快照时显示上一次体积，让用户对耗时与磁盘有预期。
-            try {
-                Promise.resolve(call('WipeGuardSnapshotList', getWorkspace())).then((list) => {
-                    const latest = (Array.isArray(list) ? list : [])
-                        .slice().sort((a, b) => Number(b.at) - Number(a.at))[0];
-                    if (!latest || !(Number(latest.bytes) > 0)) return;
-                    const hint = el('span', 'orch-muted', '（上次快照 ' + Math.round(Number(latest.bytes) / (1024 * 1024)) + ' MB）');
-                    (snapshot.parentElement || snapshot).appendChild(hint);
-                }).catch(() => {});
-            } catch (e) {}
-
-            const modelBox = el('div', 'orch-models');
-            const allowModels = createCheckbox({checked: false, label: '允许编排为批次指定模型（默认不许）'}).control;
-            const modelList = createInput({placeholder: '模型 ref（账号id|模型id），逗号分隔，最多 5 条'}).control;
-            const reviewModel = createInput({placeholder: '审查模型 ref；留空 = 仲裁模型'}).control;
-            modelList.disabled = true;
-            reviewModel.disabled = true;
-            allowModels.addEventListener('change', () => {
-                modelList.disabled = !allowModels.checked;
-                reviewModel.disabled = !allowModels.checked;
-            });
-            modelBox.append(
-                allowModels.parentElement || allowModels,
-                labelRow('允许的模型', modelList),
-                labelRow('审查模型', reviewModel),
-                el('div', 'orch-muted', '当前仲裁模型：' + (model ? model.label + '（' + model.ref + '）' : '继承发起会话')),
-            );
-            body.appendChild(modelBox);
-
-            const list = el('div', 'orch-batch-list');
-            body.appendChild(list);
-            const addBatch = iconButton('添加批次', 'plus', 'orch-btn orch-btn-ghost', () => {
-                const used = new Set(Array.from(list.children).map((c) => c.__id).filter(Boolean));
-                let n = 1;
-                while (used.has('B' + n)) n++;
-                list.appendChild(buildBatchEditor(normalizeBatch({id: 'B' + n}, list.children.length), list.children.length, noop));
-            });
-            body.appendChild(addBatch);
-            const errorBox = el('div', 'orch-error');
-            const previewBox = el('pre', 'orch-preview');
-            body.append(errorBox, previewBox);
-            const batchCards = [];
-            for (let i = 0; i < basePlan.batches.length; i++) {
-                const card = buildBatchEditor(basePlan.batches[i], i, noop);
-                batchCards.push(card);
-                list.appendChild(card);
-            }
-
-            const readPlan = () => {
-                const batches = [];
-                const errors = [];
-                Array.from(list.children).forEach((card, index) => {
-                    if (!card || typeof card.__read !== 'function') return;
-                    const b = card.__read();
-                    if (b.__verifyError) errors.push(b.id + '：' + b.__verifyError);
-                    delete b.__verifyError;
-                    batches.push(b);
-                });
-                const allowed = ownsFromInput(modelList.value);
-                const policy = {
-                    ...basePlan.policy,
-                    maxParallel: Math.max(1, Math.min(8, Number(concurrent.value) || 2)),
-                    maxAttemptsPerBatch: Math.max(1, Math.min(2, Number(attempts.value) || 2)),
-                    budgetTokens: Number(budget.value) > 0 ? Number(budget.value) : 0,
-                    batchTimeoutMs: Math.max(60, Number(timeoutSec.value) || 1200) * 1000,
-                    review: review.checked,
-                    reviewExplicit: true,
-                    allowWorkerModels: allowModels.checked,
-                    allowedWorkerModels: allowed.slice(0, 5),
-                    reviewModel: allowModels.checked ? reviewModel.value.trim() : '',
-                    autoRun: autoRun.checked,
-                    snapshotBeforeStart: snapshot.checked,
-                };
-                policy.auditIdleMs = computeAuditIdleMs(basePlan.policy.auditIdleMs, policy, batches);
-                return {
-                    ...basePlan, policy,
-                    batches,
-                    __errors: errors,
-                };
-            };
-            const preview = async () => {
-                const plan = readPlan();
-                if (plan.__errors.length) {
-                    errorBox.textContent = plan.__errors.join('；');
-                    return null;
-                }
-                const clean = Object.assign({}, plan);
-                delete clean.__errors;
-                try {
-                    const res = await call('OrchestrationPlanPreview', JSON.stringify(clean));
-                    if (!res || !res.valid) {
-                        errorBox.textContent = (res && res.errors ? res.errors.join('；') : '计划校验失败');
-                        previewBox.textContent = '';
-                        return null;
-                    }
-                    errorBox.textContent = '';
-                    const previewLines = ['执行顺序预览：'];
-                    (res.waves || []).forEach((wave, i) => {
-                        previewLines.push(`第 ${i + 1} 波：${wave.join('、') || '（空）'}`);
-                    });
-                    if ((res.forcedSerial || []).length) previewLines.push('串行约束：' + res.forcedSerial.join('；'));
-                    if ((res.warnings || []).length) previewLines.push('提示：' + res.warnings.join('；'));
-                    previewBox.textContent = previewLines.join('\n');
-                    return {plan: clean, preview: res};
-                } catch (e) {
-                    errorBox.textContent = (e && e.message) || String(e);
-                    return null;
-                }
-            };
-            const previewBtn = iconButton('预览执行顺序', 'play', 'orch-btn orch-btn-ghost', () => { preview().catch(() => {}); });
-            const cancel = iconButton('取消', '', 'orch-btn', () => {
-                finish('用户取消了编排计划，未创建。');
-                dlg.close();
-            });
-            const submit = iconButton('执行编排', 'check', 'orch-btn primary', async () => {
-                const got = await preview();
-                if (!got) return;
-                submitting = true;
-                submit.disabled = true;
-                cancel.disabled = true;
-                previewBtn.disabled = true;
-                try {
-                    const created = await call('OrchestrationCreate', JSON.stringify(got.plan));
-                    const ai2 = aiPanel();
-                    if (ai2 && ai2.bridgeAttachOrchestrationSession && session) {
-                        ai2.bridgeAttachOrchestrationSession(session.id, {
-                            id: created.id, role: 'arbiter', generation: 1, parentSessionId: session.id,
-                        }, '');
-                    }
-                    if (created.warning) notify(created.warning, false);
-                    openBoard(got.plan.workspace);
-                    finish('编排已创建并启动：' + created.id + '（' + got.plan.title + '）'
-                        + (created.warning ? '\n注意：' + created.warning : ''));
-                    dlg.close();
-                } catch (e) {
-                    const msg = (e && e.message) || String(e);
-                    notify('编排创建失败：' + msg, true);
-                    if (dismissedWhileSubmitting || settled) {
-                        finish('编排创建失败，未创建：' + msg);
-                    } else {
-                        errorBox.textContent = msg;
-                    }
-                } finally {
-                    submitting = false;
-                    submit.disabled = false;
-                    cancel.disabled = false;
-                    previewBtn.disabled = false;
-                }
-            });
-            dlg.foot.append(previewBtn, el('span', 'orch-spacer'), cancel, submit);
-            // 首次打开先跑一次纯内存 dry-run，让用户一眼看到并行顺序；编辑后重新点预览。
-            preview().catch(() => {});
-            // 卡片删除 / 添加不自动预览；用户点预览或执行时统一重算。
-            function noop() {}
+        }
+        return Promise.resolve(bridge(session, ctx.toolMessage, editor)).then(async (res) => {
+            // 创建请求可能比“停止/关闭”晚到：等它落地再决定给模型什么结果，
+            // 避免实际已创建却回报“未创建”导致模型重复发起。
+            await editor.waitForSubmit();
+            if (editor.continueRequested) return editor.continueText;
+            if (editor.resultText) return editor.resultText;
+            if (res && res.approved) return '编排计划已批准。';
+            return res && res.cancelled
+                ? '用户停止生成，编排计划未创建。'
+                : '用户取消了编排计划，未创建。';
         });
     }
 
@@ -466,7 +694,12 @@ export function createOrchestrationDomain(deps) {
             const id = String((input && input.orchestrationId) || '').trim();
             if (id) {
                 const view = await call('OrchestrationGet', id);
-                return [summarizeView(view), ...formatBatchTable(view)].join('\n');
+                const ai = aiPanel();
+                const sessions = ai && ai.bridgeListSessions
+                    ? (ai.bridgeListSessions(session ? session.id : '') || [])
+                    : [];
+                const byId = new Map(sessions.map((item) => [item.id, item]));
+                return [summarizeView(view), ...formatBatchTable(view, byId)].join('\n');
             }
             const list = (await call('OrchestrationList')) || [];
             if (!list.length) return '当前工作区没有编排。';
@@ -577,17 +810,22 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
     function effectiveModel(view, batch) {
         const o = view.orchestration || {};
         const policy = o.policy || {};
-        if (batch.kind === 'review') return policy.reviewModel || o.arbiterModelRef || '';
+        // 空串 = 继承母会话：bridgeCreateOrchestrationSession 会按 parentSessionId
+        // 解析发起会话「当前」模型，而不是审批时固定下来的旧 arbiterModelRef。
+        if (batch.finalReview) return policy.finalReviewModel || '';
+        if (batch.kind === 'review') return policy.reviewModel || '';
         const attempt = Number(batch.attempts || 0) + 1;
         const requested = attempt > 1
             ? ((batch.model && batch.model.retry) || (batch.model && batch.model.first) || '')
             : ((batch.model && batch.model.first) || '');
-        if (!policy.allowWorkerModels || !requested) return o.arbiterModelRef || '';
-        return (policy.allowedWorkerModels || []).includes(requested) ? requested : (o.arbiterModelRef || '');
+        if (!policy.allowWorkerModels || !requested) return '';
+        return (policy.allowedWorkerModels || []).includes(requested) ? requested : '';
     }
 
     async function handleDispatch(payload) {
-        if (!payload || !acceptsWorkspace(payload.root, getWorkspace())) return;
+        // 多工作区 harness 聚焦别的仓库时也要接派发：各窗口都收到事件，后端 ClaimBatch
+        // 的 90 秒互斥保证只有一个窗口认领，不会重复建会话；不再按当前根把事件丢掉。
+        if (!payload || (!acceptsWorkspace(payload.root, getWorkspace()) && !isMultiWorkspace())) return;
         const key = payload.orchestrationId + '#' + payload.batchId;
         if (inflightClaims.has(key)) return;
         inflightClaims.add(key);
@@ -613,7 +851,9 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
             // owns 为空的 work 是只读设计批次：会话档位也建成 read，与后端 StartResponse 对齐。
             const scope = (role === 'review' || !(batch.owns || []).length)
                 ? 'read' : ((o.policy && o.policy.scope) || 'edit');
-            const title = role === 'review' ? ('审查 · ' + o.title) : (batch.title || '编排批次');
+            const title = role === 'review'
+                ? ((batch.finalReview ? '终审 · ' : '审查 · ') + o.title)
+                : (batch.title || '编排批次');
             const session = await ai.bridgeCreateOrchestrationSession({
                 title,
                 callerSessionId: o.parentSessionId,
@@ -700,12 +940,14 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
             if (!o) return;
             const ratio = batchDoneRatio(view);
             const oldTitle = '编排';
+            const parentModel = ai.bridgeSessionModelRef ? ai.bridgeSessionModelRef(o.parentSessionId) : null;
             const created = await ai.bridgeCreateOrchestrationSession({
                 title: '编排仲裁·接替「' + (o.title || oldTitle) + '」',
                 callerSessionId: o.parentSessionId,
                 workspace: (o.workspaces && o.workspaces[0]) || '',
                 scope: 'read',
-                modelRef: o.arbiterModelRef || '',
+                // 仲裁交接也跟随母会话当前模型；不再沿用可能已删除的审批时 ref。
+                modelRef: parentModel && parentModel.ref ? parentModel.ref : '',
             });
             await call('OrchestrationSetArbiter', o.id, created.id, payload.reason || '仲裁者交接');
             const fresh = await call('OrchestrationGet', o.id);
@@ -795,7 +1037,7 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
 
     function refreshBoards(root) {
         for (const board of boards) {
-            if (!root || acceptsWorkspace({root}, board.workspace)) {
+            if (!root || acceptsWorkspace(root, board.workspace)) {
                 board.refresh().catch(() => {});
             }
         }
@@ -803,7 +1045,26 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
 
     // ---------- 看板 ----------
 
-    function formatBatchTable(view) {
+    function sessionStateLabel(state) {
+        if (state === 'streaming') return '运行中';
+        if (state === 'compacting') return '压缩中';
+        if (state === 'idle') return '空闲';
+        return '';
+    }
+
+    function batchSessionSuffix(batch, sessions) {
+        if (!batch || !batch.sessionId) return '';
+        const s = sessions && sessions.get(batch.sessionId);
+        if (!s) return ' · 会话 ' + batch.sessionId;
+        const bits = [];
+        const state = sessionStateLabel(s.state);
+        if (state) bits.push(state);
+        if (s.messages) bits.push(s.messages + ' 条');
+        if (s.unread) bits.push('未读');
+        return ' · 会话 ' + batch.sessionId + (bits.length ? '（' + bits.join(' · ') + '）' : '');
+    }
+
+    function formatBatchTable(view, sessions) {
         const lines = [];
         const batches = (view && view.batches) || [];
         for (const b of batches) {
@@ -811,9 +1072,20 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
             lines.push(`${b.id}「${b.title}」${batchStatusLabel(b.status)}` +
                 (b.failureReason ? ' · ' + failureLabel(b.failureReason) : '') +
                 (b.attempts ? ' · 尝试 ' + b.attempts : '') +
-                (b.owns && b.owns.length ? ' · owns ' + b.owns.join(',') : ' · 只读'));
+                (b.owns && b.owns.length ? ' · owns ' + b.owns.join(',') : ' · 只读') +
+                batchSessionSuffix(b, sessions));
             for (const r of batches.filter((x) => x.kind === 'review' && x.reviewOf === b.id)) {
-                lines.push('  ↳ ' + r.id + ' ' + batchStatusLabel(r.status));
+                lines.push('  ↳ ' + r.id + '「' + r.title + '」' + batchStatusLabel(r.status) +
+                    batchSessionSuffix(r, sessions));
+            }
+        }
+        const finals = batches.filter((x) => x.finalReview);
+        if (finals.length) {
+            lines.push('终审：');
+            for (const b of finals) {
+                lines.push('  - ' + b.id + '「' + b.title + '」' + batchStatusLabel(b.status) +
+                    (b.failureReason ? ' · ' + failureLabel(b.failureReason) : '') +
+                    batchSessionSuffix(b, sessions));
             }
         }
         return lines;
@@ -943,7 +1215,12 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
         board.refresh = async () => {
             if (!root.isConnected) return;
             try {
-                const list = (await call('OrchestrationList')) || [];
+                const all = (await call('OrchestrationList')) || [];
+                // 多工作区 harness 的主窗口没有单一 workspace，后端会返回全部；
+                // 看板仍按自己的 workspace 过滤，避免 A 仓库面板列出 B 仓库的编排。
+                const list = board.workspace
+                    ? all.filter((item) => acceptsWorkspace(item.workspace, board.workspace))
+                    : all;
                 listCol.textContent = '';
                 if (!list.length) {
                     listCol.appendChild(el('div', 'orch-empty', '当前工作区还没有编排。在 AI 会话里用 orchestration_plan 发起，或查看帮助了解与群聊/子代理的边界。'));
@@ -1023,6 +1300,11 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
             for (const r of (view.batches || []).filter((x) => x.kind === 'review' && x.reviewOf === b.id)) {
                 batches.appendChild(renderBatchRow(r, view, board, true));
             }
+        }
+        const finals = (view.batches || []).filter((b) => b.finalReview);
+        if (finals.length) {
+            batches.appendChild(el('div', 'orch-section-title', '终审'));
+            for (const b of finals) batches.appendChild(renderBatchRow(b, view, board, true));
         }
         host.appendChild(batches);
 
@@ -1124,8 +1406,11 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
         if (b.status === 'pending' && !review && !Number(b.attempts)) {
             actions.appendChild(iconButton('改草稿', 'rename', 'orch-btn orch-btn-ghost', () => onBoardAction(board, 'edit_batch', b, view)));
         }
-        if (['pending', 'failed', 'blocked'].includes(b.status) && !review) {
+        if (['pending', 'failed', 'blocked'].includes(b.status) && (!review || b.finalReview)) {
             actions.appendChild(iconButton('跳过', 'close', 'orch-btn orch-btn-ghost', () => onBoardAction(board, 'skip', b, view)));
+        }
+        if (b.finalReview && ['failed', 'blocked'].includes(b.status)) {
+            actions.appendChild(iconButton('重派终审', 'refresh', 'orch-btn orch-btn-ghost', () => onBoardAction(board, 'retry', b, view)));
         }
         if (actions.children.length) row.appendChild(actions);
         return row;
@@ -1187,6 +1472,13 @@ export function createOrchestrationHost(deps) {
             'orchestration-dispatch', 'orchestration-changed', 'orchestration-stop',
             'orchestration-arbiter-event', 'orchestration-arbiter-handoff', 'orchestration-audit',
         ]) {
+            if (eventName === 'orchestration-dispatch') {
+                // 派发要跨「当前聚焦根」接收（harness 聚焦别处时仍能认领）；认领互斥在后端。
+                appEvents.onApp(eventName, (payload) => {
+                    ensure().handleEvent(eventName, payload);
+                });
+                continue;
+            }
             appEvents.onWorkspace(eventName, getWorkspace, (payload) => {
                 ensure().handleEvent(eventName, payload);
             });

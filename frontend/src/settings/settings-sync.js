@@ -62,7 +62,7 @@ export const PER_WINDOW_LAYOUT_KEYS = [
     'showSidebar', 'sidebarView', 'sidebarMode', 'sidebarWidth',
     'terminalHeight', 'gitCommitAreaHeight',
     'aiPanelOpen', 'aiPanelWidth', 'aiPanelSide', 'aiFloatMode',
-    'splitRatio', 'structureSource',
+    'splitRatio',
     'alwaysOnTop', 'writingMode', 'runActiveProfile',
     // 窗口模式（单 / 多工作区）：一个窗口切模式不该把别的窗口也改掉
     'windowMode',

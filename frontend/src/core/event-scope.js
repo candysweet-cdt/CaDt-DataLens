@@ -59,6 +59,7 @@ export const EVENT_SCOPES = Object.freeze({
 
     // 窗口控制命令
     'confirm-close': 'window',
+    'close-choice': 'window',
     'app-quit-request': 'window',
     'app-open-terminal': 'window',
     // 文件拖放：Go 侧收下 v3 drop 后转成窗口事件（window_factory.go），按窗口消费

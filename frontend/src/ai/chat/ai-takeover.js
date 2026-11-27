@@ -113,6 +113,7 @@ export function createAITakeover(ctx) {
     const currentSession = ctx.currentSession;
     const currentScopeOf = ctx.currentScopeOf;
     const decideApproval = ctx.decideApproval;
+    const pendingApprovals = ctx.pendingApprovals;
     const currentPendingApprovalEntry = ctx.currentPendingApprovalEntry;
     const currentPendingAskEntry = ctx.currentPendingAskEntry;
     const currentPendingEnvEntry = ctx.currentPendingEnvEntry;
@@ -157,6 +158,13 @@ export function createAITakeover(ctx) {
         updateComposerTakeover: (...args) => updateComposerTakeover(...args),
     });
     const renderActionTakeover = (...args) => actionApprovalCard.renderActionTakeover(...args);
+    // 编排计划审批：卡片主体由 orchestration 域注入（record.mount），这里只提供
+    // 与 submit_plan 同款的接管外壳、折叠细条与结算通道。
+    const getOrchestrationApproval = typeof ctx.getOrchestrationApproval === 'function'
+        ? ctx.getOrchestrationApproval
+        : () => null;
+    let orchestrationTakeoverKey = '';
+    let orchestrationTakeoverCollapsed = false;
     const requestPatchApproval = (...args) => patchCards.requestPatchApproval(...args);
     const renderPatchTakeover = (...args) => patchCards.renderPatchTakeover(...args);
     const renderPatchApprovalBody = (...args) => patchCards.renderPatchApprovalBody(...args);
@@ -165,6 +173,10 @@ export function createAITakeover(ctx) {
     const renderAskTakeover = (...args) => askCards.renderAskTakeover(...args);
 
     function renderApprovalTakeover(entry) {
+        if (entry && entry.approval && entry.approval.kind === 'orchestration') {
+            renderOrchestrationTakeover(entry);
+            return;
+        }
         if (entry && entry.approval && entry.approval.kind === 'patch') {
             renderPatchTakeover(entry);
             return;
@@ -565,6 +577,85 @@ export function createAITakeover(ctx) {
         apply.addEventListener('click', () => decideApproval(toolMessage, true));
         actions.append(deny, apply);
         foot.append(hint, actions);
+        card.append(head, body, foot);
+        el.takeover.appendChild(card);
+    }
+
+    // 编排计划审批：复用 composer 接管卡，正文由 orchestration 域的编辑器挂载；
+    // 折叠只影响显示，审批/提交状态仍在编辑器内，收起再展开不会丢失已填内容。
+    function renderOrchestrationTakeover(entry) {
+        const toolMessage = entry.toolMessage;
+        const record = getOrchestrationApproval(toolMessage);
+        const takeoverKey = 'approval:' + (toolMessage.toolCallId || '');
+        el.takeover.dataset.takeoverKey = takeoverKey;
+        el.takeover.textContent = '';
+        if (orchestrationTakeoverKey !== takeoverKey) {
+            orchestrationTakeoverKey = takeoverKey;
+            orchestrationTakeoverCollapsed = false;
+        }
+        if (!record) {
+            const card = document.createElement('div');
+            card.className = 'ai-takeover-card ai-orchestration-takeover';
+            const body = document.createElement('div');
+            body.className = 'ai-takeover-body';
+            body.textContent = '编排计划审批状态已丢失，请重新发起（orchestration_plan）。';
+            card.appendChild(body);
+            el.takeover.appendChild(card);
+            return;
+        }
+        if (orchestrationTakeoverCollapsed) {
+            const bar = document.createElement('button');
+            bar.type = 'button';
+            bar.className = 'ai-takeover-bar';
+            const barIcon = document.createElement('span');
+            barIcon.className = 'ai-takeover-icon';
+            barIcon.innerHTML = iconSvg('branch', 13);
+            const barText = document.createElement('span');
+            barText.className = 'ai-takeover-bar-text';
+            barText.textContent = '编排计划待批准' + (record.subtitle ? ' · ' + record.subtitle : '');
+            const chev = document.createElement('span');
+            chev.className = 'ai-takeover-collapse';
+            chev.innerHTML = AI_CHEVRON_SVG;
+            bar.append(barIcon, barText, chev);
+            bar.addEventListener('click', () => {
+                orchestrationTakeoverCollapsed = false;
+                updateComposerTakeover(true);
+            });
+            el.takeover.appendChild(bar);
+            return;
+        }
+        const card = document.createElement('div');
+        card.className = 'ai-takeover-card ai-orchestration-takeover';
+        const head = document.createElement('div');
+        head.className = 'ai-takeover-head';
+        const icon = document.createElement('span');
+        icon.className = 'ai-takeover-icon';
+        icon.innerHTML = iconSvg('branch', 13);
+        const title = document.createElement('span');
+        title.className = 'ai-takeover-title';
+        title.textContent = record.title || '编排计划审批';
+        const collapse = document.createElement('button');
+        collapse.type = 'button';
+        collapse.className = 'ai-takeover-collapse';
+        collapse.innerHTML = AI_CHEVRON_SVG;
+        collapse.addEventListener('click', () => {
+            orchestrationTakeoverCollapsed = true;
+            updateComposerTakeover(true);
+        });
+        head.append(icon, title, collapse);
+        const body = document.createElement('div');
+        body.className = 'ai-takeover-body ai-orchestration-takeover-body';
+        const foot = document.createElement('div');
+        foot.className = 'ai-takeover-foot ai-orchestration-takeover-foot';
+        record.mount(body, foot, {
+            finish: (approved) => decideApproval(toolMessage, approved),
+            // 与 submit_plan 的「继续规划」同义：不是拒绝，而是把计划退回给母会话修订。
+            continue: () => {
+                const entry = pendingApprovals && pendingApprovals.get(toolMessage.toolCallId);
+                if (entry && entry.approval) entry.approval.continue = true;
+                decideApproval(toolMessage, false);
+            },
+        });
         card.append(head, body, foot);
         el.takeover.appendChild(card);
     }

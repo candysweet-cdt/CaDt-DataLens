@@ -538,7 +538,8 @@ func (e *Engine) tickAllInner() {
 		// 失败/阻塞批次必须有对应的 L2 事件（覆盖冷启动恢复、旧版本状态迁移）。
 		for i := range o.Batches {
 			b := &o.Batches[i]
-			if b.Kind == KindReview || (b.Status != BatchFailed && b.Status != BatchBlocked) {
+			// 逐批审查的失败由被审 work 的事件覆盖；终审没有 work 可挂，必须自己进 L2。
+			if (b.Kind == KindReview && !b.FinalReview) || (b.Status != BatchFailed && b.Status != BatchBlocked) {
 				continue
 			}
 			found := false
@@ -618,6 +619,10 @@ func (e *Engine) tickAllInner() {
 			freezeDeadlinesLocked(o)
 			e.enqueueArbitrationLocked(o, "", "guardrail", p, now)
 			guardrailHit = true
+			mutated = true
+		}
+		// 全部 work 与逐批审查收尾后，按策略创建终审批次；终审未通过前不报 done。
+		if e.ensureFinalReviewsLocked(o) {
 			mutated = true
 		}
 		// 派发可运行批次。
@@ -910,14 +915,14 @@ func (e *Engine) ensureReviewBatchLocked(o *Orchestration, work *Batch) *Batch {
 			existing.Question, existing.AwaitingUntil = nil, 0
 			existing.Deadline, existing.Frozen, existing.RemainingMs = 0, false, 0
 			existing.Spec = reviewSpecFor(id, work)
+			existing.Model = ModelSpec{First: o.Policy.ReviewModel}
 		}
 		return existing
 	}
 	spec := reviewSpecFor(id, work)
+	// 留空 = 继承母会话（前端创建审查会话时按 parentSessionId 解析当前模型）；
+	// 不再回落到审批时固定的 ArbiterModelRef，避免母会话换模型后审查仍走旧档。
 	model := o.Policy.ReviewModel
-	if model == "" {
-		model = o.ArbiterModelRef
-	}
 	o.Batches = append(o.Batches, Batch{
 		ID: id, Title: "审查：" + work.Title, Kind: KindReview, ReviewOf: work.ID,
 		Workspace: work.Workspace, Spec: spec, Owns: []string{}, DependsOn: []string{},
@@ -942,6 +947,110 @@ func reviewSpecFor(id string, work *Batch) string {
 - 对「已修的接线类断言」做反向验证：说明如果把实现删掉，这条测试会不会红。
 - 收尾调用 orchestration_report（batchId=%s），用 review 字段给出 blocking / shouldFix / suggestions。`,
 		work.ID, work.Title, truncateRunes(work.Spec, 1500), summarizeWriteDirs(work.WriteLog, 1000), id)
+}
+
+// ensureFinalReviewsLocked 在全部工作与逐批审查收尾后创建终审批次。
+// 终审是独立的只读批次（不是 spawn_agent 子代理）：沿用同一条 claim/start 路径，
+// 模型留空时由前端创建会话时继承母会话，不在 Router 里猜模型。
+func (e *Engine) ensureFinalReviewsLocked(o *Orchestration) bool {
+	if !o.Policy.FinalReview || len(finalReviewBatches(o)) > 0 {
+		return false
+	}
+	if !allWorkDoneOrSkipped(o) || !normalReviewsTerminal(o) {
+		return false
+	}
+	count := o.Policy.FinalReviewCount
+	if count <= 0 {
+		count = 1
+	}
+	if count > MaxFinalReviews {
+		count = MaxFinalReviews
+	}
+	for i := 1; i <= count; i++ {
+		id := fmt.Sprintf("final-review-%d", i)
+		o.Batches = append(o.Batches, Batch{
+			ID: id, Title: "终审：" + o.Title, Kind: KindReview, FinalReview: true,
+			Workspace: workspaceRoot(o), Spec: finalReviewSpecFor(o, i, count),
+			Owns: []string{}, DependsOn: []string{},
+			Model:  ModelSpec{First: o.Policy.FinalReviewModel},
+			Status: BatchPending, Activated: true,
+		})
+	}
+	e.store.AppendLog(o.ID, LogEntry{
+		Kind: "final-review-created", Why: fmt.Sprintf("全部批次完成，创建 %d 个终审批次", count),
+	})
+	return true
+}
+
+func finalReviewIndex(o *Orchestration, id string) int {
+	for i, b := range finalReviewBatches(o) {
+		if b.ID == id {
+			return i + 1
+		}
+	}
+	return 1
+}
+
+// resetFinalReviewsForReworkLocked：work 批次在终审之后被重派/跳过时，旧终审结论立即失效。
+// 终审正在执行则拒绝改 work（避免 review 会话审到移动目标）；否则把终审批次重置为待派发，
+// 并关闭它们遗留的 L2 事件，等新结果收尾后重新终审。
+func (e *Engine) resetFinalReviewsForReworkLocked(o *Orchestration, reason string, now int64) error {
+	finals := finalReviewBatches(o)
+	if len(finals) == 0 {
+		return nil
+	}
+	for _, b := range finals {
+		if batchActive(b.Status) {
+			return fmt.Errorf("终审正在执行，不能重派/跳过已完成批次；请先等终审收尾")
+		}
+	}
+	ids := make(map[string]bool, len(finals))
+	for _, b := range finals {
+		ids[b.ID] = true
+		b.Status = BatchPending
+		b.Attempts = 0
+		b.Report = nil
+		b.Review = nil
+		b.Receipts = nil
+		b.Question, b.AwaitingUntil = nil, 0
+		b.SessionID = ""
+		b.FailureReason = ""
+		b.Deadline, b.Frozen, b.RemainingMs = 0, false, 0
+	}
+	for i := range o.ArbitrationQueue {
+		ev := &o.ArbitrationQueue[i]
+		if !ev.Resolved && ids[ev.BatchID] {
+			ev.Resolved = true
+			ev.Resolution = "终审因 " + reason + " 失效"
+		}
+	}
+	e.store.AppendLog(o.ID, LogEntry{Kind: "final-review-reset", Why: "批次 " + reason + "，旧终审结论作废"})
+	return nil
+}
+
+func finalReviewSpecFor(o *Orchestration, index, count int) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "你是只读终审者（%d/%d）。这不是逐批审查：请从整份编排的目标出发，检查所有批次的改动合起来是否成立。\n\n", index, count)
+	fmt.Fprintf(&sb, "总目标：%s\n\n工作批次与逐批审查结论：\n", o.Goal)
+	for _, b := range workBatches(o) {
+		notes := ""
+		if b.Report != nil {
+			notes = strings.TrimSpace(b.Report.Notes)
+		}
+		fmt.Fprintf(&sb, "- %s「%s」%s\n  · 写了：%s\n  · 结论：%s\n",
+			b.ID, b.Title, b.Status, summarizeWriteDirs(b.WriteLog, 300), truncateRunes(notes, 300))
+		if b.Review != nil {
+			fmt.Fprintf(&sb, "  · 逐批审查：blocking=%d shouldFix=%d suggestions=%d\n",
+				len(b.Review.Blocking), len(b.Review.ShouldFix), len(b.Review.Suggestions))
+		}
+	}
+	sb.WriteString("\n终审要求：\n")
+	sb.WriteString("- 只读；不得修改任何文件。\n")
+	sb.WriteString("- 以各批 writeLog 与工作区当前内容为准，不要把工作区既有未提交改动归到本次编排。\n")
+	sb.WriteString("- 检查跨批次接口/接线是否真的接上；对“已修的接线类断言”做反向验证：删掉实现，测试会不会红。\n")
+	sb.WriteString("- 只报会影响目标或交付质量的问题；不要重复逐批审查已经确认的细节。\n")
+	fmt.Fprintf(&sb, "- 收尾必须调用 orchestration_report（batchId=final-review-%d），用 review 字段给出 blocking / shouldFix / suggestions。\n", index)
+	return sb.String()
 }
 
 func (e *Engine) finishWorkLocked(o *Orchestration, b *Batch, now int64) {
@@ -1216,7 +1325,11 @@ func (e *Engine) Preview(req PlanRequest) PlanPreview {
 
 // List 按工作区过滤；workspace 由 Service 从可信调用方上下文取得。
 func (e *Engine) List(workspace string) []Summary {
-	key := cleanAbs(workspace)
+	// 空 workspace = 多工作区 harness 的全局视图（只由 Service 在可信主窗口下放行）。
+	key := ""
+	if strings.TrimSpace(workspace) != "" {
+		key = cleanAbs(workspace)
+	}
 	e.mu.Lock()
 	out := make([]Summary, 0, len(e.items))
 	for _, o := range e.items {
@@ -1375,6 +1488,11 @@ func (e *Engine) StartBatch(req StartRequest, window, workspace string) (StartRe
 		e.mu.Unlock()
 		return StartResponse{}, fmt.Errorf("缺少执行会话 id")
 	}
+	// 终审 spec 在每次派发时按当前工作批次状态重算：work 可能被重派/跳过，
+	// 创建时的旧摘要不能带进新终审。
+	if b.FinalReview {
+		b.Spec = finalReviewSpecFor(o, finalReviewIndex(o, b.ID), len(finalReviewBatches(o)))
+	}
 	// prompt 必须用「上一轮」字段生成：attempts、FailureReason、UserAnswer 一旦清掉，
 	// 重派回顾与用户回答就永远进不了新会话。先拼 prompt，再改字段。
 	prompt := buildDispatchPrompt(o, b)
@@ -1420,24 +1538,24 @@ func (e *Engine) StartBatch(req StartRequest, window, workspace string) (StartRe
 
 func focusedModel(o *Orchestration, b *Batch) string {
 	if b.Kind == KindReview {
-		if o.Policy.ReviewModel != "" {
-			return o.Policy.ReviewModel
+		if b.FinalReview {
+			return o.Policy.FinalReviewModel
 		}
-		return o.ArbiterModelRef
+		return o.Policy.ReviewModel
 	}
 	ref := b.Model.First
 	if b.Attempts > 1 && b.Model.Retry != "" {
 		ref = b.Model.Retry
 	}
 	if !o.Policy.AllowWorkerModels || ref == "" {
-		return o.ArbiterModelRef
+		return ""
 	}
 	for _, allowed := range o.Policy.AllowedWorkerModels {
 		if allowed == ref {
 			return ref
 		}
 	}
-	return o.ArbiterModelRef
+	return ""
 }
 
 // AbortStart 起轮前基础设施失败：吊销票据、清 claim、回到 pending 并回滚 attempts。
@@ -1454,7 +1572,7 @@ func (e *Engine) AbortStart(req AbortRequest, window, workspace string) error {
 		e.mu.Unlock()
 		return fmt.Errorf("编排已停止或故障，不能回滚起轮")
 	}
-	if workspace == "" || cleanAbs(workspace) != cleanAbs(workspaceRoot(o)) {
+	if workspace != "" && cleanAbs(workspace) != cleanAbs(workspaceRoot(o)) {
 		e.mu.Unlock()
 		return fmt.Errorf("编排属于其它工作区")
 	}
@@ -1869,6 +1987,10 @@ func (e *Engine) applyReportLocked(o *Orchestration, b *Batch, report *Report, t
 }
 
 func (e *Engine) applyReviewReportLocked(o *Orchestration, review *Batch, report *Report, now int64) {
+	if review.FinalReview {
+		e.applyFinalReviewReportLocked(o, review, report, now)
+		return
+	}
 	work := findBatch(o, review.ReviewOf)
 	review.Review = report.Review
 	if work == nil {
@@ -1910,6 +2032,39 @@ func (e *Engine) applyReviewReportLocked(o *Orchestration, review *Batch, report
 		e.enqueueArbitrationLocked(o, work.ID, ReasonReviewFailed, "审查提出返工且 attempts 已用尽", now)
 	}
 	e.store.AppendLog(o.ID, LogEntry{Kind: "review-rework", Batch: work.ID, Why: fmt.Sprintf("审查阻断 %d 项 / 应修 %d 项", len(rv.Blocking), len(rv.ShouldFix))})
+}
+
+// applyFinalReviewReportLocked 处理终审结论：通过则 done；有阻断/应修则停下交人，
+// 不自动返工（终审的意见是整体判断，机械地拆回批次会猜错范围）。
+func (e *Engine) applyFinalReviewReportLocked(o *Orchestration, review *Batch, report *Report, now int64) {
+	review.Review = report.Review
+	review.Status = BatchDone
+	review.FailureReason = ""
+	review.SessionID = ""
+	review.Deadline, review.Frozen, review.RemainingMs = 0, false, 0
+	blocking := 0
+	shouldFix := 0
+	if report.Review != nil {
+		blocking = len(report.Review.Blocking)
+		shouldFix = len(report.Review.ShouldFix)
+	}
+	if blocking == 0 && shouldFix == 0 {
+		review.History = append(review.History, HistoryEntry{
+			Attempt: review.Attempts, Status: BatchDone, At: now,
+			ReportID: report.ReportID, Reason: truncateRunes(report.Notes, 800),
+		})
+		e.store.AppendLog(o.ID, LogEntry{Kind: "final-review-pass", Batch: review.ID, Why: "终审通过"})
+		return
+	}
+	review.Status = BatchBlocked
+	review.FailureReason = ReasonFinalReview
+	review.History = append(review.History, HistoryEntry{
+		Attempt: review.Attempts, Status: BatchBlocked, At: now, Problems: append(append([]ReviewIssue{}, report.Review.Blocking...), report.Review.ShouldFix...),
+		ReportID: report.ReportID, Reason: truncateRunes(report.Notes, 800),
+	})
+	detail := fmt.Sprintf("终审阻断 %d 项、应修 %d 项；处理后可裁决通过或重派终审。", blocking, shouldFix)
+	e.enqueueArbitrationLocked(o, review.ID, ReasonFinalReview, detail, now)
+	e.store.AppendLog(o.ID, LogEntry{Kind: "final-review-blocked", Batch: review.ID, Why: detail})
 }
 
 // Control 仲裁者动作：必须带当前 generation。
@@ -1972,6 +2127,12 @@ func (e *Engine) control(req ControlRequest, sessionID string, arbiter bool, wor
 			e.mu.Unlock()
 			return ControlResult{}, fmt.Errorf("批次正在执行，不能跳过")
 		}
+		if b.Kind == KindWork {
+			if err := e.resetFinalReviewsForReworkLocked(o, "skip", now); err != nil {
+				e.mu.Unlock()
+				return ControlResult{}, err
+			}
+		}
 		b.Status = BatchSkipped
 		b.SessionID = ""
 		if b.Kind == KindReview {
@@ -2001,6 +2162,12 @@ func (e *Engine) control(req ControlRequest, sessionID string, arbiter bool, wor
 		if b.Status == BatchRunning || b.Status == BatchDispatched || b.Status == BatchReviewing {
 			e.mu.Unlock()
 			return ControlResult{}, fmt.Errorf("批次正在执行，不能重派")
+		}
+		if b.Kind == KindWork {
+			if err := e.resetFinalReviewsForReworkLocked(o, "retry", now); err != nil {
+				e.mu.Unlock()
+				return ControlResult{}, err
+			}
 		}
 		b.Status = BatchPending
 		b.Attempts = 0
@@ -2088,6 +2255,18 @@ func (e *Engine) control(req ControlRequest, sessionID string, arbiter bool, wor
 		}
 		ev.Resolved = true
 		ev.Resolution = truncateRunes(req.Answer, 500)
+		// 终审提出阻断/应修后停在 blocked 等裁决；裁决通过 = 接受终审意见并放行收尾。
+		if ev.Reason == ReasonFinalReview {
+			if b := findBatch(o, ev.BatchID); b != nil && b.FinalReview && (b.Status == BatchBlocked || b.Status == BatchFailed) {
+				b.History = append(b.History, HistoryEntry{
+					Attempt: b.Attempts, Status: "accepted", At: now,
+					Reason: truncateRunes("用户裁决接受终审意见："+req.Answer, 800),
+				})
+				b.Status = BatchDone
+				b.FailureReason = ""
+				e.store.AppendLog(o.ID, LogEntry{Kind: "final-review-accepted", Batch: b.ID, Why: truncateRunes(req.Answer, 400)})
+			}
+		}
 	case "handoff":
 		if req.Answer == "" {
 			e.mu.Unlock()

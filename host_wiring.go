@@ -61,10 +61,12 @@ func init() {
 				return false
 			}
 			for _, st := range winReg.List() {
-				if st.Startup().Mode != windowModeMain || st.Window() == nil || st.Workspace() == "" {
+				if st.Startup().Mode != windowModeMain || st.Window() == nil {
 					continue
 				}
-				if pathKeyForCompare(st.Workspace()) == key {
+				// 多工作区 harness 主窗口按设计不绑定单一目录（Workspace 恒空），
+				// 但会话可以在任一已打开仓库里发起编排；派发事件按当前聚焦根投递。
+				if st.Workspace() == "" || pathKeyForCompare(st.Workspace()) == key {
 					return true
 				}
 			}
@@ -94,6 +96,10 @@ func init() {
 			return st.Workspace()
 		},
 		WindowForCall: callerWindowName,
+		MainWindowForCall: func(ctx context.Context) bool {
+			st := stateForCaller(ctx)
+			return st != nil && st.Startup().Mode == windowModeMain
+		},
 	})
 
 	// ---- AI 传输与对话（internal/aitransport + internal/aichat）----

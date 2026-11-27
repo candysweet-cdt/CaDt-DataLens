@@ -56,6 +56,7 @@ const (
 	ReasonVerifyFailed      = "verify_failed"
 	ReasonReviewFailed      = "review_failed"
 	ReasonReviewUnavailable = "review_unavailable"
+	ReasonFinalReview       = "final_review_findings"
 	ReasonOverBudget        = "over_budget"
 	ReasonBlockedByDep      = "blocked_by_dep"
 	ReasonUserStopped       = "user_stopped"
@@ -79,6 +80,7 @@ const (
 	DefaultArbiterTimeoutMs = 10 * 60 * 1000
 	DefaultArbiterMissLimit = 2
 	DefaultReviewAttempts   = 2
+	MaxFinalReviews         = 3
 	ClaimTTL                = 90 * 1000
 	TicketTTL               = 12 * 60 * 60 * 1000
 	MaxWorkBatches          = 20
@@ -103,7 +105,7 @@ type VerifySpec struct {
 	TimeoutMs int64    `json:"timeoutMs,omitempty"`
 }
 
-// ModelSpec 批次模型分配；空串表示用审批时固定的 ArbiterModelRef。
+// ModelSpec 批次模型分配；空串表示继承母会话（前端创建会话时按 parentSessionId 解析）。
 type ModelSpec struct {
 	First string `json:"first,omitempty"`
 	Retry string `json:"retry,omitempty"`
@@ -125,8 +127,12 @@ type Policy struct {
 	Review              bool    `json:"review"`
 	// ReviewExplicit 表示审批卡上确实动过审查开关；缺省 false 时审查门默认开（§5.5）。
 	// 持久化后保留 true，避免重新读取状态时被「缺省开」再次覆盖用户选择。
-	ReviewExplicit      bool     `json:"reviewExplicit,omitempty"`
-	ReviewModel         string   `json:"reviewModel,omitempty"`
+	ReviewExplicit bool   `json:"reviewExplicit,omitempty"`
+	ReviewModel    string `json:"reviewModel,omitempty"`
+	// FinalReview 全部 work 批次收尾后再开 1–3 个只读终审批次；终审通过前编排不算 done。
+	FinalReview         bool     `json:"finalReview,omitempty"`
+	FinalReviewCount    int      `json:"finalReviewCount,omitempty"`
+	FinalReviewModel    string   `json:"finalReviewModel,omitempty"`
 	EscalateOnRetry     bool     `json:"escalateOnRetry"`
 	AllowWorkerModels   bool     `json:"allowWorkerModels"`
 	AllowedWorkerModels []string `json:"allowedWorkerModels,omitempty"`
@@ -225,6 +231,7 @@ type Batch struct {
 	Title         string       `json:"title"`
 	Kind          string       `json:"kind"`
 	ReviewOf      string       `json:"reviewOf,omitempty"`
+	FinalReview   bool         `json:"finalReview,omitempty"`
 	Workspace     string       `json:"workspace"`
 	Spec          string       `json:"spec"`
 	Owns          []string     `json:"owns"`
@@ -488,14 +495,16 @@ type ControlResult struct {
 
 // PlanPreview 审批卡预览结果。
 type PlanPreview struct {
-	Valid         bool         `json:"valid"`
-	Errors        []string     `json:"errors,omitempty"`
-	Warnings      []string     `json:"warnings,omitempty"`
-	Plan          *PlanRequest `json:"plan,omitempty"`
-	Waves         [][]string   `json:"waves,omitempty"`
-	ForcedSerial  []string     `json:"forcedSerial,omitempty"`
-	ReviewEnabled bool         `json:"reviewEnabled"`
-	AuditMinMs    int64        `json:"auditMinMs"`
+	Valid              bool         `json:"valid"`
+	Errors             []string     `json:"errors,omitempty"`
+	Warnings           []string     `json:"warnings,omitempty"`
+	Plan               *PlanRequest `json:"plan,omitempty"`
+	Waves              [][]string   `json:"waves,omitempty"`
+	ForcedSerial       []string     `json:"forcedSerial,omitempty"`
+	ReviewEnabled      bool         `json:"reviewEnabled"`
+	FinalReviewEnabled bool         `json:"finalReviewEnabled"`
+	FinalReviewCount   int          `json:"finalReviewCount,omitempty"`
+	AuditMinMs         int64        `json:"auditMinMs"`
 }
 
 // CreateResult 创建回执。
@@ -568,6 +577,17 @@ func defaultPolicy(p Policy) Policy {
 	if p.ArbiterRotateAt <= 0 || p.ArbiterRotateAt >= 1 {
 		p.ArbiterRotateAt = 0.7
 	}
+	if p.FinalReview {
+		if p.FinalReviewCount <= 0 {
+			p.FinalReviewCount = 1
+		}
+		if p.FinalReviewCount > MaxFinalReviews {
+			p.FinalReviewCount = MaxFinalReviews
+		}
+	} else {
+		p.FinalReviewCount = 0
+		p.FinalReviewModel = ""
+	}
 	if p.MaxTotalRounds <= 0 {
 		p.MaxTotalRounds = MaxRoundsHard
 	}
@@ -620,6 +640,45 @@ func workBatches(o *Orchestration) []*Batch {
 		}
 	}
 	return out
+}
+
+// finalReviewBatches 返回全部完成后的终审批次（KindReview + FinalReview）。
+func finalReviewBatches(o *Orchestration) []*Batch {
+	out := make([]*Batch, 0, MaxFinalReviews)
+	for i := range o.Batches {
+		if o.Batches[i].Kind == KindReview && o.Batches[i].FinalReview {
+			out = append(out, &o.Batches[i])
+		}
+	}
+	return out
+}
+
+// allWorkDoneOrSkipped 是终审的前置条件：任何失败/阻塞都先走人工仲裁，不进入终审。
+func allWorkDoneOrSkipped(o *Orchestration) bool {
+	works := workBatches(o)
+	if len(works) == 0 {
+		return false
+	}
+	for _, b := range works {
+		if b.Status != BatchDone && b.Status != BatchSkipped {
+			return false
+		}
+	}
+	return true
+}
+
+// normalReviewsTerminal 保证逐批审查已收尾；终审不能和正在跑的逐批审查重叠。
+func normalReviewsTerminal(o *Orchestration) bool {
+	for i := range o.Batches {
+		b := &o.Batches[i]
+		if b.Kind != KindReview || b.FinalReview {
+			continue
+		}
+		if b.Status == BatchPending || batchActive(b.Status) {
+			return false
+		}
+	}
+	return true
 }
 
 func findBatch(o *Orchestration, id string) *Batch {

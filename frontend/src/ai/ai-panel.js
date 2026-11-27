@@ -19,6 +19,7 @@ import {detectLanguage, outlineForLanguage, planSectionComments, applySectionEdi
 import {overlayStack} from '../core/overlay-stack.js';
 import {createContextMenu} from '../shell/contextmenu.js';
 import {mergePluginAIRequest, pluginAIAccounts} from '../shell/plugin-ai-providers.js';
+import {PLUGIN_CTX_ORIGINS, pluginCtxBase, withCtx} from '../shell/plugin-ctx.js';
 import {copyImageUrlToClipboard} from '../core/image-clipboard.js';
 import {kvGet, kvGetJson, kvRemove, kvSet, kvSetJson} from '../core/kv-store.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
@@ -81,6 +82,10 @@ import {
 } from './tools/ai-search-advanced.js';
 import {redactScopePaths} from './security/ai-scope-redact.js';
 import {createLoopGuard} from './chat/ai-loop-guard.js';
+import {
+    createToolFailureGuard, resolveToolFailureMax,
+    toolFailureNotice, toolFailureToastText, toolFailureToolResultText,
+} from './chat/ai-tool-failure-guard.js';
 import {createImagePolicyStore, checkRequestBudget} from './tools/ai-image-policy.js';
 import {
     turnProcessDefaultExpanded,
@@ -751,6 +756,7 @@ export function createAIPanel(options) {
         notifyApprove: document.getElementById('ai-opt-notify-approve'),
         notifySound: document.getElementById('ai-opt-notify-sound'),
         retryMax: document.getElementById('ai-opt-retry-max'),
+        toolFailureMax: document.getElementById('ai-opt-tool-failure-max'),
         subAgentMax: document.getElementById('ai-opt-subagent-max'),
         subAgentMaxDepth: document.getElementById('ai-opt-subagent-depth'),
         subAgentRounds: document.getElementById('ai-opt-subagent-rounds'),
@@ -889,10 +895,39 @@ export function createAIPanel(options) {
     const userFoldExpanded = new Set();
     const AI_USER_FOLD_LINES = 12;
     const AI_USER_FOLD_CHARS = 800;
+    // 兜底：字符/行数没超阈值的消息，若实际渲染高度超过这个像素值也折叠
+    //（中文长段/窄面板下 400 字就能占十几行，只按字符判断会出现「视觉上已经很长的气泡」）。
+    const AI_USER_FOLD_PX = 240;
 
     function isLongUserMessage(content) {
         const text = aiTextOf(content);
         return text.split('\n').length > AI_USER_FOLD_LINES || text.length > AI_USER_FOLD_CHARS;
+    }
+
+    // 用户超长消息的折叠 UI：加 foldable/folded（CSS 限高 + 尾部渐隐）+「展开全文 / 收起」按钮。
+    // 手动展开/收起按 foldKey 记住，重渲染不弹回。
+    function attachUserFold(bubble, text, foldKey) {
+        text.classList.add('foldable');
+        text.classList.toggle('folded', !userFoldExpanded.has(foldKey));
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'ai-user-fold-btn';
+        const syncToggle = () => {
+            const folded = text.classList.contains('folded');
+            toggle.innerHTML = iconSvg('chevron-down') + '<span>' + (folded ? '展开全文' : '收起') + '</span>';
+            // 折叠态翻转箭头：transform 留在 svg 上，css 的 .15s 过渡才作用于它
+            toggle.firstElementChild.style.transform = 'rotate(' + (folded ? '0' : '180') + 'deg)';
+        };
+        syncToggle();
+        toggle.addEventListener('click', () => {
+            const nextFolded = text.classList.contains('folded');
+            if (nextFolded) userFoldExpanded.add(foldKey);
+            else userFoldExpanded.delete(foldKey);
+            text.classList.toggle('folded', !nextFolded);
+            syncToggle();
+        });
+        bubble.appendChild(toggle);
+        return toggle;
     }
     // 流式期间被手动折叠/展开过的轮次 key：轮次结束后要丢弃这些记忆，
     // 否则「处理中点过折叠条」会把状态带进完成态，压掉“完成后默认展开/收起”的判断。
@@ -928,6 +963,9 @@ export function createAIPanel(options) {
     let slashState = {open: false, index: 0, items: []};
     let noteSeq = 0;
     const pendingApprovals = new Map();
+    // 编排计划审批的富编辑器（toolCallId -> record）：卡片主体由 orchestration 域提供，
+    // ai/ 只负责把 pendingApprovals 通道与 composer 接管区借给它，不反向 import 编排域。
+    const orchestrationApprovals = new Map();
     // 工具卡折叠偏好（toolCallId -> collapsed）：手动展开/收起后跨重渲保留，
     // 否则一轮内每次新输出触发 renderMessages 全量重建都会把手动展开的卡片折叠回去。
     const toolFoldState = new Map();
@@ -1076,6 +1114,8 @@ export function createAIPanel(options) {
             worklogEnabled: stored.worklogEnabled !== false,
             appControlEnabled: stored.appControlEnabled !== false,
             retryMax: aiClampInt(stored.retryMax, 0, 10, 5),
+            // 工具连续失败熔断阈值：0 = 关闭，非零有效值 3–20，缺省 5（resolveToolFailureMax 钳制）
+            toolFailureMax: resolveToolFailureMax(stored.toolFailureMax),
             // 子代理总数（含递归派出的全部层级，不含主代理）；递归层级 0 = 不设限
             subAgentMax: aiClampInt(stored.subAgentMax, 1, 20, 20),
             // 层级上限含主代理，默认 3 = 主代理 + 2 层子代理（子代理可再派孙代理，孙代理不能再派）。
@@ -1632,7 +1672,9 @@ export function createAIPanel(options) {
         // 重开会话后工具卡的结果文案依赖这些字段；其余仍归一成 file/command。
         const kind = raw.kind === 'command'
             ? 'command'
-            : (raw.kind === 'worktree' ? 'worktree' : (raw.kind === 'action' ? 'action' : 'file'));
+            : (raw.kind === 'worktree' ? 'worktree'
+                : (raw.kind === 'action' ? 'action'
+                    : (raw.kind === 'orchestration' ? 'orchestration' : 'file')));
         // 命令类审批的 tool 只回这三个值；read_image 的网图审批带 web 标记，要按原样留住，
         // 否则会话重开后卡文案退回「在工作目录执行命令」、记住粒度也变成「相同命令」。
         let tool = 'run_command';
@@ -1642,6 +1684,8 @@ export function createAIPanel(options) {
             else if (raw.web === true && raw.tool === 'read_image') tool = 'read_image';
         } else if (kind === 'action') {
             tool = 'app_control';
+        } else if (kind === 'orchestration') {
+            tool = 'orchestration_plan';
         } else {
             tool = raw.tool === 'edit_file' ? 'edit_file' : 'write_file';
         }
@@ -1664,6 +1708,8 @@ export function createAIPanel(options) {
             target: raw.kind === 'action' ? aiTextOf(raw.target) : '',
             oldValue: raw.kind === 'action' ? aiTextOf(raw.oldValue) : '',
             newValue: raw.kind === 'action' ? aiTextOf(raw.newValue) : '',
+            title: raw.kind === 'orchestration' ? aiTextOf(raw.title) : '',
+            summary: raw.kind === 'orchestration' ? aiTextOf(raw.summary) : '',
             risk: ['low', 'medium', 'high'].includes(raw.risk) ? raw.risk : 'medium',
             warnings: raw.kind === 'action' && Array.isArray(raw.warnings)
                 ? raw.warnings.map((item) => aiTextOf(item)).filter(Boolean).slice(0, 6)
@@ -4041,6 +4087,26 @@ export function createAIPanel(options) {
         sendAppMessage,
         // 静默注入（阶段 I）：定时任务改走会话信箱，不切视图、不强开面板
         deliverAgentNotice: (...args) => noticesMod.deliverAgentNotice(...args),
+        // 权限档 / 模型：设置默认档、会话权限、full 确认框、触发时落模型
+        getConfig: () => config,
+        currentScopeOf: (session) => currentScopeOf(session),
+        confirmFullPermission: (onConfirm, options) => confirmFullPermission(onConfirm, options),
+        // 定时任务的模型字段是 id 字符串（非 profile/entry 对象），直接写会话字段即可。
+        pinSessionModel: (session, profileId, modelId) => {
+            if (!session) return;
+            if (profileId) session.profileId = profileId;
+            if (modelId) session.modelId = modelId;
+        },
+        // 模型下拉选项：value = 'profileId|modelId'，空值 = 跟随会话默认
+        modelChoices: () => {
+            const out = [{value: '', label: '跟随会话默认'}];
+            for (const p of config.profiles || []) {
+                for (const e of p.models || []) {
+                    out.push({value: p.id + '|' + e.id, label: modelRefLabel(p, e)});
+                }
+            }
+            return out;
+        },
         // 头部定时任务胶囊与弹层（kind=schedules，与计时器胶囊同机制）
         chipSchedules: el.chipSchedules,
         togglePop: (chip) => toggleChipsPop('schedules', chip),
@@ -6090,6 +6156,8 @@ export function createAIPanel(options) {
     function renderMessage(message, index, session, parent, options) {
         const wrap = document.createElement('div');
         wrap.className = 'ai-msg ' + message.role;
+        // 渲染后按实际高度补折叠的候选（见 renderMessage 末尾）
+        let pendingFold = null;
         // silent 机械提醒（给模型的注入块）：保留 DOM 与索引（buildApiMessages / 定位都用），
         // 视觉隐藏——用户不需要看模型上下文的内部维护信息
         if (message.silent) wrap.classList.add('msg-silent');
@@ -6194,28 +6262,12 @@ export function createAIPanel(options) {
                 bubble.appendChild(text);
                 // 超长消息默认折叠：只露出开头一段 + 渐隐，点「展开全文」看完整内容
                 //（展开后全文可选中复制）；手动展开/收起按消息 key 记住，重渲染不弹回。
+                const foldKey = (session ? session.id : '') + ':' + (Number(message.ts) || 0) + ':' + shownText.length;
                 if (isLongUserMessage(shownText)) {
-                    const foldKey = (session ? session.id : '') + ':' + (Number(message.ts) || 0) + ':' + shownText.length;
-                    text.classList.add('foldable');
-                    text.classList.toggle('folded', !userFoldExpanded.has(foldKey));
-                    const toggle = document.createElement('button');
-                    toggle.type = 'button';
-                    toggle.className = 'ai-user-fold-btn';
-                    const syncToggle = () => {
-                        const folded = text.classList.contains('folded');
-                        toggle.innerHTML = iconSvg('chevron-down') + '<span>' + (folded ? '展开全文' : '收起') + '</span>';
-                        // 折叠态翻转箭头：transform 留在 svg 上，css 的 .15s 过渡才作用于它
-                        toggle.firstElementChild.style.transform = 'rotate(' + (folded ? '0' : '180') + 'deg)';
-                    };
-                    syncToggle();
-                    toggle.addEventListener('click', () => {
-                        const nextFolded = text.classList.contains('folded');
-                        if (nextFolded) userFoldExpanded.add(foldKey);
-                        else userFoldExpanded.delete(foldKey);
-                        text.classList.toggle('folded', !nextFolded);
-                        syncToggle();
-                    });
-                    bubble.appendChild(toggle);
+                    attachUserFold(bubble, text, foldKey);
+                } else if (shownText.length > 200) {
+                    // 字符数没到阈值但可能已经很高（中文长段）：等元素进 DOM 后按实际渲染高度再判一次
+                    pendingFold = {bubble, text, foldKey};
                 }
             }
             wrap.appendChild(bubble);
@@ -6230,6 +6282,10 @@ export function createAIPanel(options) {
             appendActions(wrap, message, index, session, foot);
         }
         (parent || msgHost()).appendChild(wrap);
+        // 进 DOM 后按实际渲染高度补判一次：字符阈值没到、但中文长段在窄面板里已经很占屏幕时也折叠
+        if (pendingFold && pendingFold.text.offsetHeight > AI_USER_FOLD_PX) {
+            attachUserFold(pendingFold.bubble, pendingFold.text, pendingFold.foldKey);
+        }
     }
 
     // 应用注入的消息（Git 快捷操作 / 定时任务）：全宽卡片 + 来源标识，不用用户胶囊；
@@ -6456,6 +6512,7 @@ export function createAIPanel(options) {
         const isCommand = approval.kind === 'command';
         const isWorktree = approval.kind === 'worktree';
         const isAction = approval.kind === 'action';
+        const isOrchestration = approval.kind === 'orchestration';
         const dot = document.createElement('span');
         dot.className = 'ai-approval-placeholder-dot';
         const text = document.createElement('span');
@@ -6466,7 +6523,9 @@ export function createAIPanel(options) {
                 ? '隔离工作区操作待审批，请在下方输入区确认'
                 : isAction
                     ? '操作待审批，请在下方输入区确认'
-                    : '更改待审批，请在下方输入区确认应用';
+                    : (isOrchestration
+                        ? '编排计划待批准，请在下方输入区确认'
+                        : '更改待审批，请在下方输入区确认应用');
         hint.append(dot, text);
         container.appendChild(hint);
     }
@@ -6666,10 +6725,10 @@ export function createAIPanel(options) {
         return -1;
     }
 
-    // ---------- 结构面板的「会话结构」（用户消息定位条） ----------
-    // 控制器搬进 session-outline.js（方案 M5）：数据快照 / 视口吸附 / 跳转与高位通知；
-    // 渲染仍在 session-outline.js 的 renderSessionOutline。下方函数声明保持既有调用点不变。
-    // 会话消息导航滑轨：复用同一 controller 的 snapshot / jumpTo；active 变化经回调同步高亮。
+    // ---------- 会话消息导航滑轨（session rail） ----------
+    // 控制器在 session-outline.js：数据快照 / 视口吸附 / 跳转与高亮通知。
+    // 结构面板的「会话结构」来源已下线，滑轨是会话导航的唯一呈现，复用同一 controller
+    // 的 snapshot / jumpTo；active 变化经回调同步高亮。下方函数声明保持既有调用点不变。
     // railMod 先声明再赋值——controller 的 onActiveChange 在初始化期就可能触发，惰性引用避免 TDZ。
     let railMod = null;
     const outlineMod = createSessionOutlineController({
@@ -8112,6 +8171,9 @@ export function createAIPanel(options) {
             ? pluginContextMod.renderPluginContextBlocks({
                 scope: currentScopeOf(session),
                 sessionId: session && session.id ? session.id : '',
+                // 会话根就是插件眼里的「工作区」：与技能扫描 / 认知 / 记忆同源，
+                // 不要换成窗口根（harness 下窗口根为空，插件会永远读到空串）。
+                workspace: sessionScopeRoot(session) || '',
             })
             : {text: '', count: 0, truncated: false}),
         get settings() { return settings; },
@@ -8747,6 +8809,8 @@ async function requestApproval(session, toolMessage, info) {
                 cwd,
                 toolName: toolName || 'run_command',
                 sessionId: (session && session.id) || '',
+                // 插件分类器的 ctx 也走基座：workspace 与会话同源（同技能 / 认知 / 记忆）
+                workspace: sessionScopeRoot(session) || '',
             });
             // 调试探针：端侧分类器各层结果（线性 / 语义插件）输出到调试控制台。
             // 排查「端侧判险但远程放行」时看这里：每层 score、allow、以及聚合后的 final。
@@ -9188,6 +9252,7 @@ async function requestApproval(session, toolMessage, info) {
         const entry = pendingApprovals.get(key);
         if (!entry) return;
         pendingApprovals.delete(key);
+        if (entry.approval && entry.approval.kind === 'orchestration') orchestrationApprovals.delete(key);
         // 审批已决定：丢弃接管卡的收起状态（下一条审批恢复默认展开）
         approvalTakeoverKey = '';
         approvalTakeoverCollapsed = false;
@@ -9278,7 +9343,11 @@ async function requestApproval(session, toolMessage, info) {
                         ? (approved
                             ? (approval.action === 'discard' ? '正在丢弃隔离工作区…' : '正在创建隔离工作区…')
                             : '用户取消了隔离工作区操作')
-                        : (approved ? '正在应用更改…' : '用户放弃了本次更改');
+                        : approval.kind === 'orchestration'
+                            ? (approval.continue
+                                ? '已继续编排计划，等待你的修改意见'
+                                : (approved ? '已批准编排计划，正在创建…' : '用户取消了编排计划'))
+                            : (approved ? '正在应用更改…' : '用户放弃了本次更改');
         // 用户裁定也进审批记录：来源标 user，避免只看到「待审批」看不到结果。
         const auditKind = approval.kind === 'command'
             ? (isWebApproval(approval) ? 'web' : 'command')
@@ -9286,7 +9355,9 @@ async function requestApproval(session, toolMessage, info) {
                 ? 'read'
                 : (approval.kind === 'worktree'
                     ? 'worktree'
-                    : (approval.kind === 'action' ? 'action' : 'write')));
+                    : (approval.kind === 'action'
+                        ? 'action'
+                        : (approval.kind === 'orchestration' ? 'orchestration' : 'write'))));
         const auditSubject = approval.kind === 'command'
             ? (isWebApproval(approval)
                 ? (webRuleSubject(approval.command) || approval.command)
@@ -9295,7 +9366,9 @@ async function requestApproval(session, toolMessage, info) {
                 ? (approval.relPath || approval.name || 'worktree')
                 : approval.kind === 'action'
                     ? (approval.target || approval.actionTitle || approval.actionName || 'action')
-                    : (approval.relPath || approval.path || '');
+                    : (approval.kind === 'orchestration'
+                        ? (approval.summary || approval.title || 'orchestration-plan')
+                        : (approval.relPath || approval.path || ''));
         // 动作审批把「改了什么、原值 → 新值、危险度、发起会话」一并落进操作留痕。
         logPermission(auditKind, auditSubject, approved ? 'allow' : 'deny', 'user', approvalAuditRule(approval),
             approval.kind === 'action'
@@ -9343,6 +9416,11 @@ async function requestApproval(session, toolMessage, info) {
             entry.toolMessage.status = 'done';
             entry.toolMessage.content = reason || '审批已取消';
             pendingApprovals.delete(key);
+            if (entry.approval && entry.approval.kind === 'orchestration') {
+                const editor = orchestrationApprovals.get(key);
+                if (editor && typeof editor.cancelFromHost === 'function') editor.cancelFromHost();
+                orchestrationApprovals.delete(key);
+            }
             // 停止路径不在这里发“回合恢复”：随后 finishStream 会发 turn_failed(user_stopped)，
             // 迟到的 turn_started 会把已 blocked 的批次重新挂上 deadline。
             entry.resolve({approved: false, cancelled: true});
@@ -10227,11 +10305,18 @@ async function requestApproval(session, toolMessage, info) {
                     '插件工具超时（' + Math.round(tool.timeoutMs / 1000) + ' 秒）：' + name)), tool.timeoutMs);
             });
             const result = await Promise.race([
-                Promise.resolve(tool.execute(input, {
+                Promise.resolve(tool.execute(input, withCtx(pluginCtxBase({
+                    pluginId: tool.pluginId,
+                    pluginName: tool.pluginName,
+                    // 与会话同源（同 AIContext 的 workspace）：插件工具读 workspace 拿到的
+                    // 必须是它被派活时所在的那个仓库，而不是窗口根。
+                    workspace: sessionScopeRoot(session) || '',
                     sessionId: session && session.id ? session.id : '',
+                    origin: PLUGIN_CTX_ORIGINS.tool,
+                }), {
                     scope,
                     signal: ctx && ctx.signal,
-                })),
+                }))),
                 timeout,
             ]);
             return formatPluginToolResult(result);
@@ -10799,23 +10884,62 @@ async function requestApproval(session, toolMessage, info) {
         }
     }
 
+    // 工具连续失败熔断：主对话与子代理都走 executeTool 这一个收口（子代理经 ctx 注入），
+    // 所以在这里统一记账，覆盖所有工具而非只管补丁（propose_patch 的 patchAttempts 另算）。
+    // maxAttempts 传 getter：设置页改阈值后立即生效，无需重建 guard；0 = 关闭熔断。
+    const toolFailureGuard = createToolFailureGuard({
+        maxAttempts: () => config.toolFailureMax,
+    });
+
     /**
      * 工具执行包装层（生命周期钩子）：PreToolUse 前阻塞、PostToolUse / PostToolUseFailure 后触发。
      * 原 executeTool 的所有 case 零侵入改名成 executeToolInner 由本层调用。
      * 钩子失败一律不阻断真实工具执行（控制器已兜错，这里再兜一层）。
      */
     async function executeTool(name, args, ctx) {
+        const sessionId = ctx && ctx.session && ctx.session.id;
+        // 熔断命中：不再执行工具，直接把强提示作为「成功结果」回给模型，引导换策略。
+        // 不 throw——throw 会被调用方记成工具失败，模型更容易照着错误再试一次。
+        const blocked = toolFailureGuard.shouldBlock(name, args, sessionId);
+        if (blocked) {
+            // 主对话：把完整强提示作为 urgent 应用消息投递——工具轮边界会折叠成 user 消息
+            // 随本轮收尾请求进入上下文（不起新轮），弱模型对 user 指令服从度更高。
+            // 子代理有自己的收件箱（consumeSubInbox），不走主会话信箱，避免串台。
+            if (sessionId && !(Number(ctx && ctx.agentDepth) > 0)) {
+                // 应用消息卡片：urgent，工具轮边界折叠成 user 消息随本轮收尾请求进上下文。
+                if (typeof deliverAgentNotice === 'function') {
+                    try {
+                        deliverAgentNotice(ctx.session, toolFailureNotice(name, args, blocked));
+                    } catch (e) {
+                        // 投递失败不影响熔断本身：tool 结果仍会返回，模型照样收到拦截信号。
+                    }
+                }
+                // 用户知情：右下角消息通知 + 消息中心留一条。notifyDesktop 内部按 sessionId
+                // 算 viewingOther——用户正停在这条会话时不弹，不在当前会话才弹（ai-notify-policy）。
+                try {
+                    notifyDesktop({
+                        kind: 'error',
+                        title: '工具熔断 · ' + name,
+                        body: toolFailureToastText(name, args, blocked),
+                        sessionId,
+                    });
+                } catch (e) {
+                    // 通知失败不影响熔断主流程。
+                }
+            }
+            return toolFailureToolResultText();
+        }
         const hookCtx = {tool: name, session: ctx && ctx.session};
         await runLifecycle('pre-tool-use', {...hookCtx, blocking: true});
         let result;
-        let failed = false;
         try {
             result = await executeToolInner(name, args, ctx);
         } catch (e) {
-            failed = true;
+            toolFailureGuard.recordFailure(name, args, e, sessionId);
             await runLifecycle('post-tool-use-failure', hookCtx);
             throw e;
         }
+        toolFailureGuard.recordSuccess(name, args, sessionId);
         await runLifecycle('post-tool-use', hookCtx);
         return result;
     }
@@ -12877,16 +13001,19 @@ async function requestApproval(session, toolMessage, info) {
                     cron: aiTextOf(input.cron).trim(),
                     prompt: aiTextOf(input.prompt),
                     sessionId: resolvedTarget,
-                    scope: ['chat', 'read', 'edit'].includes(input.scope) ? input.scope : 'chat',
+                    scope: ['inherit', 'read', 'edit', 'auto', 'full'].includes(input.scope) ? input.scope : 'inherit',
+                    profileId: aiTextOf(input.profileId).trim(),
+                    modelId: aiTextOf(input.modelId).trim(),
                     maxRuns: aiClampInt(input.maxRuns, 0, 1000000, 0),
                 });
                 // 工具卡在过程折叠体里，创建成功后再给一个过程外的可见提示，并刷新设置列表。
                 flash('已创建定时任务：' + created.name + '（' + describeAISchedule(created) + '）');
                 renderScheduleSettings();
                 return '已创建定时任务：' + created.name + '（id=' + created.id + '）\n' +
-                    describeAISchedule(created) + ' · 权限档：' + (created.scope === 'edit' ? 'edit' : created.scope) +
+                    describeAISchedule(created) + ' · 权限档：' + (created.scope || 'inherit') +
                     (created.sessionId ? ' · 唤醒会话 ' + (sessionTitleById(created.sessionId) || created.sessionId) : ' · 每次新建会话') +
-                    (created.scope === 'edit' ? '\n注意：edit 档任务触发时若无人在场处理写审批会一直挂起。' : '');
+                    (created.scope === 'edit' ? '\n注意：edit 档任务触发时若无人在场处理写审批会一直挂起。' : '') +
+                    (created.scope === 'full' ? '\n注意：full 档任务触发时 AI 以完全权限运行，无沙箱、命令不进审批。' : '');
             }
             case 'schedule_list': {
                 if (!backend.AIScheduleList) throw new Error('当前版本不支持定时任务');
@@ -13844,6 +13971,10 @@ async function requestApproval(session, toolMessage, info) {
                 scopeRoot: scopeRootOf(session),
                 stream: s,
             });
+            // 新回合开始：清空工具连续失败账。放在 pre-step 钩子之后——钩子可能同步调工具，
+            // 它的失败不该被随后的 reset 抹掉。工具循环内的续轮（roundNo>1）不重置，
+            // 否则死循环每轮清零永远熔不断；跨回合 / 换策略后的旧账则不该带进来误判。
+            toolFailureGuard.reset();
         }
         // 只在回合的首个请求记 turn/start：roundNo>1 是同一回合内的工具续轮，
         // 重复记会让「未闭合回合」的判定把所有续轮都算成新回合。
@@ -16313,11 +16444,8 @@ async function requestApproval(session, toolMessage, info) {
             {label: '选中内容', icon: 'select-all', action: () => attachSelection()},
             {label: '附加文件…', icon: 'file', action: () => attachFilesDialog()},
             {label: '技能…', icon: 'sparkles', action: () => showSkillPicker()},
-            // 手动创建计时器：与 AI 的 start_timer 同一条 Go 侧计时链路
-            {label: '计时器', icon: 'clock', submenu: [
-                {label: '倒计时…', action: () => timerMod.openCreateDialog('countdown')},
-                {label: '正计时…', action: () => timerMod.openCreateDialog('countup')},
-            ]},
+            // 手动创建计时器：统一弹层（顶部分段切换倒计时/正计时），与 start_timer 同一条 Go 侧链路
+            {label: '计时器…', icon: 'clock', action: () => timerMod.openCreateDialog()},
             {label: '任务提醒…', icon: 'bell', action: () => remindersMod.openCreateDialog()},
             {sep: true},
             // 协作：投递 / 支线都在这里——不进输入框、不改当前会话，先选人再写内容
@@ -16481,22 +16609,12 @@ async function requestApproval(session, toolMessage, info) {
         // 对话引用：与编辑器右键的「引用该文件 / 引用选取」（只给路径、让模型自己读）区分，
         // 这里把消息正文/选区带进输入区附件条，发送时拼成 user content 前缀的 <quote>。
         if (message && (message.role === 'assistant' || message.role === 'user')) {
-            // 用户消息引用只取正文（开头的 <system-reminder> 环境块是宿主注入的每轮状态，不引用）
-            const quotedBody = message.role === 'user'
-                ? splitTurnReminderPrefix(message.content || '').body
-                : (message.content || '');
             const quoteOf = (text, scope) => addMessageQuote({
                 source: message.role, index, scope, content: text,
             });
             if (selectedText.trim() && selectionInside) {
                 items.push({label: '引用所选到输入框', icon: 'quote', action: () => quoteOf(selectedText, 'selection')});
             }
-            items.push({
-                label: message.role === 'assistant' ? '引用整条回复' : '引用整条消息',
-                icon: 'quote',
-                disabled: !aiTextOf(quotedBody).trim(),
-                action: () => quoteOf(quotedBody, 'message'),
-            });
         }
         if (codeText.trim()) {
             items.push({label: '复制代码', icon: 'copy', action: () => copyText(codeText, '代码')});
@@ -20018,6 +20136,7 @@ async function requestApproval(session, toolMessage, info) {
         streamOf,
         positionOverlays,
         pendingApprovals,
+        getOrchestrationApproval: (toolMessage) => (toolMessage && orchestrationApprovals.get(toolMessage.toolCallId)) || null,
         askDrafts,
         AI_CHEVRON_SVG,
         renderMarkdown,
@@ -21237,6 +21356,25 @@ async function requestApproval(session, toolMessage, info) {
             renderSessionList();
             return true;
         },
+        // 编排计划审批走 composer 接管区：正文编辑器由 orchestration 域提供，
+        // 这里只登记 pendingApprovals（复用审批的阻塞、停止、审计与通知语义）。
+        bridgeRequestOrchestrationPlanApproval: (session, toolMessage, editor) => {
+            if (!session || !toolMessage || !editor) {
+                return Promise.resolve({approved: false, error: '缺少编排审批上下文'});
+            }
+            if (toolHalted(toolMessage)) return Promise.resolve({approved: false, cancelled: true});
+            const approval = {
+                state: 'pending',
+                kind: 'orchestration',
+                tool: 'orchestration_plan',
+                title: editor.title || '编排计划审批',
+                summary: editor.subtitle || '',
+                sessionId: session.id,
+            };
+            orchestrationApprovals.set(toolMessage.toolCallId, editor);
+            return registerPendingApproval(session, toolMessage, approval,
+                (session.title || '会话') + ' · 编排计划待批准' + (editor.subtitle ? '：' + editor.subtitle : ''));
+        },
         bridgeOrchestrationStartTurn: async (sessionId, prompt) => {
             const session = sessionById(String(sessionId || ''));
             if (!session) throw new Error('编排执行会话不存在：' + sessionId);
@@ -21727,25 +21865,97 @@ async function requestApproval(session, toolMessage, info) {
         },
         bridgeListSessions: (callerSessionId) => {
             const caller = String(callerSessionId || '').trim();
-            return (sessions || []).map((s) => ({
+            return (sessions || []).map((s) => {
+                const state = streamOf(s.id) ? 'streaming'
+                    : (compactOf(s.id) ? 'compacting'
+                        : (canAutoStartTurn(s.id).ok ? 'idle' : 'streaming'));
+                return {
+                    id: s.id,
+                    title: s.title,
+                    scope: s.scope || 'read',
+                    group: s.group || '',
+                    workspace: s.workspace || '',
+                    planMode: !!s.planMode,
+                    orchestration: s.orchestration ? Object.assign({}, s.orchestration) : null,
+                    messages: sessionMessageCount(s),
+                    state,
+                    unread: !!s.unread,
+                    active: s.id === (activeSessionId()),
+                    // 「哪一个是我」：active 只是面板当前查看的会话，后台会话调用时 caller 才是自己
+                    caller: !!caller && s.id === caller,
+                };
+            });
+        },
+        // get_state 专用：身份会话（调用者自己 + 面板当前查看，最多 2 条）+ 运行中会话（streaming/compacting，最多 20 条），
+        // 去重、带 state、合计上限 22 防无界。字段瘦身到最小集；全量列表仍走 bridgeListSessions（orchestration 等在用）。
+        bridgeListSessionsBrief: (callerSessionId) => {
+            const caller = String(callerSessionId || '').trim();
+            const activeId = activeSessionId();
+            const stateOf = (s) => streamOf(s.id) ? 'streaming'
+                : (compactOf(s.id) ? 'compacting'
+                    : (canAutoStartTurn(s.id).ok ? 'idle' : 'streaming'));
+            const seen = new Set();
+            const identity = [];
+            const running = [];
+            // 身份会话必含（即便 idle），保证后台唤醒时消歧信息不丢
+            for (const id of [caller, activeId]) {
+                if (!id || seen.has(id)) continue;
+                const s = (sessions || []).find((item) => item && item.id === id);
+                if (!s) continue;
+                seen.add(id);
+                identity.push({s, state: stateOf(s)});
+            }
+            // 运行中会话补齐（排除已入列的身份会话），上限 20
+            for (const s of sessions || []) {
+                if (seen.has(s.id)) continue;
+                const state = stateOf(s);
+                if (state === 'idle') continue;
+                seen.add(s.id);
+                running.push({s, state});
+                if (running.length >= 20) break;
+            }
+            return identity.concat(running).slice(0, 22).map(({s, state}) => ({
                 id: s.id,
                 title: s.title,
-                scope: s.scope || 'read',
-                group: s.group || '',
                 workspace: s.workspace || '',
-                planMode: !!s.planMode,
-                orchestration: s.orchestration ? Object.assign({}, s.orchestration) : null,
-                messages: sessionMessageCount(s),
-                active: s.id === (activeSessionId()),
-                // 「哪一个是我」：active 只是面板当前查看的会话，后台会话调用时 caller 才是自己
+                state,
+                active: s.id === activeId,
                 caller: !!caller && s.id === caller,
             }));
         },
+        // get_state 专用：会话涉及的工作区去重聚合（按最近更新排序、上限 8），
+        // 让模型知道「有哪些根可用」而不必背下整张会话表。current=本窗口工作区，active=面板当前会话所在根。
+        bridgeListWorkspaces: () => {
+            const current = aiWorkspaceKey(windowWorkspacePath());
+            const activeWs = aiWorkspaceKey(sessionWorkspacePath(currentSession()));
+            const best = new Map();
+            for (const s of sessions || []) {
+                const dir = sessionWorkspacePath(s);
+                if (!dir) continue;
+                const key = aiWorkspaceKey(dir);
+                if (!key) continue;
+                const at = Number(s.updatedAt) || 0;
+                const prev = best.get(key);
+                if (prev) {
+                    prev.count++;
+                    if (at > prev.at) { prev.at = at; prev.path = dir; }
+                } else {
+                    best.set(key, {path: dir, name: aiWorkspaceName(dir) || dir, at, count: 1});
+                }
+            }
+            return [...best.values()]
+                .sort((a, b) => b.at - a.at)
+                .slice(0, 8)
+                .map((entry) => ({
+                    path: entry.path,
+                    name: entry.name,
+                    sessions: entry.count,
+                    current: aiWorkspaceKey(entry.path) === current,
+                    active: aiWorkspaceKey(entry.path) === activeWs,
+                }));
+        },
         // AI 弹窗已进全局弹层栈（openAIDialog/closeAIDialog 注册），Esc 层序由栈分发，
         // 旧的顶层弹窗让路查询已随栈退役（main.js 不再需要知道 AI 域的弹窗）。
-        // 结构面板的「会话结构」数据源：当前会话里的用户消息（用户消息定位条）
-        bridgeSessionOutline: () => sessionOutlineSnapshot(),
-        bridgeJumpToMessage: (index) => jumpToSessionMessage(index),
         bridgeGetState: (callerSessionId) => {
             const session = currentSession();
             const profile = profileOf(session);

@@ -15,6 +15,9 @@ import (
 type CallDeps struct {
 	WorkspaceForCall func(context.Context) string
 	WindowForCall    func(context.Context) string
+	// MainWindowForCall 区分「主窗口（含多工作区 harness）」与浮窗/调试窗。
+	// 多工作区窗口不绑定单一目录，允许按会话显式传 workspace；辅助窗仍 fail-closed。
+	MainWindowForCall func(context.Context) bool
 }
 
 var (
@@ -64,14 +67,34 @@ func callerWindow(ctx context.Context) string {
 	return callDeps.WindowForCall(ctx)
 }
 
-// requireWorkspace 对编排的读写一律 fail-closed：多工作区 harness 窗口没有单一
-// 窗口工作区时，宁可不显示编排，也不能把其他仓库的编排暴露给本窗口。
+// requireWorkspace 对编排的读写默认 fail-closed；唯一例外是多工作区 harness 主窗口：
+// 它按设计不绑定单一目录，调用方用「当前会话的工作区」显式提交。返回空串代表
+// 该窗口可跨工作区读写（引擎侧约定空 workspace = 不过滤），浮窗/调试窗仍拒绝。
 func requireWorkspace(ctx context.Context) (string, error) {
-	ws := callerWorkspace(ctx)
-	if strings.TrimSpace(ws) == "" {
-		return "", fmt.Errorf("当前窗口没有绑定工作区；编排需要单工作区窗口")
+	ws := strings.TrimSpace(callerWorkspace(ctx))
+	if ws != "" {
+		return ws, nil
 	}
-	return ws, nil
+	if callDeps.MainWindowForCall != nil && callDeps.MainWindowForCall(ctx) {
+		return "", nil
+	}
+	return "", fmt.Errorf("当前窗口没有绑定工作区；请在主窗口或会话工作区里发起编排")
+}
+
+// bindRequestWorkspace：有窗口工作区时强制执行；多工作区 harness（ws 为空）时
+// 使用计划里由发起会话带上的 workspace。
+func bindRequestWorkspace(ws string, req *PlanRequest) error {
+	if strings.TrimSpace(req.Workspace) == "" {
+		if ws == "" {
+			return fmt.Errorf("缺少归属工作区；多工作区窗口需要由会话带上 workspace")
+		}
+		req.Workspace = ws
+		return nil
+	}
+	if ws != "" && cleanAbs(req.Workspace) != cleanAbs(ws) {
+		return fmt.Errorf("只能为当前窗口的工作区创建编排")
+	}
+	return nil
 }
 
 // Service 是 Wails 绑定入口；只在这里放导出方法（每个都进绑定基线）。
@@ -90,10 +113,8 @@ func (s *Service) OrchestrationPlanPreview(ctx context.Context, reqJSON string) 
 	if err != nil {
 		return PlanPreview{}, err
 	}
-	if strings.TrimSpace(req.Workspace) == "" {
-		req.Workspace = ws
-	} else if cleanAbs(req.Workspace) != cleanAbs(ws) {
-		return PlanPreview{}, fmt.Errorf("只能为当前窗口的工作区创建编排")
+	if err := bindRequestWorkspace(ws, &req); err != nil {
+		return PlanPreview{}, err
 	}
 	return e.Preview(req), nil
 }
@@ -111,10 +132,8 @@ func (s *Service) OrchestrationCreate(ctx context.Context, reqJSON string) (Crea
 	if err != nil {
 		return CreateResult{}, err
 	}
-	if strings.TrimSpace(req.Workspace) == "" {
-		req.Workspace = ws
-	} else if cleanAbs(req.Workspace) != cleanAbs(ws) {
-		return CreateResult{}, fmt.Errorf("只能为当前窗口的工作区创建编排")
+	if err := bindRequestWorkspace(ws, &req); err != nil {
+		return CreateResult{}, err
 	}
 	return e.Create(req, callerWindow(ctx))
 }

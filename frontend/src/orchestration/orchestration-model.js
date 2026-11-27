@@ -39,6 +39,7 @@ export const FAILURE_LABELS = Object.freeze({
     verify_failed: '验收失败',
     review_failed: '审查提出返工',
     review_unavailable: '审查不可用（未放行）',
+    final_review_findings: '终审提出阻断/应修',
     over_budget: '超预算',
     blocked_by_dep: '上游失败',
     user_stopped: '用户停止',
@@ -144,6 +145,10 @@ export function buildPlanRequest(input, context) {
         review: reviewExplicit ? rawPolicy.review !== false : true,
         reviewExplicit,
         reviewModel: textOf(rawPolicy.reviewModel).trim(),
+        finalReview: rawPolicy.finalReview === true,
+        finalReviewCount: rawPolicy.finalReview === true
+            ? intOf(rawPolicy.finalReviewCount, 1, 3, 1) : 0,
+        finalReviewModel: rawPolicy.finalReview === true ? textOf(rawPolicy.finalReviewModel).trim() : '',
         escalateOnRetry: false,
         allowWorkerModels: rawPolicy.allowWorkerModels === true,
         allowedWorkerModels: stringList(rawPolicy.allowedWorkerModels).slice(0, 5),
