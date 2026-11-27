@@ -562,7 +562,7 @@ export const AI_TOOL_DEFS = {
     },
     schedule_create: {
         name: 'schedule_create',
-        description: '创建定时任务：到点自动向目标会话注入一条指令并开始一轮对话（消耗 token）。kind=once 用 at（本地时间，如 2026-11-13T09:00）或 delayMinutes（多少分钟后）；kind=interval 用 intervalMinutes；kind=cron 用 5 字段 cron（分 时 日 月 周，支持 * , - /）。目标会话：默认绑定当前会话（到点唤醒本对话继续）；只有用户明确要「每次都用新对话跑」才传 newSession=true。scope 仅在每次新建会话时作为该会话权限档（chat/read/edit）。仅在用户明确要求定时/循环/提醒时使用，创建前先与用户确认内容。',
+        description: '创建定时任务：到点自动向目标会话注入一条指令并开始一轮对话（消耗 token）。kind=once 用 at（本地时间，如 2026-11-13T09:00）或 delayMinutes（多少分钟后）；kind=interval 用 intervalMinutes；kind=cron 用 5 字段 cron（分 时 日 月 周，支持 * , - /）。目标会话：默认绑定当前会话（到点唤醒本对话继续）；只有用户明确要「每次都用新对话跑」才传 newSession=true。scope 权限档：newSession=true 时用于新建会话（read/edit/auto/full，省略=inherit 取设置默认）；绑定已有会话时省略=inherit 继承目标会话权限。profileId/modelId 仅新建会话时指定模型，省略跟随会话默认。仅在用户明确要求定时/循环/提醒时使用，创建前先与用户确认内容。',
         parameters: {
             type: 'object',
             properties: {
@@ -575,7 +575,9 @@ export const AI_TOOL_DEFS = {
                 prompt: {type: 'string', description: '触发时注入给 AI 的指令（≤8192 字符）'},
                 sessionId: {type: 'string', description: '目标会话 id；省略 = 绑定当前会话（到点唤醒本对话）'},
                 newSession: {type: 'boolean', description: 'true = 每次触发都新建会话（默认 false = 唤醒绑定会话）'},
-                scope: {type: 'string', enum: ['chat', 'read', 'edit'], description: '新建会话时的权限档，默认 chat'},
+                scope: {type: 'string', enum: ['inherit', 'read', 'edit', 'auto', 'full'], description: '权限档：省略=inherit（新建会话取设置默认、绑定会话则继承目标会话）；显式 read/edit/auto/full 不可比目标会话更宽'},
+                profileId: {type: 'string', description: '新建会话的模型账号 id；省略跟随会话默认（绑定已有会话时忽略）'},
+                modelId: {type: 'string', description: '新建会话的模型条目 id；省略跟随会话默认（绑定已有会话时忽略）'},
                 maxRuns: {type: 'integer', description: '最多触发次数，0 = 不限（once 固定 1）'},
             },
             required: ['kind', 'prompt'],
@@ -656,7 +658,7 @@ export const AI_TOOL_DEFS = {
     },
     agent_tree: {
         name: 'agent_tree',
-        description: '查看自己所在的智能体团队树（只读）：主代理看到整棵任务树（含孙代理与更深层级），子代理只看到自己这一支；每行带代理 id、名称、层级、状态、沙箱档、轮次与任务摘要，并标注「你」是哪一行。要 agent_send / agent_stop / agent_compact 某个嵌套代理但手上没有它的 id 时先调用它；只是想停掉所有在跑的代理，直接用不带 id 的 agent_stop 即可。',
+        description: '查看自己所在的智能体团队树（只读）：主代理看到整棵任务树（含孙代理与更深层级），子代理只看到自己这一支；每行带代理 id、名称、层级、状态、沙箱档、轮次与任务摘要，并标注「你」是哪一行。只覆盖 spawn_agent 子代理；编排批次是独立会话，不在团队树里，查编排用 orchestration_status。要 agent_send / agent_stop / agent_compact 某个嵌套代理但手上没有它的 id 时先调用它；只是想停掉所有在跑的代理，直接用不带 id 的 agent_stop 即可。',
         parameters: {
             type: 'object',
             properties: {},
@@ -1093,6 +1095,7 @@ export const AI_TOOL_DEFS = {
             + 'owns（相对工作区的可写 glob，只有 * 与 **；空数组 = 只读设计批次）、dependsOn（只依赖 work 批次）、verify（exe + argv，不走 shell）。'
             + '不要自己编造“已完成”的依赖，不要把一个文件同时交给两个可能并行的批次。'
             + '批准后由确定性 Router 按依赖与文件所有权推进；你只负责判断性仲裁，不执行具体批次。'
+            + '可选终审：全部批次收尾后再派 1–3 个只读终审会话，检查整体目标与跨批接线，通过后编排才算完成。'
             + '与群聊（讨论）、spawn_agent（临时工）不同：编排是跨会话的生产线。',
         parameters: {
             type: 'object',
@@ -1129,7 +1132,7 @@ export const AI_TOOL_DEFS = {
                                 type: 'object',
                                 description: '模型分配（只有用户在审批卡上授权白名单后才生效；白名单外会被拒绝）',
                                 properties: {
-                                    first: {type: 'string', description: '首次尝试模型 ref；省略 = 用审批时固定的仲裁模型'},
+                                    first: {type: 'string', description: '首次尝试模型 ref；省略 = 继承母会话'},
                                     retry: {type: 'string', description: '重派模型 ref；省略 = 同 first'},
                                 },
                             },
@@ -1146,7 +1149,10 @@ export const AI_TOOL_DEFS = {
                         maxAttemptsPerBatch: {type: 'integer', description: '单批尝试上限（默认 2，硬上限 2）'},
                         budgetTokens: {type: 'integer', description: 'token 预算（事后熔断：超出后停止派发，不保证绝不超）'},
                         batchTimeoutMs: {type: 'integer', description: '单批超时毫秒（默认 20 分钟）'},
-                        review: {type: 'boolean', description: '审查门；默认开，只有用户明确要求关才传 false'},
+                        review: {type: 'boolean', description: '逐批审查门；默认开，只有用户明确要求关才传 false'},
+                        finalReview: {type: 'boolean', description: '全部批次完成后的子代理终审；默认 false，由用户在审批卡上勾选'},
+                        finalReviewCount: {type: 'integer', description: '终审子代理数（1–3）；仅 finalReview=true 时生效'},
+                        finalReviewModel: {type: 'string', description: '终审模型 ref；省略 = 继承母会话（仍需用户授权模型白名单）'},
                         autoRun: {type: 'boolean', description: '自主执行：禁止 awaiting_user；默认 false，必须由用户在审批卡上勾选'},
                         snapshotBeforeStart: {type: 'boolean', description: '开始前快照；默认 false（大项目可能几百 MB）'},
                     },
@@ -1220,8 +1226,8 @@ export const AI_TOOL_DEFS = {
     },
     orchestration_status: {
         name: 'orchestration_status',
-        description: '只读查询当前工作区的编排：省略 id 返回编排列表与进度；给 id 返回批次状态、attempts、失败分类和最近事件。'
-            + '不知道编排 id、想确认“现在卡在哪 / 哪批失败了”时用它；不要用它推进或修改状态。',
+        description: '只读查询当前工作区的编排：省略 id 返回编排列表与进度；给 id 返回批次状态、attempts、失败分类、执行/审查/终审会话 id 与运行态（空闲 / 运行中 / 压缩中 / 未读）以及最近事件。'
+            + '这是编排的“会话树”视图：工作批次下缩进列审查子项，终审单独分组；要发消息给某个批次会话时，从我给出的会话 id 复制，不要用 agent_tree（它只覆盖 spawn_agent 子代理）。不要用它推进或修改状态。',
         parameters: {
             type: 'object',
             properties: {
@@ -1371,7 +1377,7 @@ export const AI_TOOL_CATALOG = {
     session_send: {group: 'session', blurb: '会话间投递'},
     orchestration_plan: {group: 'orchestration', blurb: '把大改造拆成带依赖与文件所有权的批次计划，强制审批后跨会话执行'},
     orchestration_report: {group: 'orchestration', blurb: '执行/审查批次的强制收尾回报（不调用视为未完成）'},
-    orchestration_status: {group: 'orchestration', blurb: '只读查询当前工作区编排进度、失败分类与最近事件'},
+    orchestration_status: {group: 'orchestration', blurb: '只读查询编排批次树：批次状态、失败分类、子会话 id/运行态与最近事件'},
     orchestration_control: {group: 'orchestration', blurb: '仲裁者的暂停/恢复/停止/跳过/重派/改未派批次（每次确认）'},
     schedule_list: {group: 'task', blurb: '定时任务管理'},
     schedule_create: {group: 'task', blurb: '定时任务管理'},

@@ -396,13 +396,6 @@ export function createAIHeadHud(ctx, extras) {
                 // 实时刷新重建后按这个键找回焦点
                 mainBtn.dataset.agentKey = key;
                 mainBtn.appendChild(agentStateBadge(agent.state));
-                // 收件箱有未消费消息 / 等待主代理回答：单独一枚徽标（不改变 running 语义）
-                if (agent.inboxCount > 0) {
-                    const wait = document.createElement('span');
-                    wait.className = 'ai-agent-badge ai-agent-waiting';
-                    wait.textContent = '待处理 ' + agent.inboxCount;
-                    mainBtn.appendChild(wait);
-                }
                 if (agent.compacting) {
                     const compacting = document.createElement('span');
                     compacting.className = 'ai-agent-badge ai-agent-waiting';
@@ -433,6 +426,13 @@ export function createAIHeadHud(ctx, extras) {
                 if (agent.sessionTitle) appendBit('@ ' + agent.sessionTitle);
                 main.append(nameSpan, subSpan);
                 mainBtn.appendChild(main);
+                // 收件箱有未消费消息 / 等待主代理回答：橙色徽标放在文字右侧、展开箭头左侧
+                if (agent.inboxCount > 0) {
+                    const wait = document.createElement('span');
+                    wait.className = 'ai-agent-badge ai-agent-waiting';
+                    wait.textContent = '待处理 ' + agent.inboxCount;
+                    mainBtn.appendChild(wait);
+                }
                 const go = document.createElement('span');
                 go.className = 'ai-chips-go';
                 go.innerHTML = iconSvg('chevron-right', 12);

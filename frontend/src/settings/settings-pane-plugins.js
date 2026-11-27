@@ -4,6 +4,7 @@ import {iconSvg} from '../core/icons.js';
 
 import {formats} from '../core/formats.js';
 import {initPluginRuntime, loadPlugins} from '../shell/plugins.js';
+import {PLUGIN_CTX_ORIGINS, pluginCtxBase, withCtx} from '../shell/plugin-ctx.js';
 import {getPluginSettingsPanel, getPluginSettingsPanels, panelsOfPlugin} from '../shell/plugin-settings-panels.js';
 import {serviceLogs, serviceStatus, startService, stopService} from '../shell/plugin-services.js';
 
@@ -93,7 +94,15 @@ function renderPluginSettingsPane(key) {
     const spec = getPluginSettingsPanel(key);
     if (!pane || !spec) return;
     pane.textContent = '';
-    const ctx = {
+    // 身份与位置走 shell/plugin-ctx.js 的基座（ctx.plugin / ctx.workspace / ctx.origin）；
+    // 设置面板是全局 UI，工作区可能为空——插件要判「有没有工作区」就读空串。
+    const ctx = withCtx(pluginCtxBase({
+        pluginId: spec.pluginId,
+        pluginName: spec.pluginName,
+        workspace: deps.workspaceFolder || '',
+        sessionId: '',
+        origin: PLUGIN_CTX_ORIGINS.settings,
+    }), {
         flash: (msg, isErr) => deps.flash(String(msg), !!isErr),
         startService: (id) => startService(spec.pluginId, id),
         stopService: (id) => stopService(spec.pluginId, id),
@@ -103,7 +112,7 @@ function renderPluginSettingsPane(key) {
             if (deps.rt && deps.rt.BrowserOpenURL) deps.rt.BrowserOpenURL(url);
             else window.open(url, '_blank', 'noopener');
         },
-    };
+    });
     try {
         spec.render(pane, ctx);
     } catch (e) {

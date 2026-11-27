@@ -6,6 +6,8 @@
 //
 // 上限依据设计：单条 ≤ 4 KiB、合计 ≤ 12 KiB（超出截断并在 meta 里标记）。
 
+import {PLUGIN_CTX_ORIGINS, pluginCtxBase, withCtx} from './plugin-ctx.js';
+
 export const MAX_BLOCK_CHARS = 4096;
 export const MAX_TOTAL_CHARS = 12 * 1024;
 
@@ -77,8 +79,27 @@ export function pluginAIContextsByPlugin() {
     return [...groups.values()];
 }
 
-// 渲染本轮要注入的块。runtimeCtx 形如 {scope, sessionId, workspace}（传给插件的 text()）。
+// 渲染本轮要注入的块。runtimeCtx 形如 {scope, sessionId, workspace}（由 ai-panel 的面板组装，
+// 经 shell/plugin-ctx.js 的基座补齐身份与 origin 后传给插件的 text()）；调用方漏传 workspace
+// 时会退化成空串而不是 undefined——插件里 `if (ctx.workspace)` 的判定才可靠。
 // 单个插件抛错只跳过该块，绝不影响系统提示词组装。
+/**
+ * 单个块的 text(ctx)：基座（身份 + 位置 + origin）之上叠加宿主给的运行时字段。
+ * @param {{pluginId: string, pluginName: string}} block
+ * @param {any} runtimeCtx
+ * @returns {Record<string, any>}
+ */
+function ctxForBlock(block, runtimeCtx) {
+    const src = runtimeCtx && typeof runtimeCtx === 'object' ? runtimeCtx : {};
+    return withCtx(pluginCtxBase({
+        pluginId: block.pluginId,
+        pluginName: block.pluginName,
+        workspace: src.workspace,
+        sessionId: src.sessionId,
+        origin: PLUGIN_CTX_ORIGINS.prompt,
+    }), src);
+}
+
 export function renderPluginContextBlocks(runtimeCtx) {
     const out = [];
     let total = 0;
@@ -86,7 +107,7 @@ export function renderPluginContextBlocks(runtimeCtx) {
     for (const block of blocks.values()) {
         let text = '';
         try {
-            text = String(block.text(runtimeCtx || {}) || '').trim();
+            text = String(block.text(ctxForBlock(block, runtimeCtx)) || '').trim();
         } catch (e) {
             continue;
         }

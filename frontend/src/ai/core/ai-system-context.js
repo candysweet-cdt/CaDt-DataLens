@@ -96,7 +96,7 @@ export function createAISystemContext(ctx) {
             '- preference_* 管理设置里「用户偏好」列表（长期生效的回答/工作方式约定）：始终优先遵循 <user_preferences>；用户明确表达长期偏好时用 preference_write 记录，一次性要求不要写入。',
             '- memory_* 读写跨会话持久记忆（MEMORY.md 是索引，内容随 <memory> 块每轮自动注入）：用户给出值得跨会话保留的事实/结论/决定时用 memory_write 落盘并同步更新索引；不确定有无相关记忆时可先 memory_list。',
             '- 涉密值（API key、令牌、密码等）优先建议用户经 env_create 登记为环境变量，不要引导用户把这类值发进对话或写进文件。',
-            '- schedule_* 管理定时任务：仅当用户明确要求「定时 / 每 N 分钟 / 明早 X 点 / 循环执行」时创建，创建前先与用户确认触发内容与频率；scope 默认 chat；任务需要写文件或执行命令时（scope=edit）提醒用户触发时段需在场处理审批。用户说「看看我有哪些定时任务」时用 schedule_list。',
+            '- schedule_* 管理定时任务：仅当用户明确要求「定时 / 每 N 分钟 / 明早 X 点 / 循环执行」时创建，创建前先与用户确认触发内容与频率；scope 省略=inherit（新建会话取设置默认权限、绑定已有会话则继承目标会话权限），可显式 read/edit/auto/full（不可比目标会话更宽）；任务需要写文件或执行命令时（scope=edit）提醒用户触发时段需在场处理审批，scope=full 时提醒 AI 以完全权限运行、无沙箱且不进审批。用户说「看看我有哪些定时任务」时用 schedule_list。',
             '- 回复里可用 Markdown 图片语法嵌入本地图片：![说明](工作区相对路径)；支持 png/jpg/jpeg/gif/webp/bmp/svg（≤30MB），完全权限下可用绝对路径；不要输出 base64 data URL。',
             '- 引用工作区文件时用反引号包裹相对路径，需要定位可加 :行号[:列号] 或 :起行-止行（如 `src/main.js`、`src/main.js:42` 或 `src/main.js:42-56`）；真实存在的文件会渲染成可点击芯片，用户点击即在编辑器打开并跳到该行（区间跳到起始行）。',
             '- ask_user 用于必须由用户拍板的关键选择；问题与选项要具体，能在某一项上给出推荐时标记 recommended=true；不要用它询问可以自行查证的信息。需要更短/更长的等待时，给本次调用传 timeoutSec（0=不限时）和/或 timeoutAction，只影响本次，不要改用户设置。',

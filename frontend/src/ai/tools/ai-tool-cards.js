@@ -392,6 +392,15 @@ export function createAIToolCards(ctx) {
             renderActionApprovalBody(container, message, approval);
             return;
         }
+        if (approval.kind === 'orchestration') {
+            const result = document.createElement('div');
+            result.className = 'ai-approval-result ' + approval.state;
+            result.textContent = approval.state === 'approved'
+                ? (message.content || '编排计划已批准')
+                : (approval.state === 'denied' ? '已取消本次编排' : '编排计划已取消');
+            container.appendChild(result);
+            return;
+        }
         // skipMeta：工具卡头部已带路径与 diff 统计时，正文不再重复
         if (!(opts && opts.skipMeta)) {
             const meta = document.createElement('div');
