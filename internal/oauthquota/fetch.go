@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -32,10 +33,25 @@ func Fetch(providerID, rawURL string) (FetchResult, error) {
 	if target == "" {
 		target = p.ConsoleOrigin + p.UsagePath
 	}
-	if !strings.HasPrefix(target, p.ConsoleOrigin) {
+	if !sameOrigin(target, p.ConsoleOrigin) {
 		return FetchResult{Error: "请求地址必须属于 " + p.ConsoleOrigin}, nil
 	}
 	return fetch(p, target, false)
+}
+
+// sameOrigin 判断 target 是否严格落在 origin 的 scheme + host 下。
+// 不能做字符串前缀比较：https://<origin>.evil.com 与 https://<origin>@evil.com
+// 都能通过 HasPrefix，却会把 Bearer token 发给第三方（URL 来自可编辑的额度脚本）。
+func sameOrigin(target, origin string) bool {
+	u, err := url.Parse(target)
+	if err != nil || u.Host == "" || u.User != nil {
+		return false
+	}
+	o, err := url.Parse(origin)
+	if err != nil || o.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, o.Scheme) && strings.EqualFold(u.Host, o.Host)
 }
 
 func fetch(p Provider, target string, retried bool) (FetchResult, error) {

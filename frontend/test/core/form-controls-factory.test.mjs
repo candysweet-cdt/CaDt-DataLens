@@ -202,6 +202,34 @@ function sourceFiles() {
     return out;
 }
 
+// 封装 class 白名单：只有这些 class 的静态写法算「已封装」。
+// 之前只判「标签里有没有 class=」，于是 class="随便什么" 也能绕过——
+// index.html 里 109 处裸控件全部落在基线之外，护栏等于没设。
+const ALLOWED_CLASS_TOKENS = new Set([
+    'ai-input',
+    'ai-font-size-num',
+    'find-input',
+    'gb-search',
+    'git-message',
+    'sb-filter-input',
+    'settings-search',
+    'sub-agent-choice',
+    'writing-goal-input',
+    'mcfg-input-sm',
+    'mcfg-textarea',
+]);
+const ALLOWED_CLASS_PREFIXES = ['dlg-', 'opt-', 'mcfg-', 'ai-settings-', 'run-'];
+
+function hasWrappedClass(tag) {
+    const m = tag.match(/\bclass="([^"]*)"/);
+    if (!m) return false;
+    const tokens = m[1].trim().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return false;
+    // 每个 token 都必须是白名单：混进一个野 class 就按未封装算。
+    return tokens.every((t) => ALLOWED_CLASS_TOKENS.has(t) ||
+        ALLOWED_CLASS_PREFIXES.some((prefix) => t.startsWith(prefix)));
+}
+
 function countRawControls(text) {
     // 已封装的 .set-switch 结构内部的隐藏 checkbox 不算裸用法
     const cleaned = text.replace(
@@ -209,7 +237,7 @@ function countRawControls(text) {
     );
     let count = 0;
     for (const m of cleaned.matchAll(/<(?:input|select|textarea)\b[^>]*>/gi)) {
-        if (/\bclass=/.test(m[0])) continue; // 带封装 class 的静态写法是合规的
+        if (hasWrappedClass(m[0])) continue; // 带白名单封装 class 的静态写法才合规
         count++;
     }
     for (const _m of cleaned.matchAll(/createElement\(\s*['"](?:input|select|textarea)['"]\s*\)/gi)) {
@@ -240,6 +268,10 @@ test('扫描器自测：抓得到裸控件、放得过封装结构', () => {
     assert.equal(countRawControls("document.createElement('select')"), 1);
     assert.equal(countRawControls('<input class="dlg-input" type="text">'), 0);
     assert.equal(countRawControls('<label class="set-switch"><input type="checkbox"></label>'), 0);
+    // 任意 class 不能放行：这是原先的绕过口子
+    assert.equal(countRawControls('<input class="whatever" type="text">'), 1);
+    assert.equal(countRawControls('<input class="dlg-input evil" type="text">'), 1);
+    assert.equal(countRawControls('<input class="" type="text">'), 1);
     assert.equal(countRawControls("const el = document.createElement('div');"), 0);
 });
 

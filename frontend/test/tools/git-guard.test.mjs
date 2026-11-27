@@ -25,6 +25,12 @@ test('拦下 git checkout 的各种写法', () => {
         'git.exe checkout -- x',
         'GIT_PAGER=cat git checkout x',
         'sudo git checkout x',
+        // env 的带值选项（-u/-C/-S）不能只跳过选项本身，否则 FOO 会留在命令位
+        'env -u FOO git checkout -- x',
+        'env -C /tmp git checkout x',
+        'env -i git checkout -- x',
+        'env FOO=1 git checkout -- x',
+        'sudo FOO=1 git checkout -- x',
         'cd frontend && git checkout -- src/main.js',
         'echo hi; git checkout -- x',
         '(git checkout -- x)',

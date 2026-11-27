@@ -85,6 +85,21 @@ test('parseOutline：返回总行数（按换行切分，与 read_file 行号同
     assert.equal(parseOutline('a\nb\nc\n').lines, 4);
 });
 
+test('parseOutline：大文本（数万行）无隐藏上限，首尾符号行号正确', () => {
+    // get_file_outline 放开 10MB 闸的前提：解析层对大文件没有行数/长度截断。
+    const lines = ['// ===== 第一段 =====', 'function first() {}'];
+    for (let i = 0; i < 50000; i++) lines.push('const v' + i + ' = ' + i + ';');
+    lines.push('// ===== 末段 =====', 'function last() {}');
+    const outline = parseOutline(lines.join('\n'));
+    assert.equal(outline.lines, 50004);
+    assert.deepEqual(outline.sections.map((s) => [s.n, s.title]), [
+        [1, '第一段'],
+        [50003, '末段'],
+    ]);
+    const fns = outline.symbols.filter((s) => s.type === 'function');
+    assert.deepEqual(fns.map((s) => [s.n, s.name]), [[2, 'first'], [50004, 'last']]);
+});
+
 test('formatOutlineText：分节带起止行，符号带行号，sectionsOnly 只出分节', () => {
     const text = [
         '// ===== 第一节 =====',

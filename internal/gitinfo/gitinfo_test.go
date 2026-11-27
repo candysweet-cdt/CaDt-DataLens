@@ -395,3 +395,87 @@ func TestRollbackForBacksUpBeforeCheckout(t *testing.T) {
 		t.Fatalf("备份内容不是回滚前的改动：%q", saved)
 	}
 }
+
+// StatusFor 的未跟踪项必须展开到文件级：normal 模式下 git 把整个新目录折叠成
+// 「?? dir/」一条，去掉尾斜杠后前端会把「目录」当成不存在的文件渲染。
+// 同时 ignored 必须保持目录级折叠——每 3 秒轮询一次，展开 .cadt/ 会拖垮 UI。
+func TestStatusForExpandsUntrackedKeepsIgnoredFolded(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("未安装 git，跳过状态集成测试")
+	}
+	dir := t.TempDir()
+	gitTestCmd(t, dir, "init")
+	gitTestCmd(t, dir, "symbolic-ref", "HEAD", "refs/heads/main")
+	gitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	gitTestCmd(t, dir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestCmd(t, dir, "add", "a.txt")
+	gitTestCmd(t, dir, "commit", "-m", "init")
+
+	// 新目录里放两个文件：normal 模式下 git 只输出一条 ?? newdir/
+	if err := os.MkdirAll(filepath.Join(dir, "newdir", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"newdir/one.go", "newdir/nested/two.js"} {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(name)), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 单个未跟踪文件也应照常出现
+	if err := os.WriteFile(filepath.Join(dir, "loose.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ignored 目录里放多个文件：不应在结果里逐个展开
+	if err := os.MkdirAll(filepath.Join(dir, "ignored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ignored/one.log", "ignored/two.log"} {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(name)), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	status, err := StatusFor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Available {
+		t.Fatalf("仓库应可用：%#v", status)
+	}
+	got := map[string]string{}
+	for _, e := range status.Entries {
+		got[filepath.ToSlash(e.Path)] = e.State
+	}
+	abs := func(rel string) string {
+		return filepath.ToSlash(filepath.Join(dir, filepath.FromSlash(rel)))
+	}
+	want := map[string]string{
+		abs("newdir/one.go"):        "untracked",
+		abs("newdir/nested/two.js"): "untracked",
+		abs("loose.txt"):            "untracked",
+	}
+	for path, state := range want {
+		if got[path] != state {
+			t.Fatalf("条目 %q 状态 = %q，期望 %q（全部：%v）", path, got[path], state, got)
+		}
+	}
+	// 未跟踪目录本身绝不能作为条目出现（否则前端把目录当文件渲染）
+	if _, ok := got[abs("newdir")]; ok {
+		t.Fatalf("未跟踪目录不应作为条目出现（全部：%v）", got)
+	}
+	// ignored 保持目录级折叠：只有一条目录条目（既有行为，供文件树打灰色角标），
+	// 里面的文件不逐个展开——否则每 3 秒轮询会把 .cadt/ 等展开成上千条。
+	if got[abs("ignored")] != "ignored" {
+		t.Fatalf("ignored 目录条目 = %q，期望 ignored（全部：%v）", got[abs("ignored")], got)
+	}
+	for path := range got {
+		if strings.Contains(path, "/ignored/") {
+			t.Fatalf("ignored 文件不应展开：%q", path)
+		}
+	}
+}

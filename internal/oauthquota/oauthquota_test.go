@@ -136,3 +136,32 @@ func TestFetchURLGuard(t *testing.T) {
 		t.Fatalf("跨域 URL 应被拒：%+v", result)
 	}
 }
+
+// 前缀比较的两个经典绕过：子域拼接与 userinfo 伪装。两种都必须被 sameOrigin 拒掉。
+func TestFetchURLGuardPrefixBypass(t *testing.T) {
+	cases := []string{
+		"https://platform.sensenova.cn.evil.com/x",
+		"https://platform.sensenova.cn@evil.com/x",
+		"http://platform.sensenova.cn/x",       // scheme 不同
+		"https://platform.sensenova.cn:8443/x", // 端口不同
+		"https://PLATFORM.SENSENOVA.CN.evil.com/x",
+	}
+	for _, target := range cases {
+		result, err := Fetch("sensenova", target)
+		if err != nil {
+			t.Fatalf("%s: %v", target, err)
+		}
+		if result.Error == "" {
+			t.Fatalf("%s 应被拒，实际放行：%+v", target, result)
+		}
+	}
+	// 正常同源（含大小写差异）仍应通过校验，只是随后会因无凭据而报错
+	for _, target := range []string{
+		"https://platform.sensenova.cn/x",
+		"https://Platform.SenseNova.CN/x",
+	} {
+		if !sameOrigin(target, "https://platform.sensenova.cn") {
+			t.Fatalf("%s 应通过同源校验", target)
+		}
+	}
+}

@@ -251,12 +251,36 @@ func StatusFor(dir string) (*GitTreeStatus, error) {
 		if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
 			i++ // 重命名的旧路径占一个 NUL 字段
 		}
+		// 未跟踪项在 normal 模式下是折叠的目录（?? dir/）：跳过，下面用
+		// ls-files --others 展开到文件级，避免列表里出现「目录伪装成文件」的条目。
+		if x == '?' || y == '?' {
+			continue
+		}
 		// 忽略目录在 porcelain 输出中带尾斜杠（!! dir/），去掉以匹配文件树行路径
 		path = strings.TrimSuffix(path, "/")
 		status.Entries = append(status.Entries, GitFileState{
 			Path:  filepath.ToSlash(filepath.Join(status.Root, filepath.FromSlash(path))),
 			State: gitBadgeState(x, y),
 		})
+	}
+	// 未跟踪文件另取：--untracked-files=all 会把 --ignored 也展开成上千条
+	//（本仓库实测 10 → 2917），而 git 面板每 3 秒轮询一次，不能这么换。
+	// ls-files --others --exclude-standard 天然不含 ignored 条目，输出恒为文件级；
+	// 从仓库根跑让路径口径与 status 一致（dir 可能是仓库子目录）。
+	lsRoot := status.Root
+	if lsRoot == "" {
+		lsRoot = dir
+	}
+	if out, code, err := gitRun(lsRoot, []string{"ls-files", "--others", "--exclude-standard", "-z"}, 10000); err == nil && code == 0 {
+		for _, p := range strings.Split(out, "\x00") {
+			if p == "" {
+				continue
+			}
+			status.Entries = append(status.Entries, GitFileState{
+				Path:  filepath.ToSlash(filepath.Join(lsRoot, filepath.FromSlash(p))),
+				State: "untracked",
+			})
+		}
 	}
 	return status, nil
 }
