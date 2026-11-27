@@ -6,8 +6,10 @@
 // 另接内部函数 markDocDirty / updateStatus 的转发箭头。
 import {isDocReadOnly} from '../core/readonly.js';
 
+// ===== CSV 视图服务入口 =====
 export function createEditorCsvView(deps) {
 
+// ===== 表格创建与排序 =====
 function createCsvTableView(doc) {
     if (doc.tableEl || !doc.pane) return;
     const wrap = document.createElement('div');
@@ -150,6 +152,7 @@ function csvViewIndices(doc) {
     return indices;
 }
 
+// ===== 列统计面板 =====
 function computeCsvColumnStats(doc, col) {
     const rows = doc.tableRows || [];
     const values = [];
@@ -258,6 +261,7 @@ function openCsvColumnStats(doc, col) {
     sub.textContent = '第 ' + (index + 1) + ' 列';
     panel.appendChild(sub);
     const stats = computeCsvColumnStats(doc, index);
+// ===== 行编辑与缩放 =====
     const addRow = (label, value) => {
         const row = document.createElement('div');
         row.className = 'csv-stats-row';
@@ -349,6 +353,7 @@ function estimateCsvColumnWidths(doc) {
     return widths;
 }
 
+// ===== 虚拟行渲染 =====
 function createCsvVirtualRow(doc, editable, headerCount) {
     const tr = document.createElement('tr');
     tr.className = 'csv-row';
@@ -465,6 +470,7 @@ function renderCsvVirtualRows(doc, force) {
     }
 }
 
+// ===== 表格渲染 =====
 function renderCsvTableView(doc, opts = {}) {
     if (!doc || !doc.tableEl || !doc.editor) return;
     const scroll = doc.tableScroll;
@@ -684,6 +690,7 @@ function renderCsvTableView(doc, opts = {}) {
     }
 }
 
+// ===== 列宽与布局 =====
 function buildCsvColgroup(widths) {
     const group = document.createElement('colgroup');
     group.className = 'csv-colgroup';
@@ -773,6 +780,7 @@ function startCsvColumnResize(doc, colIndex, e) {
     window.addEventListener('blur', cleanup);
 }
 
+// ===== 单元格编辑与序列化 =====
 function onCsvCellKeyDown(doc, e) {
     const td = e.currentTarget;
     if (e.key === 'Escape') {
@@ -922,6 +930,7 @@ function tableHistory(action) {
 }
 
 
+// ===== 显示与进入退出 =====
 function showCsvTableView(doc) {
     if (!doc || !doc.format.table) return;
     createCsvTableView(doc);

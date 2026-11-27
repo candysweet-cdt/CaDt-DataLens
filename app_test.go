@@ -18,6 +18,7 @@ import (
 	"golang.org/x/text/transform"
 )
 
+// ===== 文件读写与编码测试 =====
 func TestSaveFilePreservesEolAndBom(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -157,6 +158,7 @@ func TestSaveFileEmptyPath(t *testing.T) {
 	}
 }
 
+// ===== 编码探测测试 =====
 func TestGbkEncodeDecode(t *testing.T) {
 	app := NewApp()
 	path := filepath.Join(t.TempDir(), "gbk.json")
@@ -229,6 +231,7 @@ func TestCheckEncoding(t *testing.T) {
 	}
 }
 
+// ===== 打开模式与目录测试 =====
 func TestOpenModeConfig(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
 	app := NewApp()
@@ -255,6 +258,7 @@ func TestOpenModeConfig(t *testing.T) {
 	}
 }
 
+// ===== 图片与二进制测试 =====
 func TestOpenImageAsHex(t *testing.T) {
 	dir := t.TempDir()
 	img := filepath.Join(dir, "pic.png")
@@ -298,6 +302,7 @@ func TestOpenFileDetectsDirectory(t *testing.T) {
 	}
 }
 
+// ===== 目录项操作测试 =====
 func TestReadDirListsAndTruncates(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"b.json", "a.yaml"} {
@@ -427,6 +432,7 @@ func TestRenameEntryRejectsExistingAndInvalid(t *testing.T) {
 	}
 }
 
+// ===== 复制移动与命名测试 =====
 func TestSuggestCopyName(t *testing.T) {
 	dir := t.TempDir()
 	app := NewApp()
@@ -547,6 +553,7 @@ func mustSelfPath(t *testing.T) string {
 	return exe
 }
 
+// ===== 窗口与版本测试 =====
 func TestOpenDirInNewWindowValidation(t *testing.T) {
 	app := NewApp()
 	if err := app.OpenDirInNewWindow(""); err == nil {
@@ -642,6 +649,7 @@ func TestVersionFilesInSync(t *testing.T) {
 	}
 }
 
+// ===== 启动设置与默认应用测试 =====
 func TestConsumeStartupSettings(t *testing.T) {
 	state := winReg.Add(windowSpec{Name: "test-startup-settings", Mode: windowModeMain, SettingsPane: "models"})
 	defer winReg.Remove(state.Name())

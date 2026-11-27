@@ -35,6 +35,7 @@ const (
 	sqlQueryRowMax     = 5000
 )
 
+// ===== SQL 结果类型与会话 =====
 type SQLImportInfo struct {
 	ID        string   `json:"id"`
 	Kind      string   `json:"kind"`
@@ -79,6 +80,7 @@ func nextSQLSessionID() string {
 	return fmt.Sprintf("sql-%d-%d", time.Now().UnixNano(), sqlSessionSeq)
 }
 
+// ===== SQL 语句辅助 =====
 func quoteSQLIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
@@ -134,6 +136,7 @@ func sqlWritesOutsideSession(q string) bool {
 	return sqlExternalWriteRe.MatchString(stripSQLLiterals(q))
 }
 
+// ===== 临时数据库与建表 =====
 func createSQLTempDB() (*sqlSession, error) {
 	f, err := os.CreateTemp("", "cadt-sql-*.db")
 	if err != nil {
@@ -203,6 +206,7 @@ func (s *sqlSession) insertRows(columnCount int, rows func(insert func([]any) er
 	return tx.Commit()
 }
 
+// ===== 数据导入 =====
 func loadSQLSource(path, encoding, text string, useText bool) (string, int64, error) {
 	if useText {
 		if int64(len(text)) > maxSQLFileBytes {
@@ -394,6 +398,7 @@ func uniqueColumnName(existing []sqlColumn, name string) string {
 	}
 }
 
+// ===== JSONL 导入与列状态 =====
 // importJSONL 第一遍收集顶层键与类型，第二遍写入；非对象行整体退化为单列 data。
 func importJSONL(content string) ([]sqlColumn, func(insert func([]any) error) error, int, bool, error) {
 	lines := strings.Split(content, "\n")
@@ -567,6 +572,7 @@ func importJSONL(content string) ([]sqlColumn, func(insert func([]any) error) er
 	return columns, insertRows, rows, truncated, nil
 }
 
+// ===== 导入与查询入口 =====
 func Import(path, kind, encoding, text string, useText bool) (SQLImportInfo, error) {
 	started := time.Now()
 	kind = strings.ToLower(strings.TrimSpace(kind))
@@ -714,6 +720,7 @@ func Query(id, query string, limit int) (SQLResult, error) {
 	return result, nil
 }
 
+// ===== 关闭与清理 =====
 func Close(id string) error {
 	sqlSessionsMu.Lock()
 	session := sqlSessions[id]

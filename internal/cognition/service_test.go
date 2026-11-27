@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// ===== 测试工具 =====
 func newTestService() *Service {
 	return New(Deps{Now: func() time.Time { return time.Unix(1700000000, 0) }})
 }
@@ -51,6 +52,7 @@ func editReq(op string, entries []EntryIn, meta, base string) EditReq {
 
 var testMeta = "scene: code\n" + BudgetLine() + "\nlabels: hot\nbuild: 按目录分批\n"
 
+// ===== 编辑与 CAS 测试 =====
 func TestEditBootstrapAndCAS(t *testing.T) {
 	s := newTestService()
 	ws := t.TempDir()
@@ -122,6 +124,7 @@ func TestEditBootstrapAndCAS(t *testing.T) {
 	}
 }
 
+// ===== 输入校验与预算测试 =====
 func TestEditRejectsBadInput(t *testing.T) {
 	s := newTestService()
 	ws := t.TempDir()
@@ -181,6 +184,7 @@ func makeBatchN(start, n int) []EntryIn {
 	return out
 }
 
+// ===== 账本闭环测试 =====
 func TestBookkeepingClosesLoop(t *testing.T) {
 	s := newTestService()
 	ws := t.TempDir()
@@ -260,6 +264,7 @@ func TestBookkeepingClosesLoop(t *testing.T) {
 	}
 }
 
+// ===== 状态与读取测试 =====
 func TestStatusBaselineOnlyOnce(t *testing.T) {
 	s := newTestService()
 	ws := t.TempDir()
@@ -379,6 +384,7 @@ func min(a, b int) int {
 
 func utf8Len(s string) int { return len([]rune(s)) }
 
+// ===== 租约与清除门禁测试 =====
 func TestLeaseAndClearGate(t *testing.T) {
 	s := newTestService()
 	ws := t.TempDir()
@@ -420,6 +426,7 @@ func readFP(t *testing.T, s *Service, ws string) string {
 	return res.Fingerprint
 }
 
+// ===== 编辑删除与告警测试 =====
 // 回归（2026-11-22 审查 P0）：同批升序多条 remove——旧实现按陈旧索引删除，会删错条目且报成功
 func TestEditRemoveMultipleAscending(t *testing.T) {
 	s := newTestService()
@@ -479,6 +486,7 @@ func TestEditWarnsDroppedBadLines(t *testing.T) {
 	}
 }
 
+// ===== 概览与忽略测试 =====
 // 回归（审查 P1）：overview 与过滤读同一 rune 封顶——大卷无参 read 不封顶会被 artifact 指针化
 func TestReadOverviewCap(t *testing.T) {
 	s := newTestService()

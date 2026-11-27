@@ -1,6 +1,6 @@
 // ai-new-session-picker.js：harness 窗口的「新建会话」三选一选择器。
 //
-// 背景（docs/unfinished-plans/agent-host-platform.md §4.8）：harness 窗口启动时不恢复任何
+// 背景（docs/finished-plans/agent-host-platform.md §4.8）：harness 窗口启动时不恢复任何
 // 工作区，「新建会话」如果静默建一条无根会话，模型就没有可解析的相对路径。所以 harness 下
 // 必须先问清这一轮绑到哪个根：最近工作区 / 打开文件夹 / 会话沙盒。非 harness 窗口不弹
 // （直接建，行为与改造前一致）。

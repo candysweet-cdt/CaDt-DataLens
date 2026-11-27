@@ -13,6 +13,7 @@ import (
 	"datalens/internal/appdata"
 )
 
+// ===== 事件与日志行解析 =====
 func TestEventFromInput(t *testing.T) {
 	now := time.Now().UnixMilli()
 	ev, err := eventFromInput(RecordInput{
@@ -163,6 +164,7 @@ func TestParseGroupLogLine(t *testing.T) {
 	}
 }
 
+// ===== 请求加载与迁移 =====
 func TestLoadRequests(t *testing.T) {
 	root := t.TempDir()
 	dataRoot = func() string { return root }
@@ -294,6 +296,7 @@ VALUES ('s1', 10, 20, 30, 'abc', 1);
 	}
 }
 
+// ===== 快照与热力图 =====
 func TestBuildSnapshotStreaks(t *testing.T) {
 	loc := time.Local
 	now := time.Date(2026, 11, 19, 12, 0, 0, 0, loc)
@@ -404,6 +407,7 @@ func TestBuildHeatmapCap(t *testing.T) {
 	}
 }
 
+// ===== 日志增量同步 =====
 func TestSyncSessionLogIncremental(t *testing.T) {
 	root := t.TempDir()
 	dataRoot = func() string { return root }

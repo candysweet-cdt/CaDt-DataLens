@@ -94,6 +94,7 @@ const (
 	MaxRoleBriefChars       = 2000
 )
 
+// ===== 验证与策略类型 =====
 // VerifySpec 验收命令：exe + argv，绝不走 shell 字符串。
 type VerifySpec struct {
 	File      string   `json:"file"`
@@ -147,6 +148,7 @@ type Option struct {
 	Recommended bool   `json:"recommended,omitempty"`
 }
 
+// ===== 审查与报告类型 =====
 // ReviewIssue 审查问题项。
 type ReviewIssue struct {
 	Path    string `json:"path,omitempty"`
@@ -216,6 +218,7 @@ type HistoryEntry struct {
 	Reason           string        `json:"reason,omitempty"`
 }
 
+// ===== 批次与编排状态类型 =====
 // Batch 一个工作或审查批次。
 type Batch struct {
 	ID            string       `json:"id"`
@@ -342,6 +345,7 @@ type Orchestration struct {
 	Audit            AuditInfo          `json:"audit,omitempty"`
 }
 
+// ===== 请求与结果类型 =====
 // PlanRequest 审批卡提交的不可信草稿（Go 侧必须整份重验）。
 type PlanRequest struct {
 	Title            string      `json:"title"`
@@ -454,6 +458,7 @@ type WriteResult struct {
 	Message string `json:"message,omitempty"`
 }
 
+// ===== 控制与事件类型 =====
 // ControlRequest 仲裁者控制动作（AI 工具，有副作用，必须审批）。
 type ControlRequest struct {
 	OrchestrationID string `json:"orchestrationId"`
@@ -516,6 +521,7 @@ type PlanInput struct {
 	Batches []BatchPlan `json:"batches"`
 }
 
+// ===== ID 与默认值工具 =====
 func nowMs() int64 { return time.Now().UnixMilli() }
 
 var idSafe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -571,6 +577,7 @@ func defaultPolicy(p Policy) Policy {
 	return p
 }
 
+// ===== 批次查询与拷贝工具 =====
 func batchActive(status string) bool {
 	switch status {
 	case BatchDispatched, BatchRunning, BatchVerifying, BatchReviewing:

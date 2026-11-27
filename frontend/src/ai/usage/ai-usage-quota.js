@@ -27,6 +27,7 @@ const USAGE_SNAPSHOT_ITEMS_MAX = 24;
 // v2：条目结构升级（结构化 resetAt + 百分比优先 used），旧版快照直接作废重查
 const USAGE_SNAPSHOT_STORAGE_KEY = AI_USAGE_CACHE_KEY;
 
+// ===== 用量快照归一化 =====
 // resetAt 归一：number 按 <1e12 视为秒、否则毫秒；字符串先试数字再按 ISO 解析。
 // 无效 / 非正数返回 0（调用方据此不显示倒计时）。
 export function normalizeResetAt(raw) {
@@ -209,6 +210,7 @@ export function usageStale(snapshot, intervalMin, now = Date.now()) {
     return (now - snapshot.at) >= interval * 60000;
 }
 
+// ===== 用量文本格式化 =====
 export function formatUsageAmount(value, unit) {
     if (value === -1) return '∞';
     const text = Number(value).toFixed(2);
@@ -315,6 +317,7 @@ export function usageHeadlineParts(snapshot, now = Date.now()) {
 // 窗口短名 5 小时→5h / 每周→7d / 每月→30d；百分比最多 1 位小数；倒计时 ⏱ + 两单位；
 // 段间「 · 」；只有数值上色，按剩余比例 ≤0 红 / <20% 橙 / 其余绿，币种数值不上色。
 
+// ===== 紧凑摘要与窗口名 =====
 // 窗口短名：匹配不上时去空格原样保留。
 export function shortWindowName(name) {
     const text = String(name || '').trim();
@@ -496,6 +499,7 @@ function usageCompactParts(snapshot, now = Date.now()) {
     };
 }
 
+// ===== 紧凑行与时效文本 =====
 // 账号卡外显的紧凑行（显示规范 v1）；null = 无数据（调用方显示「待查询」）。
 export function usageCompactLine(snapshot, now = Date.now()) {
     return usageCompactParts(snapshot, now);
@@ -544,6 +548,7 @@ export function formatUsageAge(at, now) {
 
 // ── 快照存储（localStorage 只存展示数据）───────────────────────
 
+// ===== 快照存储读写 =====
 function loadSnapshotStore(storage) {
     try {
         const raw = storage.getItem(USAGE_SNAPSHOT_STORAGE_KEY);
@@ -565,6 +570,7 @@ function saveSnapshotStore(storage, store) {
 
 // ── 查询管线 ─────────────────────────────────────────────────
 
+// ===== 用量查询服务 =====
 export function createAIUsageQuota(deps) {
     // deps.backend 是 getter（组合根约定）：求值兼容直接传对象（测试）与传 getter 两种形态
     const backend = () => (typeof deps.backend === 'function' ? deps.backend() : (deps.backend || null));
@@ -618,6 +624,7 @@ export function createAIUsageQuota(deps) {
         return {state: 'error', items: [], error, at: Date.now()};
     }
 
+// ===== 官方查询配置 =====
     // 「官方」模板的查询入参：连接字段取账号，apiKey/baseUrl 允许覆盖。
     function officialQueryConfig(profile, usage) {
         return {
@@ -642,6 +649,7 @@ export function createAIUsageQuota(deps) {
         return OFFICIAL_USAGE_HOSTS.some((known) => host === known || host.endsWith('.' + known));
     }
 
+// ===== 脚本查询与轮转 =====
     function usageVarsFor(profile, usage) {
         const vars = {
             baseUrl: String(usage.baseUrl || (profile && profile.baseURL) || ''),

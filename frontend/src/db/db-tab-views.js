@@ -13,6 +13,7 @@ import {ensureSession, getSessionState, disconnectSession, reconnectSession, sub
 
 // 会话门面通道在 build 回调内按 getSessionState 动态解析（api || deps.backend）
 
+// ===== 会话挂载与门禁 =====
 // 会话挂载通用壳：连接中/失败/断开三态覆盖层 + 就绪后 build(ready)
 // 返回 {el, dispose}；dispose 撤订阅并拒绝后续回调（关标签页时的竞态防线）
 function mountWithSession(deps, doc, build) {
@@ -126,6 +127,7 @@ function mountWithSession(deps, doc, build) {
     };
 }
 
+// ===== 查询执行 =====
 // 插件驱动声明的自定义视图（graph / 画布 / 时间线…）：数据表标签页顶部多一排切换。
 // 与 cadt.registerViewer 的差别在数据来源——这里给的是「库 + 表 + 只读查询出口」而不是文件文本：
 //   ctx.query(cypher, limit) 走会话门面（插件会话 = 插件门面，内置会话 = 宿主绑定），
@@ -179,6 +181,7 @@ function createDbTableViewsHost(deps, t, session, paneEl, views, consoleSpec) {
         throw new Error(out.message || '查询未执行');
     }
 
+// ===== 查询栏构建 =====
     // 查询输入框：Enter / Ctrl+Enter 执行（Shift+Enter 换行），结果就地展开成表格。
     // 与图视图共用同一条 query 通道，插件不需要为它额外实现执行逻辑。
     function createQueryBar(spec) {
@@ -403,6 +406,7 @@ function createDbTableViewsHost(deps, t, session, paneEl, views, consoleSpec) {
         return wrap;
     }
 
+// ===== 视图切换与按钮 =====
     function makeCtx() {
         return {
             database: t.db,
@@ -539,6 +543,7 @@ function createDbTableViewsHost(deps, t, session, paneEl, views, consoleSpec) {
     };
 }
 
+// ===== 标签页视图工厂 =====
 // 数据表标签页：一个表 = 一个标签页（全宽网格）；插件驱动声明了自定义视图时多一排切换
 export function createDbTableTabView(deps, doc) {
     const t = doc.dbTableSpec; // {entryId, entry, db, table, kind}

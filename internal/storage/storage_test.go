@@ -12,6 +12,7 @@ import (
 	"testing"
 )
 
+// ===== 测试环境与工具 =====
 type testEnv struct {
 	service  *Service
 	appRoot  string
@@ -140,6 +141,7 @@ func resultByID(t *testing.T, report ClearReport, id string) ClearResult {
 	return ClearResult{}
 }
 
+// ===== 缓存 ID 测试 =====
 // TestSpecTable 卡住条目表本身的合法性：新增条目时这里先报错，好过界面上出怪行。
 func TestSpecTable(t *testing.T) {
 	svc := New(Deps{})
@@ -232,6 +234,7 @@ func TestMustNotBeCached(t *testing.T) {
 	}
 }
 
+// ===== 路径测量与白名单测试 =====
 func TestMeasurePath(t *testing.T) {
 	env := newTestEnv(t)
 	dir := filepath.Join(env.appRoot, "tree")
@@ -315,6 +318,7 @@ func TestTargetFilesWithoutWorkspace(t *testing.T) {
 	_ = sp
 }
 
+// ===== 扫描与大小测试 =====
 func TestScanReportsSizesAndLeftover(t *testing.T) {
 	env := newTestEnv(t)
 	env.mustFile(t, filepath.Join(env.browser, "browser-a", "big.bin"), 4000)
@@ -369,6 +373,7 @@ func TestScanWorkspaceSizes(t *testing.T) {
 	}
 }
 
+// ===== 清理缓存与数据测试 =====
 func TestClearCacheKeepsForeignFiles(t *testing.T) {
 	env := newTestEnv(t)
 	env.mustFile(t, filepath.Join(env.browser, "browser-a", "big.bin"), 4000)
@@ -472,6 +477,7 @@ func TestClearWebviewSchedulesUntilNextStart(t *testing.T) {
 	}
 }
 
+// ===== pending 标记测试 =====
 // TestApplyPendingKeepsMarkerWhenStuck：还剩东西没删掉时标记要留着，
 // 否则用户点过的清除会被下一次启动吞掉。
 func TestApplyPendingKeepsMarkerWhenStuck(t *testing.T) {
@@ -538,6 +544,7 @@ func TestWritePendingRejectsUnknownIDAndRoundTrips(t *testing.T) {
 	}
 }
 
+// ===== 位置与孤儿目标测试 =====
 func TestLocationFromHostMissingMeansNoPath(t *testing.T) {
 	// 宿主什么都给不出（应用数据目录定位失败）时，扫描要全空而不是去删相对路径
 	report := New(Deps{}).Scan("")
@@ -605,6 +612,7 @@ func TestOrphanWorktreeTargets(t *testing.T) {
 	}
 }
 
+// ===== 忙碌与部分移除测试 =====
 // 清理前门闩返回 busy 时，条目必须原样保留（正在被另一窗口使用）。
 func TestClearBeforeClearBusySkips(t *testing.T) {
 	env := newTestEnv(t)

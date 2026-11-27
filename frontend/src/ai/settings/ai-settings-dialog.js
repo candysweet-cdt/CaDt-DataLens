@@ -32,6 +32,7 @@ import {matchCommandRule, commandFamilySignature, commandText} from '../security
 import {canAutoFill} from '../core/model-catalog.js';
 import {createSessionBusyProbe} from '../session/ai-session-scope.js';
 
+// ===== 设置对话框构建 =====
 export function createAISettingsDialog(ctx) {
     const el = ctx.el;
     const panel = ctx.panel;
@@ -138,6 +139,7 @@ export function createAISettingsDialog(ctx) {
     // （modelEditorState 已随模型编辑器归 ai-model-settings.js，此处只剩状态条计时器）
     let settingsStatusTimer = 0;
 
+// ===== 状态与表单禁用 =====
     function setSettingsStatus(text, kind) {
         if (!opt.status) return;
         opt.status.textContent = text || '—';
@@ -162,6 +164,7 @@ export function createAISettingsDialog(ctx) {
         }
     }
 
+// ===== 思考预算与可见性 =====
     function refreshThinkingVisibility() {
         const profile = activeProfile();
         const entry = modelMod.editorEntryOf(profile);
@@ -196,6 +199,7 @@ export function createAISettingsDialog(ctx) {
     // 也让 refreshSettingsPane 在「无模型账号提前返回」之前就能刷新该页。
     let refreshPersonaPane = null;
 
+// ===== 窗口提示与目录状态 =====
     // 窗口字段的可读回显：输入框里是「256K」这类紧凑写法，右侧给出精确 token 数，
     // 免得 1M 到底是多少全靠猜（换算唯一来源仍是 ai-config-model 的 parseTokenAmount）。
     function renderWindowHints(entry) {
@@ -208,6 +212,7 @@ export function createAISettingsDialog(ctx) {
         fmt(opt.maxTokensHuman, entry && entry.outputWindow);
     }
 
+// ===== 模型字段同步 =====
     // 窗口/能力三个字段的界面回写：整页刷新与「配置表回填」共用，避免两处各写一份
     function syncModelFieldsFromEntry(entry) {
         if (!entry) return;
@@ -280,6 +285,7 @@ export function createAISettingsDialog(ctx) {
         }
     }
 
+// ===== 面板刷新 =====
     function refreshSettingsPane() {
         if (refreshPersonaPane) refreshPersonaPane();
         if (genMod) genMod.renderGenList();
@@ -345,6 +351,7 @@ export function createAISettingsDialog(ctx) {
         modelMod.renderModelEntries();
     }
 
+// ===== 子代理模型选项 =====
     // 子代理模型下拉：跟随当前模型（默认）+ 所有账号下的模型条目；自选模型的三个候选
     // 共用同一份条目，只是首项是「（不使用）」。refreshChatSettings 打开设置时就会跑，
     // 用签名比对避免重建下拉打断交互。
@@ -385,6 +392,7 @@ export function createAISettingsDialog(ctx) {
         });
     }
 
+// ===== 聊天设置与记忆路径 =====
     function refreshChatSettings() {
         if (opt.displayMode) opt.displayMode.value = settings.aiFloatMode === 'fullscreen' ? 'fullscreen' : 'dock';
         if (opt.sendKey) opt.sendKey.value = settings.aiSendKey === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
@@ -494,6 +502,7 @@ export function createAISettingsDialog(ctx) {
         updateComposerState();
     }
 
+// ===== 事件绑定 =====
     function bindSettingsPane() {
         if (!opt.name && !opt.modelList) return;
         if (opt.name) opt.name.addEventListener('change', () => {

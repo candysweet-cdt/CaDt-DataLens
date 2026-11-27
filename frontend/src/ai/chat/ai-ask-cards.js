@@ -11,6 +11,7 @@ const ASK_ICON_SVG = iconSvg('question', 16);
 const ASK_PAUSE_SVG = iconSvg('pause');
 const ASK_PLAY_SVG = iconSvg('play');
 
+// ===== 询问卡片入口与草稿 =====
 export function createAIAskCards(ctx, extras) {
     const el = ctx.el;
     const decideEnvCreation = ctx.decideEnvCreation;
@@ -67,6 +68,7 @@ export function createAIAskCards(ctx, extras) {
         return draft;
     }
 
+// ===== env 询问接管 =====
     function renderEnvAskTakeover(entry) {
         const toolMessage = entry.toolMessage;
         const envAsk = toolMessage.envAsk;
@@ -130,6 +132,7 @@ export function createAIAskCards(ctx, extras) {
         }, 50);
     }
 
+// ===== 询问接管渲染 =====
     function renderAskTakeover(entry) {
         const ask = entry.ask;
         const draft = askDraftFor(entry);
@@ -390,6 +393,7 @@ export function createAIAskCards(ctx, extras) {
         }
     }
 
+// ===== 折叠条 =====
     // 收起态细条（沿用审批卡的 .ai-takeover-bar）：标题 + 当前问题 + 倒计时，不放「跳过 / 提交回答」；
     // 超时处理照常在后台走（到点按设置结算，细条随接管区一起消失）。点击恢复完整卡。
     function renderAskCollapsedBar(entry, ask, draft, key, multi) {

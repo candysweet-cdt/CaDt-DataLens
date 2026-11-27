@@ -113,6 +113,7 @@ type (
 	orchestrationService = orchestration.Service
 )
 
+// ===== App 结构与构造 =====
 type App struct {
 	*reading.Reader                              // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
 	*run.Runner                                  // 运行代码引擎（internal/run）
@@ -197,6 +198,7 @@ func NewApp() *App {
 	}), mavenService: &mavenproject.Service{}, sandboxService: &sandbox.Service{}, runProjectService: &runproject.Service{}, sqlviewService: &sqlview.Service{}, updateService: &update.Service{}, envvarsService: &envvars.Service{}, patchService: &patch.Service{}, webtoolsService: &webtools.Service{}, structuredirService: &structuredir.Service{}, dbclientService: &dbclient.Service{}, gitinfoService: &gitinfo.Service{}, desktopmcpService: &desktopmcp.Service{}, winutilService: &winutil.Service{}, orchestrationService: &orchestration.Service{}}
 }
 
+// ===== 启动流程 =====
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	// 关闭行为（点 X 退出还是最小化到托盘）：配置在 config.json，前端设置页只负责推过来。
@@ -261,6 +263,7 @@ func (a *App) startup(ctx context.Context) {
 // createWindow(main) 补齐）。
 var aiServicesOnce sync.Once
 
+// ===== AI 服务与二实例 =====
 func (a *App) ensureAIServices() {
 	aiServicesOnce.Do(func() {
 		// 多会话编排：加载磁盘真源并做冷启动恢复，随后 supervisor/auditor 各自起循环。
@@ -423,6 +426,7 @@ func (a *App) onToastActivation(payload string) {
 	}
 }
 
+// ===== 启动项消费 =====
 // ConsumeStartupSettings 返回该窗口启动时携带的设置页并清空（供前端启动后打开）。
 func (a *App) ConsumeStartupSettings(ctx context.Context) string {
 	st := stateForCaller(ctx)
@@ -469,6 +473,7 @@ func (a *App) GetStartupTargets(ctx context.Context) []launchargs.OpenTarget {
 	return targets
 }
 
+// ===== 命令行参数读取 =====
 func (a *App) GetStartupFiles(ctx context.Context) []string {
 	st := stateForCaller(ctx)
 	if st == nil {

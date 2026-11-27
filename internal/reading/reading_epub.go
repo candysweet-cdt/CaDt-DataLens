@@ -32,6 +32,7 @@ const (
 	epubCacheMaxBytes   int64 = 500 << 20
 )
 
+// ===== EPUB 数据结构 =====
 // ReadingEpubChapterMeta spine 顺序中的一章。
 type ReadingEpubChapterMeta struct {
 	Index int    `json:"index"`
@@ -75,6 +76,7 @@ var (
 	reEpubNavHref = regexp.MustCompile(`(?is)<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>`)
 )
 
+// ===== 读取入口 =====
 // PrepareReadingEpub 解析并解压一本 EPUB；重复调用命中缓存目录直接复用。
 func (s *Reader) PrepareReadingEpub(path string) (*ReadingEpubBook, error) {
 	return prepareReadingEpub(path)
@@ -150,6 +152,7 @@ func (s *Reader) ReadReadingEpubChapter(epubID string, index int) (*ReadingEpubC
 	return &ReadingEpubChapter{Index: index, Title: ch.Title, HTML: html, Words: ch.Words}, nil
 }
 
+// ===== 归档解析与解包 =====
 // parseEpubArchive 打开 zip：校验 DRM/条目数，解析 container/OPF，解压 manifest 资源。
 func parseEpubArchive(abs, cacheDir string) (*ReadingEpubBook, error) {
 	zr, err := zip.OpenReader(abs)
@@ -331,6 +334,7 @@ func readZipEntry(f *zip.File) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(rc, epubMaxFileBytes+1))
 }
 
+// ===== OPF / NCX / Nav 解析 =====
 // resolveEpubHref 把 OPF 相对 href 规范为 zip 内路径；拒绝绝对路径与 ..。
 type epubManifestItem struct {
 	Href      string
@@ -483,6 +487,7 @@ func parseEpubNav(f *zip.File, opfDir string, out map[string]string) {
 	}
 }
 
+// ===== 正文提取 =====
 func firstEpubHeading(html string) string {
 	if m := reEpubH1ToH6.FindStringSubmatch(html); m != nil {
 		return strings.TrimSpace(reEpubTag.ReplaceAllString(m[2], ""))
@@ -515,6 +520,7 @@ func extractEpubBody(content string) string {
 	return content[start:]
 }
 
+// ===== 缓存清理 =====
 // cleanupReadingEpubCache 缓存 LRU：超过 20 本或 500 MB 时按修改时间从旧到新删除。
 func cleanupReadingEpubCache() {
 	root := filepath.Join(appdata.Root(), "reading-cache")

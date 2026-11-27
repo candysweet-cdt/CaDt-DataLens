@@ -16,6 +16,7 @@ import {overlayStack} from '../../core/overlay-stack.js';
 import {providerIconTileHtml} from '../core/ai-provider-icons.js';
 import {usageCompactLine} from '../usage/ai-usage-quota.js';
 
+// ===== 模型设置入口 =====
 export function createAIModelSettings(ctx, extras) {
 
     const opt = ctx.opt;
@@ -45,6 +46,7 @@ export function createAIModelSettings(ctx, extras) {
     let modelEditorState = null;
     // 编辑器的弹层栈条目：盖在设置窗之上，Esc 由栈先退它再退设置窗
     let modelEditorStackHandle = null;
+// ===== 编辑器栈与拖拽 =====
     function disposeEditorStack() {
         if (modelEditorStackHandle) {
             modelEditorStackHandle.dispose();
@@ -153,6 +155,7 @@ export function createAIModelSettings(ctx, extras) {
     // 更多菜单含复制 / 测试连接 / 删除，走全局弹层栈（popover），Esc 与外点由栈处理。
     let cardMenuHandle = null;
     let cardMenuEl = null;
+// ===== 卡片菜单 =====
     function iconAction(iconName, tip, onClick) {
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -221,6 +224,7 @@ export function createAIModelSettings(ctx, extras) {
         });
     }
 
+// ===== 模型列表渲染 =====
     // 余额行：只在 usage.enabled 时渲染。点击 = 重新查询 + 明细弹层（ctx.queryUsageForAccount）；
     // 失败态红字带原因（详情在弹层里），无缓存显示「待查询」。缓存来自 ai-usage-quota 的快照层。
     function buildUsageLine(profile) {
@@ -356,6 +360,7 @@ export function createAIModelSettings(ctx, extras) {
         switchProfile(id);
     }
 
+// ===== 模型编辑器 =====
     function openModelEditor(id) {
         if (!opt.modelEditor) return;
         let profile = id ? getConfig().profiles.find((item) => item.id === id) : null;
@@ -554,6 +559,7 @@ export function createAIModelSettings(ctx, extras) {
         }
     }
 
+// ===== 条目增删改 =====
     function addEditorEntry() {
         const profile = activeProfile();
         if (!profile) return;

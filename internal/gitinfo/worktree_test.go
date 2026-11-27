@@ -11,6 +11,7 @@ import (
 	"datalens/internal/patch"
 )
 
+// ===== 测试仓库夹具 =====
 // 临时仓库：main 分支提交 a.txt + .gitignore(.cadt/)，与真实工作区形态对齐。
 func worktreeTestRepo(t *testing.T) string {
 	t.Helper()
@@ -30,6 +31,7 @@ func worktreeTestRepo(t *testing.T) string {
 	return dir
 }
 
+// ===== slug 派生测试 =====
 func TestDeriveSlug(t *testing.T) {
 	cases := []struct {
 		label  string
@@ -53,6 +55,7 @@ func TestDeriveSlug(t *testing.T) {
 	}
 }
 
+// ===== 生命周期与差异测试 =====
 func TestWorktreeLifecycleAndDiff(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("未安装 git，跳过 worktree 集成测试")
@@ -203,6 +206,7 @@ func TestWorktreeAddConflictSuffix(t *testing.T) {
 	}
 }
 
+// ===== 依赖目录与 include 测试 =====
 // 依赖目录 junction：主根的 node_modules / .venv / venv 自动共享进 worktree；共享是
 // 双向的（worktree 里装依赖写的就是主根目录）；删除 worktree 绝不伤主根依赖。
 func TestWorktreeJunctionDeps(t *testing.T) {
@@ -334,6 +338,7 @@ func TestWorktreeIncludeCopy(t *testing.T) {
 	}
 }
 
+// ===== 携带改动测试 =====
 // carry=true：主根当前未提交改动（暂存 + 未暂存 + 未跟踪）带入隔离区，并打快照 commit
 // 推进 baseSha——相对新基准的 diff 为空，export 只含 AI 的后续改动（对齐 ZCode fork §3.6）。
 func TestWorktreeCarryChanges(t *testing.T) {
@@ -390,6 +395,7 @@ func TestWorktreeCarryChanges(t *testing.T) {
 	}
 }
 
+// ===== 环境隔离测试 =====
 // gitRun 环境隔离：GUI 进程继承的 GIT_DIR / GIT_WORK_TREE 不能把命令重定向到别的仓库。
 func TestGitRunEnvIsolation(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
@@ -404,6 +410,7 @@ func TestGitRunEnvIsolation(t *testing.T) {
 	}
 }
 
+// ===== 移除与清理测试 =====
 func TestWorktreeRemoveNestedJunction(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("未安装 git，跳过 worktree 集成测试")
@@ -509,6 +516,7 @@ func TestWorktreeRemoveRejectsRootJunction(t *testing.T) {
 	}
 }
 
+// ===== 边界字符与列表测试 =====
 // createJunction 不许经 cmd.exe：路径里的 & % ( ) 等元字符会被命令行解释
 // （复查实测 `x&echo` 会假成功并把后半段当第二条命令执行）。
 func TestCreateJunctionMetachars(t *testing.T) {

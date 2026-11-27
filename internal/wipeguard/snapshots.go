@@ -43,6 +43,7 @@ const (
 	snapshotTotalCap = 300 << 20
 )
 
+// ===== 快照类型与模式检测 =====
 // ModeInfo 形态判定结果（Reason 用于设置页回答「为什么没快照」）。
 type ModeInfo struct {
 	Mode   Mode   `json:"mode"`
@@ -109,6 +110,7 @@ func DetectMode(ws string) ModeInfo {
 	return ModeInfo{Mode: ModeCasSnapshots, Reason: "无版本控制且体积在保护阈值内"}
 }
 
+// ===== 目录与 Git 快照 =====
 type walkResult struct {
 	bytes   int64
 	files   int
@@ -243,6 +245,7 @@ func (s *Service) snapshotGit(ws string) (SnapshotResult, error) {
 // 「一批保留名/无权限文件」的正常场景；超限说明问题面太大，按失败处理（不让快照悄悄缺很多文件）。
 const addRetryRounds = 8
 
+// ===== Git 索引操作 =====
 // gitAddAllWith 执行 `git add -A`（add 闭包收到附加了 excludes 的完整参数）。
 // 单个无法索引的文件（保留设备名 / 无权限 / 被锁）解析自 git stderr，用
 // `:(exclude)路径` pathspec 跳过后重试——一枚坏文件不再放弃整张快照。
@@ -338,6 +341,7 @@ func compactGitOutput(out []byte) string {
 	return s
 }
 
+// ===== CAS 内容寻址快照 =====
 // manifestEntry 增量 CAS 快照的条目（mtime 快速路径 + blob 指针）。
 type manifestEntry struct {
 	Rel   string `json:"rel"`
@@ -453,6 +457,7 @@ func (s *Service) storeBlobBytes(root string, data []byte) error {
 	return s.writeBlob(root, sum, data)
 }
 
+// ===== 快照列表与恢复 =====
 // readLatestManifest 读 snapshots/<ws>/ 下最新一份 CAS manifest（没有 / 损坏返回 nil）。
 func readLatestManifest(dir string) *casManifest {
 	files, err := os.ReadDir(dir)
@@ -566,6 +571,7 @@ func (s *Service) SnapshotRestore(ws, name string) (string, error) {
 	return path, nil
 }
 
+// ===== 安全解包与清理 =====
 // extractTarSafe 解 tar 包覆盖工作区：拒绝绝对路径与 .. 穿越，文件走 atomfile。
 func extractTarSafe(tarPath, ws string) error {
 	f, err := os.Open(tarPath)

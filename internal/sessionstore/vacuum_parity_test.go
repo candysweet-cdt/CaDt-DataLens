@@ -16,6 +16,7 @@ import (
 // parityFixturePath 相对包目录指向前端夹具；文件缺失直接红，防止两侧静默脱钩。
 const parityFixturePath = "../../frontend/test/ai/fixtures/vacuum-parity.json"
 
+// ===== 夹具与日志工具 =====
 type parityExpect struct {
 	Live             int      `json:"live"`
 	Archived         int      `json:"archived"`
@@ -67,6 +68,7 @@ func writeParityLog(t *testing.T, dir string, testCase parityCase) string {
 	return path
 }
 
+// ===== 计划回放测试 =====
 // TestVacuumPlanParityToReplay 断言 Go 重放（buildVacuumPlan）与夹具 expect 一致。
 func TestVacuumPlanParityToReplay(t *testing.T) {
 	fixture := loadParityFixture(t)
@@ -118,6 +120,7 @@ func TestVacuumPlanParityToReplay(t *testing.T) {
 	}
 }
 
+// ===== 重写形态与 torn tail 测试 =====
 // TestVacuumRewriteShape 跑完整 Vacuum 并验证产物形状：主文件 = header + meta +
 // summary patch + live（重放归档为 0），sidecar = 归档事件（顺序与重放一致）。
 func TestVacuumRewriteShape(t *testing.T) {
@@ -274,6 +277,7 @@ func TestVacuumTornTailRecovered(t *testing.T) {
 	}
 }
 
+// ===== 幂等与状态恢复测试 =====
 // TestVacuumIdempotentUnderThreshold 自动整理语义：正文 ≤ 上限且 force=false 直接跳过；
 // force=true 才动手。双窗口同时打开同一会话时的第二方为 no-op（方案 §5.3 要点 4）。
 func TestVacuumIdempotentUnderThreshold(t *testing.T) {
@@ -371,6 +375,7 @@ func TestVacuumStateRecovery(t *testing.T) {
 	}
 }
 
+// ===== 归档分页与 live 标志测试 =====
 // TestVacuumReadArchivePaging 分页读回：offset/limit 按非空事件行计。
 func TestVacuumReadArchivePaging(t *testing.T) {
 	store := &Store{Root: t.TempDir()}
@@ -442,6 +447,7 @@ func TestVacuumLiveDominantFlag(t *testing.T) {
 	}
 }
 
+// ===== 错误与歧义窗口测试 =====
 // TestSessionTooLargeErrorPrefix 稳定错误前缀契约：超限错误必须以 session-too-large: 开头，
 // 前端据此分流「打开即自动整理」，不做字符串模糊匹配。
 func TestSessionTooLargeErrorPrefix(t *testing.T) {
@@ -596,6 +602,7 @@ func TestVacuumRecoveryPartialTail(t *testing.T) {
 	}
 }
 
+// ===== 阈值与 schema 测试 =====
 // TestVacuumKeepHugeClamp keep 超界浮点的数值边界：JS 端 1e20 / 1e999（JSON 解析为
 // Infinity）clamp 后都是「全部保留」，Go 必须一致（int(1e20) 是 implementation-dependent，
 // 修前会得到负的「整数不定值」→ live 全部判死 → 物理丢消息）。
@@ -661,6 +668,7 @@ func TestVacuumRefusesFutureSchema(t *testing.T) {
 	}
 }
 
+// ===== 重置测试 =====
 // TestVacuumResetClearsSidecar reset × sidecar：物化会把 reset 从主文件抹掉，
 // 拼接重放（sidecar 在前）从此看不到这次清档——替换主文件时必须连带清空 sidecar。
 func TestVacuumResetClearsSidecar(t *testing.T) {

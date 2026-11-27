@@ -41,6 +41,7 @@ const (
 // var 不是 const：并发追加测试要把阈值顶到极大，避免压缩与追加赛跑。
 var enforceEveryRows = 200
 
+// ===== 备份类型与入口 =====
 // BackupCall 前端写路径入口参数。Content 是原文本（前端已在内存），Existed=false 表示新建。
 type BackupCall struct {
 	SessionID string `json:"sessionId"`
@@ -131,6 +132,7 @@ func (s *Service) Backup(call BackupCall) (BackupResult, error) {
 	return BackupResult{EntryID: row.ID, Skipped: row.Skipped, Bytes: row.Bytes}, nil
 }
 
+// ===== 存储与索引 =====
 // Store Go 内部钩子（internal/patch 写入点，方案 §4.2）：字节已在补丁快照里，直接进 CAS。
 func (s *Service) Store(ws, rel, absPath string, content []byte) error {
 	if !s.current().Enabled {
@@ -246,6 +248,7 @@ func readIndex(root string) []IndexRow {
 	return rows
 }
 
+// ===== 列举与恢复 =====
 // List 列出备份记录（正序）。ws 非空时只返回该工作区的记录。
 func (s *Service) List(ws string) ([]IndexRow, error) {
 	root, err := s.ensureRoot()
@@ -335,6 +338,7 @@ func (s *Service) ClearAll() error {
 	return os.RemoveAll(root)
 }
 
+// ===== 配额强制 =====
 // noteRowsForEnforce 累计追加行数，到阈值做一次清理检查（超阈值才扫，方案 §4.3）。
 func (s *Service) noteRowsForEnforce(root string, n int) {
 	s.mu.Lock()
@@ -411,6 +415,7 @@ func (s *Service) enforce(root string) error {
 	return nil
 }
 
+// ===== Blob 垃圾回收 =====
 // referencedBlobs 汇总 objects/ 的全部存活引用：L1 索引行 + 所有 CAS manifest。
 // 两者共用同一个 blob 库，但保留期不同（L1 7 天、快照 28 天）。只按 L1 行构造
 // 引用集，会把仍被快照引用的 blob 当孤儿删掉——"还原快照"变成 blob 读取失败，

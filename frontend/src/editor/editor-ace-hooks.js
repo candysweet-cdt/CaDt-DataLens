@@ -8,6 +8,7 @@ import {aceModeFor} from '../core/formats.js';
 import {isDocReadOnly} from '../core/readonly.js';
 import {setupEditorCompletion} from './editor-completion.js';
 
+// ===== 折叠范围调整 =====
 // 折叠范围调整：Go 的 import ( ) 块把圆括号本体折进去，折叠后才显示 import ...。
 // 花括号块不动——Ace cstyle 范围起始在 { 之后、结束在 } 之前，配默认占位符正好渲染成 {...}。
 // getLine: (row) => string；range 原对象改动后返回。纯函数，导出供测试。
@@ -64,6 +65,7 @@ export function disableAceFoldWidgetTooltips() {
     }
 }
 
+// ===== Ace hooks 入口 =====
 export function createEditorAceHooks(deps) {
     disableAceFoldWidgetTooltips();
 
@@ -130,6 +132,7 @@ let codeFoldHoverShowTimer = 0;
 let codeFoldHoverHideTimer = 0;
 let codeFoldHoverTarget = null;
 
+// ===== 代码折叠悬停 =====
 function ensureCodeFoldHover() {
     if (codeFoldHoverEl) return codeFoldHoverEl;
     codeFoldHoverEl = document.createElement('div');
@@ -206,6 +209,7 @@ function hookCodeFoldRanges(ace) {
     };
 }
 
+// ===== 多光标处理 =====
 // 多光标：Alt+单击添加光标；中键拖动建立列光标/矩形选区；普通单击回到单光标
 function hookMultiCursor(ace) {
     if (!ace || ace._multiCursorHooked || !ace.container) return;
@@ -284,6 +288,7 @@ function hookMultiCursor(ace) {
     }, true);
 }
 
+// ===== 光标跟踪 =====
 function hookCursorTracking(ace) {
     if (!ace || ace._cursorTracked) return;
     ace._cursorTracked = true;
@@ -299,6 +304,7 @@ function hookCursorTracking(ace) {
     } catch (e) {}
 }
 
+// ===== Python token 类 =====
 function applyPythonTokenClasses(ace) {
     if (!ace || !ace.container || !ace.container.classList.contains('ace-mode-python')) return;
     const layer = ace.container.querySelector('.ace_text-layer');
@@ -377,6 +383,7 @@ function hookPythonTokenClasses(ace) {
     applyPythonTokenClasses(ace);
 }
 
+// ===== 折叠悬停展示 =====
 function showCodeFoldHover(lineEl) {
     const found = codeFoldForLine(lineEl);
     if (!found) return;

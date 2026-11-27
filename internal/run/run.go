@@ -22,6 +22,7 @@ import (
 	"golang.org/x/text/transform"
 )
 
+// ===== Runner 与 Shell 探测 =====
 // Runner 运行通道引擎。进程注册/取消与命令桥共用 internal/procctl。
 type Runner struct{}
 
@@ -65,6 +66,7 @@ const (
 // 手动停止前端另有 cancelled 标志，无需后端区分。
 const runExitReasonTimeout = "timeout"
 
+// ===== 运行规格与临时目录 =====
 // RunSpec 前端给出的运行请求。
 type RunSpec struct {
 	SrcPath  string `json:"srcPath"`  // 磁盘上的源文件；虚拟文档为空
@@ -148,6 +150,7 @@ func safeRunFileName(name string) string {
 	return name
 }
 
+// ===== 运行准备与输出解码 =====
 // PrepareRun 准备可执行的源文件与工作目录。
 // 有未保存修改或虚拟文档时把内容写成临时副本；需要编译产物时额外开临时目录。
 func (r *Runner) PrepareRun(spec RunSpec) (*RunWorkspace, error) {
@@ -235,6 +238,7 @@ func envWithPathPrepend(prepend string) []string {
 	return append(env, "PATH="+prepend)
 }
 
+// ===== 输出流刷新 =====
 // runStream 输出合并器：按行切分后攒批发送，避免高产命令每行一次跨进程事件。
 type runStream struct {
 	id        string
@@ -371,6 +375,7 @@ func (s *runStream) readPipe(pipe io.Reader, stream string) {
 	}
 }
 
+// ===== 标准输入泵 =====
 // runStdin 一个运行任务的 stdin 通道。
 //
 // 用 os.Pipe 而不是 io.Pipe：cmd.Stdin 是 *os.File 时 os/exec 直接把 fd 交给子进程，
@@ -518,6 +523,7 @@ func (r *Runner) RunEndInput(id string) error {
 	return nil
 }
 
+// ===== 执行与停止 =====
 // RunExec 启动一个运行进程：输出走 run-out（{id, stream, data}），结束走 run-exit。
 // pathPrepend 非空时前置到子进程 PATH（编译型语言运行阶段用）。
 // timeoutMs > 0 表示这一步的超时毫秒数：到点强杀整棵进程树，run-exit 带 reason="timeout"；
@@ -638,6 +644,7 @@ func (r *Runner) RunStop(id string) error {
 	return nil
 }
 
+// ===== 临时目录清理 =====
 // GetRunTempDir 返回（并按需创建）运行临时目录根，供设置页「打开临时目录」用。
 func (r *Runner) GetRunTempDir() (string, error) {
 	root := RunTempRoot()

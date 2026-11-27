@@ -20,6 +20,7 @@ import (
 	"time"
 )
 
+// ===== OpenAI SSE 流 =====
 func streamOpenAISSE(body io.Reader, id string, emit Emitter, touch func()) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
@@ -124,6 +125,7 @@ func streamOpenAISSE(body io.Reader, id string, emit Emitter, touch func()) erro
 	return nil
 }
 
+// ===== Responses SSE 流 =====
 // responsesStreamEvent：只解析 Responses SSE 里会映射到 ai-* 事件的字段。
 // 网关普遍会在 data JSON 里带 type；event: 行即使存在也不影响，这里逐行只读 data:。
 type responsesStreamEvent struct {
@@ -263,6 +265,7 @@ func streamResponsesSSE(body io.Reader, id string, emit Emitter, touch func()) e
 	return nil
 }
 
+// ===== Anthropic SSE 流 =====
 func streamAnthropicSSE(body io.Reader, id string, emit Emitter, touch func()) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
@@ -427,6 +430,7 @@ func streamAnthropicSSE(body io.Reader, id string, emit Emitter, touch func()) e
 	return nil
 }
 
+// ===== 流结束原因与错误文本 =====
 // aiFinishReason：把三家协议的结束原因归一成前端认识的三档：
 // tool（有工具调用）/ length（输出预算打满，内容被砍断）/ stop（其余）。
 // length 必须原样保留——归一成 stop 会让「被截断」与「模型写完了」在界面上无法区分，
@@ -509,6 +513,7 @@ func StatusErrorText(resp *http.Response) string {
 	return fmt.Sprintf("AI 接口返回 HTTP %d：%s", resp.StatusCode, text)
 }
 
+// ===== HTTP 客户端与代理 =====
 func BaseHost(baseURL string) string {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
@@ -667,6 +672,7 @@ func aiProxyBypassed(host, override string) bool {
 // aiModelsTimeout 模型列表/连通性测试的单次上限：端点无响应时必须能回错误。
 const aiModelsTimeout = 20 * time.Second
 
+// ===== 模型列表 =====
 func ListModels(client *http.Client, cfg Config) ([]string, error) {
 	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	// 必须带 ctx + 超时：client 本身没有 Timeout，端点挂起时绑定调用会永久卡死
@@ -713,6 +719,7 @@ func ListModels(client *http.Client, cfg Config) ([]string, error) {
 	return models, nil
 }
 
+// ===== 流分块与计时类型 =====
 // aiChatTimings 是 llama.cpp 系服务（llama-server / LM Studio / 兼容实现）在流末块附带的
 // 引擎自报计时：cache_n = 从提示缓存复用的 token，prompt_n = 本次真正预填充的 token，
 // predicted_n = 生成的 token。老版本即便收下 stream_options 也可能只在 timings 里给数字，

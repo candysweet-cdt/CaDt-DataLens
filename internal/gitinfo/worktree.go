@@ -30,6 +30,7 @@ var worktreeSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 // shaRe 允许完整 40 位或 git 缩写（≥7 位）十六进制。
 var shaRe = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
 
+// ===== Worktree 结果类型 =====
 type GitWorktreeInfo struct {
 	Path      string `json:"path"`             // 绝对路径
 	RelPath   string `json:"relPath"`          // 相对仓库根，正斜杠
@@ -68,6 +69,7 @@ var junctionWhitelist = []string{"node_modules", ".venv", "venv"}
 // 与 FILE_ATTRIBUTE_REPARSE_POINT），实现分别在 worktree_platform_windows.go 与
 // worktree_platform_other.go。这里不放平台代码：gitinfo 的引擎部分要保持可交叉编译。
 
+// ===== 依赖目录与重解析点 =====
 // linkDepDirs 把主根的依赖目录 junction 进 worktree：worktree/<dep> → 主根/<dep>。
 // 目标已存在（同名实体或旧 junction）跳过；创建失败记错误但不致命（依赖共享是增益不是前提）。
 // 删除侧（WorktreeRemove）先递归摘掉所有 reparse 点再交 git，保证绝不误删主根依赖。
@@ -183,6 +185,7 @@ func pathUnderReparse(wtPath, rel string) bool {
 	}
 }
 
+// ===== 工作改动携带 =====
 // copyWorktreeInclude 按 <主根>/.worktreeinclude（gitignore 语法）把「被 git 忽略 且
 // 匹配清单」的文件从主根拷进刚检出的 worktree（.env 这类 dotfiles——junction 只能共享
 // 目录、覆盖不了它们；对齐 ZCode §3.4）。规则：只拷普通文件（符号链接跳过）、不覆盖
@@ -405,6 +408,7 @@ func applyCarryPatch(wtPath, patch string, index bool) error {
 	return nil
 }
 
+// ===== 统计与暂存 =====
 // WorktreeStat 返回 worktree 的改动统计（git diff --stat 文本，供列表与胶囊快速对比
 // 多个隔离区的改动量；完整补丁仍走 WorktreeDiff）。baseSha 有效时对比创建基准（全量
 // 草稿语义）；为空或非法时对比 HEAD（该 worktree 自己的未提交改动——外部 worktree /
@@ -446,6 +450,7 @@ func stageIntentToAdd(path string) {
 	_, _, _ = gitRun(path, stageIntentToAddArgs(path), 30000)
 }
 
+// ===== 路径与 slug 派生 =====
 // deriveSlug 由 label + 会话 id 派生 slug：小写、[^a-z0-9-] 折成 -、截断 32，拼会话 id
 // 末 8 位字母数字（会话 id 形如 session-<base36 时间戳><5 位随机>，取尾部才是高熵段）；
 // label 清洗后为空用 "wt"。纯函数，可单测。
@@ -513,6 +518,7 @@ func worktreeRepoReady(root string) bool {
 	return err == nil && code == 0 && strings.TrimSpace(out) == "true"
 }
 
+// ===== Worktree 增删 =====
 // WorktreeList 解析 git worktree list --porcelain：主根、bare、detached 一并列出，
 // 由 UnderCadt 区分 AI 隔离区。孤儿判定（不在任何会话登记里）由前端算，引擎保持纯净。
 func WorktreeList(dir string) (*GitWorktreeListResult, error) {
@@ -652,6 +658,7 @@ func WorktreeAdd(root, label, sessionKey string, carry bool) (*GitWorktreeAddRes
 	return nil, fmt.Errorf("worktree 名称冲突过多（%s…），请换一个用途名", base)
 }
 
+// ===== 清理与差异 =====
 // WorktreeRemove 删除隔离 worktree（--force：草稿区本来就该允许未提交改动）；
 // deleteBranch=true 时一并删隔离分支（默认语义：分支永不合并、不保留）。
 // 先递归摘掉所有 reparse 点（含 AI 手动建在子目录里的 junction；只删链接，目标绝不受影响），

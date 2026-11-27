@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 )
 
+// ===== 搜索器与过滤规则 =====
 // Searcher 工作区检索与 glob 引擎（无状态）。
 type Searcher struct{}
 
@@ -186,6 +187,7 @@ func sortSearchTier(hits []SearchHit, needle string, caseSensitive, fuzzy bool) 
 	})
 }
 
+// ===== 搜索结果类型 =====
 // SearchOptions 高级检索参数（AI search_text 下推；Wails 绑定可直接收该结构）。
 // 空字段一律表示「用默认值」——旧参数面（SearchWorkspace / Filtered）走零值即完全兼容。
 type SearchOptions struct {
@@ -257,6 +259,7 @@ type SearchResult struct {
 	Counts []FileCount `json:"counts,omitempty"`
 }
 
+// ===== 预览与大小写折叠匹配 =====
 func utf16Len(s string) int {
 	n := 0
 	for _, r := range s {
@@ -387,6 +390,7 @@ func foldMatchAt(s string, want []rune) (int, bool) {
 	return pos, true
 }
 
+// ===== 搜索规格构造 =====
 // searchSpec 一次检索的归一化参数（内部用，不进 Wails 绑定）。
 // 两条扫描路径（rg / 内置）共用同一份 spec，保证参数语义不漂移。
 type searchSpec struct {
@@ -505,6 +509,7 @@ func isWordByte(b byte) bool {
 		(b >= 'A' && b <= 'Z') || b >= 0x80 // 非 ASCII 字节按「词字符」保守处理
 }
 
+// ===== 匹配与上下文 =====
 // findMatches 返回一行内所有命中的字节区间 [start, end)。
 // 正则模式用 Go regexp（RE2，线性时间，无灾难性回溯）；字面量模式沿用 ASCII 折叠快路径。
 func (spec *searchSpec) findMatches(line string) [][2]int {
@@ -639,6 +644,7 @@ func applyOutputMode(result *SearchResult, spec *searchSpec) {
 	}
 }
 
+// ===== 文件名命中 =====
 type searchFileJob struct {
 	path   string
 	name   string
@@ -786,6 +792,7 @@ func appendWorkspaceNameHits(root string, spec *searchSpec, res *SearchResult) {
 	})
 }
 
+// ===== 文件扫描 =====
 // scanSearchFile 单文件内容扫描（文件名兜底命中统一在 searchWorkspace 的
 // appendWorkspaceNameHits 收口，两条扫描路径语义一致）。
 func scanSearchFile(job searchFileJob, spec *searchSpec, deadline time.Time) searchFileResult {
@@ -909,6 +916,7 @@ func markScannerTruncated(scanner *bufio.Scanner, out *searchFileResult) {
 	}
 }
 
+// ===== 工作区搜索入口 =====
 // SearchWorkspace 流式扫描工作区文本文件，不建索引；命中数/单文件命中/耗时均有限额。
 func (s *Searcher) SearchWorkspace(root, query string, caseSensitive bool, maxResults int) (*SearchResult, error) {
 	return s.searchWorkspace(root, query, legacySearchSpec(query, caseSensitive, maxResults, "", false))
@@ -982,6 +990,7 @@ func (s *Searcher) searchWorkspace(root, query string, spec *searchSpec) (*Searc
 	return result, nil
 }
 
+// ===== 分页与内置扫描 =====
 // applyPagination 在 applyOutputMode 之后按 offset/limit 对「最终可见结果」切片。
 // content 模式切 Hits；files 切 FileList；count 切 Counts。切片前记录 Total（本次扫描
 // 到的命中/项总数，扫描上限固定为硬顶，故各页 Total 一致、顺序稳定），切片后记
@@ -1119,6 +1128,7 @@ func (s *Searcher) scanWorkspaceBuiltin(root string, spec *searchSpec) (*SearchR
 	return result, nil
 }
 
+// ===== 并发扫描作业 =====
 // scanSearchJobs 并行扫描一组文件，命中按 jobs 顺序回收；到 hitCap 或超预算即截断。
 // 每个文件只扫一遍，排序只在 ≤ hitCap 条命中上做。
 func scanSearchJobs(jobs []searchFileJob, spec *searchSpec, deadline time.Time, hitCap int) ([]SearchHit, int, bool) {

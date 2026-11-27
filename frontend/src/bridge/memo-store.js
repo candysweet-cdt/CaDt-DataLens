@@ -12,6 +12,7 @@ import {parseMemoDoc, defaultMemoData, collectImageRefs} from './memo-model.js';
 
 const SAVE_DEBOUNCE_MS = 1000;
 
+// ===== 便签存储入口 =====
 // createMemoStore(deps)：deps 全部 getter 延迟求值（组合根接线约定）。
 // - backend：Wails 桥（dev 模式走 mock-backend 同名方法）
 // - flash(msg, isErr)：状态栏提示
@@ -61,6 +62,7 @@ export function createMemoStore(deps) {
     return () => changeListeners.delete(fn);
   }
 
+// ===== 租约获取与释放 =====
   function hasLeaseBackend() {
     return !!(deps.backend && typeof deps.backend.MemoLeaseAcquire === 'function');
   }
@@ -93,6 +95,7 @@ export function createMemoStore(deps) {
     }
   }
 
+// ===== 读取与加载 =====
   function resultOf(cache, extra) {
     return Object.assign({
       doc: cache.doc,
@@ -240,6 +243,7 @@ export function createMemoStore(deps) {
     await Promise.all(jobs);
   }
 
+// ===== 缓存与落盘 =====
   // state 给视图渲染只读横幅/禁用控件用。
   function state(scope) {
     const {cache} = findCache(scope);
@@ -305,6 +309,7 @@ export function createMemoStore(deps) {
     }
   }
 
+// ===== 图片与待保存 =====
   // gcImages 保存成功后的贴图回收：对比「上次成功保存/载入的引用集」与本次——
   // 消失的引用即被删除的贴图，按缓存捕获的工作区根定位后走 DeleteEntry（回收站，
   // 资源管理器同款校验）。引用口径含正文占位符（collectImageRefs）：正文里删掉
@@ -377,6 +382,7 @@ export function createMemoStore(deps) {
     }, SAVE_DEBOUNCE_MS);
   }
 
+// ===== 变更与全局操作 =====
   // mutate 统一变更入口：fn(doc) → {ok, doc?, error?}（memo-model 的变更函数）。
   // opts.temporary=true：AI 工具在面板未持锁时用短租约，变更后立即 flush 再释放。
   async function mutate(scope, fn, opts) {

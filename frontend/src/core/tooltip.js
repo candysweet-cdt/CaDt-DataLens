@@ -60,6 +60,7 @@ let lastPointer = null; // 最近一次指针位置：滚动/重渲染后用 ele
 let lastUserScrollGestureAt = 0; // 最近一次用户滚动手势（wheel/touchmove/翻页键）
 let installed = false;
 
+// ===== 气泡管理 =====
 function ensureBubble() {
     if (bubble) return bubble;
     bubble = document.createElement('div');
@@ -75,6 +76,7 @@ function bubbleVisible() {
     return !!(bubble && bubble.classList.contains('app-tip-on'));
 }
 
+// ===== 显示与隐藏 =====
 // warm=true 表示这次隐藏是「指针/焦点离开」，可开热窗口；滚动、点击、Esc、窗口失焦不算
 // （那是用户在干别的事，不该让下一个 tooltip 提前冒出来）。
 // 例外：程序滚动把内容顶走算「指针被顶离锚点」，也开热窗口——内容动了，不是用户在干别的事。
@@ -148,6 +150,7 @@ function pointerInBubble() {
     return !!(el && bubble && bubble.contains(el));
 }
 
+// ===== 定位与内容渲染 =====
 // 摆位（锚点在 showFor 里先落到 anchor 上）：越界翻到上方并做视口钳制。
 // follow/retether 重摆复用同一段数学。锚点离文档或量不出面积就撤——不弹到 (0,0) 垃圾位。
 function positionBubble() {
@@ -209,6 +212,7 @@ function showFor(target) {
     positionBubble();
 }
 
+// ===== 动作解析 =====
 // 延迟判定（纯函数，tooltip.test.mjs 有护栏）：显式 data-tip-delay 优先，其次 ⓘ 说明点立即，
 // 气泡还在屏上换内容不留空档，热窗口内只等 reshow，其余一律走「停留」窗口。
 export function resolveTipDelay({
@@ -312,6 +316,7 @@ function retetherAfterReplacement() {
     return true;
 }
 
+// ===== 绑定安装 =====
 export function installTooltip() {
     if (installed) return;
     installed = true;

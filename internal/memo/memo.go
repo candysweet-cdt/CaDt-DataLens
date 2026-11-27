@@ -45,6 +45,7 @@ var imageExtByMIME = map[string]string{
 	"image/bmp":  "bmp",
 }
 
+// ===== 依赖与结果类型 =====
 // Deps 外部动作注入：全局作用域落在应用数据目录；OwnerForCall 从绑定 ctx 取
 // 调用方窗口名（多窗口写权租约的归属者）。
 type Deps struct {
@@ -97,6 +98,7 @@ type envelope struct {
 	MtimeMs int64  `json:"mtimeMs"`
 }
 
+// ===== 加载与路径 =====
 func defaultDoc() string {
 	return `{"version":1,"updatedAt":0,"blocks":[]}`
 }
@@ -149,6 +151,7 @@ func LeasePath(scope, workspace string) (string, error) {
 	return root + ".lock", nil
 }
 
+// ===== 租约管理 =====
 // AcquireLease 取便签写权（面板打开期间持有；同窗口重入走计数，跨窗口 Busy）。
 // owner 是归属者（v3 = 调用方窗口名；空串 = 兼容测试的单桶语义）。
 func AcquireLease(scope, workspace, label, owner string) (LeaseStatus, error) {
@@ -324,6 +327,7 @@ func LockForClear(scope, workspace string) (func(), error) {
 	return func() { lease.Release() }, nil
 }
 
+// ===== 保存与图片 =====
 // Save 整份写 memo.json。baseMtimeMs>0 时做 CAS：文件比读入时新（哪怕毫秒级）
 // 即视为其他窗口先写，返回 Conflict 让前端重载；「文件更旧」只在超出时间戳粒度
 // 放宽时才算冲突。baseMtimeMs==0 表示载入时还没有文件，此时若文件已存在也报冲突。
@@ -426,6 +430,7 @@ func SaveImage(scope, workspace, dataURL string) (string, error) {
 	return "img/" + name, nil
 }
 
+// ===== 路径与图片工具 =====
 // resolveRoot 解析作用域根目录：workspace → <ws>/.cadt/memo，global → <appdata>/memo。
 func resolveRoot(scope, workspace string) (string, error) {
 	switch scope {

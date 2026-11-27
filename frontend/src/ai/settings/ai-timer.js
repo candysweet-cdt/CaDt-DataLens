@@ -32,6 +32,7 @@ const AI_TIMER_PRESETS = [
     {value: 3600, label: '1 小时'},
 ];
 
+// ===== 计时器快照与筛选 =====
 // secondsUntilClock 把「到点时刻 HH:MM」换算成距现在的秒数（Go 侧按 duration 计时）。
 // 时刻已过按明天同一时刻算（今晚 23 点建一个明早 8 点的到点 ≈ 9 小时）。
 // 返回 0 表示时刻格式非法。
@@ -104,6 +105,7 @@ export function snapshotTimersForTree(timers, sessionIdOf, sessionIds, nowMs) {
     return out;
 }
 
+// ===== 计时器服务入口 =====
 export function createAITimer(ctx) {
     const timers = new Map();   // id → AITimerInfo
     const sessions = new Map(); // id → 启动时的会话 id（Go 侧不感知会话）
@@ -117,6 +119,7 @@ export function createAITimer(ctx) {
         return filterTimersForSession(timers, (id) => sessions.get(id) || '', sid);
     }
 
+// ===== 胶囊与格式化 =====
     function ensureStyle() {
         if (styleInjected) return;
         styleInjected = true;
@@ -208,6 +211,7 @@ export function createAITimer(ctx) {
         }
     }
 
+// ===== 胶囊渲染 =====
     function updateChipTime(chip) {
         const timeEl = chip.querySelector('.ai-chip-time');
         if (!timeEl) return;
@@ -260,6 +264,7 @@ export function createAITimer(ctx) {
         }
     }
 
+// ===== 弹层渲染 =====
     // chips-pop 的 timers 内容：列表视图（行点击进详情，行尾【x】停止）与详情视图两种形态
     function renderPop(host) {
         if (!host) return;
@@ -423,6 +428,7 @@ export function createAITimer(ctx) {
         host.appendChild(box);
     }
 
+// ===== 创建对话框 =====
     // 「+」菜单的创建对话框（居中弹窗）：倒计时选常用时长档位或自定义到点时刻，
     // 正计时填目的 + 可选「到点自动停止」时刻。Go 侧按 duration 计时，到点时刻在此换算成秒。
     function openCreateDialog(mode) {
@@ -567,6 +573,7 @@ export function createAITimer(ctx) {
         if (typeof ctx.closeDialog === 'function') ctx.closeDialog();
     }
 
+// ===== 同步与后端事件 =====
     function sync(list) {
         timers.clear();
         for (const info of Array.isArray(list) ? list : []) {

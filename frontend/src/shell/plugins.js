@@ -42,6 +42,7 @@ const commandClassifiers = new Map();
 // 核心 exe 保持零依赖。ctx 由消费方组装（title/html/images + 落盘原语）。
 const docConverters = new Map();
 
+// ===== 插件运行时初始化 =====
 export function getPluginDocConverters() {
     return [...docConverters.values()];
 }
@@ -68,6 +69,7 @@ function ensurePlatformPrimitives() {
     return {container: pluginContainer, bus: pluginHookBus};
 }
 
+// ===== 插件能力访问器 =====
 /** 当前这一轮的插件容器（未加载过插件时为 null）。 */
 export function getPluginContainer() {
     return pluginContainer;
@@ -120,6 +122,7 @@ function requireHookBus() {
     return pluginHookBus;
 }
 
+// ===== 插件 API 构造 =====
 function apiFor(plugin) {
     return {
         // 注册自定义文件格式：{id, name, extensions, parse(text), stringify(value), aceMode?, rawOnly?, table?, parseTable?, stringifyTable?}
@@ -373,6 +376,7 @@ function apiFor(plugin) {
     };
 }
 
+// ===== 加载与重载 =====
 // 清空上一轮注册并按当前启用列表重新执行插件代码；返回错误信息数组。
 // 插件注册表状态变化广播：loadPlugins 每次完成（含清空 / 跳过 / 失败路径）都派发，
 // 订阅方（如端侧模型设置的下拉与状态行）据此原位刷新，不必各自轮询

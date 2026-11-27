@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// ===== 测试夹具 =====
 func testWorkspace(t *testing.T) string {
 	t.Helper()
 	ws := t.TempDir()
@@ -84,6 +85,7 @@ func claimAndStart(t *testing.T, engine *Engine, ws, id, batchID string, attempt
 	return res
 }
 
+// ===== 校验与预演测试 =====
 func TestValidatePlanAndDryRun(t *testing.T) {
 	ws := testWorkspace(t)
 	req := basePlan(ws, "B2")
@@ -154,6 +156,7 @@ func TestOwnsPathGate(t *testing.T) {
 	}
 }
 
+// ===== 派单报告验证流程 =====
 func TestCreateDispatchReportVerifyDone(t *testing.T) {
 	ws := testWorkspace(t)
 	var verifyCalls atomic.Int32
@@ -195,6 +198,7 @@ func TestCreateDispatchReportVerifyDone(t *testing.T) {
 	}
 }
 
+// ===== 审查批次与死锁测试 =====
 func TestReviewBatchIsIndependentAndNoDeadlock(t *testing.T) {
 	ws := testWorkspace(t)
 	engine := testEngine(t, Deps{})
@@ -242,6 +246,7 @@ func TestReviewBatchIsIndependentAndNoDeadlock(t *testing.T) {
 	}
 }
 
+// ===== 尝试耗尽与状态区分 =====
 func TestNoReportThenAttemptExhausted(t *testing.T) {
 	ws := testWorkspace(t)
 	engine := testEngine(t, Deps{})
@@ -278,6 +283,7 @@ func TestNoReportThenAttemptExhausted(t *testing.T) {
 	}
 }
 
+// ===== 暂停停止与超时测试 =====
 func TestStalledAndUserStopAreDifferent(t *testing.T) {
 	ws := testWorkspace(t)
 	engine := testEngine(t, Deps{})
@@ -389,6 +395,7 @@ func TestAuditorNeverChangesBusinessStatus(t *testing.T) {
 	}
 }
 
+// ===== 隔离与权限测试 =====
 func TestServiceWorkspaceIsolation(t *testing.T) {
 	wsA := testWorkspace(t)
 	wsB := testWorkspace(t)
@@ -434,6 +441,7 @@ func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// ===== 报告与用户超时测试 =====
 func TestReportRejectsForeignBatchID(t *testing.T) {
 	ws := testWorkspace(t)
 	engine := testEngine(t, Deps{})
@@ -497,6 +505,7 @@ func TestUnknownBatchStateFailsClosed(t *testing.T) {
 	}
 }
 
+// ===== 审查重做与跳过测试 =====
 func TestReviewWaitsForOtherWorkers(t *testing.T) {
 	ws := testWorkspace(t)
 	engine := testEngine(t, Deps{})
@@ -628,6 +637,7 @@ func TestSkipBlocksDownstreamAndClosesEvent(t *testing.T) {
 	}
 }
 
+// ===== 提示词与中止测试 =====
 func TestPromptIncludesPreviousFailureAndAnswer(t *testing.T) {
 	ws := testWorkspace(t)
 	engine := testEngine(t, Deps{})

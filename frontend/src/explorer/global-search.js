@@ -6,6 +6,7 @@ import {fileIconSpec} from '../core/fileicons.js';
 import {createSelect, createCheckbox} from '../core/form-controls.js';
 import {overlayStack} from '../core/overlay-stack.js';
 
+// ===== 全局搜索入口 =====
 export function createGlobalSearch(deps) {
 
 // 全局搜索的弹层栈条目（modal 档，遮罩即容器）；Esc 由栈按层序退
@@ -29,6 +30,7 @@ const globalSearch = {
     aiControlsBound: false,
 };
 
+// ===== 搜索控件与范围 =====
 // 搜索范围控件行与样式：自带注入（不动 index.html / style.css），
 // 复用 gs- 系布局变量，勾选「AI 会话」后才可用模式切换（简要 / 详细）。
 function ensureAISearchControls() {
@@ -206,6 +208,7 @@ function showGlobalSearchEmpty(text) {
     deps.els.gsList.appendChild(empty);
 }
 
+// ===== 搜索执行 =====
 function scheduleGlobalSearch() {
     clearTimeout(globalSearch.timer);
     globalSearch.timer = setTimeout(runGlobalSearch, 180);
@@ -251,6 +254,7 @@ async function runGlobalSearch() {
     renderGlobalSearchResults(res || {hits: []}, sessionRes);
 }
 
+// ===== 结果渲染 =====
 function globalSearchRow(hit, index) {
     const row = document.createElement('div');
     row.className = 'gs-row';
@@ -393,6 +397,7 @@ function renderGlobalSearchResults(res, sessionRes) {
     updateGlobalSearchSelection();
 }
 
+// ===== 选择与定位 =====
 function updateGlobalSearchSelection() {
     const rows = deps.els.gsList.querySelectorAll('.gs-row');
     for (let i = 0; i < rows.length; i++) {
@@ -476,6 +481,7 @@ async function openGlobalSearchHit(hit) {
     }
 }
 
+// ===== 键盘与绑定 =====
 function handleGlobalSearchKey(e) {
     // Esc 不在这里处理：全局搜索已进弹层栈，栈按层序关；方向键 / Enter 仍归输入框
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {

@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+// ===== 计划校验与环检测 =====
 // ValidatePlan 整份重验不可信草稿；返回归一化后的计划与错误列表。
 func ValidatePlan(req PlanRequest) (*PlanRequest, []string) {
 	var errs []string
@@ -199,6 +200,7 @@ func findCycle(batches []BatchPlan, ids map[string]int) []string {
 	return nil
 }
 
+// ===== 状态聚合与就绪批次 =====
 // aggregateStatus 按固定优先级把批次状态聚合为编排状态。
 func aggregateStatus(o *Orchestration) string {
 	switch o.Status {
@@ -381,6 +383,7 @@ func readyBatchIDs(o *Orchestration, includeReviews bool) []string {
 	return out
 }
 
+// ===== 截止时间与延迟状态 =====
 // freezeDeadlinesLocked 把在跑批次的剩余时限冻结（暂停/等待/无窗口时）。
 func freezeDeadlinesLocked(o *Orchestration) {
 	now := nowMs()
@@ -439,6 +442,7 @@ func applyDeferredStatusLocked(o *Orchestration) {
 	o.UpdatedAt = nowMs()
 }
 
+// ===== 护栏与上游摘要 =====
 // guardrailProblem 纯数值护栏；返回非空表示必须停止派发并交人。
 func guardrailProblem(o *Orchestration) string {
 	if len(workBatches(o)) > MaxWorkBatches {
@@ -516,6 +520,7 @@ func summarizeUpstream(o *Orchestration, b *Batch) string {
 	return strings.Join(lines, "\n")
 }
 
+// ===== 派单提示词构造 =====
 // buildDispatchPrompt 拼派单首轮消息：本批 spec + 上游摘要 + 上一轮回顾 + 约束。
 func buildDispatchPrompt(o *Orchestration, b *Batch) string {
 	var sb strings.Builder
@@ -565,6 +570,7 @@ func buildDispatchPrompt(o *Orchestration, b *Batch) string {
 	return sb.String()
 }
 
+// ===== 预演与批次工具 =====
 // PlanDryRun 纯内存模拟：不写状态、不发事件、不建会话。只断言不变量，不追求与人工顺序一致。
 func PlanDryRun(plan *PlanRequest) PlanPreview {
 	preview := PlanPreview{Valid: true, Plan: plan, ReviewEnabled: plan.Policy.Review}

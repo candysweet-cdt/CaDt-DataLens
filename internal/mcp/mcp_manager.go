@@ -25,6 +25,7 @@ var (
 	PrepareServer func(cfg MCPServerConfig)
 )
 
+// ===== 重连策略与条目状态 =====
 // logf 宿主日志钩子的 nil 安全包装。
 func logf(level, format string, args ...any) {
 	if Logf != nil {
@@ -99,6 +100,7 @@ type mcpRoute struct {
 	OpenWorld bool
 }
 
+// ===== 管理器与配置应用 =====
 // mcpManager 多 server 编排。mu 保护 servers 表 / registry / routes；connect 等慢操作不持锁，
 // 完成后回到锁内做 eligible 检查（entry 未被丢弃且客户端代仍是自己）再发布。
 type Manager struct {
@@ -236,6 +238,7 @@ func (m *Manager) newEntryLocked(name string, cfg MCPServerConfig) *mcpServerEnt
 	return entry
 }
 
+// ===== 启动与重连 =====
 // ensureStarted 惰性启动：仅 enabled 且 EnabledTools 非空、未连接、未在连接、未阻塞的 server。
 func (m *Manager) ensureStarted(name string) {
 	m.mu.Lock()
@@ -394,6 +397,7 @@ func (m *Manager) queueResync(name string) {
 	}
 }
 
+// ===== 重同步与断线处理 =====
 // resyncEntry 重新拉取工具清单并重建世代。失败保留上一代（连接继续用），只记日志。
 func (m *Manager) resyncEntry(name string) {
 	m.mu.Lock()
@@ -537,6 +541,7 @@ func (m *Manager) stopEntry(entry *mcpServerEntry) {
 	}
 }
 
+// ===== 工具路由与调用 =====
 // mcpRedactSecrets 失败路径脱敏（§10.4）：把该 server 配置 env 的值（长度 ≥ 8）从文本里替换掉。
 // 只用于诊断/错误文本；成功结果不脱敏——那是模型真正要用的内容，乱替换会破坏功能。
 func mcpRedactSecrets(env map[string]string, text string) string {
@@ -588,6 +593,7 @@ func (m *Manager) CallTool(publicName string, args json.RawMessage) (CallResult,
 	return result, nil
 }
 
+// ===== 快照与面板数据 =====
 type SnapshotServer struct {
 	Name        string             `json:"name"`
 	State       string             `json:"state"`
@@ -685,6 +691,7 @@ func clientToolsSorted(c *mcpClient) []RemoteTool {
 	return out
 }
 
+// ===== 重启与关闭 =====
 // restartServer 用户点「重启」：清失败计数、重置状态、重新连接。
 func (m *Manager) RestartServer(name string) error {
 	m.mu.Lock()
@@ -742,6 +749,7 @@ func (m *Manager) CloseAll() {
 	}
 }
 
+// ===== 事件广播与初始配置 =====
 func (m *Manager) emitTools() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

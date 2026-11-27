@@ -24,6 +24,7 @@ export const CTX_LIMIT_TIERS = [262144, 524288, 1048576]; // 256K / 512K / 1M
 export const MODALITY_KEYS = ['text', 'image', 'video', 'audio'];
 export const MODALITY_LABELS = {text: '文本', image: '图像', video: '视频', audio: '音频'};
 
+// ===== 数值与 token 格式化 =====
 export function clampNumber(value, min, max, fallback) {
     const n = Math.round(Number(value));
     if (!Number.isFinite(n)) return fallback;
@@ -79,6 +80,7 @@ export function windowValue(value, min, max, fallback) {
     return clampNumber(value, min, max, fallback);
 }
 
+// ===== 上下文窗口限制 =====
 // 服务端参数校验给出 max_tokens 上界时，把模型条目的输出窗口收敛到该上界。
 // 只降不升（服务端上限比用户已设值还宽松时不动），返回是否改动。
 // 供 AI 面板在 Go 侧自动降档重试成功后回写配置，避免下一轮继续踩同一个 400。
@@ -117,6 +119,7 @@ export function ctxLimitTiersFor(baseWindow) {
     return CTX_LIMIT_TIERS.filter((tier) => tier < base);
 }
 
+// ===== 模态与模型条目 =====
 export function defaultModalities() {
     // 默认只勾文本 + 图像：大多数模型不支持视频输入，视频是按条目手动勾的能力位
     // （勾了才允许附加视频 / 调 read_video；「获取列表」添加时由配置表对已知视频模型自动勾上）。
@@ -167,6 +170,7 @@ export function normalizeModelEntry(raw, idGen) {
     };
 }
 
+// ===== 模型查找与迁移 =====
 // 取账号的激活模型条目：按 activeModelId 精确匹配，缺省退回首条目；无条目返回 null。
 // 注意这是「取一个可用条目」的语义——找不到会静默回落首条，**不要**用它做 id 有效性校验，
 // 否则 `if (!modelEntryOf(...))` 恒为假，兜底分支永远不执行。校验请用 findModelEntry。
@@ -229,6 +233,7 @@ export function migrateAccountModels(account, activeModelId, idGen) {
     return models;
 }
 
+// ===== 推理等级与配置 =====
 // 模型条目的思考等级单一来源（模型选择器行内徽标 / 档位条 / chip 文案共用）：
 // 非 Anthropic 按 reasoningEffort 推导（空串 = 自动），Anthropic 按 thinking/thinkingBudget
 // 反推档位（沿用旧边界：≤2048 低、≤10000 中、其余高）。返回当前档位值、中文标签、
@@ -280,6 +285,7 @@ export function configForModel(account, entry, idleTimeoutSec) {
     };
 }
 
+// ===== OpenCode 会话头 =====
 // OpenCode（Zen / Go）建议每个会话带一个稳定的 x-opencode-session 头，用于路由优化与
 // prompt 缓存（见 https://opencode.ai/docs/console/go/ ）。生成一次存进会话对象，整会话复用。
 // 返回形如 datalens-<随机> 的短串；不外泄内部 session.id。
@@ -299,6 +305,7 @@ export function withOpencodeSessionHeader(cfg, session) {
     if (!id) return cfg;
     return Object.assign({}, cfg, {extraHeaders: Object.assign({}, userHeaders, {'x-opencode-session': id})});
 }
+// ===== 模型引用解析 =====
 // 解析模型引用（自动审批分类器等场景）：'accountId|modelId'；兼容旧格式（纯账号 id
 // 解析为该账号首条目）。无效 / 已删除返回 ''（跟随当前模型）。
 export function resolveModelRef(rawRef, profiles) {
@@ -329,6 +336,7 @@ export function resolveModelRefTarget(rawRef, profiles) {
     return account && entry ? {account, entry} : null;
 }
 
+// ===== 子代理模型选择 =====
 // 子代理自选模型的候选清单（设置 → AI 助手 → 子代理 · 自选模型）：配置里的
 // '账号id|模型id' 数组 → [{ref, model, label}]。失效引用（账号或条目被删）直接丢弃，
 // 不留悬空候选——候选为空即「未启用自选」，请求里连 model 参数都不出现。
@@ -391,6 +399,7 @@ export const USAGE_CODE_MAX_LENGTH = 65536;
 export const USAGE_EXTRA_FIELDS_MAX = 8;
 export const USAGE_EXTRA_VALUE_MAX_LENGTH = 512;
 
+// ===== 用量配置与脱敏 =====
 // 归一化账号的用量查询配置：缺字段 / 非法值一律回落默认，绝不 throw（配置导入
 // 与手改 JSON 都算不可信输入，坏值最坏等于功能关闭）。enabled 是显式 true 才开。
 export function normalizeUsageConfig(raw) {

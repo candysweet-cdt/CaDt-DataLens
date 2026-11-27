@@ -20,6 +20,7 @@ import {SCROLL_STYLES} from '../editor/editor-smooth-scroll.js';
 import {keymap} from '../core/keymap.js';
 import {mergeSettingsInto, stripPerWindowLayout} from './settings-sync.js';
 
+// ===== 设置 UI 入口与变更记录 =====
 export function createSettingsUI(deps) {
 
 const activityLog = createActivityLog({
@@ -79,6 +80,7 @@ function logSettingsChange(snapshot) {
     }
 }
 
+// ===== 格式设置读取 =====
 function getFormatSettings(id) {
     return deps.settings.formatSettings[id] || deps.defaultFormatSettings()[id] || {encoding: 'auto', indent: '2', eol: 'follow', view: 'tree'};
 }
@@ -160,6 +162,7 @@ const elsSettings = {
 // 快捷键表：由 core/keybindings.js 单一来源渲染，不再在 index.html 手抄一份。
 // 表内容跟随当前快捷键风格（keymap.style），切换风格后立刻重绘。
 const shortcutsTable = document.getElementById('shortcuts-table');
+// ===== 快捷键与主题下拉 =====
 function renderShortcuts() {
     if (shortcutsTable) {
         shortcutsTable.innerHTML = renderShortcutsTable(keymap.style)
@@ -317,6 +320,7 @@ const elsDialogs = {
 };
 
 let syncedOpenMode = null;
+// ===== 主题与代码样式 =====
 function setSyncedOpenMode(value) {
     syncedOpenMode = value;
 }
@@ -457,6 +461,7 @@ function setTheme(id) {
     deps.flash('主题：' + currentTheme().name);
 }
 
+// ===== 窗口与只读模式 =====
 function applyCodeWrap() {
     for (const doc of deps.docs) {
         const ace = doc && doc.editor && doc.editor.aceEditor;
@@ -619,6 +624,7 @@ function applyReadOnlyMode() {
     else if (deps.settings.autoSave && deps.dirty) deps.scheduleAutoSave();
 }
 
+// ===== 设置应用 =====
 // 关于页横幅随系统时间切换：白天（6–18 点）用 light 版配图，夜间（其余时段）用 dark 版。
 // 只影响「关于」页顶部的横幅配图，不改变应用主题；打开设置 / 换肤 / 启动时刷新。
 function syncAboutBannerByTime() {
@@ -780,6 +786,7 @@ function applySettings() {
     broadcastSettings();
 }
 
+// ===== 设置同步与落盘 =====
 // broadcastSettings：settings-changed 的唯一广播点（applySettings / persistSettingsLight 共用）。
 // 全量快照走 payload（localStorage 是否跨窗口共享不强依赖）；远端触发期间静默，防回声环。
 function broadcastSettings() {
@@ -832,6 +839,7 @@ function reloadSettingsFromDisk() {
 
 // 关于页版本号唯一来源是 Go 的 appVersion（GetAppVersion 绑定），index.html 只留占位符。
 let aboutVersionText = '';
+// ===== 设置页打开与导航 =====
 async function fillAboutVersion() {
     const el = document.getElementById('about-version');
     if (!el) return;
@@ -970,6 +978,7 @@ function openSettingsAtRow(pane, controlEl) {
 }
 
 
+// ===== 集成状态 =====
 async function syncIntegrationStatus() {
     if (!elsSettings.fileAssoc) return;
     if (!deps.backend.GetIntegrationStatus) {
@@ -1028,6 +1037,7 @@ async function applyIntegration(kind, checkbox, label) {
 }
 
 
+// ===== 字数统计 =====
 function cursorPositionForDoc() {
     if (!deps.file) return null;
     if (deps.currentMode === 'code' && deps.file.editor && deps.file.editor.aceEditor) {

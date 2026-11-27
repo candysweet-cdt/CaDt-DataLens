@@ -64,6 +64,7 @@ var ErrSessionBusy = errors.New("session-busy: 会话正在另一窗口运行")
 // 绝不通过 MkdirAll 把目录重建出来。
 var ErrSessionGone = errors.New("session-gone: 会话已被删除")
 
+// ===== 存储结构与工作区分桶 =====
 type Store struct {
 	Root     string
 	DeleteFn func(string) error
@@ -179,6 +180,7 @@ func Default() (*Store, error) {
 	return NewBucketed(filepath.Join(base, SessionsDirName)), nil
 }
 
+// ===== 路径与 ID 校验 =====
 // ValidSessionID 限制会话 id 可安全拼进路径：不含分隔符、不以点开头、不是 . / ..。
 func ValidSessionID(id string) bool {
 	if id == "" || len(id) > aiSessionIDMax || id[0] == '.' {
@@ -308,6 +310,7 @@ func (s *Store) ResolveSessionWorkspace(id string) (string, error) {
 	return "", fmt.Errorf("会话无归属工作区：%s", id)
 }
 
+// ===== 目录与租约锁 =====
 // ensureBucketDir 取工作区对应的桶目录，必要时创建并写 ws.json 说明文件。
 func (s *Store) ensureBucketDir(workspace string) (string, error) {
 	name := WorkspaceBucketKey(workspace)
@@ -459,6 +462,7 @@ func (s *Store) withSessionLock(id, workspace string, allowCreate bool, fn func(
 	return fn(dir)
 }
 
+// ===== 墓碑与日志路径 =====
 // tombstonePath 删除墓碑放在 .locks/ 而不是会话目录里：删目录不会把墓碑一起删掉，
 // 同 id 的扇出写会一直看到“已删除”。
 func (s *Store) tombstonePath(id string) (string, error) {
@@ -497,6 +501,7 @@ func (s *Store) logPath(id string) (string, error) {
 	return filepath.Join(dir, aiSessionLogName), nil
 }
 
+// ===== 图片与视频路径 =====
 func validSessionImageName(name string) bool {
 	if name == "" || len(name) > aiSessionImageMax || name[0] == '.' {
 		return false
@@ -545,6 +550,7 @@ func (s *Store) VideoPath(id, name string) (string, error) {
 	return filepath.Join(dir, VideosDir, name), nil
 }
 
+// ===== 会话列表与读写 =====
 // list 只读各会话的 meta.json，不触碰正文；meta 缺失/损坏时用正文 header 兜底。
 func (s *Store) List() ([]string, error) {
 	if err := s.EnsureRoot(); err != nil {
@@ -747,6 +753,7 @@ func workspaceFromHeader(payload string) string {
 	return header.Workspace
 }
 
+// ===== 改写与删除 =====
 // rewrite 原子替换整个正文（迁移、清空、状态与日志不一致时的兜底）。
 func (s *Store) Rewrite(id string, payload string) error {
 	return s.withSessionLock(id, "", false, func(dir string) error {

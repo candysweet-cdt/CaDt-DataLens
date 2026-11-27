@@ -44,6 +44,7 @@ var providerCapabilityLabels = map[string]string{
 	"asr":    "语音识别",
 }
 
+// ===== 供应商响应类型 =====
 type providerSearchItem struct {
 	RerankScore float64 `json:"rerank_score"`
 	Title       string  `json:"title"`
@@ -83,6 +84,7 @@ type providerASRResponse struct {
 	DurationMs int64  `json:"duration_ms"`
 }
 
+// ===== 搜索与抓取 =====
 // ProviderSearch 调 DeepSeek 网页搜索，返回与内置搜索一致的 results 结构。
 func ProviderSearch(cfg Config, query string, maxResults int) (map[string]interface{}, error) {
 	started := time.Now()
@@ -183,6 +185,7 @@ func ProviderFetch(cfg Config, rawURL string, maxChars int) (map[string]interfac
 	}, nil
 }
 
+// ===== OCR / TTS / ASR 能力 =====
 // ProviderOCR 上传文件做 OCR / 文件解析，按页返回文本。
 func ProviderOCR(cfg Config, path, purpose string) (map[string]interface{}, error) {
 	started := time.Now()
@@ -373,6 +376,7 @@ func ProviderASR(cfg Config, name string, audio []byte) (map[string]interface{},
 	}, nil
 }
 
+// ===== 音频输入处理 =====
 // AudioBytesForASR 解析 ASR 上传字节：给了转码后的 base64 就用它，否则读本地文件。
 func AudioBytesForASR(path, wavBase64 string) ([]byte, error) {
 	if strings.TrimSpace(wavBase64) != "" {
@@ -443,6 +447,7 @@ func audioMimeByExt(ext string) string {
 	return ""
 }
 
+// ===== HTTP 请求辅助 =====
 func providerEndpoint(cfg Config, op string) (string, error) {
 	base := strings.TrimSpace(cfg.BaseURL)
 	if base == "" {
@@ -594,6 +599,7 @@ func providerHTTPError(status int, body []byte) error {
 	return fmt.Errorf("服务提供商返回 HTTP %d：%s", status, message)
 }
 
+// ===== 校验与工具 =====
 func providerValidateFetchURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

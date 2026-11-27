@@ -21,6 +21,7 @@ const xmlBuilderOptions = {
     suppressEmptyNode: false,
 };
 
+// ===== 格式辅助与 TOML/INI 解析 =====
 function isPlainObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -67,6 +68,7 @@ function iniValue(value) {
     return String(value);
 }
 
+// ===== INI 序列化 =====
 function stringifyIni(value) {
     if (!isPlainObject(value)) return '';
     const lines = [];
@@ -331,6 +333,7 @@ export const videoExtensions = ['mp4', 'm4v', 'webm', 'mov', 'mkv'];
 // RIFF-WAVE / fLaC / OggS / ID3 魔数）。只收 WebView2 能解码的格式。
 export const audioExtensions = ['wav', 'mp3', 'ogg', 'oga', 'opus', 'flac', 'm4a', 'aac', 'weba'];
 
+// ===== 插件格式注册 =====
 /**
  * 判定媒体文档（图片 / 视频 / 音频）的首屏视图。
  * 有对应媒体就先给它自己的视图，binary / text 只是手动备份视图。
@@ -395,6 +398,7 @@ export function unregisterAllPluginFormats() {
     pluginFormats.length = 0;
 }
 
+// ===== 格式检测与映射 =====
 /**
  * 判定文件名是否属于可打开的受支持类型（内置格式 / 媒体扩展名 / 插件格式 / 已知文件名）。
  * @param {string} name 文件名（可含路径，取末段 base 判定）

@@ -20,6 +20,7 @@ import (
 	"time"
 )
 
+// ===== 流式响应处理 =====
 func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id string, cfg Config, messages []Message, tools []ToolDef, emit Emitter, retryMax int) error {
 	idleTimeout := resolveIdleTimeout(cfg.IdleTimeoutSec)
 	timeoutErr := &idleTimeoutError{seconds: int(idleTimeout / time.Second)}
@@ -219,6 +220,7 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 	}
 }
 
+// ===== 重试与错误判定 =====
 // aiRetryableStatus：429（限流）与 5xx（服务端故障）值得重试；4xx 参数/鉴权错误重试无意义。
 func aiRetryableStatus(code int) bool {
 	return code == http.StatusTooManyRequests || code >= 500
@@ -350,6 +352,7 @@ func aiMaxTokensLimitFromError(body []byte) int {
 	return high
 }
 
+// ===== URL 与请求构造 =====
 func aiBuildChatRequest(ctx context.Context, cfg Config, messages []Message, tools []ToolDef) (*http.Request, error) {
 	provider := ProviderOf(cfg)
 	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
@@ -426,6 +429,7 @@ func aiResponsesURL(base string) string {
 	return base + "/responses"
 }
 
+// ===== 请求头处理 =====
 func ApplyHeaders(req *http.Request, cfg Config, provider ProviderKind, stream bool) error {
 	req.Header.Set("Content-Type", "application/json")
 	if stream {
@@ -467,6 +471,7 @@ func ForbiddenHeader(name string) bool {
 	return false
 }
 
+// ===== Body 补丁与能力协商 =====
 // aiApplyBodyPatch 合并插件 provider 的请求体补丁。前端 applyPluginAIPatch 已按白名单与
 // 体积上限收过一遍，这里只做最后兜底：拒绝超量补丁，并强制 stream=true——
 // 关掉流式会让 SSE 解码拿不到事件，整轮对话挂住。
@@ -558,6 +563,7 @@ func aiRejectsCacheControl(code int, body []byte) bool {
 	return strings.Contains(text, "cache_control") || strings.Contains(text, "cache control")
 }
 
+// ===== 请求诊断 =====
 // aiDumpRequestDiagnostics 落一份最小定位结构：只记「哪个模型、发多大、服务端
 // 怎么回的」，绝不包含会话正文与图片 base64。同时做环形清理（只保留最近几份），
 // 避免每次失败都新建文件、无限增长。
@@ -619,6 +625,7 @@ func aiPruneDiagnostics(dir string, keep int) {
 	}
 }
 
+// ===== 各供应商 Body 构造 =====
 func aiBuildOpenAIBody(cfg Config, messages []Message, tools []ToolDef) (map[string]any, error) {
 	passReasoning := strings.Contains(strings.ToLower(cfg.Model), "deepseek")
 	converted, err := aiOpenAIMessages(messages, passReasoning)
@@ -848,6 +855,7 @@ func aiBuildAnthropicBody(cfg Config, messages []Message, tools []ToolDef) (map[
 	return body, nil
 }
 
+// ===== 消息与工具格式转换 =====
 func aiOpenAIMessages(messages []Message, passReasoning bool) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(messages))
 	for i, m := range messages {

@@ -21,6 +21,7 @@ import (
 	"datalens/internal/aiimagepolicy"
 )
 
+// ===== 测试辅助与 SSE 写入 =====
 type aiEventRecord struct {
 	Name    string
 	Payload any
@@ -88,6 +89,7 @@ func writeAnthropicSSE(w http.ResponseWriter, event string, value any) {
 	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 }
 
+// ===== OpenAI 流测试 =====
 func TestAIStreamOpenAI(t *testing.T) {
 	requestCh := make(chan aiCapturedRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +205,7 @@ func TestAIStreamOpenAI(t *testing.T) {
 	}
 }
 
+// ===== Anthropic 流与消息测试 =====
 func TestAIStreamAnthropic(t *testing.T) {
 	requestCh := make(chan aiCapturedRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -400,6 +403,7 @@ func TestAIAnthropicMessages(t *testing.T) {
 	}
 }
 
+// ===== 思考参数与 Body 测试 =====
 func TestAIAnthropicThinkingNeedsSignature(t *testing.T) {
 	_, out, err := aiAnthropicMessages([]Message{
 		{Role: "user", Content: "q"},
@@ -597,6 +601,7 @@ func TestAIRejectsThinkingParam(t *testing.T) {
 	}
 }
 
+// ===== 消息与图片校验测试 =====
 func TestAIOpenAIMessages(t *testing.T) {
 	out, err := aiOpenAIMessages([]Message{
 		{Role: "system", Content: "sys"},
@@ -696,6 +701,7 @@ func TestAIMessageImageValidation(t *testing.T) {
 	}
 }
 
+// ===== 校验与数量限制测试 =====
 // 条数不再设限：长任务的几百轮工具调用是正常形态（六个参照 harness 都不设条数上限），
 // 只有真实体积才该被拒。
 func TestValidateMessagesHasNoCountLimit(t *testing.T) {
@@ -831,6 +837,7 @@ func TestSanitizeAIMessagesToolArguments(t *testing.T) {
 	}
 }
 
+// ===== HTTP 错误与异常流测试 =====
 func TestAIStreamHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -911,6 +918,7 @@ func TestAIStreamUnexpectedEOF(t *testing.T) {
 	}
 }
 
+// ===== 配置与工具校验测试 =====
 func TestValidateAIConfigThinking(t *testing.T) {
 	cfg := Config{
 		Provider: "anthropic", BaseURL: "https://example.com", Model: "m",
@@ -941,6 +949,7 @@ func TestValidateAITools(t *testing.T) {
 	}
 }
 
+// ===== 代理测试 =====
 func TestAIProxyServerForScheme(t *testing.T) {
 	cases := []struct {
 		server string
@@ -1015,6 +1024,7 @@ func TestAIStreamOpenAIReasoningKeepsWhitespace(t *testing.T) {
 	}
 }
 
+// ===== 重试与退避测试 =====
 func TestAIStreamRetry429Backoff(t *testing.T) {
 	var requestCount int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1340,6 +1350,7 @@ func TestAIRetryWaitTouchesWatchdog(t *testing.T) {
 	}
 }
 
+// ===== 视频与多模态测试 =====
 func TestAIOpenAIUserVideos(t *testing.T) {
 	data := base64.StdEncoding.EncodeToString([]byte("fake-mp4"))
 	out, err := aiOpenAIMessages([]Message{{
@@ -1430,6 +1441,7 @@ func TestAIMessageVideoValidation(t *testing.T) {
 	}
 }
 
+// ===== stream usage 测试 =====
 // 流式 usage 必须显式索取：llama.cpp / LM Studio / vLLM 这类服务不带上
 // stream_options.include_usage 就完全不回 token 数，前端的速度与缓存命中永远显示「—」。
 func TestAIStreamOpenAIRequestsStreamUsage(t *testing.T) {
@@ -1494,6 +1506,7 @@ func TestAIStreamOpenAIUsageFromTimings(t *testing.T) {
 	}
 }
 
+// ===== 参数丢弃测试 =====
 // 网关把 stream_options 当未知参数拒收：摘掉该字段重发一次，对话不能被卡死。
 func TestAIStreamDropsStreamOptionsWhenRejected(t *testing.T) {
 	var requestCount int32
@@ -1619,6 +1632,7 @@ func TestAIStreamNoDropForUnrelated400(t *testing.T) {
 	}
 }
 
+// ===== 空闲超时测试 =====
 // 空闲超时可配置：resolveIdleTimeout 把秒数钳到 [30, 3600]，缺省取 300 秒。
 func TestResolveIdleTimeout(t *testing.T) {
 	tests := []struct {
@@ -1655,6 +1669,7 @@ func TestIdleTimeoutErrorCarriesSeconds(t *testing.T) {
 	}
 }
 
+// ===== 错误文本标记测试 =====
 // 流内 error 事件文案命中网关 5xx 特征时，aiStreamErrorText 必须包成
 // ErrStreamUpstreamError（chat.go 据此给 ai-error 标 retryable），且保留原始文案；
 // 模型业务错误（额度/限流/内容类）不得误标，否则会把确定性失败重试成死循环。
@@ -1715,6 +1730,7 @@ func TestAIStreamErrorTextMarksConnectionResetTruncated(t *testing.T) {
 	}
 }
 
+// ===== 截断与结束原因测试 =====
 // 断流的第三种形态（2026-11-19 线上实测）：连接被掐在一条 JSON 数据块中间——
 // bufio 把最后的不完整行当整块交上来，解析报「unexpected end of JSON input」。
 // 不是网关发了坏数据，是断流，必须同样标 ErrStreamTruncated 让前端整轮重发。

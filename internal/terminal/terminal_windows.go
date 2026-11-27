@@ -34,6 +34,7 @@ const (
 	termReadMaxChars     = 20000
 )
 
+// ===== 会话结构类型 =====
 type termSession struct {
 	id        string
 	p         pty.Pty
@@ -67,6 +68,7 @@ type terminalManager struct {
 
 var terminals = &terminalManager{sessions: map[string]*termSession{}}
 
+// ===== Shell 探测与启动 =====
 // normalizeTermShell 把空值解析为默认 shell：本机有 PowerShell 7 时用 pwsh，否则回退 Windows PowerShell。
 func normalizeTermShell(shell string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(shell)) {
@@ -211,6 +213,7 @@ func startTermSession(id, shell string, cols, rows int, cwd string, emit func(ev
 	return session, nil
 }
 
+// ===== 会话读写与生命周期 =====
 // termExitCode 取退出码。cmd.Wait() 已经把进程收掉并把结果放进 ProcessState，
 // 这里绝不能再调 cmd.Process.Wait()：那是对同一进程句柄的第二次回收，Windows 上
 // 等于重复 CloseHandle——句柄号被别处复用之后，踩空的是整个进程
@@ -373,6 +376,7 @@ func (m *terminalManager) closeAll() {
 	m.mu.Unlock()
 }
 
+// ===== 绑定方法 =====
 func (t *Terminal) TermCreate(cols, rows int, shell string, cwd string) (map[string]string, error) {
 	resolvedShell, err := normalizeTermShell(shell)
 	if err != nil {
@@ -523,6 +527,7 @@ func (t *Terminal) RunningSessionCount() int {
 	return n
 }
 
+// ===== 进程存活检测 =====
 // procInfo 是进程快照的一行（只取枚举需要的字段）。
 type procInfo struct {
 	pid  uint32
@@ -595,6 +600,7 @@ func lastTermLine(text string) string {
 	return ""
 }
 
+// ===== Shell 列表 =====
 // TermShells 返回本机可用的 shell 列表（供新建终端菜单），默认 shell 排在最前。
 func (t *Terminal) TermShells() []map[string]string {
 	shells := []map[string]string{}

@@ -13,6 +13,7 @@ import (
 	"time"
 )
 
+// ===== 文件名与输出解码 =====
 func TestSafeRunFileName(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -59,6 +60,7 @@ func TestDecodeRunOutput(t *testing.T) {
 	}
 }
 
+// ===== 环境 PATH 测试 =====
 func TestEnvWithPathPrepend(t *testing.T) {
 	t.Setenv("CA_DT_RUN_PATH_TEST", "keep")
 	env := envWithPathPrepend(`C:\msys64\mingw64\bin`)
@@ -87,6 +89,7 @@ func TestEnvWithPathPrependEmptyKeepsEnv(t *testing.T) {
 	}
 }
 
+// ===== 运行准备测试 =====
 func TestPrepareRunDiskSource(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "main.py")
@@ -178,6 +181,7 @@ func TestPrepareRunErrors(t *testing.T) {
 	}
 }
 
+// ===== 临时目录清理测试 =====
 func TestCleanupRunTempGuards(t *testing.T) {
 	app := &Runner{}
 	if err := app.CleanupRunTemp(""); err != nil {
@@ -225,6 +229,7 @@ func TestCleanupRunTempStale(t *testing.T) {
 	}
 }
 
+// ===== 执行校验测试 =====
 func TestRunExecValidation(t *testing.T) {
 	app := &Runner{}
 	if err := app.RunExec("", "cmd.exe", nil, "", "", 0); err == nil {
@@ -277,6 +282,7 @@ func captureRunEvents(t *testing.T) *runEvents {
 	return events
 }
 
+// ===== 输出流测试 =====
 func TestRunStreamSplitsDecodesAndFlagsStderr(t *testing.T) {
 	events := captureRunEvents(t)
 	stream := &runStream{id: "run-1"}
@@ -314,6 +320,7 @@ func TestRunStreamTruncatesOverLimit(t *testing.T) {
 	}
 }
 
+// ===== 执行端到端测试 =====
 func TestRunExecEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("cmd.exe"); err != nil {
 		t.Skip("缺少 cmd.exe")
@@ -352,6 +359,7 @@ func TestRunExecEndToEnd(t *testing.T) {
 	}
 }
 
+// ===== 输入测试 =====
 func TestRunInputValidation(t *testing.T) {
 	app := &Runner{}
 	if err := app.RunInput("missing", "x"); err == nil {
@@ -456,6 +464,7 @@ func TestRunInputEndToEnd(t *testing.T) {
 	}
 }
 
+// ===== 超时测试 =====
 // TestRunExecTimeout：超时到点强杀进程树，run-exit 带 reason="timeout"。
 // 用测试二进制自己当子进程睡死，比依赖外部命令可靠；已捕获输出应保留。
 func TestRunExecTimeout(t *testing.T) {

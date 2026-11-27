@@ -11,6 +11,7 @@ import (
 	"datalens/internal/sessionstore"
 )
 
+// ===== 测试夹具与回放 =====
 func newTestSessionIndex(t *testing.T) (*sql.DB, bool) {
 	t.Helper()
 	db, trigram, err := openSessionIndex(filepath.Join(t.TempDir(), "index.db"))
@@ -41,6 +42,7 @@ func TestReplayIndexEvents(t *testing.T) {
 	}
 }
 
+// ===== 搜索与归档排除 =====
 func TestSessionIndexSearch(t *testing.T) {
 	db, trigram := newTestSessionIndex(t)
 	raw := strings.Join([]string{
@@ -119,6 +121,7 @@ func TestSessionIndexExcludesArchived(t *testing.T) {
 	}
 }
 
+// ===== 同步重建与统计 =====
 func TestSyncSessionIndexRebuildsDirty(t *testing.T) {
 	store := sessionstore.New(t.TempDir())
 	if err := store.Append("s1", `{"v":1,"t":"header","id":"s1","title":"同步会话"}`+"\n"+
@@ -195,6 +198,7 @@ func TestStatsDoesNotRebuildDirtySessions(t *testing.T) {
 	}
 }
 
+// ===== 片段标记测试 =====
 func TestMakeSearchSnippetMarksMatch(t *testing.T) {
 	snippet := makeSearchSnippet("前面一些内容，关键词在这里，后面还有一些内容", "关键词", 8)
 	if !strings.Contains(snippet, "\x01关键词\x02") {
@@ -228,6 +232,7 @@ func TestMakeSearchSnippetExpandingLowerRune(t *testing.T) {
 	}
 }
 
+// ===== 作用域搜索测试 =====
 // 全局搜索接入：详细 = 全文；简要 = 用户消息 + 每轮最后一条 assistant；
 // 两种模式都只搜未归档会话，工具消息不参与简要模式。
 func TestScopedSessionSearchBriefAndFull(t *testing.T) {
@@ -374,6 +379,7 @@ func TestScopedSessionSearchLimitBudget(t *testing.T) {
 	}
 }
 
+// ===== 归档拼接与迁移 =====
 // TestSyncStitchesArchiveSidecar vacuum 之后的会话：归档正文只在 sidecar，
 // 索引同步按「sidecar 在前、主文件在后」拼接重建，归档行（live_index=-1）与
 // 主文件 live 行同时入索引（方案 §5.1 S1 消费点接线）。
@@ -467,6 +473,7 @@ func TestMigrateAddsGroupNameColumn(t *testing.T) {
 	}
 }
 
+// ===== 分组元数据测试 =====
 // TestSearchHitsCarryGroup：标题命中 / 详细 / 简要三条检索路径都回填 group；
 // 改分组后（ON CONFLICT 更新路径）下一次搜索拿到新值。
 func TestSearchHitsCarryGroup(t *testing.T) {

@@ -10,6 +10,7 @@
 import {createSelect} from '../core/form-controls.js';
 import {pageHeader, commandBar, stateBlock, copyButton, relativeTime, formatFullTime} from '../app-pages/ui-kit.js';
 
+// ===== 活动页面入口与筛选 =====
 // 页面骨架：筛选栏 + 列表 + 状态 + 分页 + 记录管理动作。
 // 本页现在是应用页面标签页，骨架由 mount() 直接建 DOM（分页控件要绑事件）；
 // 旧的字符串骨架 activitySkeleton 已随设置页内嵌形态一起移除（零引用死代码）。
@@ -77,6 +78,7 @@ async function fetchActivityPage(page) {
     return data;
 }
 
+// ===== 分页与导航 =====
 function activityStatusText(data) {
     if (!data || !data.entries.length) return '暂无记录（功能未开启或近期没有操作）';
     return '本页 ' + data.entries.length + ' 条（新→旧）· ' + (data.truncated ? '还有更早记录' : '已到最早');
@@ -115,6 +117,7 @@ function gotoActivityPage(page) {
     void renderActivityPane();
 }
 
+// ===== 列表渲染 =====
 // 渲染当前页。opts.reset=true 表示筛选条件/刷新变化：清空所有缓存页并回到第 1 页。
 async function renderActivityPane(opts = {}) {
     const listEl = node('activity-list');
@@ -155,6 +158,7 @@ async function renderActivityPane(opts = {}) {
 
 const ACTIVITY_ACTOR_LABEL = {user: '用户', ai: 'AI', system: '系统'};
 
+// ===== 详情构造 =====
 function actionLabel(action) {
     const text = String(action || '');
     const domain = text.split('.')[0];
@@ -294,6 +298,7 @@ function buildActivityRow(entry) {
     return row;
 }
 
+// ===== 导出与目录 =====
 function activityExportQuery() {
     return {limit: 500, ...activityFilterOf()};
 }
@@ -360,6 +365,7 @@ function openActivityDir() {
         .catch((e) => deps.flash('打开记录目录失败：' + ((e && e.message) || e), true));
 }
 
+// ===== 记录管理与挂载 =====
 function clearActivity() {
     if (!deps.backend.ActivityClear) return deps.flash('当前版本不支持操作记录', true);
     deps.openConfirmDialog('将删除全部操作记录（包括按月分文件与滚动分段），只保留一条「已清空」标记。确定继续吗？', async () => {

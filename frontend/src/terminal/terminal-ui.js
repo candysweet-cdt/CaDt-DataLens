@@ -9,6 +9,7 @@ import {createRunUI} from './run-ui.js';
 import {createTerminalSessions} from './terminal-sessions.js';
 import {createGitGraph} from '../git-graph/git-graph.js';
 
+// ===== 终端 UI 入口 =====
 export function createTerminalUI(deps) {
 
 const terminalUI = {open: false, sessions: new Map(), order: [], activeId: null};
@@ -43,6 +44,7 @@ let mockSchedSeq = 0; // mock 定时任务编号
 
 
 
+// ===== Git 面板操作 =====
 // gitRelParentDir 返回 path 相对仓库根的父目录（JetBrains 式灰字，Windows 反斜杠显示）。
 function gitRelParentDir(path) {
     const root = (deps.gitStateCache.dir || '').replace(/\\/g, '/').replace(/\/+$/, '');
@@ -135,6 +137,7 @@ function openGitMoreMenu(anchor) {
     ], rect.left, rect.bottom + 2);
 }
 
+// ===== Git 面板渲染 =====
 function renderGitPanel() {
     if (!deps.els.gitChanges) return;
     const available = deps.gitStateCache.available && deps.gitStateCache.dir;
@@ -275,6 +278,7 @@ function renderGitPanel() {
     applyGitSelection();
 }
 
+// ===== 侧栏视图切换 =====
 function currentSidebarView() {
     const view = deps.settings.sidebarView;
     if (view === 'git' || view === 'structure' || view === 'chats' || view === 'app-pages' || view === 'database' || view === 'maven') return view;
@@ -313,6 +317,7 @@ function toggleSidebarView(view) {
     deps.applySettings();
 }
 
+// ===== 终端面板与 dock =====
 function termCwd() {
     return deps.workspaceFolder || (deps.file && deps.file.path ? deps.file.path.replace(/[\\/][^\\/]*$/, '') : '') || '';
 }
@@ -428,6 +433,7 @@ deps.els.gitMore.addEventListener('click', () => openGitMoreMenu(deps.els.gitMor
 deps.els.gitCommitBtn.addEventListener('click', () => runGitCommit(false));
 deps.els.gitCommitPushBtn.addEventListener('click', () => runGitCommit(true));
 
+// ===== Git 提交 =====
 function collectCheckedPaths() {
     return [...deps.els.gitChanges.querySelectorAll('.git-file-row input[type="checkbox"]:checked')].map((cb) => cb.dataset.path);
 }
@@ -537,6 +543,7 @@ if (deps.els.terminalResize) {
     });
 }
 
+// ===== 工具与小序号生成器 =====
     function getDockView() { return dockView; }
     function setDockView(v) { dockView = v; }
     function nextCmdSeq() { return ++cmdSeq; }

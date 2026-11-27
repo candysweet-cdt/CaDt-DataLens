@@ -16,6 +16,7 @@
 import {tabKindOf} from '../core/tab-kinds.js';
 import {listModelOptions} from '../ai/agent/ai-agent-model.js';
 
+// ===== 上下文入口与文档信息 =====
 export function createAppActionContext(deps) {
     function appActionDocInfo(doc) {
         if (!doc) return null;
@@ -29,6 +30,7 @@ export function createAppActionContext(deps) {
         return info;
     }
 
+// ===== 文档与标签定位 =====
     // 浏览器标签定位：id / name / url / index 四选一（与 close_browser_tab 的匹配口径一致），
     // 命中多个时报错而不是随便选一个——接管是不可逆的能力授予，必须精确。
     function appActionFindBrowserDoc(ref) {
@@ -162,6 +164,7 @@ export function createAppActionContext(deps) {
         return deps.findDocByPath(text);
     }
 
+// ===== 交互派发与节点描述 =====
     // click 动作的 DOM 合成：按真实顺序派发 pointer/mouse 事件（不移动系统鼠标）。
     // 合成事件 isTrusted=false、不带用户激活——依赖真实点击校验的行为可能无响应（技能表已注明）。
     function appActionDispatchClick(el, x, y) {
@@ -242,6 +245,7 @@ export function createAppActionContext(deps) {
         return el;
     }
 
+// ===== 上下文内容提取 =====
     // 文档当前文本（含未保存修改）：编辑器在树/代码模式下 getText 会按当前设置序列化
     function appActionDocText(doc) {
         if (!doc || doc.binary) return '';
@@ -264,6 +268,7 @@ export function createAppActionContext(deps) {
         return lines.join('\n');
     }
 
+// ===== 配置与智能体快照 =====
     // —— AI 智能体（app_control get_agents / create_agent）——
     // 智能体配置的真源在 AI 面板（ai-config.json 的 agents[]，经 panel 的 aiGroupApi 读写）；
     // 这里只做参数整理与快照整形，校验/去重/编号全走 ai-agent-model 的纯函数。
@@ -292,6 +297,7 @@ export function createAppActionContext(deps) {
         return {agents, models: options.map((option) => ({ref: option.ref, label: option.label}))};
     }
 
+// ===== 工作区与群聊信息 =====
     // 相对路径按工作区根解析（app_control 的文件/目录类动作共用）。
     function appActionWorkspacePath(raw) {
         const text = String(raw == null ? '' : raw).trim();

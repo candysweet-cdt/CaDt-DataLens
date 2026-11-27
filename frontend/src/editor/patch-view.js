@@ -20,6 +20,7 @@ const STATUS_LABEL = {
     missing: '文件缺失',
 };
 
+// ===== 补丁视图状态与工具 =====
 function formatCount(n) {
     return n > 0 ? '+' + n : '0';
 }
@@ -101,6 +102,7 @@ export async function refreshPatchView(doc, ctx) {
     await loadPreview(doc, ctx);
 }
 
+// ===== 补丁预览加载 =====
 // 虚拟 diff 文档在 createDocEditor 完成后 doc.content 会被清空，刷新时仍要能取到原文。
 function patchTextOf(doc) {
     if (!doc) return '';
@@ -224,6 +226,7 @@ async function chooseTargetRoot(doc, ctx, plan) {
     await loadPreview(doc, ctx, {root: picked});
 }
 
+// ===== 视图渲染 =====
 function render(doc, ctx) {
     const st = patchViewState(doc);
     const host = st.el;
@@ -393,6 +396,7 @@ function render(doc, ctx) {
     }
 }
 
+// ===== 应用状态与快照 =====
 function applyLabel(st) {
     const count = st.selected.size;
     if (st.mode === MODE_PARTIAL) {
@@ -489,6 +493,7 @@ export function patchViewSnapshot(doc) {
     return out;
 }
 
+// ===== 目标根与重预览 =====
 function isAbsolutePath(text) {
     return /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(text);
 }
@@ -542,6 +547,7 @@ function renderRootSuggestion(doc, ctx, plan) {
     return box;
 }
 
+// ===== 差异渲染 =====
 function renderFile(doc, ctx, file, st, review, plain) {
     const card = el('div', 'patch-file ' + (plain ? '' : (file.status || '')));
     const head = el('div', 'patch-file-head');
@@ -668,6 +674,7 @@ function renderResult(result) {
     return box;
 }
 
+// ===== 应用与回退 =====
 async function apply(doc, ctx) {
     const st = patchViewState(doc);
     if (st.review || !st.plan || !canApply(st)) return;

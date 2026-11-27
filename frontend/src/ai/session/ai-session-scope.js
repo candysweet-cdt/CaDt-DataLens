@@ -67,7 +67,7 @@ export function activeFileDir(filePath) {
     return idx > 0 ? full.slice(0, idx) : '';
 }
 
-// 唯一根来源，四步顺序不可变（见 docs/unfinished-plans/agent-host-platform.md 核心设计 §1）：
+// 唯一根来源，四步顺序不可变（见 docs/finished-plans/agent-host-platform.md 核心设计 §1）：
 //   1. session.workspace 非空      → 会话真源
 //   2. session.noWorkspace === true → 会话沙盒（backing workspace），取不到就是无根
 //   3. harness 窗口且会话未绑定     → ''（无根：工具只读 + 绝对路径）

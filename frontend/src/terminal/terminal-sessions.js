@@ -4,6 +4,7 @@ import {iconSvg} from '../core/icons.js';
 import {termKeyAction} from './term-keys.js';
 import {matchLinks, linkRangeInRows, linkHitAt} from './term-links.js';
 
+// ===== 终端会话服务与输出缓冲 =====
 export function createTerminalSessions(deps) {
 
 // —— term-out 先于 UI 注册到达的兜底 ——
@@ -76,6 +77,7 @@ async function pasteClipboardTo(term) {
     } catch (e) {}
 }
 
+// ===== 终端链接识别 =====
 // —— 终端内链接：hover 下划线 + 手型光标由 xterm 对已注册链接的默认装饰提供，
 // Ctrl/Cmd+单击用系统默认程序打开（普通点击留给选区，不动作）。检测纯函数在
 // term-links.js；linkHandler 同时接管应用经 OSC 8 转义序列发的真链接的激活。
@@ -179,6 +181,7 @@ function termLinkAtPointer(s, e) {
     return linkHitAt(links, bufRow, col, term.cols);
 }
 
+// ===== 会话创建与附着 =====
 async function createTermSession(shell = '', meta = null) {
     if (!deps.backend.TermCreate) {
         deps.flash('当前版本不支持内置终端', true);
@@ -333,6 +336,7 @@ function termDefaultRows() {
     return 24;
 }
 
+// ===== 尺寸同步与激活 =====
 // xterm 行列与 ConPTY 同步：fit 之后如果行列变了，防抖调 TermResize 让 PTY 跟上。
 // 之前只 fit 不 resize：ConPTY 停在创建时的 80x24，shell 按 80 列输出/重绘、
 // xterm 按面板实际宽度渲染，错位与重绘残留就是这么来的。拖面板时 mousemove
@@ -379,6 +383,7 @@ function fitActiveTerm() {
     if (s) fitTerm(s);
 }
 
+// ===== 会话关闭与恢复 =====
 async function closeTermSession(id) {
     try {
         await deps.backend.TermClose(id);
@@ -470,6 +475,7 @@ async function popOutTermSession(id) {
     if (!deps.terminalUI.sessions.size) deps.toggleTerminalPanel(false);
 }
 
+// ===== 主题与右键菜单 =====
 function syncTerminalTheme() {
     for (const s of deps.terminalUI.sessions.values()) {
         try {
@@ -593,6 +599,7 @@ async function showTermTabMenu(id, x, y) {
     deps.ctxMenu.open(items, x, y);
 }
 
+// ===== 重命名与宿主 API =====
 // 重命名终端标签页：清空并确定则恢复默认名
 function renameTermSession(s) {
     if (!s) return;
