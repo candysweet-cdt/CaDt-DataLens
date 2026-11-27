@@ -296,6 +296,12 @@ func (s *Sandbox) Close() error {
 			if err := revokeWrite(s.tempDir, s.tempSID); err != nil {
 				problems = append(problems, "撤销 temp 授权: "+err.Error())
 			}
+			// revokeWrite 只撤能力 SID 的 allow ACE，Everyone 的 FILE_DELETE_CHILD
+			// deny 还留在 temp 上（并继承给子项）。宿主随后 os.RemoveAll 会被拒、错误
+			// 又常被 `_ =` 吞掉，私有 temp 就长期泄漏——所以这里把三样痕迹一并清掉。
+			if _, err := Revoke(s.tempDir); err != nil {
+				problems = append(problems, "清理 temp ACL: "+err.Error())
+			}
 			s.tempGranted = false
 		}
 		if s.token != 0 {

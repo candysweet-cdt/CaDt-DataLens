@@ -9,6 +9,7 @@ package main
 // ⚠️ 必须带 //go:build !windows：Windows 版在 platform_windows.go。
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -41,6 +42,6 @@ func systemShuttingDown() bool { return false }
 // ---- 开发者工具（原 devtools_other.go）----
 
 // OpenDevTools 非 Windows 不支持（保留绑定方法，避免其它平台构建丢绑定）。
-func (a *App) OpenDevTools() error {
+func (a *App) OpenDevTools(ctx context.Context) error {
 	return fmt.Errorf("当前平台不支持打开开发者工具")
 }

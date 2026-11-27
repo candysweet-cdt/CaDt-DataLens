@@ -385,15 +385,27 @@ func (t *Terminal) TermCreate(cols, rows int, shell string, cwd string) (map[str
 	}
 	terminals.seq++
 	id := fmt.Sprintf("term-%d", terminals.seq)
+	// 先在表里占位再起 ConPTY：上限判断与插入之间原本有一次不带锁的
+	// startTermSession（起进程耗时毫秒级），并发调用会一起通过检查突破上限。
+	terminals.sessions[id] = nil
+	terminals.order = append(terminals.order, id)
 	terminals.mu.Unlock()
 
 	session, err := startTermSession(id, resolvedShell, cols, rows, cwd, emit)
 	if err != nil {
+		terminals.mu.Lock()
+		delete(terminals.sessions, id)
+		for i, existing := range terminals.order {
+			if existing == id {
+				terminals.order = append(terminals.order[:i], terminals.order[i+1:]...)
+				break
+			}
+		}
+		terminals.mu.Unlock()
 		return nil, err
 	}
 	terminals.mu.Lock()
 	terminals.sessions[id] = session
-	terminals.order = append(terminals.order, id)
 	terminals.mu.Unlock()
 	return map[string]string{"id": id, "shell": resolvedShell}, nil
 }

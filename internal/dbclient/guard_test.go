@@ -65,6 +65,13 @@ func TestClassifyStatement(t *testing.T) {
 		{name: "where true", stmt: "DELETE FROM t WHERE TRUE", wantClass: "write", wantMissing: true},
 		{name: "where 1", stmt: "DELETE FROM t WHERE 1", wantClass: "write", wantMissing: true},
 		{name: "where 1=1", stmt: "DELETE FROM t WHERE 1=1", wantClass: "write", wantMissing: true},
+		// 字面量自比的各种写法（旧实现只认 true / 1 / 1=1 三种）
+		{name: "where 0=0", stmt: "DELETE FROM t WHERE 0=0", wantClass: "write", wantMissing: true},
+		// 词法层丢弃运算符，`2>1` 与 `2<1` 无法区分：不做数值比较判定（宁可少报）
+		{name: "where 2>1", stmt: "DELETE FROM t WHERE 2>1", wantClass: "write", wantMissing: false},
+		{name: "where quoted", stmt: "DELETE FROM t WHERE 'a'='a'", wantClass: "write", wantMissing: true},
+		// 列自比不是恒真（两列可能不等），不能误报
+		{name: "where col=col", stmt: "DELETE FROM t WHERE a=a", wantClass: "write", wantMissing: false},
 		{name: "子查询 where 不算顶层", stmt: "UPDATE t SET a=(SELECT b FROM u WHERE u.id=t.id)", wantClass: "write", wantMissing: true},
 		{name: "where in 子查询", stmt: "DELETE FROM t WHERE id IN (SELECT id FROM u)", wantClass: "write"},
 

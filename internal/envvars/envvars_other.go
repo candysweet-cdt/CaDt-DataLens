@@ -15,11 +15,7 @@ func envProtectValue(plain string) (string, error) {
 	return dpapi.Protect(plain, "CaDt-DataLens 环境变量")
 }
 
-// envUnprotectValue 明文直通；来自加密文件的密文会原样返回（无法解密）。
-func envUnprotectValue(stored string) string {
-	plain, err := dpapi.Unprotect(stored)
-	if err != nil {
-		return stored
-	}
-	return plain
+// envUnprotectValue 明文直通；解不开（来自加密文件的密文）返回错误，由调用方 fail-closed。
+func envUnprotectValue(stored string) (string, error) {
+	return dpapi.Unprotect(stored)
 }

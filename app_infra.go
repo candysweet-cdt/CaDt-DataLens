@@ -49,7 +49,10 @@ func ensureAppDataDir() {
 	if root == "" {
 		return
 	}
-	_ = os.MkdirAll(root, 0o755)
+	// 建不出来不能静默：启动期不报，后面会变成 WebView2 初始化的不透明失败。
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		writeAppLog("warn", "创建应用数据目录失败（"+root+"）："+err.Error())
+	}
 }
 
 // ==================== 日志（原 logging.go）====================

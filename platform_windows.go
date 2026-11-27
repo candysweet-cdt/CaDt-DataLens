@@ -20,12 +20,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"reflect"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
-	"github.com/wailsapp/go-webview2/pkg/edge"
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"datalens/internal/applog"
@@ -151,25 +150,39 @@ func showWindowWhenReady(win *application.WebviewWindow, maximised bool) {
 }
 
 // findWailsWindow 枚举本进程窗口，找 Wails 窗口类名的句柄（browser / screenshot 的兜底）。
-func findWailsWindow() uintptr {
-	pid := uint32(os.Getpid())
-	var found uintptr
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		var wpid uint32
-		procGetWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&wpid)))
-		if wpid != pid {
-			return 1
-		}
-		var buf [64]uint16
-		n, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-		if syscall.UTF16ToString(buf[:n]) == "WailsWebviewWindow" || syscall.UTF16ToString(buf[:n]) == "wailsWindow" {
-			found = hwnd
-			return 0
-		}
+//
+// 回调必须是包级变量：syscall.NewCallback 每调用一次就永久占一个 Go 回调槽（上限约
+// 2000），而这里是截图/内嵌浏览器拿不到调用方窗口时的兜底路径，调用频度高，
+// 槽满后 runtime 直接 throw。同仓 browser/tray 的回调都是包级写法。
+var (
+	findWindowMu     sync.Mutex
+	findWindowPID    uint32
+	findWindowResult uintptr
+)
+
+var findWailsWindowCallback = syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+	var wpid uint32
+	procGetWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&wpid)))
+	if wpid != findWindowPID {
 		return 1
-	})
-	procEnumWindows.Call(cb, 0)
-	return found
+	}
+	var buf [64]uint16
+	n, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	class := syscall.UTF16ToString(buf[:n])
+	if class == "WailsWebviewWindow" || class == "wailsWindow" {
+		findWindowResult = hwnd
+		return 0
+	}
+	return 1
+})
+
+func findWailsWindow() uintptr {
+	findWindowMu.Lock()
+	defer findWindowMu.Unlock()
+	findWindowPID = uint32(os.Getpid())
+	findWindowResult = 0
+	procEnumWindows.Call(findWailsWindowCallback, 0)
+	return findWindowResult
 }
 
 // ==================== 托盘接缝（原 trayhost_windows.go） ====================
@@ -194,48 +207,23 @@ func systemShuttingDown() bool {
 
 // ==================== 开发者工具（原 devtools_windows.go） ====================
 
-// uiThreadInvoker 对应 winc.Form/ControlBase 的 Invoke：把函数切到窗口线程执行。
-type uiThreadInvoker interface {
-	Invoke(func()) bool
-}
-
 // OpenDevTools 在开发者模式下打开 WebView2 开发者工具。
-// Wails v2 没有公开该能力：从启动上下文取出 windows.Frontend，
-// 再通过其未导出的 chromium / mainWindow 字段调用 WebView2。
-// WebView2 控制器只能在窗口线程调用，所以经 winc 的 Invoke 切线程。
-// 该实现依赖当前锁定的 Wails v2.17.1 结构，字段缺失时直接报错。
-func (a *App) OpenDevTools() error {
+// v3 有公开 API `(*WebviewWindow).OpenDevTools()`；旧实现反射 v2 的
+// windows.Frontend 私有字段（chromium / mainWindow），在 v3 上取
+// ctx.Value("frontend") 恒为 nil，必然返回"无法访问界面实例"。窗口优先取
+// 调用方（多窗口各自开各自的工具），无窗口上下文时回退主窗口。
+func (a *App) OpenDevTools(ctx context.Context) error {
 	if !applog.DevMode() {
 		return fmt.Errorf("请先在设置中开启开发者模式")
 	}
-	if a.ctx == nil {
-		return fmt.Errorf("应用尚未启动")
+	win := callerWindow(ctx)
+	if win == nil {
+		win = currentWindow()
 	}
-	frontend := a.ctx.Value("frontend")
-	if frontend == nil {
+	if win == nil {
 		return fmt.Errorf("无法访问界面实例")
 	}
-	value := reflect.ValueOf(frontend).Elem()
-	if !value.IsValid() {
-		return fmt.Errorf("界面实例不可用")
-	}
-	chromiumField := value.FieldByName("chromium")
-	windowField := value.FieldByName("mainWindow")
-	if !chromiumField.IsValid() || chromiumField.IsNil() ||
-		!windowField.IsValid() || windowField.IsNil() {
-		return fmt.Errorf("当前 Wails 版本不支持打开开发者工具")
-	}
-	chromium := (*edge.Chromium)(chromiumField.UnsafePointer())
-	window := reflect.NewAt(windowField.Type(), unsafe.Pointer(windowField.UnsafeAddr())).Elem()
-	invoker, ok := window.Interface().(uiThreadInvoker)
-	if !ok {
-		return fmt.Errorf("当前 Wails 版本不支持打开开发者工具")
-	}
-	if !invoker.Invoke(func() {
-		chromium.OpenDevToolsWindow()
-		writeAppLog("info", "已打开开发者工具")
-	}) {
-		return fmt.Errorf("无法切换回界面线程")
-	}
+	win.OpenDevTools()
+	writeAppLog("info", "已打开开发者工具")
 	return nil
 }

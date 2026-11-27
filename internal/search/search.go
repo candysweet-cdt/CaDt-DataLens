@@ -649,6 +649,7 @@ type searchFileResult struct {
 	hits       []SearchHit
 	scanned    bool
 	overBudget bool
+	truncated  bool // Scanner 报错（超长行）导致本文件后面的内容没读
 }
 
 // nameHitMax 文件名兜底命中的补充上限：这类命中不读内容、代价可忽略，内容命中把
@@ -884,6 +885,7 @@ func scanSearchFile(job searchFileJob, spec *searchSpec, deadline time.Time) sea
 			// 此时 lines 已收齐全文，前后文不会因「后文还没读到」而缺半边。
 			attachContextFromSlice(&out.hits[i], lines, out.hits[i].Line-1, spec.context)
 		}
+		markScannerTruncated(scanner, &out)
 		return out
 	}
 	for {
@@ -895,7 +897,16 @@ func scanSearchFile(job searchFileJob, spec *searchSpec, deadline time.Time) sea
 			break
 		}
 	}
+	markScannerTruncated(scanner, &out)
 	return out
+}
+
+// markScannerTruncated 把 Scanner 的错误反映到结果上：超长行会返回 ErrTooLong
+// 并停止扫描，不检查就会把「该行及其后整段」静默当成没有命中。
+func markScannerTruncated(scanner *bufio.Scanner, out *searchFileResult) {
+	if err := scanner.Err(); err != nil {
+		out.truncated = true
+	}
 }
 
 // SearchWorkspace 流式扫描工作区文本文件，不建索引；命中数/单文件命中/耗时均有限额。
@@ -1143,6 +1154,11 @@ func scanSearchJobs(jobs []searchFileJob, spec *searchSpec, deadline time.Time, 
 				if res.overBudget {
 					truncated.Store(true)
 					stop.Store(true)
+				}
+				// Scanner 报错（单行超长）只影响该文件后续内容，不必中止全局扫描，
+				// 但结果必须标记为不完整，否则用户会以为"这段代码里没有这个词"。
+				if res.truncated {
+					truncated.Store(true)
 				}
 				if len(res.hits) > 0 {
 					perFile[idx] = res.hits

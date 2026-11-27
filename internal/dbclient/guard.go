@@ -424,12 +424,35 @@ func lacksWhereFrom(toks []lexToken, start int) bool {
 		switch {
 		case len(rest) == 1 && (rest[0] == "true" || rest[0] == "1"):
 			return true
-		case len(rest) == 2 && rest[0] == "1" && rest[1] == "1":
+		case len(rest) == 0:
+			// WHERE 后面只剩被丢弃的引号串/运算符（`WHERE 'a'='a'`）：无法证明有过滤条件，
+			// 按恒真处理，进确认流程。
+			return true
+		case len(rest) == 2 && rest[0] == rest[1] && tautologyOperand(rest[0]):
+			// 0=0 / 2>1 左侧同形 / 'a'='a'：字面量自比恒真。
+			// 列自比（col = col）不在此列——rest 里是标识符，不算字面量。
 			return true
 		}
 		return false
 	}
 	return true // 顶层没有 WHERE
+}
+
+// tautologyOperand 判断 WHERE 两侧的同一 token 是否字面量（数字或引号串）。
+// 运营商筛掉后 rest 只剩词，`0 = 0` 与 `2 > 1` 都会落到"两个相同的数字"上。
+func tautologyOperand(word string) bool {
+	if word == "" {
+		return false
+	}
+	if word[0] == '\'' || word[0] == '"' {
+		return true
+	}
+	for _, r := range word {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------- 批量口径 ----------

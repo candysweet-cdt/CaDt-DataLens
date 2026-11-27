@@ -57,24 +57,37 @@ type flashWindowInfo struct {
 	dwTimeout uint32
 }
 
+// 一次 EnumWindows 的匹配条件与结果。回调必须是**包级静态**值：
+// syscall.NewCallback 每次调用都会永久占用一个 Go runtime 回调槽（上限约 2000），
+// 槽满时 runtime 直接 throw、进程消失。同仓 browser/tray 的回调都是包级变量。
+var (
+	notifyEnumMu     sync.Mutex
+	notifyEnumPID    uint32
+	notifyEnumTarget uintptr
+)
+
+var notifyAttentionCallback = syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+	var windowPID uint32
+	procNotifyGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&windowPID)))
+	if windowPID != notifyEnumPID {
+		return 1
+	}
+	visible, _, _ := procNotifyIsWindowVisible.Call(hwnd)
+	if visible == 0 {
+		return 1
+	}
+	notifyEnumTarget = hwnd
+	return 0
+})
+
 // NotifyAttention 让当前进程的任务栏图标闪烁（窗口已聚焦时基本无感），可选播放系统提示音。
 func (nt *Notifier) NotifyAttention(beep bool) {
-	pid := uint32(os.Getpid())
-	var target uintptr
-	callback := syscall.NewCallback(func(hwnd uintptr, lparam uintptr) uintptr {
-		var windowPID uint32
-		procNotifyGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&windowPID)))
-		if windowPID != pid {
-			return 1
-		}
-		visible, _, _ := procNotifyIsWindowVisible.Call(hwnd)
-		if visible == 0 {
-			return 1
-		}
-		target = hwnd
-		return 0
-	})
-	procNotifyEnumWindows.Call(callback, 0)
+	notifyEnumMu.Lock()
+	notifyEnumPID = uint32(os.Getpid())
+	notifyEnumTarget = 0
+	procNotifyEnumWindows.Call(notifyAttentionCallback, 0)
+	target := notifyEnumTarget
+	notifyEnumMu.Unlock()
 	if target != 0 {
 		info := flashWindowInfo{
 			cbSize:  uint32(unsafe.Sizeof(flashWindowInfo{})),
@@ -171,10 +184,11 @@ func Prepare() {
 // ---- 通知点击激活 ----
 //
 // 通知卡片上除了 Title/Body 还得告诉 Windows「点了我之后叫醒谁」，否则点击只等于关闭卡片：
-//   · toast XML 的 launch 属性放业务参数（NotifySystemToast 的 payload，如 "ai-session=<id>"）；
-//   · 注册表 AUMID 下写 CustomActivator 指向库内置的 COM 激活器 GUID（SetAppData 完成），
-//     再由 pushCOM 在本进程注册类工厂——应用运行期间点击通知，Windows 就把激活投递回本进程；
-//   · SetActivationCallback 收到激活后转交宿主钩子 OnToastActivation（拉窗口 + 发事件给前端）。
+//
+//	· toast XML 的 launch 属性放业务参数（NotifySystemToast 的 payload，如 "ai-session=<id>"）；
+//	· 注册表 AUMID 下写 CustomActivator 指向库内置的 COM 激活器 GUID（SetAppData 完成），
+//	  再由 pushCOM 在本进程注册类工厂——应用运行期间点击通知，Windows 就把激活投递回本进程；
+//	· SetActivationCallback 收到激活后转交宿主钩子 OnToastActivation（拉窗口 + 发事件给前端）。
 //
 // 应用完全没在跑时点旧卡片：Windows 会按 LocalServer32 拉起 exe（带 -Embedding 参数），
 // 应用正常启动即可；旧通知的会话参数在冷启动场景拿不到（激活超时早过），可接受——

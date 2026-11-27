@@ -59,18 +59,7 @@ func (s *Service) Clear(ids []string, workspaceRoot string) ClearReport {
 		matched[sp.id] = true
 		result := s.clearSpec(sp, workspaceRoot)
 		report.Results = append(report.Results, result)
-		report.Freed += result.Freed
-		switch {
-		case result.Reason != "" && result.Remaining > 0 && result.Freed == 0:
-			report.Failed = append(report.Failed, result.Label)
-		case result.Scheduled:
-			report.Scheduled = append(report.Scheduled, result.Label)
-		default:
-			report.Succeeded++
-			if result.Skipped > 0 {
-				report.Skipped = append(report.Skipped, result.Label)
-			}
-		}
+		report.add(result)
 	}
 	for _, id := range ids {
 		if id = strings.TrimSpace(id); id != "" && !matched[id] {
@@ -78,6 +67,27 @@ func (s *Service) Clear(ids []string, workspaceRoot string) ClearReport {
 		}
 	}
 	return report
+}
+
+// add 把单条清除结果归入桶。口径：**只要还有残留就算失败**——此前要求
+// 「Freed==0」，于是同一条目里删掉任意一个路径就能把密钥文件残留一起报成成功，
+// 破坏性操作误报"已清除"，用户以为清空了其实没有。
+func (r *ClearReport) add(result ClearResult) {
+	r.Freed += result.Freed
+	switch {
+	case result.Remaining > 0:
+		r.Failed = append(r.Failed, result.Label)
+		if result.Freed > 0 {
+			r.Skipped = append(r.Skipped, result.Label) // 部分删除：体积记了，但有残留
+		}
+	case result.Scheduled:
+		r.Scheduled = append(r.Scheduled, result.Label)
+	default:
+		r.Succeeded++
+		if result.Skipped > 0 {
+			r.Skipped = append(r.Skipped, result.Label)
+		}
+	}
 }
 
 func (s *Service) clearSpec(sp spec, workspaceRoot string) ClearResult {

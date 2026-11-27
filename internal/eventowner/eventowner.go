@@ -54,10 +54,22 @@ func Register(owner, kind, id string) {
 }
 
 // Unregister 摘除登记（阅读搜索等一次性请求结束时调用）。
+// 同时把 order 里的对应项删掉：只删 map 会让 order 只增不减——上限淘汰分支
+// 永远触发不了，一次性请求（每次新 requestID）会把切片撑到无限长。
 func Unregister(kind, id string) {
+	k := key{strings.TrimSpace(kind), strings.TrimSpace(id)}
 	registry.Lock()
-	delete(registry.m, key{strings.TrimSpace(kind), strings.TrimSpace(id)})
-	registry.Unlock()
+	defer registry.Unlock()
+	if _, ok := registry.m[k]; !ok {
+		return
+	}
+	delete(registry.m, k)
+	for i, item := range registry.order {
+		if item == k {
+			registry.order = append(registry.order[:i], registry.order[i+1:]...)
+			break
+		}
+	}
 }
 
 // Lookup 查资源 id 的归属窗口名；未登记返回 ok=false。

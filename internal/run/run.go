@@ -385,6 +385,11 @@ type runStdin struct {
 	closeW    sync.Once
 	closeEof  sync.Once
 	closeDone sync.Once
+
+	// inputMu + closed 让「检查是否已结束」与「入队」成为原子操作：
+	// 两者分开做时，pump 可能在中间退出，输入被塞进没人读的队列却返回成功。
+	inputMu sync.Mutex
+	closed  bool
 }
 
 var (
@@ -427,12 +432,19 @@ func (s *runStdin) pump() {
 }
 
 // sendEOF 正常结束输入：pump 排空队列后自行关闭写端。
+// 先置 closed 再关 eof：之后 RunInput 一律拒绝，不会再往队列里塞没人消费的输入。
 func (s *runStdin) sendEOF() {
+	s.inputMu.Lock()
+	s.closed = true
+	s.inputMu.Unlock()
 	s.closeEof.Do(func() { close(s.eof) })
 }
 
 // forceClose 进程已退出：直接关 fd，唤醒可能阻塞在 Write 上的 pump。
 func (s *runStdin) forceClose() {
+	s.inputMu.Lock()
+	s.closed = true
+	s.inputMu.Unlock()
 	s.closeDone.Do(func() { close(s.done) })
 	s.closeWriter()
 }
@@ -471,6 +483,13 @@ func (r *Runner) RunInput(id, text string) error {
 	}
 	if len(text) > runInputMax {
 		return fmt.Errorf("单次输入不能超过 %d 字节", runInputMax)
+	}
+	// 检查与入队必须在同一临界区：分开做时 pump 可能刚好退出，
+	// 输入被塞进没人消费的队列却返回成功（静默丢输入）。
+	s.inputMu.Lock()
+	defer s.inputMu.Unlock()
+	if s.closed {
+		return fmt.Errorf("运行 %q 的输入端已关闭（EOF）", id)
 	}
 	select {
 	case <-s.done:

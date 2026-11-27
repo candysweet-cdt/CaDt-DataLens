@@ -627,3 +627,53 @@ func TestClearBeforeClearBusySkips(t *testing.T) {
 		t.Fatalf("busy 时不应删除目录：%v", err)
 	}
 }
+
+// 同一条目里删掉了一部分（Freed>0）但仍有残留时，必须算失败：
+// 旧判定要求「Freed==0」，导致密钥文件残留也被报成"已清除"。
+func TestClearPartiallyRemovedCountsAsFailed(t *testing.T) {
+	cases := []struct {
+		name string
+		in   ClearResult
+		// 期望
+		failed, succeeded int
+		freed             int64
+	}{
+		{
+			name:      "删了一部分仍有残留",
+			in:        ClearResult{ID: "app-config", Label: "应用配置", Freed: 40, Remaining: 1},
+			failed:    1,
+			succeeded: 0,
+			freed:     40,
+		},
+		{
+			name:      "全部删除",
+			in:        ClearResult{ID: "app-logs", Label: "运行日志", Freed: 40},
+			failed:    0,
+			succeeded: 1,
+			freed:     40,
+		},
+		{
+			name:      "一个都没删掉",
+			in:        ClearResult{ID: "app-config", Label: "应用配置", Remaining: 2},
+			failed:    1,
+			succeeded: 0,
+		},
+		{
+			name:      "安排在下次启动",
+			in:        ClearResult{ID: "webview-cache", Label: "界面浏览器缓存", Scheduled: true},
+			failed:    0,
+			succeeded: 0,
+		},
+	}
+	for _, tc := range cases {
+		report := ClearReport{}
+		report.add(tc.in)
+		if len(report.Failed) != tc.failed || report.Succeeded != tc.succeeded {
+			t.Fatalf("%s：failed=%v succeeded=%d，期望 failed=%d succeeded=%d",
+				tc.name, report.Failed, report.Succeeded, tc.failed, tc.succeeded)
+		}
+		if report.Freed != tc.freed {
+			t.Fatalf("%s：freed=%d，期望 %d", tc.name, report.Freed, tc.freed)
+		}
+	}
+}

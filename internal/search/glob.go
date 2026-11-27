@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -72,12 +73,39 @@ func globMatchPath(pattern, relPath, name string) bool {
 		}
 	}
 	b.WriteString("$")
-	re, err := regexp.Compile(b.String())
-	if err != nil {
+	re := globRegexp(b.String())
+	if re == nil {
 		// 非法模式按「不过滤」处理：一次坏参数不该让整次发现失败
 		return true
 	}
 	return re.MatchString(target)
+}
+
+// globRegexpCache 缓存「模式 → 编译好的正则」：globMatchPath 按候选文件逐个调用，
+// 每次重新 regexp.Compile 会让一次目录遍历付出成千上万次编译。上限之外简单清空
+// （个人使用量级，模式数通常只有个位数）。
+var (
+	globRegexpMu    sync.Mutex
+	globRegexpCache = map[string]*regexp.Regexp{}
+)
+
+const globRegexpCacheMax = 256
+
+func globRegexp(expr string) *regexp.Regexp {
+	globRegexpMu.Lock()
+	defer globRegexpMu.Unlock()
+	if re, ok := globRegexpCache[expr]; ok {
+		return re
+	}
+	re, err := regexp.Compile(expr)
+	if err != nil {
+		return nil
+	}
+	if len(globRegexpCache) >= globRegexpCacheMax {
+		globRegexpCache = map[string]*regexp.Regexp{}
+	}
+	globRegexpCache[expr] = re
+	return re
 }
 
 // FindFiles 遍历工作区列出匹配通配的文件（相对 root，按路径排序）。

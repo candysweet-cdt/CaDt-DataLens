@@ -179,7 +179,7 @@ type RequestPage struct {
 }
 
 var (
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	dbHandle *sql.DB
 	// syncMu 串行化本进程的扫描（打开面板与刷新按钮可能撞车）。
 	syncMu sync.Mutex
@@ -205,13 +205,15 @@ func Start() {
 }
 
 // Close 释放库句柄（设置 → 存储与清理删 ai-usage.db 前调用）。
+// 关闭必须在写锁内完成：withDB 的读者持读锁跑完整个操作，Close 等它们结束再关，
+// 否则会出现「取到句柄 → 连接已关 → Exec 报 database is closed」，
+// 而子代理用量只存在这个库里（不可重建），一丢就是永久丢失。
 func Close() {
 	mu.Lock()
-	conn := dbHandle
-	dbHandle = nil
-	mu.Unlock()
-	if conn != nil {
-		_ = conn.Close()
+	defer mu.Unlock()
+	if dbHandle != nil {
+		_ = dbHandle.Close()
+		dbHandle = nil
 	}
 }
 

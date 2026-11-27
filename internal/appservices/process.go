@@ -78,6 +78,8 @@ func (r *Registry) start(svc *service) error {
 	svc.startedAt = time.Now().UnixMilli()
 	svc.state = StateRunning
 	svc.healthOK = svc.spec.HealthURL == ""
+	svc.healthFailed = false // 新一轮启动，上一轮的健康判死标记不能带过来
+	svc.stopping = false
 	healthCtx, healthCancel := context.WithCancel(ctx)
 	svc.healthCancel = healthCancel
 	svc.mu.Unlock()
@@ -162,10 +164,14 @@ func (r *Registry) watchProcess(svc *service, cmd *exec.Cmd, ctx context.Context
 	}
 	svc.state = StateFailed
 	svc.pid = 0
-	if err != nil {
-		svc.lastError = err.Error()
-	} else {
-		svc.lastError = "进程已退出"
+	// 健康检查判死后是我们主动杀的：保留"健康检查连续失败"这个更准确的原因，
+	// 不要被退出码文案覆盖。
+	if !svc.healthFailed {
+		if err != nil {
+			svc.lastError = err.Error()
+		} else {
+			svc.lastError = "进程已退出"
+		}
 	}
 	svc.healthOK = false
 	logf("warn", "后台服务 %s 意外退出：%s", svc.spec.ID, svc.lastError)
@@ -198,8 +204,13 @@ func (r *Registry) watchHealth(svc *service, ctx context.Context) {
 			if fails >= healthFailThreshold {
 				svc.state = StateFailed
 				svc.lastError = "健康检查连续失败：" + svc.spec.HealthURL
+				svc.healthFailed = true
 				svc.mu.Unlock()
 				logf("warn", "%s", svc.lastError)
+				// 判死之后必须把进程收掉：否则 procctl 的任务 id 一直被占，
+				// 用户点 Start 只会反复报"任务 id 已在运行"，服务再也起不来。
+				// 这里只杀进程（不置 stopped），由 watchProcess 完成退出收尾。
+				procctlStop(procIDPrefix + svc.spec.ID)
 				return
 			}
 		}

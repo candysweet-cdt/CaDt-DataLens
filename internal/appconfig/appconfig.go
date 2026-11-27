@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"datalens/internal/appdata"
+	"datalens/internal/atomfile"
 	"datalens/internal/plugins"
 )
 
@@ -98,7 +99,9 @@ func Save(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0644)
+	// 原子写：os.WriteFile 先截断再写，写一半崩溃/断电会留下半截 JSON，
+	// Read 解析失败后直接回落 Default()，用户设置被静默重置。
+	return atomfile.WriteFileAtomicMode(path, raw, 0o644)
 }
 
 // OpenMode 返回文件打开方式（仅 tab；window 已禁用，见 Read）。

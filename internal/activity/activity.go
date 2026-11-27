@@ -297,10 +297,15 @@ func pruneActivityFiles(dir string, months int) {
 		return
 	}
 	now := time.Now()
+	// 节流时间戳是包级共享变量，而本函数在追加锁释放之后才被调用：
+	// 多窗口/并发批次会同时进来，取与置都必须在锁内（否则 data race）。
+	activityMu.Lock()
 	if !activityPruneAt.IsZero() && now.Sub(activityPruneAt) < activityPruneEvery {
+		activityMu.Unlock()
 		return
 	}
 	activityPruneAt = now
+	activityMu.Unlock()
 	// 按文件名里的月份判断过期（同月分段共享月份）；窗口外连同分段号一起删。
 	cutoff := now.AddDate(0, -months, 0)
 	cutoffMonth := cutoff.Year()*12 + int(cutoff.Month()) - 1

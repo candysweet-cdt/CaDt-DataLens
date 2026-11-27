@@ -48,14 +48,26 @@ func TestSearchReadingBookBasics(t *testing.T) {
 
 func TestSearchReadingBookCaseInsensitive(t *testing.T) {
 	dir := t.TempDir()
-	writeReadingFixture(t, dir, "a.md", "Hello World 你好\n")
+	writeReadingFixture(t, dir, "a.md", "Hello World 你好\nПривет Мир\n")
 	app := &Reader{}
-	res, err := app.SearchReadingBook("req-2", dir, "hello", ReadingSearchOptions{})
+	// 两个方向都要成立：旧实现只折叠源文本、不折叠查询词，
+	// 于是「查询大写」永远命中不了「源小写」，而全小写查询恰好掩盖了它。
+	for _, query := range []string{"hello", "HELLO", "Hello"} {
+		res, err := app.SearchReadingBook("req-2", dir, query, ReadingSearchOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Hits) != 1 || res.Hits[0].Match != "Hello" {
+			t.Fatalf("查询 %q hits = %+v", query, res.Hits)
+		}
+	}
+	// 非 ASCII 也要折叠（unicode.ToLower，不是只处理 A-Z）
+	res, err := app.SearchReadingBook("req-2b", dir, "ПРИВЕТ", ReadingSearchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Hits) != 1 || res.Hits[0].Match != "Hello" {
-		t.Fatalf("hits = %+v", res.Hits)
+	if len(res.Hits) != 1 || res.Hits[0].Match != "Привет" {
+		t.Fatalf("西里尔大写查询 hits = %+v", res.Hits)
 	}
 }
 

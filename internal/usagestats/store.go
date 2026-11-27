@@ -122,93 +122,101 @@ func ensureDBLocked() error {
 	return nil
 }
 
-// db 取当前连接（nil 表示未初始化，调用方按错误路径处理）。
+// db 取当前连接（仅供测试与诊断；业务路径用 withDB，见下）。
 func db() *sql.DB {
-	mu.Lock()
-	defer mu.Unlock()
+	mu.RLock()
+	defer mu.RUnlock()
 	return dbHandle
 }
 
-func upsertEvent(ev Event) error {
+// withDB 在持有读锁期间执行 fn。Close 的写锁会等所有在飞操作结束，
+// 避免「拿到句柄 → 连接被关 → Exec 失败」导致用量事实静默丢失。
+func withDB(fn func(*sql.DB) error) error {
 	if err := ensureDB(); err != nil {
 		return err
 	}
-	conn := db()
+	mu.RLock()
+	defer mu.RUnlock()
+	conn := dbHandle
 	if conn == nil {
-		return errors.New("统计库未初始化")
+		return errors.New("统计库已关闭")
 	}
-	_, err := conn.Exec(upsertEventSQL,
-		ev.ID, ev.SessionID, ev.Ts, ev.Model, ev.ModelAccount,
-		ev.PromptTokens, ev.CompletionTokens, ev.TotalTokens, ev.CachedTokens, ev.CacheWriteTokens,
-		ev.TurnMs, ev.ModelMs, ev.TtftMs, ev.StatusCode)
-	return err
+	return fn(conn)
+}
+
+func upsertEvent(ev Event) error {
+	return withDB(func(conn *sql.DB) error {
+		_, err := conn.Exec(upsertEventSQL,
+			ev.ID, ev.SessionID, ev.Ts, ev.Model, ev.ModelAccount,
+			ev.PromptTokens, ev.CompletionTokens, ev.TotalTokens, ev.CachedTokens, ev.CacheWriteTokens,
+			ev.TurnMs, ev.ModelMs, ev.TtftMs, ev.StatusCode)
+		return err
+	})
 }
 
 // loadEvents 读取全部用量事实。个人使用量级（万级）一次读入并在内存聚合，
 // 与 ZCode「查询时全量重算、不建 rollup」同口径；将来变慢再加日汇总表。
 func loadEvents() ([]Event, error) {
-	if err := ensureDB(); err != nil {
-		return nil, err
-	}
-	conn := db()
-	if conn == nil {
-		return nil, errors.New("统计库未初始化")
-	}
-	rows, err := conn.Query(`SELECT id, session_id, ts, model, model_account,
-		prompt_tokens, completion_tokens, total_tokens, cached_tokens, cache_write_tokens,
-		turn_ms, model_ms, ttft_ms, status_code
-		FROM usage_events`)
+	events := make([]Event, 0, 256)
+	err := withDB(func(conn *sql.DB) error {
+		rows, err := conn.Query(`SELECT id, session_id, ts, model, model_account,
+			prompt_tokens, completion_tokens, total_tokens, cached_tokens, cache_write_tokens,
+			turn_ms, model_ms, ttft_ms, status_code
+			FROM usage_events`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ev Event
+			if err := rows.Scan(&ev.ID, &ev.SessionID, &ev.Ts, &ev.Model, &ev.ModelAccount,
+				&ev.PromptTokens, &ev.CompletionTokens, &ev.TotalTokens, &ev.CachedTokens, &ev.CacheWriteTokens,
+				&ev.TurnMs, &ev.ModelMs, &ev.TtftMs, &ev.StatusCode); err != nil {
+				return err
+			}
+			events = append(events, ev)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	events := make([]Event, 0, 256)
-	for rows.Next() {
-		var ev Event
-		if err := rows.Scan(&ev.ID, &ev.SessionID, &ev.Ts, &ev.Model, &ev.ModelAccount,
-			&ev.PromptTokens, &ev.CompletionTokens, &ev.TotalTokens, &ev.CachedTokens, &ev.CacheWriteTokens,
-			&ev.TurnMs, &ev.ModelMs, &ev.TtftMs, &ev.StatusCode); err != nil {
-			return nil, err
-		}
-		events = append(events, ev)
-	}
-	return events, rows.Err()
+	return events, nil
 }
 
 // loadRequestRows 请求日志分页查询：时间倒序（同一毫秒按 id 稳定排序）。
 func loadRequestRows(offset, limit int) ([]RequestRow, int64, error) {
-	if err := ensureDB(); err != nil {
-		return nil, 0, err
-	}
-	conn := db()
-	if conn == nil {
-		return nil, 0, errors.New("统计库未初始化")
-	}
+	items := make([]RequestRow, 0, limit)
 	var total int64
-	if err := conn.QueryRow(`SELECT COUNT(*) FROM usage_events`).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	rows, err := conn.Query(`SELECT ts, model, model_account,
-		prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens,
-		model_ms, ttft_ms, status_code
-		FROM usage_events
-		ORDER BY ts DESC, id DESC
-		LIMIT ? OFFSET ?`, limit, offset)
+	err := withDB(func(conn *sql.DB) error {
+		if err := conn.QueryRow(`SELECT COUNT(*) FROM usage_events`).Scan(&total); err != nil {
+			return err
+		}
+		rows, err := conn.Query(`SELECT ts, model, model_account,
+			prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens,
+			model_ms, ttft_ms, status_code
+			FROM usage_events
+			ORDER BY ts DESC, id DESC
+			LIMIT ? OFFSET ?`, limit, offset)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row RequestRow
+			if err := rows.Scan(&row.Ts, &row.Model, &row.ModelAccount,
+				&row.PromptTokens, &row.CompletionTokens, &row.CachedTokens, &row.CacheWriteTokens,
+				&row.ModelMs, &row.TtftMs, &row.StatusCode); err != nil {
+				return err
+			}
+			items = append(items, row)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
-	items := make([]RequestRow, 0, limit)
-	for rows.Next() {
-		var row RequestRow
-		if err := rows.Scan(&row.Ts, &row.Model, &row.ModelAccount,
-			&row.PromptTokens, &row.CompletionTokens, &row.CachedTokens, &row.CacheWriteTokens,
-			&row.ModelMs, &row.TtftMs, &row.StatusCode); err != nil {
-			return nil, 0, err
-		}
-		items = append(items, row)
-	}
-	return items, total, rows.Err()
+	return items, total, nil
 }
 
 // syncState 单个会话日志的增量游标：已消费到哪个字节、上次看到的文件大小与 mtime。
@@ -221,33 +229,37 @@ type syncState struct {
 
 // loadSyncStates 一轮扫描开始前一次性预取全部游标：会话多时避免每文件一次查询。
 func loadSyncStates() (map[string]syncState, error) {
-	conn := db()
-	if conn == nil {
-		return nil, errors.New("统计库未初始化")
-	}
-	rows, err := conn.Query(`SELECT session_id, byte_offset, file_size, file_mtime, prefix_hash FROM usage_sync_state`)
+	states := make(map[string]syncState, 64)
+	err := withDB(func(conn *sql.DB) error {
+		rows, err := conn.Query(`SELECT session_id, byte_offset, file_size, file_mtime, prefix_hash FROM usage_sync_state`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			var st syncState
+			if err := rows.Scan(&id, &st.Offset, &st.Size, &st.Mtime, &st.PrefixHash); err != nil {
+				return err
+			}
+			states[id] = st
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	states := make(map[string]syncState, 64)
-	for rows.Next() {
-		var id string
-		var st syncState
-		if err := rows.Scan(&id, &st.Offset, &st.Size, &st.Mtime, &st.PrefixHash); err != nil {
-			return nil, err
-		}
-		states[id] = st
-	}
-	return states, rows.Err()
+	return states, nil
 }
 
 // saveScanResult 把一批事实与游标放在同一个事务里提交：要么整批可见，要么整批重来。
 func saveScanResult(sessionID string, events []Event, offset, size, mtime int64, prefixHash string, now int64) error {
-	conn := db()
-	if conn == nil {
-		return errors.New("统计库未初始化")
-	}
+	return withDB(func(conn *sql.DB) error {
+		return saveScanResultTx(conn, sessionID, events, offset, size, mtime, prefixHash, now)
+	})
+}
+
+func saveScanResultTx(conn *sql.DB, sessionID string, events []Event, offset, size, mtime int64, prefixHash string, now int64) error {
 	tx, err := conn.Begin()
 	if err != nil {
 		return err
@@ -283,23 +295,25 @@ func saveScanResult(sessionID string, events []Event, offset, size, mtime int64,
 // pruneSyncStates 清掉已不存在的会话游标（被删的会话目录不再回来；
 // 误删游标只会让下次全量重读一次，写入幂等所以无害）。
 func pruneSyncStates(found map[string]bool) {
-	conn := db()
-	if conn == nil || len(found) == 0 {
+	if len(found) == 0 {
 		return
 	}
-	rows, err := conn.Query(`SELECT session_id FROM usage_sync_state`)
-	if err != nil {
-		return
-	}
-	stale := make([]string, 0, 4)
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil && !found[id] {
-			stale = append(stale, id)
+	_ = withDB(func(conn *sql.DB) error {
+		rows, err := conn.Query(`SELECT session_id FROM usage_sync_state`)
+		if err != nil {
+			return err
 		}
-	}
-	rows.Close()
-	for _, id := range stale {
-		_, _ = conn.Exec(`DELETE FROM usage_sync_state WHERE session_id = ?`, id)
-	}
+		stale := make([]string, 0, 4)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err == nil && !found[id] {
+				stale = append(stale, id)
+			}
+		}
+		rows.Close()
+		for _, id := range stale {
+			_, _ = conn.Exec(`DELETE FROM usage_sync_state WHERE session_id = ?`, id)
+		}
+		return nil
+	})
 }

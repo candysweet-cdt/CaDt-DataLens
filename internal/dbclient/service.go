@@ -27,10 +27,23 @@ func (s *Service) DBCreateSQLite(path string) error {
 
 // DBReadImportFile 导入数据（CSV/JSONL）的文本读取：UTF-8，上限 20 MB 防大文件卡顿。
 func (s *Service) DBReadImportFile(path string) (string, error) {
+	// 先 Stat 判大小再读：直接 os.ReadFile 一个 2 GB 文件会先整份分配内存
+	// 再报"超过 20 MB"，表现为卡死/OOM（同包 sqlview 已是先 Stat 再读）。
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("导入路径是目录：%s", path)
+	}
+	if info.Size() > 20*1024*1024 {
+		return "", fmt.Errorf("导入文件超过 20 MB 上限（实际 %d MB），请先拆分再导入", info.Size()>>20)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
+	// Stat 与 Read 之间文件可能变大：读后再兜一次，避免边界竞态。
 	if len(data) > 20*1024*1024 {
 		return "", fmt.Errorf("导入文件超过 20 MB 上限，请先拆分再导入")
 	}

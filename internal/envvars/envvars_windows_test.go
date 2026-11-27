@@ -17,11 +17,11 @@ func TestEnvDPAPIRoundtrip(t *testing.T) {
 	if enc == "" || strings.Contains(enc, "s3cret") {
 		t.Fatalf("ciphertext should be opaque base64, got %q", enc)
 	}
-	if got := envUnprotectValue(enc); got != "s3cret-值!" {
-		t.Fatalf("roundtrip = %q", got)
+	if got, err := envUnprotectValue(enc); err != nil || got != "s3cret-值!" {
+		t.Fatalf("roundtrip = %q, err %v", got, err)
 	}
-	if got := envUnprotectValue("bm90LWRwYXBpLWRhdGE="); got != "" {
-		t.Fatalf("non-DPAPI blob should fail closed, got %q", got)
+	if _, err := envUnprotectValue("bm90LWRwYXBpLWRhdGE="); err == nil {
+		t.Fatal("non-DPAPI blob should fail closed")
 	}
 	if enc, err := envProtectValue(""); enc != "" || err != nil {
 		t.Fatalf("empty value = %q, err %v", enc, err)

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 const (
@@ -286,7 +287,13 @@ type foldedQuery struct {
 
 func foldReadingText(s string) foldedQuery {
 	runes := []rune(s)
-	return foldedQuery{runes: runes, queryRun: runes, ctx: readingSearchDefaultContext}
+	// queryRun 必须是折叠后的：只折叠源文本会让「搜 HELLO 命中不了 hello」
+	//（源已 fold 成小写，查询词原样大写，永远不相等）。
+	folded := make([]rune, len(runes))
+	for i, r := range runes {
+		folded[i] = unicodeToLower(r)
+	}
+	return foldedQuery{runes: runes, queryRun: folded, ctx: readingSearchDefaultContext}
 }
 
 func (f foldedQuery) len() int { return len(f.runes) }
@@ -342,11 +349,10 @@ func (f foldedQuery) findAll(text string) []readingMatch {
 	return matches
 }
 
+// unicodeToLower 用 unicode.ToLower 而不是只处理 A-Z：
+// 只覆盖 ASCII 会让西里尔/希腊/带重音的拉丁字母的大小写不敏感匹配失效。
 func unicodeToLower(r rune) rune {
-	if r >= 'A' && r <= 'Z' {
-		return r + 32
-	}
-	return r
+	return unicode.ToLower(r)
 }
 
 // advanceReadingUnit 在标题列表中推进指针：返回 offset 行之前最后一个标题的下标。

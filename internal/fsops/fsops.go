@@ -115,7 +115,7 @@ const (
 )
 
 // ReadDirTree 递归列目录树。默认软忽略与用户 search-ignore 命中的目录整棵跳过
-//（与 search_text 同一张表，! 可覆盖默认），目录符号链接不跟（防环）；
+// （与 search_text 同一张表，! 可覆盖默认），目录符号链接不跟（防环）；
 // 条目预算用尽时在对应目录打 Omitted 并停止深入。
 func (f *FS) ReadDirTree(path string, depth int) (*DirTreeListing, error) {
 	path = strings.TrimSpace(path)
@@ -143,7 +143,7 @@ func (f *FS) ReadDirTree(path string, depth int) (*DirTreeListing, error) {
 
 // walkDirTree 递归收录；根级读失败由调用方先 os.Stat 挡过，子级读失败按空目录跳过。
 // rel 为当前目录相对遍历根的路径（正斜杠；根为空串）——用于按路径跳过 AI 隔离 worktree
-//（.cadt/worktree 整棵不列；从 worktree 自身发起的遍历 rel 不命中，照常列出）。
+// （.cadt/worktree 整棵不列；从 worktree 自身发起的遍历 rel 不命中，照常列出）。
 func walkDirTree(dir string, rel string, remainingDepth int, budget *int, ignore *search.IgnoreRules) (*DirTreeNode, bool) {
 	node := &DirTreeNode{Name: filepath.Base(dir), IsDir: true}
 	if remainingDepth <= 0 {
@@ -419,9 +419,23 @@ func CopyTree(src, dst string, info os.FileInfo) error {
 		for _, entry := range entries {
 			childSrc := filepath.Join(src, entry.Name())
 			childDst := filepath.Join(dst, entry.Name())
-			childInfo, err := os.Stat(childSrc)
+			// 用 Lstat 而不是 Stat：Stat 会跟随符号链接，指向工作区外的链接会被
+			// 整棵复制出来（越界），指向祖先目录的链接（Windows junction 常见）
+			// 会无限递归直到路径超长。链接本身原样重建，不展开目标。
+			childInfo, err := os.Lstat(childSrc)
 			if err != nil {
 				return err
+			}
+			if childInfo.Mode()&os.ModeSymlink != 0 {
+				target, lerr := os.Readlink(childSrc)
+				if lerr != nil {
+					return lerr
+				}
+				if serr := os.Symlink(target, childDst); serr != nil {
+					// 平台不支持建链接（或权限不足）：跳过而不是复制目标内容
+					continue
+				}
+				continue
 			}
 			if err := CopyTree(childSrc, childDst, childInfo); err != nil {
 				return err

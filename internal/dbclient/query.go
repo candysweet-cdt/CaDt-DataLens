@@ -50,7 +50,17 @@ func Query(id, queryID, q string, confirmed bool, limit int) (QueryOutcome, erro
 	for _, stmt := range stmts {
 		res, wrote, err := executeStatement(s, queryID, stmt, limit)
 		if err != nil {
-			return QueryOutcome{}, fmt.Errorf("%s：%w", snippet(stmt), err)
+			// 批量里前面的语句已生效（autocommit）：不能返回零值 outcome，
+			// 否则前端看不到已执行的语句与 Writes 计数，用户无从判断"到底改没改"。
+			// 一条都没执行时仍走 error（没有信息可保留）；否则回 partial + nil，
+			// 让绑定层把已执行结果原样送到前端（Wails 的 (T, error) 在 error 非空时丢弃 T）。
+			if out.Statements == 0 {
+				return QueryOutcome{}, fmt.Errorf("%s：%w", snippet(stmt), err)
+			}
+			out.Status = "partial"
+			out.Message = fmt.Sprintf("执行到「%s」失败：%s", snippet(stmt), err.Error())
+			out.Result.ElapsedMs = time.Since(started).Milliseconds()
+			return out, nil
 		}
 		out.Statements++
 		if wrote {

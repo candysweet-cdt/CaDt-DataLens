@@ -343,3 +343,29 @@ func TestDiagnoseGrantFailure(t *testing.T) {
 		t.Errorf("读不到所有者时应用通用文案：%q", missing)
 	}
 }
+
+// Close 之后私有 temp 必须能被宿主删掉：只撤能力 SID 的 allow ACE 会留下
+// Everyone 的 FILE_DELETE_CHILD deny，os.RemoveAll 被拒且错误常被吞掉 → temp 泄漏。
+func TestCloseLeavesTempRemovable(t *testing.T) {
+	root := t.TempDir()
+	temp := filepath.Join(t.TempDir(), "private-temp")
+	if err := os.MkdirAll(temp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Policy{Mode: WorkspaceWrite, WorkspaceRoot: root, TempDir: temp})
+	if err != nil {
+		t.Fatalf("New 失败：%v", err)
+	}
+	if err := os.WriteFile(filepath.Join(temp, "leftover.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := sb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := os.RemoveAll(temp); err != nil {
+		t.Fatalf("Close 后宿主 RemoveAll 被拒：%v", err)
+	}
+	if _, err := os.Stat(temp); !os.IsNotExist(err) {
+		t.Fatalf("temp 未被删除：%v", err)
+	}
+}

@@ -95,6 +95,24 @@ func serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	// 词法校验挡不住符号链接：根内有指向根外的链接时 Rel 仍判"在根内"，
+	// Stat/ServeFile 会跟随链接把目标读出来。解析真实路径后再比一次。
+	realFull, lerr := filepath.EvalSymlinks(full)
+	if lerr != nil {
+		http.NotFound(w, r)
+		return
+	}
+	realRoot, rerr := filepath.EvalSymlinks(root)
+	if rerr != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if realInside, rerr2 := filepath.Rel(realRoot, realFull); rerr2 != nil || realInside == ".." ||
+		strings.HasPrefix(strings.ToLower(realInside), ".."+string(filepath.Separator)) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	full = realFull
 	info, err := os.Stat(full)
 	if err != nil || info.IsDir() {
 		http.NotFound(w, r)

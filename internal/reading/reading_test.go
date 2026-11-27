@@ -5,6 +5,7 @@ package reading
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -431,5 +432,35 @@ func TestSuggestReadingBooks(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("正文目录未入候选：%+v", sugs)
+	}
+}
+
+// 4 个 worker 并发解析时，警告必须一条不少地汇总回 scan.Warnings。
+// 旧实现直接在 worker 里 append 共享 slice：-race 必报，且会丢警告。
+func TestScanReadingDirWarningsConcurrent(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	dir := t.TempDir()
+	// 8 个超限文件（每个都会产出一条"已跳过"警告），保证多个 worker 同时写
+	for i := 0; i < 8; i++ {
+		name := fmt.Sprintf("第%04d章-超限.md", i)
+		writeReadingFixture(t, dir, name, strings.Repeat("正文内容。", 200))
+	}
+	app := &Reader{}
+	// 上限设得比文件小：processReadingFile 直接走"超过上限，已跳过"分支
+	scan, err := app.ScanReadingRoot(dir, ReadingScanOptions{MaxFileBytes: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped := 0
+	for _, w := range scan.Warnings {
+		if strings.Contains(w, "已跳过") {
+			skipped++
+		}
+	}
+	if skipped != 8 {
+		t.Fatalf("警告条数 = %d，期望 8（并发 append 丢了警告）：%v", skipped, scan.Warnings)
+	}
+	if len(scan.Files) != 8 {
+		t.Fatalf("文件数 = %d", len(scan.Files))
 	}
 }

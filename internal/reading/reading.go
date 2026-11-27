@@ -343,7 +343,8 @@ func (s *Reader) scanReadingSingleFile(abs string, info os.FileInfo, opts Readin
 	ext := strings.ToLower(filepath.Ext(abs))
 	switch {
 	case readingTextExts[ext] || ext == ".docx":
-		rf := processReadingFile(abs, filepath.Base(abs), info, opts, scan)
+		rf, warns := processReadingFile(abs, filepath.Base(abs), info, opts)
+		scan.Warnings = append(scan.Warnings, warns...)
 		return []ReadingFile{rf}, nil
 	case ext == ".epub":
 		meta, err := prepareReadingEpub(abs)
@@ -465,12 +466,15 @@ func collectReadingFiles(abs string, opts ReadingScanOptions, warnings *[]string
 func (s *Reader) scanReadingDir(abs string, opts ReadingScanOptions, scan *ReadingScan) ([]ReadingFile, error) {
 	items := collectReadingFiles(abs, opts, &scan.Warnings)
 	files := make([]ReadingFile, len(items))
+	// 警告按 index 各存一份，wg.Wait 后单线程合并：4 个 worker 并发 append 同一
+	// slice 是数据竞争（-race 必报），还会丢警告（用户看不到"文件已跳过"）。
+	warnsByFile := make([][]string, len(items))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	worker := func() {
 		defer wg.Done()
 		for idx := range jobs {
-			files[idx] = processReadingFile(items[idx].path, items[idx].rel, items[idx].info, opts, scan)
+			files[idx], warnsByFile[idx] = processReadingFile(items[idx].path, items[idx].rel, items[idx].info, opts)
 		}
 	}
 	for i := 0; i < readingScanWorkers; i++ {
@@ -482,12 +486,17 @@ func (s *Reader) scanReadingDir(abs string, opts ReadingScanOptions, scan *Readi
 	}
 	close(jobs)
 	wg.Wait()
+	for _, warns := range warnsByFile {
+		scan.Warnings = append(scan.Warnings, warns...)
+	}
 	sortReadingFiles(files)
 	return files, nil
 }
 
 // processReadingFile 解析单个文件：文本按行，docx 按块，epub（目录内）仅占位。
-func processReadingFile(path, rel string, info os.FileInfo, opts ReadingScanOptions, scan *ReadingScan) ReadingFile {
+// 返回该文件产生的警告（不直接写 scan.Warnings：调用方可能并发）。
+func processReadingFile(path, rel string, info os.FileInfo, opts ReadingScanOptions) (ReadingFile, []string) {
+	var warns []string
 	rf := ReadingFile{
 		Rel:     rel,
 		Name:    filepath.Base(rel),
@@ -497,15 +506,15 @@ func processReadingFile(path, rel string, info os.FileInfo, opts ReadingScanOpti
 	}
 	if rf.Size > opts.MaxFileBytes {
 		rf.Error = fmt.Sprintf("文件超过 %d MB，已跳过", opts.MaxFileBytes>>20)
-		scan.Warnings = append(scan.Warnings, rel+"："+rf.Error)
-		return rf
+		warns = append(warns, rel+"："+rf.Error)
+		return rf, warns
 	}
 	switch {
 	case rf.Ext == ".docx":
 		blocks, err := parseReadingDocxFile(path)
 		if err != nil {
 			rf.Error = err.Error()
-			return rf
+			return rf, warns
 		}
 		texts := make([]string, len(blocks))
 		for i, b := range blocks {
@@ -536,12 +545,12 @@ func processReadingFile(path, rel string, info os.FileInfo, opts ReadingScanOpti
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			rf.Error = err.Error()
-			return rf
+			return rf, warns
 		}
 		text, enc, err := decodeReadingText(raw)
 		if err != nil {
 			rf.Error = err.Error()
-			return rf
+			return rf, warns
 		}
 		rf.Encoding = enc
 		lines := splitReadingLines(text)
@@ -551,7 +560,7 @@ func processReadingFile(path, rel string, info os.FileInfo, opts ReadingScanOpti
 			rf.Headings = scanMdHeadings(lines, opts.MaxHeadingsPerFile)
 		}
 		if len(rf.Headings) >= opts.MaxHeadingsPerFile {
-			scan.Warnings = append(scan.Warnings, rel+"：标题数超过上限，已截断")
+			warns = append(warns, rel+"：标题数超过上限，已截断")
 		}
 		cum := readingWordPrefix(lines)
 		for i := range rf.Headings {
@@ -560,7 +569,7 @@ func processReadingFile(path, rel string, info os.FileInfo, opts ReadingScanOpti
 		}
 		rf.Words = int(cum[len(lines)])
 	}
-	return rf
+	return rf, warns
 }
 
 // readingHeadingEnd 标题 i 的结束 offset（不含）：下一个同级/更高级标题的 offset，否则 defaultEnd。

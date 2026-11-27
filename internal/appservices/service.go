@@ -57,6 +57,7 @@ type service struct {
 	startedAt    int64
 	healthOK     bool
 	stopping     bool
+	healthFailed bool // 健康检查判死并主动杀进程：watchProcess 不要用退出码覆盖原因
 	logs         []string
 	logBytes     int
 	healthCancel func()

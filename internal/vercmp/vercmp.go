@@ -12,7 +12,16 @@ func Compare(a, b string) int {
 		parts := strings.Split(v, ".")
 		out := make([]int, 0, 3)
 		for _, part := range parts {
-			n, _ := strconv.Atoi(part)
+			// 非数字段（-beta / rc1）按 0 处理会让 v1.3.0-beta 与 v1.3.0 等值，
+			// 有预发布版更新时永远提示不了。取开头的数字前缀（"3beta" → 3）。
+			digits := 0
+			for digits < len(part) && part[digits] >= '0' && part[digits] <= '9' {
+				digits++
+			}
+			n := 0
+			if digits > 0 {
+				n, _ = strconv.Atoi(part[:digits])
+			}
 			out = append(out, n)
 		}
 		return out

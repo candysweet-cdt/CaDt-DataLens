@@ -568,6 +568,10 @@ func (h *Host) BrowserOpen(ctx context.Context, id, url, profileKey string) (map
 		browserMu.Lock()
 		delete(browserInstances, id)
 		browserMu.Unlock()
+		// 失败也必须在宿主线程销毁已嵌入的控件：Create 与 Hide 之间控件以库默认
+		// 矩形裸露（用户看到整块黑屏盖住界面），不 Close 控制器还会让 WebView2
+		// 渲染进程按用户数据目录常驻。
+		_ = browserHostRun(func() { browserDestroyOnHost(inst) })
 		if jobErr != nil {
 			return nil, jobErr
 		}
@@ -959,23 +963,32 @@ func (h *Host) BrowserFocus(id string) error {
 	return taskErr
 }
 
+// browserDestroyOnHost 销毁实例的 WebView2 控件（必须在宿主线程调用）。
+// 正常关闭与创建失败共用同一收口，避免两条路径行为不一致。
+func browserDestroyOnHost(inst *browserInstance) {
+	if inst == nil {
+		return
+	}
+	if inst.chromium != nil {
+		inst.chromium.ShuttingDown()
+		_ = inst.chromium.Hide()
+	}
+	if inst.controller != nil {
+		if err := wvControllerClose(inst.controller); err != nil {
+			logf("WARN", "浏览器控制器关闭失败：%v", err)
+		}
+		inst.controller = nil
+		inst.webview = nil
+	}
+}
+
 func (h *Host) BrowserClose(id string) error {
 	jobErr := browserHostRun(func() {
 		inst := browserGetRaw(id) // 失效实例也要能关掉并清出注册表
 		if inst == nil {
 			return // 已不存在视为成功
 		}
-		if inst.chromium != nil {
-			inst.chromium.ShuttingDown()
-			_ = inst.chromium.Hide()
-		}
-		if inst.controller != nil {
-			if err := wvControllerClose(inst.controller); err != nil {
-				logf("WARN", "浏览器控制器关闭失败：%v", err)
-			}
-			inst.controller = nil
-			inst.webview = nil
-		}
+		browserDestroyOnHost(inst)
 		browserMu.Lock()
 		delete(browserInstances, inst.id)
 		browserMu.Unlock()

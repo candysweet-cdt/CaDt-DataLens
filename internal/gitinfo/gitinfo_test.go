@@ -309,3 +309,89 @@ func TestTrimDiffTailKeepsTrailingBlankContextLine(t *testing.T) {
 		t.Fatalf("应只去掉一个换行：%q", got)
 	}
 }
+
+// 脏工作树切分支：git 把冲突清单写到 stderr。gitRun 若只返回 stdout，
+// parseCheckoutConflictFiles 恒空，前端三选一冲突对话框永远无法触发。
+func TestCheckoutBranchDirtyWorktreeReportsConflicts(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("未安装 git，跳过签出冲突集成测试")
+	}
+	dir := t.TempDir()
+	gitTestCmd(t, dir, "init")
+	gitTestCmd(t, dir, "symbolic-ref", "HEAD", "refs/heads/main")
+	gitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	gitTestCmd(t, dir, "config", "user.name", "Test")
+	writeA := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeA("base\n")
+	gitTestCmd(t, dir, "add", "a.txt")
+	gitTestCmd(t, dir, "commit", "-m", "init")
+	// 另一分支也改同一个文件，签出时才会被本地未提交改动挡住
+	gitTestCmd(t, dir, "checkout", "-b", "other")
+	writeA("other\n")
+	gitTestCmd(t, dir, "commit", "-am", "other")
+	gitTestCmd(t, dir, "checkout", "main")
+	writeA("dirty\n") // 不提交：工作树脏
+
+	op, err := CheckoutBranch(dir, "other", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Success {
+		t.Fatalf("脏工作树签出不应成功：%#v", op)
+	}
+	if len(op.ConflictFiles) != 1 || op.ConflictFiles[0] != "a.txt" {
+		t.Fatalf("冲突文件应解析出 a.txt，实际 %v（原始输出：%q）", op.ConflictFiles, op.Output)
+	}
+}
+
+// 回滚前必须把当前内容备份到 .cadt/rollback-backup：`git checkout HEAD --`
+// 会整份丢弃工作区改动，多会话叠加的改动再也拿不回来。
+func TestRollbackForBacksUpBeforeCheckout(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("未安装 git，跳过回滚备份集成测试")
+	}
+	dir := t.TempDir()
+	gitTestCmd(t, dir, "init")
+	gitTestCmd(t, dir, "symbolic-ref", "HEAD", "refs/heads/main")
+	gitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	gitTestCmd(t, dir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestCmd(t, dir, "add", "a.txt")
+	gitTestCmd(t, dir, "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("local-change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RollbackFor(dir, []string{"a.txt"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows 上 git 默认 core.autocrlf 会把 LF 转成 CRLF，比较前先归一化换行
+	if strings.TrimRight(string(content), "\r\n") != "base" {
+		t.Fatalf("回滚未生效：%q", content)
+	}
+	backups, err := filepath.Glob(filepath.Join(dir, ".cadt", "rollback-backup", "*", "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("应生成 1 份回滚前备份，实际 %d：%v", len(backups), backups)
+	}
+	saved, err := os.ReadFile(backups[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimRight(string(saved), "\r\n") != "local-change" {
+		t.Fatalf("备份内容不是回滚前的改动：%q", saved)
+	}
+}

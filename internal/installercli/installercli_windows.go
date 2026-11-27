@@ -48,6 +48,8 @@ func parseIntegrationArgs(args []string) (string, []string) {
 		}
 		actions = append(actions, splitIntegrationActions(value)...)
 	}
+	// 空动作（--integrate=、--integrate=,,）此前直接跑完并打印 ok：
+	// 安装器以为集成成功，实际什么都没做。留给 Run 判定并报错退出。
 	return mode, actions
 }
 
@@ -56,6 +58,10 @@ func Run(args []string) bool {
 	mode, actions := parseIntegrationArgs(args)
 	if mode == "" {
 		return false
+	}
+	if len(actions) == 0 {
+		fmt.Fprintf(os.Stderr, "integration %s failed: 没有可执行的集成项（--integrate= 为空或全是分隔符）\n", mode)
+		return true
 	}
 	exe, err := os.Executable()
 	if err != nil {

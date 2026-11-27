@@ -142,7 +142,18 @@ func gitRun(dir string, args []string, timeoutMs int) (string, int, error) {
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", -1, fmt.Errorf("git 命令超时")
 	}
-	return stdout.String(), code, nil
+	out := stdout.String()
+	// 失败时把 stderr 并入返回文本：git 把错误与冲突清单写到 stderr
+	//（"error: Your local changes ... would be overwritten by checkout:" + 文件列表），
+	// 只返回 stdout 会让 parseCheckoutConflictFiles 恒空，前端三选一冲突对话框
+	// 永远无法触发，用户没法从 UI 处理脏工作树签出。
+	if code != 0 && stderr.Len() > 0 {
+		if out != "" && !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		out += stderr.String()
+	}
+	return out, code, nil
 }
 
 // gitEnvRedirectKeys 会重定向 git 仓库位置的变量：一律剔除，保证 cmd.Dir 就是 git 眼中的仓库。
@@ -471,7 +482,7 @@ func CheckoutBranch(dir string, name string, remote bool) (*GitOperationResult, 
 		if err != nil {
 			return nil, err
 		}
-		return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out), Branch: short}, nil
+		return checkoutResult(out, code, short), nil
 	}
 	if !gitBranchRefExists(dir, "refs/heads/"+name) {
 		return &GitOperationResult{Success: false, Output: "本地分支不存在：" + name}, nil
@@ -480,7 +491,18 @@ func CheckoutBranch(dir string, name string, remote bool) (*GitOperationResult, 
 	if err != nil {
 		return nil, err
 	}
-	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out), Branch: name}, nil
+	return checkoutResult(out, code, name), nil
+}
+
+// checkoutResult 把 checkout 的输出收口成结果：失败时解析「会被覆盖」的文件列表，
+// 供前端弹「强制签出 / 智能签出 / 不签出」。分支下拉与 ref 签出必须走同一收口，
+// 否则只有其中一条路能弹对话框。
+func checkoutResult(out string, code int, branch string) *GitOperationResult {
+	res := &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out), Branch: branch}
+	if code != 0 {
+		res.ConflictFiles = parseCheckoutConflictFiles(out)
+	}
+	return res
 }
 
 // CreateBranch 从当前 HEAD 新建分支并立即检出。
@@ -529,10 +551,7 @@ func CheckoutRef(dir string, ref string) (*GitOperationResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out)}
-	if code != 0 {
-		res.ConflictFiles = parseCheckoutConflictFiles(out)
-	}
+	res := checkoutResult(out, code, "")
 	branch := ""
 	if b, c, _ := gitRun(dir, []string{"rev-parse", "--abbrev-ref", "HEAD"}, 5000); c == 0 {
 		branch = strings.TrimSpace(b)
@@ -719,6 +738,41 @@ func gitPathInRoot(root, path string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// backupRollbackTargets 把即将被回滚的文件原样复制到 .cadt/rollback-backup/<时间戳>/。
+// 返回备份目录；没有任何文件可备份时返回空串。文件读不出来（已被删/被锁）就跳过——
+// 备份是尽力而为，不能因为它失败就让回滚整体不可用。
+func backupRollbackTargets(root string, rels []string) (string, error) {
+	stamp := time.Now().Format("20060102-150405")
+	dest := filepath.Join(root, ".cadt", "rollback-backup", stamp)
+	saved := 0
+	for _, rel := range rels {
+		src := rel
+		if !filepath.IsAbs(src) {
+			src = filepath.Join(root, rel)
+		}
+		inner, err := filepath.Rel(root, src)
+		if err != nil || inner == ".." || strings.HasPrefix(inner, ".."+string(filepath.Separator)) {
+			continue
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			continue
+		}
+		target := filepath.Join(dest, inner)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return "", err
+		}
+		saved++
+	}
+	if saved == 0 {
+		return "", nil
+	}
+	return dest, nil
+}
+
 // RollbackFor 回滚指定文件：已跟踪还原到 HEAD，未跟踪直接删除。
 func RollbackFor(dir string, paths []string, untracked []string) error {
 	dir = strings.TrimSpace(dir)
@@ -736,11 +790,19 @@ func RollbackFor(dir string, paths []string, untracked []string) error {
 		}
 	}
 	if len(paths) > 0 {
+		// 回滚前先把当前内容备份到 .cadt/rollback-backup/<时间戳>/：
+		// `git checkout HEAD --` 会把工作区改动整份丢弃，同文件多会话叠加的改动
+		// 再也拿不回来（AGENTS.md 记载过同型事故）。备份失败不阻断，但错误里带上路径。
+		backupDir, backupErr := backupRollbackTargets(dir, paths)
 		if _, code, err := gitRun(dir, append([]string{"checkout", "HEAD", "--"}, paths...), 30000); err != nil {
 			return err
 		} else if code != 0 {
+			if backupDir != "" {
+				return fmt.Errorf("git checkout 返回 %d（回滚前内容已备份到 %s）", code, backupDir)
+			}
 			return fmt.Errorf("git checkout 返回 %d", code)
 		}
+		_ = backupErr
 	}
 	for _, p := range untracked {
 		// 相对路径以 dir 为基准解析：os.Remove 不会自己按 dir 走，

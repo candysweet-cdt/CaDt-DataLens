@@ -17,11 +17,8 @@ func envProtectValue(plain string) (string, error) {
 	return dpapi.Protect(plain, envDPAPIDescription)
 }
 
-// envUnprotectValue 解密一个 base64 密文；失败（换机器/换用户/数据损坏）返回空串。
-func envUnprotectValue(stored string) string {
-	plain, err := dpapi.Unprotect(stored)
-	if err != nil {
-		return ""
-	}
-	return plain
+// envUnprotectValue 解密一个 base64 密文；失败（换机器/换用户/数据损坏）返回错误，
+// 由调用方 fail-closed 处理（保留原密文，绝不把值抹成空串）。
+func envUnprotectValue(stored string) (string, error) {
+	return dpapi.Unprotect(stored)
 }

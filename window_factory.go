@@ -98,6 +98,11 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 		if a.teardownDone.Load() || st.ForceClosed() {
 			return
 		}
+		// 窗口已经被普通关闭（非最后窗口时 teardownDone / ForceClosed 都不会置位）：
+		// 注册表里查不到就说明实例已销毁，别再对一个已销毁窗口 Show。
+		if winReg.Get(spec.Name) == nil {
+			return
+		}
 		if !win.IsVisible() {
 			writeAppLog("warn", "窗口 %s 导航 8s 未完成，兜底显示", win.Name())
 			win.Show()

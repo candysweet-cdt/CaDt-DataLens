@@ -3,6 +3,7 @@ package envvars
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -175,5 +176,79 @@ func TestEnvVarsPlaintextFileHeader(t *testing.T) {
 	}
 	if file.Encrypted || len(file.Vars) != 1 || file.Vars[0].Value != "plain-value" {
 		t.Fatalf("parsed file = %+v", file)
+	}
+}
+
+// 换机器/换用户后密文解不开：保存任意其它变量不得把这些密文抹成空值。
+// 旧实现把解密失败吞成 ""，Set 整表重写后原密文永久丢失，MergeEnv 还会注入空值。
+func TestEnvVarsUnreadableSealedPreserved(t *testing.T) {
+	envTestApp(t)
+	if !envEncryptionSupported() {
+		t.Skip("当前平台无 DPAPI，不涉及密文")
+	}
+	const unreadable = "bm90LWRwYXBpLWRhdGE=" // 合法 base64，但不是 DPAPI 密文
+	stored := envVarsFile{
+		Encrypted: true,
+		Vars: []envVarEntry{
+			{Name: "STALE_SECRET", Value: unreadable, Description: "来自另一台机器", Enabled: true},
+			{Name: "BROKEN", Value: "%%%not-base64%%%", Enabled: false},
+		},
+	}
+	raw, err := json.MarshalIndent(stored, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(Path()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Vars) != 2 || snap.Vars[0].Value != "" {
+		t.Fatalf("解不开的值应为空（不显示乱码）：%+v", snap.Vars)
+	}
+
+	// 模拟"界面上改了一个无关变量后保存"：解不开的项以空值回传
+	if err := Set([]EnvVarInput{
+		{Name: "STALE_SECRET", Value: "", Description: "来自另一台机器", Enabled: true},
+		{Name: "NEW_VAR", Value: "v", Enabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile(Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept envVarsFile
+	if err := json.Unmarshal(after, &kept); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range kept.Vars {
+		if entry.Name == "STALE_SECRET" {
+			found = true
+			if entry.Value != unreadable {
+				t.Fatalf("解不开的密文被覆盖：%q", entry.Value)
+			}
+		}
+		if entry.Name == "NEW_VAR" && entry.Value == "" {
+			t.Fatal("新变量未落盘")
+		}
+	}
+	if !found {
+		t.Fatal("解不开的变量被静默删除")
+	}
+
+	// 解不开的值不得注入子进程（注入空串会覆盖系统同名变量）
+	for _, item := range MergeEnv(nil) {
+		if strings.HasPrefix(item, "STALE_SECRET=") {
+			t.Fatalf("解不开的变量被注入：%q", item)
+		}
 	}
 }

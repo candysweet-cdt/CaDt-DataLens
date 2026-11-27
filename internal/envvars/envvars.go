@@ -28,6 +28,12 @@ type envVarEntry struct {
 	Value       string `json:"value"`
 	Description string `json:"description,omitempty"`
 	Enabled     bool   `json:"enabled"`
+
+	// 仅内存态（不落盘）：密文解不开（换机器/换用户/文件损坏）时 Value 为空，
+	// sealed 保留原始密文，保存时原样写回。没有这两个字段时，一次任意保存就会把
+	// 所有解不开的密钥整体覆盖成空串，且 MergeEnv 会把空值注入子进程。
+	unreadable bool   `json:"-"`
+	sealed     string `json:"-"`
 }
 
 type envVarsFile struct {
@@ -83,7 +89,15 @@ func readEnvVarsFile() envVarsFile {
 	file.Encrypted = stored.Encrypted
 	for _, entry := range stored.Vars {
 		if stored.Encrypted {
-			entry.Value = envUnprotectValue(entry.Value)
+			plain, err := envUnprotectValue(entry.Value)
+			if err != nil {
+				// fail-closed：值置空但保留密文，保存时原样写回；不注入子进程。
+				entry.unreadable = true
+				entry.sealed = entry.Value
+				entry.Value = ""
+			} else {
+				entry.Value = plain
+			}
 		}
 		file.Vars = append(file.Vars, entry)
 	}
@@ -98,6 +112,14 @@ func saveEnvVarsFile(file envVarsFile) error {
 	}
 	out := envVarsFile{Encrypted: file.Encrypted && envEncryptionSupported(), Vars: make([]envVarEntry, 0, len(file.Vars))}
 	for _, entry := range file.Vars {
+		if entry.unreadable {
+			// 解不开的密文原样写回：既不重新加密空串，也不因一次保存就毁掉原凭据。
+			entry.Value = entry.sealed
+			entry.unreadable = false
+			entry.sealed = ""
+			out.Vars = append(out.Vars, entry)
+			continue
+		}
 		value := entry.Value
 		if out.Encrypted {
 			stored, err := envProtectValue(value)
@@ -164,6 +186,18 @@ func Set(inputs []EnvVarInput) error {
 		vars = append(vars, entry)
 	}
 	file := readEnvVarsFile()
+	// 解不开的项在 UI 里显示为空值，回传时也是空串：同名且为空时沿用原密文，
+	// 避免"改一个无关变量"把其余密钥一起抹掉。用户真要清空就直接删掉该变量。
+	oldByName := make(map[string]envVarEntry, len(file.Vars))
+	for _, old := range file.Vars {
+		oldByName[old.Name] = old
+	}
+	for i := range vars {
+		if old, ok := oldByName[vars[i].Name]; ok && old.unreadable && vars[i].Value == "" {
+			vars[i].unreadable = true
+			vars[i].sealed = old.sealed
+		}
+	}
 	file.Vars = vars
 	return saveEnvVarsFile(file)
 }
@@ -174,8 +208,26 @@ func SetEncrypted(on bool) error {
 		return fmt.Errorf("当前平台不支持加密存储")
 	}
 	file := readEnvVarsFile()
+	// 关闭加密时若还有解不开的密文，写出去等于把密文当明文落盘（且原值已不可得），
+	// 直接拒绝并提示先删除这些变量。
+	if !on {
+		if names := unreadableNames(file); len(names) > 0 {
+			return fmt.Errorf("以下变量无法解密（可能来自其他设备或用户），请先删除后再关闭加密：%s", strings.Join(names, "、"))
+		}
+	}
 	file.Encrypted = on
 	return saveEnvVarsFile(file)
+}
+
+// unreadableNames 列出解不开的变量名（诊断与 fail-closed 提示用）。
+func unreadableNames(file envVarsFile) []string {
+	var names []string
+	for _, entry := range file.Vars {
+		if entry.unreadable {
+			names = append(names, entry.Name)
+		}
+	}
+	return names
 }
 
 // injectedEnvEntries 返回已启用变量的 KEY=VALUE 列表（供子进程注入）。
@@ -186,7 +238,8 @@ func injectedEnvEntries() []string {
 	}
 	entries := make([]string, 0, len(file.Vars))
 	for _, entry := range file.Vars {
-		if !entry.Enabled {
+		// 解不开的值不注入：注入 NAME= 空串会覆盖系统同名变量，比不给更糟。
+		if !entry.Enabled || entry.unreadable {
 			continue
 		}
 		entries = append(entries, entry.Name+"="+entry.Value)
