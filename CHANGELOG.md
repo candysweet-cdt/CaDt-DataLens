@@ -4,6 +4,80 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（定时任务/计时器弹层与日期时间选择器体验）
+
+- **新建/编辑定时任务弹层改单列上下结构**：原先左右两栏在 560px 卡片里必然撑出横向滚动条（`.ai-sched-editor-2col` 自带 `min-width: 560px`），现在一行一个字段；「触发指令」独占一行、标签在上、textarea 占满整行（`ai-schedule.js` 与 `style.css` 的 `.ai-sched-editor` / `.ai-sched-field-block`）。
+- **主按钮恢复主色**：「新建计时器」的【启动】与「新建任务提醒」的【添加】补 `primary` 类（此前只有 `dlg-btn`，灰底看不出是主操作）。
+- **自绘日期时间选择器重做**（`ai/settings/ai-datetime-picker.js`）：
+  - 点输入框即弹面板（原来只能点右侧日历按钮），输入框仍可手输；
+  - 面板结构改为「日历 + 时/分列」——旧实现把年月日也当滚动列渲染，与日历重复且总宽 480px，直接溢出弹层；
+  - **先渲染内容再 `placePopover` 定位**：旧顺序按空面板宽高钳制，内容填进去后溢出视口；另加 `max-width/height: calc(100vw/vh - 16px)` 兜底；
+  - 时间列整列可滚动、隐藏滚动条、选中项滚到正中，字号/行距放大；
+  - 日历标题可点，日 → 月 → 年 → 日 三级循环；年视图 12 年一页批量翻页，月视图 12 月直选。
+- **会话消息导航滑轨刻度垂直居中**：消息少时刻度块不再贴着顶部（`railTicks` 按轨道高度算居中偏移），轨道高度变化经 `ResizeObserver` 只重排位置、不重建节点也不重置滚动位置。
+- **结构树箭头不再吞快速连点**：去掉 `e.detail > 1` 拦截，连点箭头每次都切换（旧实现把第二次点击当双击尾巴丢掉）。
+- **AI 会话用户消息按渲染高度补折叠**：字符/行数阈值之外，进 DOM 后若实际渲染高度 > 240px 也折叠并给「展开全文」，中文长段在窄面板里不再整段铺满屏幕。
+- 验证：`npm test`（typecheck 前置门 + test:ai / ui-core / ui-shell / maven）、`npm run build` 全绿；另起临时验证页用真实组件核对面板宽度（370px，无横向溢出、时间列无滚动条）。
+
+### 修复（AI 工具连续失败死循环熔断）
+
+- 主对话此前没有工具轮硬上限（`AI_TOOL_ROUND_LIMIT` 只是轻提醒），模型在 `edit_file` 的 `oldString` 不匹配时会反复重试同一处替换，直到用户手动介入才停（2026-11-28 实测同一会话连发十余次「未找到 oldString」）。
+- 新增 `ai/chat/ai-tool-failure-guard.js`：按「会话 + 工具 + 目标 + 错误类型签名」记连续失败，同类失败累计达阈值即熔断——不再执行工具，tool 结果返回极简拦截语（满足 tool_calls 配对），同时把完整强提示作为 `urgent` 应用消息投递（工具轮边界折叠成 user 消息随本轮收尾请求进上下文、不起新轮，弱模型对 user 指令服从度更高）；用户不在当前会话时另发右下角消息通知。成功或换路径清零，错误类型变化重新计数，每个新回合首轮重置（工具循环内不重置）。
+- 阈值可在 设置 → AI → 工具熔断 调整（select：关闭 / 3 / 4 / 5 默认 / 6 / 8 / 10 / 15 / 20）；**0 = 关闭熔断**，有效值最小 3。默认 5 给模型留出自我纠正空间；阈值经 getter 实时读取，改设置立即生效。
+- 接线在 `executeTool` 包装层（`ai-panel.js`，主对话与子代理共用收口），覆盖所有工具而非只管补丁；子代理走自己的收件箱、不投主会话信箱避免串台。新增单测并登记 `npm test`；typecheck、工具接线、设置树、表单控件守卫与新测试全绿。
+
+### 修复（AI 会话重复 mid 导致落盘无限重追加，日志膨胀至 300 MB）
+
+- **事故**：智能体团队的 webnovel 会话一晚涨到 300 MB+，触发「超限瘦身归档」，瘦身完又继续涨；同时段用户手动发送被「该会话正忙」反复拒绝。根因是两条消息（崩溃恢复占位 + 子代理完成回报）共用同一个 mid `m-mww5fd4m3meo1`，而 persist 的公共前缀比对用「mid → 指纹」的 Map：重复 mid 时 Map 里永远只剩后一条的指纹，前缀在第一条上永假 → **每次落盘都 truncate + 整段重追加约 150 条消息**（该会话物理日志 274 条活消息写了 1.5 万条记录），追加式日志只有 rewrite 才收缩，于是无界膨胀；满地的追加写入又引发 stat 变化 → 整份重读风暴，正是「会话正忙」的来源。
+- 四层修复（`ai/session/ai-session-disk.js` / `ai-session-store.js` / `core/id.js`）：
+  1. **前缀指纹改按位置存**（`_fps` 从 mid 键 Map 改为下标键）：重复 mid 不再能卡死前缀，truncate + 重追加一轮后即收敛；载入基线、追加、归档路径同步改。就地改写截断重追加的原语义保留（有回归测试钉住）。
+  2. **载入自愈**：新增 `dedupeMessageMids`，三条载入路径（loadOne / reload / hydrate）对重复 mid 就地改配新 mid（先到先得、消息一条不丢），并标记 `_needsRewrite` → 下次落盘整份重写，把磁盘上的复印行物理清掉——**受污染的旧会话重启即自愈瘦身**，不需要手工修文件。
+  3. **写入侧占用检查**：`syncMids` 与两条 append 路径拒绝继承已被占用的 mid（含旧账本 `mids[index]` 回退值），重复即分配新 mid——任何来源的重复都无法再写进日志。
+  4. **id 生成器堵源**：`core/id.js` 的 `randomIdSuffix` 原来 `Math.random().toString(36).slice(2, 2+n)` 在有限小数 / 尾零时后缀退化到 1–2 位（如 0.5 → "i"），同毫秒两次生成可撞出相同 id；现在保证恒定 `n` 位（含 `Math.random()===0` 退化路径的补位保护）。
+- 测试：新增 `frontend/test/ai/session/session-mid-collision.test.mjs`（自愈纯函数 / hydrate 接线 / persist 两轮收敛 / 就地改写回归 / 重写路径占用检查）并登记 `npm test`；`id.test.mjs` 补退化 Math.random 足位断言。改动面 typecheck、session 域、id 全绿。
+
+### 改进（插件回调 ctx 归一化：统一基座，只加键不改签名）
+
+- 新增 `frontend/src/shell/plugin-ctx.js`（纯函数，可单测）：`pluginCtxBase()` 拼基座 `{plugin: {id, name}, workspace, sessionId, origin}`（`flash` 只在调用方给到时注入，不留静默空实现），`withCtx()` 在其上追加域字段并保证 `plugin` 身份不被域字段覆盖。安装目录不进基座（各注册记录只存 id/name），插件自己的目录仍用 `getPluginDir()`。
+- 八个回调入口全部接上：命令 `run(env)` / `when(env)`、自定义视图 `mount(container, ctx)`、导入器 `convert(ctx)`、文档导出 `convert(ctx)`、AI 工具 `execute(args, ctx)`、AI 上下文 `text(ctx)`、插件设置面板 `render(container, ctx)`、命令风险分类器 `classify(command, ctx)`。此前只有视图与工具能认出「自己是谁」，其余入口拿不到插件身份；命令的 `run` 还会拿菜单打开那一刻的旧环境快照，现在改为执行时按命令重算。
+- **修一个既有错误**：AI 上下文的 `text(ctx)` 一直收不到 `workspace`（注释写着 `{scope, sessionId, workspace}`，面板只传了前两个），插件里 `if (ctx.workspace)` 恒为 false。现在按**会话根**传入（与技能扫描 / 认知 / 记忆同源），漏传时是空串而不是 `undefined`。
+- **消歧但不动旧键**：`source` 在导入器 / 导出上是字符串场景名、在视图上是 `{path, name, size}` 对象——保留原样；新增 `origin`（`command` / `editor` / `open` / `export` / `tool` / `prompt` / `settings` / `classifier`）与视图的 `doc`（与 `source` 同一对象）。改旧签名或改名属破坏性变更，不做。
+- 刻意不给 ctx：`registerFormat` 的 `parse` / `stringify`（纯函数，结构面板 / 表格 / worker 都可能调，挂了宿主能力等于绕过脏标记）、`registerDbDriver` 的 `connect(config)`、`registerAIProvider` 的 `prepare(ctx)`（请求补丁上下文）。
+- 文档：`docs/plugins/README.md` 新增「回调上下文（ctx）」一节（基座键位表 + 各入口域字段表 + 只加键纪律 + 不归一化边界）；内置 `plugin-creator` 技能正文补同款说明，模型不必去翻仓库文档。
+- 顺带把命令环境构造拆成 `frontend/src/shell/plugin-command-env.js`（`main.js` 只做接线，行数 7806 → 7781，守住「只减不增」基线；deps 一律传函数，编辑器整体替换后不会读到旧对象）。命令 `workspace` 改取 `currentRoot()`（原先取窗口绑定根，多工作区下恒空），与视图 / 导入器 / AI 侧口径统一；`registerDocConverter` 的记录补存 `pluginName`（此前导出 ctx 的插件名会回落成插件 id）；分类器包装先取出 `classify` 再调用，保持插件函数原有的 `this` 语义。
+- 测试：新增 `frontend/test/shell/plugin-ctx.test.mjs`（基座键位 / `flash` 注入条件 / `withCtx` 身份保护 / origin 枚举）、`plugin-context.test.mjs`（`text(ctx)` 拿到身份与 workspace、漏传退化为空串、单块抛错隔离、合计上限与闭合标签转义）、`plugin-command-env.test.mjs`（选区来源随模式切换、deps 抛错降级、活引用不拍快照），全部登记进 `npm test` 的 test:ui-shell。
+- 验证：`typecheck`、`test:ui-core`、`test:ui-shell`、`npm run build` 全绿；`test:ai` 余 4 项红属并行在途的 session-rail / session-mid / MCP 控件改动，与本改动无关（失败断言均不涉及插件 ctx）。
+
+### 修复（AI 工具连续失败死循环熔断）
+
+- 主对话此前没有工具轮硬上限（`AI_TOOL_ROUND_LIMIT` 只是轻提醒），模型在 `edit_file` 的 `oldString` 不匹配时会反复重试同一处替换，直到用户手动介入才停（2026-11-28 实测同一会话连发十余次「未找到 oldString」）。
+- 新增 `ai/chat/ai-tool-failure-guard.js`：按「会话 + 工具 + 目标路径 + 错误类型签名」记连续失败，同类错误累计 3 次即熔断——不再执行工具，直接返回强提示要求先 `read_file` 重读、改用 `write_file` 或向用户说明卡点；成功或换路径自动清零，错误类型变化重新计数。错误签名抹掉数字/路径/引号，模型微调参数也绕不过计数。
+- 接线在 `executeTool` 包装层（`ai-panel.js`，主对话与子代理共用收口），覆盖所有工具而非只管补丁；熔断返回提示文本而非抛错，避免被记成工具失败诱发再试。新增单测并登记 `npm test`；typecheck、工具接线守卫与新测试全绿。
+
+### 改进（通用表单控件 / 空态组件落地并收编首批字段）
+
+- `core/form-controls.js` 新增三个组合控件工厂：`createNumber`（`[- 输入 +]` 数字步进，按钮长按连发、失焦钳制非法回退、↑↓ 步进）、`createSlider`（原生滑杆 + 主题 accent 色 + 等宽读数，`segments` 指定段数后只能停 N+1 档并加点标位）、`createPathInput`（路径输入 + 浏览按钮，`onBrowse` 由调用方注入）。新增 `core/combo-select.js` `createComboSelect`（可过滤下拉：过滤复用 `completion.js` 的 `scoreMatch`、面板 body 挂载 + 视口钳制、外点/Esc 走 overlay-stack）、`core/badge.js` `createBadge`（五档语义色胶囊徽标）、`core/empty-state.js` `renderEmptyState`（空状态占位：icon 圈 + 标题 + 提示 + 可选动作）。
+- **首批收编（15 个数字字段换 `createNumber`，8 个文件）**：MCP 服务器编辑器启动/调用/关闭三超时、数据源端口、Redis zset score 与 TTL（-1 = 永久）、AI 生成设置四字段（超时/默认张数/轮询间隔/最大轮询）、群聊设置发言上限与总时长、AI 使用统计配置超时与自动查询间隔（删局部包装工厂）、生命周期钩子超时——步进/钳制/非法回退行为统一，各处手写 `Math.max/min` 钳制删除。
+- **空态观感统一**：AI 会话列表「还没有会话 / 没有匹配的会话」、群聊「群聊已删除」、explorer 空目录占位（局部工厂改内部委托，调用点零改动）换用 `renderEmptyState`。
+- **弹层定位收编**：智能体设置群名联想浮层的手写视口钳制/翻转换 `core/popover-position.js` 的 `placePopover`。
+- 配套：`icons.js` 注册 `minus` / `tray`；`.mi-badge` 补四档语义色（success/warn/danger/muted）；`.pp-badge` 与 `.ws-project-badge` 的重复外观声明合并；护栏测试 `form-controls-factory` 扩至 20 条用例，`combo-select` / `badge` / `empty-state` 新增测试并登记 `npm test`；`docs/frontend-form-controls.md` §6 与 `docs/core-capabilities.md` 同步登记。
+- 验证：`npm test` 的 typecheck 前置门与 test:ui-core（847）/ test:ui-shell（571）/ test:maven（23）全绿；test:ai 现存 2 处红属并行在途的 session-rail 改动，与本次无关。
+
+### 改进（插件开发技能对齐插件平台原语）
+
+- 内置 `plugin-creator` 技能同步 2026-11-27 落地的插件平台原语（提交 `0d148071`，方案 `docs/finished-plans/agent-host-platform.md`）：清单依赖声明 `dependencies`（拓扑排序先加载被依赖者、缺依赖/循环跳过下游）、入口三种等价写法（脚本式 / `return {apply(ctx)}` / `module.exports = {apply(ctx)}`，非 ES 模块、`apply` 只等 5 秒）。
+- 扩展面从原先列出的 6 个 API 补齐到当前真实能力：格式/视图/导入器/文档转换器/数据库驱动、命令（`category` / `contexts` / `when` / `shortcut`）与三类主题、`registerTool`（默认不下发，需用户授权）/ `registerAIContext` / `registerAIProvider` / `registerCommandClassifier`、`registerService` 后台进程托管与四个服务操作、依赖注入 `provide` / `require` / `inject` / `effect`（点分 key、`group` 隔离）、五模式钩子（`emit` / `waterfall` / `parallel` / `serial` / `bail`）与 `agent/pre-step`、`agent/request`、`agent/request-error` 三个插桩点。
+- 技能里把各 API 的入参形状与边界写进正文（AI 工具的三层授权与上限、`inject` / `provide` 的选项、钩子同步/异步语义、`runCommand` 系列的时间与输出限制），改成**自包含**：不再让模型去读 `docs/plugins/README.md` / `examples/`——那两个路径只在 CaDt 源码仓库里存在，别的项目工作区读不到。
+- 验证：`frontend` 下 `node --test test/ai/core/ai-constants.test.mjs`、`test/ai/ai-app-actions.test.mjs` 通过（技能名唯一性与 cadt-ui 动作表区间不受影响）。
+
+### 改进（关窗三选一确认框 + 结构面板代码大纲）
+
+- **关闭窗口时新增「每次询问」（默认）**：点 X 弹三选一确认框——取消 / 退出应用 / 最小化到托盘，正文按当前未保存修改、AI 回合、终端与后台任务给出风险提示；勾选「不再询问」把选择写进 `config.json` 的 `closeAction`（等价于设置页选定「直接退出」或「最小化到托盘」），之后点 X 直接执行。设置页「关闭窗口时」下拉同步新增该选项。
+- 「退出应用」按钮走应用级 `ForceQuitAll`（关闭全部窗口），「最小化到托盘」走新绑定 `MinimizeToTray`；仅主窗口且 Windows 托盘可用时弹框，系统关机 / 显式退出 / 附属窗口不受影响。
+- **结构面板显示代码大纲**：源码语言（JS/TS、Go、Python、Java/C 系、Rust、SQL、Shell 等）在细粒度解析树顶部追加「代码大纲」分组（分节 + 顶层符号，可点击跳行），与 AI 工具 `code_outline` / `.map.md` 共用 `core/code-outline.js` 解析真源、行号口径一致；JSON/YAML/TOML/HTML/Markdown 等数据语言维持原解析树。
+- **下线「会话结构」来源**：会话导航由已实施的 AI 面板滑轨单独承担，结构面板的来源切换按钮、`structureSource` 设置键与会话结构样式一并清除（滑轨数据链完整保留）。
+- 验证：`go test ./...`、`npm test`（含 typecheck 前置门）、`npm run build` 通过。
+
 ### 改进（新增 orchestrate 技能：斜杠触发与主动推荐编排）
 
 - 新增内置技能 `orchestrate`：输入 `/orchestrate` 可直接进入编排流程；技能描述进入系统提示词的 `<skills>` 段，AI 在遇到大重构 / 多阶段迁移 / 跨几十个文件、或用户说「分几批做 / 并行做 / 你来指挥 / 用编排跑」时会主动推荐使用编排，并说明收益与代价。
@@ -67,7 +141,13 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **人工控制**：`orchestration_plan` 任何权限档都强制弹可编辑审批卡（批次/依赖/owns/verify/超时/模型/并发/预算/dry-run 顺序/自主执行/开始前快照）；`orchestration_control` 每次越过批准边界都要确认；看板提供暂停/恢复/停止/跳过/重派/改未派草稿/回答/导出报告。
 - **可观测与自愈**：编排看板是应用页面 + 独立虚拟标签页，展示批次状态、attempts、失败分类、最近事件、执行会话用量/子代理、仲裁交接历史；会话列表把批次会话缩进挂在发起会话下并默认折叠（失败自动展开）。supervisor 有 panic fail-closed、看门狗与独立 auditor；auditor 只读持久化事实、只报警/请求重启，不改业务状态。
 - **启动误报修复**：supervisor 巡检 panic 时，只有真的存在被 fail-closed 的编排才发系统通知；没有编排时只写日志，不再出现「刚打开软件就弹编排调度器故障」。同时把 panic 堆栈接回应用日志（此前只注入了 `Deps.Logf`，包级 `logf` 仍是 nil，故障原因被静默吞掉），并加固空 `workspaces` 损坏状态的访问。
-- **验证**：新增 `internal/orchestration` 表驱动测试（热路径、返工、静默屏障、超时、未知态、写闸、归属、超时回答、审计不改状态）与前端纯函数/接线守卫；`npm test`、`go test ./...`、`go build ./...`、前端构建与 linux/darwin 交叉编译通过。
+- **审批卡迁到 composer 接管区**：编排计划审批复用 `submit_plan` 同款接管卡与折叠细条，可占满输入区高度。计划结构按只读审核展示——批次标题 / 描述 / 依赖 / 范围 / 验收不可编辑，并发 / 单批尝试 / 预算 / 超时只读；用户只调审查门、终审、模型授权与自主执行 / 快照。高级设置与审批选项在同一张卡内，展开栏粘在滚动区顶部；执行顺序用常驻 SVG 依赖图展示（同列=可并行波次、实线=dependsOn、虚线=终审门，失败可重试），不再藏在按钮后面。「继续编排」把计划退回母会话修订。提交中关闭或停止不会把已创建误报成「未创建」。
+- **多工作区提交修复**：多工作区 harness 主窗口不再要求「单工作区窗口」——审批默认使用当前会话所属工作区；派发事件跨当前聚焦根接收（后端 Claim 互斥，只有一个窗口认领会话）；看板按应用页绑定的仓库过滤，不再串仓库。
+- **模型留空 = 继承母会话**：批次、审查、终审模型留空时不再回落到审批时固定的仲裁模型，而是由新建执行会话按 `parentSessionId` 解析母会话当前模型；模型白名单授权仍必须显式勾选。
+- **全部完成后的终审**：审批卡新增「全部完成后开子代理终审」与 1–3 个数量选择（默认关，可在设置页改默认）。全部 work 与逐批审查收尾后创建只读终审批次，终审通过前编排不算 done；终审提出阻断/应修时停在看板等裁决，可接受、重派或跳过。
+- **修复编排审批卡初始化崩溃**：`createCheckbox` 返回 `{element, control}`，之前误把包装对象当原生控件绑定 `change`，打开审批卡时报 `addEventListener is not a function`；已统一保存 `.control` 绑事件、`.element` 进布局。同批修正了审查门 / 终审 / 模型授权的 `checked` 读取（此前会被当成永远未勾选）。
+- **编排子会话状态**：`orchestration_status` 的详情输出补上每个 work / 审查 / 终审批次的执行会话 id、运行态（空闲 / 运行中 / 压缩中）与未读、消息数；work 批次下缩进列审查子项，终审单独分组。`agent_tree` 明确只覆盖 `spawn_agent` 子代理，不会把编排批次混进团队树；`session_list` 仍是平铺的投递目标列表。
+- **验证**：新增 `internal/orchestration` 表驱动测试（热路径、返工、静默屏障、超时、未知态、写闸、归属、超时回答、审计不改状态、终审门、多工作区提交）与前端纯函数/接线守卫；`npm test`、`go test ./...`、`go build ./...`、前端构建与 linux/darwin 交叉编译通过。
 
 ### 修复（多工作区后台通知不再卡在信箱）
 
@@ -543,8 +623,9 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 - **侧栏 Maven 面板**：打开 Maven 项目且本机扫到 Maven 时，左侧工具条自动出现 Maven 图标（触发判定 = 工作区 pom.xml 探测 + 工具链缓存惰性扫描，非 Maven 用户不显示，重算挂在工作区切换 / 手动刷新上）。面板树形展示配置文件（pom.xml / `~/.m2/settings.xml`，点击在编辑区打开）、项目与子模块（读 `<modules>`，限深 4 层递归，`${...}` 占位模块跳过）、每个项目的九个标准生命周期目标；子模块按 `-pl <模块路径>` 执行。点目标直接在「运行」面板起会话（新增 `runCommand` 入口，继承只读拒绝 / 并发上限 / 超时杀树，按 `maven` 首次确认；mvn 经 `cmd.exe /c` 包装，沿用 bat/cmd 配方同一约定）。
 - **依赖 / 插件 / 仓库惰加载与执行开关**：「依赖项」「插件」「仓库」三组节点展开时起 `mvn dependency:tree` / `help:effective-pom` / `help:effective-settings`（Go 侧输出写临时文件绕开 `[INFO]` 噪声，前端 fast-xml-parser / 纯函数解析；4 MB 输出上限；失败提示可重试）；依赖 / 插件 / 仓库节点点击复制坐标或 URL。工具条「执行目标…」弹窗（overlay-stack 注册）跑任意 goal，词元按 argv 传递并拒绝 cmd 元字符；执行开关（离线 `-o` / 跳过测试 `-DskipTests` / 强制更新快照 `-U` / 精简进度 `-ntp`）存 `settings.mavenFlags` 偏好键，走 `persistSettingsLight` 通道。
-- **后端**：`internal/runproject` 标记表加 `pom.xml`（pyproject 之后、Makefile 之前；`Detect` 兜底文案同步）——Maven 项目 F5 不给候选命令、改提示走 Maven 工具窗口；新增 `internal/mavenproject`（pom 结构纯文件读取 + 数据命令统一通道，`cmdwrap_windows/other` 平台成对）与根壳绑定 `MavenProjectInfo` / `MavenData`；`dev/mock-backend.js` 补同名 mock。
-- **验证**：`internal/runproject`、`internal/mavenproject` 表驱动测试（含 fake mvn.cmd 打通「cmd 包装 + 临时文件 + 读回」链路）全绿；新增 `frontend/test/maven/maven-model.test.mjs`（15 例，登记 `npm test` 新分组 `test:maven`）覆盖开关 / 命令拼装 / 依赖树缩进解析 / effective-pom / effective-settings 解析；`npm test` 全量、`npm run build`、`go build ./...`、`go vet` 改动面、`tools/check-crossbuild.cmd`（linux/darwin 三目标）全通过。方案见 `docs/finished-plans/maven-tool-window.md`。
+- **后端**：`internal/runproject` 标记表加 `pom.xml`（pyproject 之后、Makefile 之前；`Detect` 兜底文案同步）——Maven 项目 F5 不给候选命令、改提示走 Maven 工具窗口；新增 `internal/mavenproject`（pom 结构纯文件读取 + 数据命令统一通道，`cmdwrap_windows/other` 平台成对）与绑定 `MavenProjectInfo` / `MavenData`（2026-11-24 根目录重构后按服务化嵌入承载）；`dev/mock-backend.js` 补同名 mock（`?maven` 场景让 dev 下面板可达）。
+- **代码评审修复**：触发判定加代际守卫（启动判定与切工作区并发时，旧 key 的结果不再写进新 key 的对象）；模块路径白名单收口注入面——`<module>` 原文来自不可信 pom 且进 `cmd.exe /c` 命令行，前后端与 Go 三处统一拒绝 cmd 元字符（`& | < > ^ % !` 等）；多模块聚合根的 effective-pom 输出多根 XML，解析取第一个根（此前恒返回空）；陈旧渲染调用的失败不再污染新一轮状态；只读模式不再白弹首次确认框；无 pom 的模块节点不可展开；设置页补扫 Maven 后图标即时出现（`settings-changed → revalidate`，已就绪跳过）；ab-maven 图标与注册表造型统一。
+- **验证**：`internal/runproject`、`internal/mavenproject` 表驱动测试（含 fake mvn.cmd 打通「cmd 包装 + 临时文件 + 读回」链路、含空格 mvn 路径回归、自引用 / 超大 pom / 畸形 pom 用例）全绿；新增 `frontend/test/maven/maven-model.test.mjs` 与 `maven-panel.test.mjs`（登记 `npm test` 新分组 `test:maven`）覆盖开关 / 命令拼装 / 依赖树缩进解析 / effective-pom / effective-settings 解析与面板接线守卫；`npm test` 全量、`npm run build`、`go build ./...`、`go vet` 改动面、绑定基线守卫、`tools/check-crossbuild.cmd`（linux/darwin 三目标）全通过。方案见 `docs/finished-plans/maven-tool-window.md`。
 
 ### 功能（应用页面：认知索引）
 

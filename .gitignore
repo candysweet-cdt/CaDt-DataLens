@@ -17,6 +17,8 @@ scripts/eval-data/
 /datalens.exe
 Thumbs.db
 .DS_Store
+# Windows 快捷方式（本机相关二进制，不入库）
+*.lnk
 # Python 字节码缓存（运行 docs/mcp-desktop 下的脚本会生成，不带前导斜杠覆盖任意层级）
 __pycache__/
 *.pyc
