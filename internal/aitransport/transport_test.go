@@ -1270,6 +1270,17 @@ func TestAIRetryDelayExponential(t *testing.T) {
 	if d := aiRetryDelay(0, past, 429); d != 0 {
 		t.Fatalf("过期的 HTTP-date 应立即重试，实际 %v", d)
 	}
+	// 超长 Retry-After 必须回落指数退避：否则故障/恶意网关能让同 key 请求挂起数小时
+	if d := aiRetryDelay(0, "7200", 429); d > 3*time.Second {
+		t.Fatalf("超长 Retry-After 应回落指数退避（≈2s），实际 %v", d)
+	}
+	if d := aiRetryDelay(0, "3600", 0); d > 2*time.Second {
+		t.Fatalf("超长 Retry-After 应回落指数退避（≈1s），实际 %v", d)
+	}
+	// 上限之内仍照原样尊重
+	if d := aiRetryDelay(0, "45", 429); d != 45*time.Second {
+		t.Fatalf("上限内的 Retry-After 应生效，实际 %v", d)
+	}
 }
 
 func TestAIRetryDelayRateLimit(t *testing.T) {

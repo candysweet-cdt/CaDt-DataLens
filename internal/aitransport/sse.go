@@ -4,6 +4,7 @@ package aitransport
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -663,9 +664,16 @@ func aiProxyBypassed(host, override string) bool {
 	return false
 }
 
+// aiModelsTimeout 模型列表/连通性测试的单次上限：端点无响应时必须能回错误。
+const aiModelsTimeout = 20 * time.Second
+
 func ListModels(client *http.Client, cfg Config) ([]string, error) {
 	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	req, err := http.NewRequest(http.MethodGet, aiOpenAIModelsURL(base), nil)
+	// 必须带 ctx + 超时：client 本身没有 Timeout，端点挂起时绑定调用会永久卡死
+	//（前端界面一直停在「测试中…」）。
+	ctx, cancel := context.WithTimeout(context.Background(), aiModelsTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, aiOpenAIModelsURL(base), nil)
 	if err != nil {
 		return nil, err
 	}

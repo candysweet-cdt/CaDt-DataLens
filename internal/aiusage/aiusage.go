@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"datalens/internal/aitransport"
+	"datalens/internal/redact"
 )
 
 const (
@@ -184,7 +185,9 @@ func aiUsageErrorSnippet(body []byte, readErr error) string {
 	if len(text) > 300 {
 		text = text[:300] + "…"
 	}
-	return text
+	// 网关会把请求头（Authorization / x-api-key）回显进错误体：这条路径与
+	// aigen 一样要把凭据形态打码，否则错误片段回传前端就等于泄露 API Key。
+	return redact.Secrets(text)
 }
 
 // ---------- 各家响应解析（字段缺失时返回明确错误） ----------

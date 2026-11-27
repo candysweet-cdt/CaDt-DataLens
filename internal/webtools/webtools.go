@@ -24,6 +24,7 @@ import (
 
 	"datalens/internal/aitransport"
 	"datalens/internal/chardec"
+	"datalens/internal/netguard"
 )
 
 const (
@@ -309,16 +310,27 @@ func webHasAVIFBrand(body []byte) bool {
 	return brand == "avif" || brand == "avis"
 }
 
+// webClient 构造抓取用客户端。
+//
+// SSRF 防护分两层：webValidateURL 做连接前预检（解析并校验每个 IP），
+// 以及拨号阶段的 netguard.Control——后者拿的是**实际要连的 IP**，能封住
+// DNS 重绑定（预检返回公网、连接时返回 127.0.0.1）。走代理时不挂 Control：
+// 那时拨号目标是代理本身（常在本机/内网），挂了会把正常代理请求一起拒掉。
 func webClient() *http.Client {
+	proxy := aitransport.SystemProxy()
+	transport := &http.Transport{
+		Proxy:                 proxy,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		IdleConnTimeout:       30 * time.Second,
+	}
+	if proxy == nil {
+		transport.DialContext = netguard.Dialer().DialContext
+	}
 	return &http.Client{
-		Timeout: webRequestTimeout,
-		Transport: &http.Transport{
-			Proxy:                 aitransport.SystemProxy(),
-			ForceAttemptHTTP2:     true,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 15 * time.Second,
-			IdleConnTimeout:       30 * time.Second,
-		},
+		Timeout:   webRequestTimeout,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= webMaxRedirects {
 				return errors.New("重定向次数过多")
@@ -412,7 +424,7 @@ func webValidateURL(ctx context.Context, raw string) (*url.URL, error) {
 		return nil, errors.New("域名没有可用地址")
 	}
 	for _, ip := range ips {
-		if !webIsPublicIP(ip) {
+		if !netguard.IsPublicIP(ip) {
 			return nil, fmt.Errorf("只允许访问公网地址（%s 解析到内网或保留地址）", host)
 		}
 	}
@@ -428,37 +440,8 @@ func webBlockedHost(host string) bool {
 		strings.HasSuffix(host, ".internal")
 }
 
-func webIsPublicIP(ip net.IP) bool {
-	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
-		return false
-	}
-	if v4 := ip.To4(); v4 != nil {
-		switch {
-		case v4[0] == 0:
-			return false
-		case v4[0] == 100 && v4[1]&0xC0 == 64: // 100.64.0.0/10
-			return false
-		case v4[0] == 192 && v4[1] == 0 && v4[2] == 0: // 192.0.0.0/24
-			return false
-		case v4[0] == 192 && v4[1] == 0 && v4[2] == 2: // 192.0.2.0/24
-			return false
-		case v4[0] == 198 && (v4[1] == 18 || v4[1] == 19): // 198.18.0.0/15
-			return false
-		case v4[0] == 198 && v4[1] == 51 && v4[2] == 100: // 198.51.100.0/24
-			return false
-		case v4[0] == 203 && v4[1] == 0 && v4[2] == 113: // 203.0.113.0/24
-			return false
-		case v4[0] >= 240:
-			return false
-		}
-		return true
-	}
-	if len(ip) == net.IPv6len && ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x0d && ip[3] == 0xb8 {
-		return false // 2001:db8::/32
-	}
-	return true
-}
+// webIsPublicIP 委托 netguard.IsPublicIP：判定逻辑集中一处，webtools / aigen 共用。
+func webIsPublicIP(ip net.IP) bool { return netguard.IsPublicIP(ip) }
 
 func webParseBingRSS(raw []byte, limit int) ([]map[string]string, error) {
 	var feed struct {

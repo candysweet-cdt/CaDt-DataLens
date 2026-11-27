@@ -14,8 +14,10 @@ var (
 	// LogsDir 应用日志目录，4xx 请求体转储落在这里（internal/applog.Dir）。
 	LogsDir func() string
 	// AttachWatchdog 把空闲看门狗挂到会话的流条目上，供 AITouchStream 重置
-	// （main/ai_stream.go 的流注册表）。
-	AttachWatchdog func(id string, watchdog *time.Timer)
+	// （internal/aichat/stream.go 的流注册表）。
+	// idle 是本次请求实际生效的空闲超时（用户可配 30–3600s）：AITouchStream 必须
+	// 按它重置，用全局默认 300s 会把用户配置双向覆盖掉。
+	AttachWatchdog func(id string, watchdog *time.Timer, idle time.Duration)
 )
 
 func logf(level, format string, args ...any) {

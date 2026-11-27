@@ -150,12 +150,20 @@ func (c *Chat) AITouchStream(sessionId string) {
 	for id, entry := range aiStreams.entries {
 		if id == sessionId || strings.HasPrefix(id, sessionId+"#") {
 			if entry.watchdog != nil {
-				entry.watchdog.Reset(aitransport.IdleTimeout)
+				idle := entry.idle
+				if idle <= 0 {
+					idle = aitransport.IdleTimeout // 未挂载时（旧路径/测试）退回默认
+				}
+				entry.watchdog.Reset(idle)
 			}
 		}
 	}
 	aiStreams.Unlock()
 }
+
+// aiTestTimeout 连通性测试的单次上限：端点无响应时绑定调用必须能返回错误，
+// 而不是让前端界面永久停在「测试中…」。
+const aiTestTimeout = 20 * time.Second
 
 // AITestConnection 验证当前 Profile 的地址/密钥/模型是否可用。
 func (c *Chat) AITestConnection(cfg aitransport.Config) (string, error) {
@@ -181,7 +189,10 @@ func (c *Chat) AITestConnection(cfg aitransport.Config) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		req, err := http.NewRequest(http.MethodPost, aitransport.AnthropicMessagesURL(base), bytes.NewReader(body))
+		// 带超时的 ctx：端点挂起时不能让绑定调用永久阻塞（chat.go 的 client 无 Timeout）。
+		ctx, cancel := context.WithTimeout(context.Background(), aiTestTimeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, aitransport.AnthropicMessagesURL(base), bytes.NewReader(body))
 		if err != nil {
 			return "", err
 		}

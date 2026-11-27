@@ -18,6 +18,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,6 +27,8 @@ import (
 
 	"datalens/internal/aitransport"
 	"datalens/internal/atomfile"
+	"datalens/internal/netguard"
+	"datalens/internal/redact"
 )
 
 // Version 宿主注入：应用版本，用于 User-Agent（main/app_core.go 的 appVersion）。
@@ -83,7 +86,10 @@ type SaveSpec struct {
 	Proxy      string            `json:"proxy"`
 	TimeoutSec int               `json:"timeoutSec"`
 	Headers    map[string]string `json:"headers,omitempty"`
-	Items      []ProductItem     `json:"items"`
+	// Endpoint 是本次生成请求的完整 URL（前端渲染后的同一地址）。用于判断产物
+	// 与生成端点是否同 host——只有同 host 才转发鉴权头，见 aiGenDownloadURL。
+	Endpoint string        `json:"endpoint,omitempty"`
+	Items    []ProductItem `json:"items"`
 }
 
 // SavedFile 是落盘后的单个产物（路径回给模型继续引用）。
@@ -218,7 +224,7 @@ func SaveProducts(specJSON string) SaveResult {
 		case "b64":
 			raw, productMIME, err = aiGenDecodeB64(item)
 		case "url":
-			raw, productMIME, err = aiGenDownloadURL(client, item, timeout, limit, spec.Headers)
+			raw, productMIME, err = aiGenDownloadURL(client, item, spec.Endpoint, timeout, limit, spec.Headers)
 		default:
 			err = fmt.Errorf("未知产物类型 %q（支持 b64 / url）", item.Type)
 		}
@@ -287,13 +293,66 @@ func aiGenDecodeB64(item ProductItem) ([]byte, string, error) {
 	return raw, productMIME, nil
 }
 
+// aiGenCheckProductURL 校验产物 URL 并判定是否与生成端点同 host。
+// 不同 host 时要求域名解析结果全为公网地址（连接时还有拨号守卫兜底）。
+func aiGenCheckProductURL(raw, endpoint string) (string, bool, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || u.User != nil {
+		return "", false, fmt.Errorf("产物 URL 无效（需为 http/https 绝对地址，且不能带账号信息）")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", false, fmt.Errorf("产物 URL 无效（需以 http:// 或 https:// 开头）")
+	}
+	sameHost := false
+	if e, eerr := url.Parse(strings.TrimSpace(endpoint)); eerr == nil && e.Host != "" {
+		sameHost = strings.EqualFold(e.Hostname(), u.Hostname())
+	}
+	if !sameHost {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, lerr := netguard.LookupPublicIPs(ctx, u.Hostname()); lerr != nil {
+			return "", false, fmt.Errorf("产物地址不可下载：%s", lerr.Error())
+		}
+	}
+	return u.String(), sameHost, nil
+}
+
+// aiGenHardenedClient 给「跨 host 下载」加拨号守卫：直连时连接阶段再校验一次
+// 实际 IP（封 DNS 重绑定）。走代理时不挂——那时拨号目标是代理本身（常在本机），
+// 挂了会把正常请求一起拒掉，只能依赖 aiGenCheckProductURL 的预检。
+func aiGenHardenedClient(client *http.Client, req *http.Request, sameHost bool) *http.Client {
+	if sameHost {
+		return client // 同 host = 用户自己配置的生成端点，允许内网（本地 ComfyUI 等）
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return client
+	}
+	if tr.Proxy != nil {
+		if p, err := tr.Proxy(req); err == nil && p != nil {
+			return client
+		}
+	}
+	clone := tr.Clone()
+	dialer := netguard.Dialer()
+	dialer.Timeout = 30 * time.Second
+	dialer.KeepAlive = 30 * time.Second
+	clone.DialContext = dialer.DialContext
+	return &http.Client{Transport: clone, Timeout: client.Timeout, CheckRedirect: client.CheckRedirect}
+}
+
 // aiGenDownloadURL 下载 URL 产物（走用户配置的代理栈，限长 + 超时）。
-// headers 由前端传入（与生成请求同一套渲染结果），用于需要鉴权的产物端点；
-// 禁止头（Host / Content-Length 等）在这里再挡一次，避免前端漏校验。
-func aiGenDownloadURL(client *http.Client, item ProductItem, timeoutSec int, limit int64, headers map[string]string) ([]byte, string, error) {
-	target := strings.TrimSpace(item.URL)
-	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-		return nil, "", fmt.Errorf("产物 URL 无效（需以 http:// 或 https:// 开头）")
+//
+// 安全边界：产物 URL 来自生成服务端的响应，属不可信输入。因此
+//   - 只接受 http/https 绝对地址，拒绝 userinfo（https://host@evil 之类）；
+//   - 与生成端点（endpoint）不同 host 时：不转发任何自定义请求头（鉴权头只会
+//     发给生成端点本身，避免 API Key 随恶意/抢注 URL 外泄），且目标必须是公网地址
+//     （预检 + 直连时拨号守卫，封 SSRF 与 DNS 重绑定）；
+//   - 同 host 时保持原有行为（含鉴权头），支持 /v1/videos/{id}/content 这类端点。
+func aiGenDownloadURL(client *http.Client, item ProductItem, endpoint string, timeoutSec int, limit int64, headers map[string]string) ([]byte, string, error) {
+	target, sameHost, err := aiGenCheckProductURL(item.URL, endpoint)
+	if err != nil {
+		return nil, "", err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
@@ -302,17 +361,19 @@ func aiGenDownloadURL(client *http.Client, item ProductItem, timeoutSec int, lim
 		return nil, "", fmt.Errorf("下载请求构造失败：%s", err.Error())
 	}
 	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(Version, "v")+" AI-Gen")
-	for name, value := range headers {
-		name = strings.TrimSpace(name)
-		if name == "" || aitransport.ForbiddenHeader(name) {
-			continue
+	if sameHost {
+		for name, value := range headers {
+			name = strings.TrimSpace(name)
+			if name == "" || aitransport.ForbiddenHeader(name) {
+				continue
+			}
+			if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
+				continue
+			}
+			req.Header.Set(name, value)
 		}
-		if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
-			continue
-		}
-		req.Header.Set(name, value)
 	}
-	resp, err := client.Do(req)
+	resp, err := aiGenHardenedClient(client, req, sameHost).Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("下载失败：%s", err.Error())
 	}
@@ -424,17 +485,5 @@ func aiGenSnippet(text string) string {
 // aiGenRedactError 错误摘要脱敏：URL 查询串里的 key/token 类参数值打码（密钥可能出现在
 // 失败请求的 URL 回显里；请求头由 Go net/http 不回显）。
 func aiGenRedactError(text string) string {
-	if idx := strings.Index(text, "?"); idx >= 0 && idx < len(text)-1 {
-		query := text[idx+1:]
-		if amp := strings.Index(query, "&"); amp >= 0 {
-			query = query[:amp]
-		}
-		if eq := strings.Index(query, "="); eq > 0 {
-			key := strings.ToLower(query[:eq])
-			if strings.Contains(key, "key") || strings.Contains(key, "token") || strings.Contains(key, "secret") {
-				return text[:idx+1] + query[:eq] + "=***" + text[idx+1+len(query):]
-			}
-		}
-	}
-	return text
+	return redact.Secrets(text)
 }

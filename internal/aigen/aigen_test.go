@@ -135,7 +135,7 @@ func TestAiGenDownloadErrorIncludesResponseHint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = aiGenDownloadURL(client, ProductItem{Type: "url", URL: server.URL + "/x"}, 30, 1<<20, nil)
+	_, _, err = aiGenDownloadURL(client, ProductItem{Type: "url", URL: server.URL + "/x"}, server.URL+"/gen", 30, 1<<20, nil)
 	if err == nil {
 		t.Fatal("非 200 应报错")
 	}
@@ -148,6 +148,43 @@ func TestAiGenDownloadErrorIncludesResponseHint(t *testing.T) {
 	}
 	if strings.Contains(msg, "\n") || strings.Contains(msg, "\t") {
 		t.Fatalf("响应片段应压成单行：%q", msg)
+	}
+}
+
+// 产物 URL 来自服务端响应，属不可信输入：跨 host 时必须是公网地址，
+// 且不能带 userinfo；同 host 才允许（本地 ComfyUI / 局域网端点）。
+func TestAiGenProductURLGuard(t *testing.T) {
+	const endpoint = "https://api.example.com/v1/images/generations"
+	cases := []struct {
+		name     string
+		url      string
+		wantErr  bool
+		sameHost bool
+	}{
+		{"同 host", "https://api.example.com/v1/files/a.png", false, true},
+		{"同 host 不同端口", "https://api.example.com:8443/a.png", false, true},
+		{"跨 host 公网 IP", "https://93.184.216.34/a.png", false, false},
+		{"跨 host 环回", "http://127.0.0.1/a.png", true, false},
+		{"跨 host 云元数据", "http://169.254.169.254/latest/meta-data/", true, false},
+		{"跨 host 私网", "http://192.168.1.5/a.png", true, false},
+		{"userinfo 伪装", "https://api.example.com@evil.example.org/a.png", true, false},
+		{"非 http(s) 协议", "file:///etc/passwd", true, false},
+		{"相对地址", "/a.png", true, false},
+	}
+	for _, tc := range cases {
+		target, sameHost, err := aiGenCheckProductURL(tc.url, endpoint)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("%s：应被拒，实际放行（target=%q）", tc.name, target)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s：不应报错：%v", tc.name, err)
+		}
+		if sameHost != tc.sameHost {
+			t.Fatalf("%s：sameHost=%v，期望 %v", tc.name, sameHost, tc.sameHost)
+		}
 	}
 }
 
@@ -276,6 +313,7 @@ func TestAiGenSaveProductsFlow(t *testing.T) {
 	spec := SaveSpec{
 		Workspace: workspace,
 		Kind:      "image",
+		Endpoint:  server.URL + "/v1/images/generations",
 		Items: []ProductItem{
 			{Type: "b64", Data: base64.StdEncoding.EncodeToString(png)},
 			{Type: "url", URL: server.URL + "/out.png"},
@@ -353,6 +391,7 @@ func TestAiGenSaveProductsHeaders(t *testing.T) {
 	spec := SaveSpec{
 		Workspace: workspace,
 		Kind:      "video",
+		Endpoint:  server.URL + "/v1/videos",
 		Headers: map[string]string{
 			"Authorization": "Bearer sk-test",
 			"Host":          "evil.example.com",

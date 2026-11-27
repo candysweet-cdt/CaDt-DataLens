@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -108,10 +109,13 @@ type jwksKey struct {
 }
 
 var jwksCache = struct {
+	mu      sync.Mutex
 	entries map[string]*jwksCacheEntry
 }{entries: make(map[string]*jwksCacheEntry)}
 
 func jwksCacheFor(endpoint string) *jwksCacheEntry {
+	jwksCache.mu.Lock()
+	defer jwksCache.mu.Unlock()
 	entry := jwksCache.entries[endpoint]
 	if entry != nil && time.Since(entry.at) < jwksTTL {
 		return entry
@@ -120,6 +124,8 @@ func jwksCacheFor(endpoint string) *jwksCacheEntry {
 }
 
 func setJWKSCache(endpoint string, keys []jwksKey) {
+	jwksCache.mu.Lock()
+	defer jwksCache.mu.Unlock()
 	jwksCache.entries[endpoint] = &jwksCacheEntry{keys: keys, at: time.Now()}
 }
 

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +28,7 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 	touch := func() { watchdog.Reset(idleTimeout) }
 	// 登记到流条目：工具执行/用户输入等长时间无网络数据时，前端经 AITouchStream 重置看门狗。
 	if AttachWatchdog != nil {
-		AttachWatchdog(id, watchdog)
+		AttachWatchdog(id, watchdog, idleTimeout)
 	}
 
 	// 参数型 400（如 max_tokens 超过模型上限）是确定性故障：按服务端给的上界
@@ -103,28 +104,14 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			// 非 2xx：读错误体（含网关校验详情），并把完整请求体转储到日志目录——
-			// 定位「reasoning_content 必须回传」这类载荷校验问题的真实规则。
+			// 非 2xx：读错误体（含网关校验详情），并落一份**最小定位结构**到日志目录。
+			// 以前这里转储的是完整请求体（会话正文 + 图片 base64），401/403 也照落：
+			// 密钥填错时每点一次就写一份完整会话进日志，且从来没有清理。
+			// 现在只记定位所需的事实（provider/model/host/状态/规模/错误片段）。
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, aiErrorBodyLimit))
 			_ = resp.Body.Close()
 			client.CloseIdleConnections()
-			var dumpPayload map[string]any
-			var dumpErr error
-			switch ProviderOf(cfg) {
-			case ProviderAnthropic:
-				dumpPayload, dumpErr = aiBuildAnthropicBody(cfg, messages, tools)
-			case ProviderResponses:
-				dumpPayload, dumpErr = aiBuildResponsesBody(cfg, messages, tools)
-			default:
-				dumpPayload, dumpErr = aiBuildOpenAIBody(cfg, messages, tools)
-			}
-			if dumpErr == nil {
-				if bodyBytes, merr := json.Marshal(dumpPayload); merr == nil {
-					dumpPath := filepath.Join(logsDir(), fmt.Sprintf("ai-last-4xx-request-%d.json", time.Now().UnixMilli()))
-					_ = os.WriteFile(dumpPath, bodyBytes, 0o600)
-					logf("info", "AI 4xx 请求体转储：%s（messages=%d tools=%d）", dumpPath, len(messages), len(tools))
-				}
-			}
+			aiDumpRequestDiagnostics(cfg, messages, tools, resp.StatusCode, errBody)
 			// 参数型 400/422：服务端把允许范围写回错误体时，按上界收敛 max_tokens 再试一次。
 			// 只在「实际发送值确实超过上界」时降档，鉴权/内容类 4xx 与其它字段不会误命中；
 			// 一次请求最多降一次，降完仍失败就把原始错误如实抛给前端。
@@ -250,16 +237,25 @@ func aiRetryAttempts(retryMax, code int) int {
 	return retryMax
 }
 
+// aiRetryAfterMax 是 Retry-After 的等待上限。此前原样尊重服务端值，故障/恶意网关
+// 回一个 Retry-After: 7200 就能让单请求与同 key 全部并发请求挂起两小时
+// （429 还会把它灌进限流器冻结期）。超限一律按指数退避处理。
+const aiRetryAfterMax = 120 * time.Second
+
 // aiRetryDelay 计算第 attempt 次重试（从 0 计）前的等待：优先 Retry-After（秒数或
-// HTTP-date，原样尊重服务器不钳制）；否则指数退避——429（分钟窗配额）2s→4s→8s…上限 60s，
-// 5xx/网络错误 1s→2s→4s…上限 30s，均附 ±15% 抖动避免同时重试踩踏。
+// HTTP-date，超过 aiRetryAfterMax 时回落指数退避）；否则指数退避——
+// 429（分钟窗配额）2s→4s→8s…上限 60s，5xx/网络错误 1s→2s→4s…上限 30s，
+// 均附 ±15% 抖动避免同时重试踩踏。
 func aiRetryDelay(attempt int, retryAfter string, code int) time.Duration {
 	if v := strings.TrimSpace(retryAfter); v != "" {
 		if seconds, err := strconv.ParseFloat(v, 64); err == nil && seconds >= 0 {
-			return time.Duration(seconds * float64(time.Second))
-		}
-		if t, err := http.ParseTime(v); err == nil {
-			return max(time.Until(t), 0)
+			if d := time.Duration(seconds * float64(time.Second)); d <= aiRetryAfterMax {
+				return d
+			}
+		} else if t, err := http.ParseTime(v); err == nil {
+			if d := max(time.Until(t), 0); d <= aiRetryAfterMax {
+				return d
+			}
 		}
 	}
 	var base time.Duration
@@ -560,6 +556,67 @@ func aiRejectsCacheControl(code int, body []byte) bool {
 	}
 	text := strings.ToLower(aiStatusErrorBodyText(code, body))
 	return strings.Contains(text, "cache_control") || strings.Contains(text, "cache control")
+}
+
+// aiDumpRequestDiagnostics 落一份最小定位结构：只记「哪个模型、发多大、服务端
+// 怎么回的」，绝不包含会话正文与图片 base64。同时做环形清理（只保留最近几份），
+// 避免每次失败都新建文件、无限增长。
+func aiDumpRequestDiagnostics(cfg Config, messages []Message, tools []ToolDef, status int, errBody []byte) {
+	// 只在载荷校验类失败时落盘：鉴权失败（401/403）与限流错误没有载荷线索，
+	// 却最容易带出完整会话，直接跳过。
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return
+	}
+	contentBytes := 0
+	imageParts := 0
+	for _, m := range messages {
+		contentBytes += len(m.Content)
+		imageParts += len(m.Images) + len(m.Videos)
+	}
+	dump := map[string]any{
+		"at":           time.Now().Format(time.RFC3339),
+		"provider":     ProviderName(cfg),
+		"model":        cfg.Model,
+		"host":         BaseHost(cfg.BaseURL),
+		"status":       status,
+		"messages":     len(messages),
+		"tools":        len(tools),
+		"contentBytes": contentBytes,
+		"imageParts":   imageParts,
+		"errorSnippet": aiStatusErrorBodyText(status, errBody),
+	}
+	raw, err := json.MarshalIndent(dump, "", "  ")
+	if err != nil {
+		return
+	}
+	dir := logsDir()
+	dumpPath := filepath.Join(dir, fmt.Sprintf("ai-last-4xx-request-%d.json", time.Now().UnixMilli()))
+	if err := os.WriteFile(dumpPath, raw, 0o600); err != nil {
+		return
+	}
+	logf("info", "AI 4xx 诊断已记录：%s（messages=%d tools=%d）", dumpPath, len(messages), len(tools))
+	aiPruneDiagnostics(dir, 5)
+}
+
+// aiPruneDiagnostics 只保留最近 keep 份 4xx 诊断：这些文件以前没人清理。
+func aiPruneDiagnostics(dir string, keep int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var paths []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "ai-last-4xx-request-") {
+			paths = append(paths, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(paths) <= keep {
+		return
+	}
+	sort.Strings(paths) // 文件名带毫秒时间戳，字典序即时间序
+	for _, p := range paths[:len(paths)-keep] {
+		_ = os.Remove(p)
+	}
 }
 
 func aiBuildOpenAIBody(cfg Config, messages []Message, tools []ToolDef) (map[string]any, error) {
