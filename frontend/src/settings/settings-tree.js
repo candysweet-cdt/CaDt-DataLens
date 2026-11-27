@@ -19,6 +19,7 @@ const HIGH_RISK_IDS = new Set([
     'ai-opt-subagent-max', 'ai-opt-subagent-depth', 'ai-opt-subagent-model',
     'ai-opt-mcp-enabled', 'ai-opt-export-keys',
     'plugin-path-mode',
+    'orch-opt-review-default',
     'opt-file-assoc', 'opt-context-menu', 'opt-agent-skill', 'opt-path-cmd', 'opt-developer-mode',
 ]);
 
@@ -34,6 +35,8 @@ const MEDIUM_RISK_IDS = new Set([
     'plugin-market-source-mode',
     'envvar-encrypted',
     'lifecycle-enabled',
+    'orch-opt-max-parallel', 'orch-opt-max-attempts', 'orch-opt-batch-timeout',
+    'orch-opt-audit-idle', 'orch-opt-budget',
 ]);
 
 // 审批卡上的警示文案（高风险项必须能说清为什么危险）。
@@ -70,6 +73,12 @@ const RISK_REASONS = {
     'plugin-market-source-mode': '插件市场数据源（Gitee / GitHub）',
     'envvar-encrypted': '环境变量存储与加密方式',
     'lifecycle-enabled': '总开关控制「生命周期钩子自动执行」：覆盖打开/关闭工作区、会话起轮、工具前后、权限请求、停止生成等 9 个事件',
+    'orch-opt-review-default': '编排默认关闭独立审查门会少一道质量关卡',
+    'orch-opt-max-parallel': '编排默认并发越高，同时改文件与消耗 token 的速度越快',
+    'orch-opt-max-attempts': '编排自动重试次数影响返工成本',
+    'orch-opt-batch-timeout': '编排单批超时影响卡住批次占用时间',
+    'orch-opt-audit-idle': '编排审计静默阈值过低会误报、过高会晚发现卡死',
+    'orch-opt-budget': '编排默认 token 预算是成本熔断线',
 };
 
 export function classifySettingsRisk(id) {

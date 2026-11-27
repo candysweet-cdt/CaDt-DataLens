@@ -26,7 +26,7 @@ function decodePartialJsonString(frag) {
 }
 
 // 流式工具卡的增量解析：路径（可能未闭合）拆成 文件名 / 目录，附已接收体积，
-// write_file 另带 content-so-far；edit_file 另带 old_string（**闭合才算完整**，open 收尾引号匹配）
+// write_file 另带 content-so-far；edit_file 另带 oldString（**闭合才算完整**，open 收尾引号匹配）
 // 与 new_string-so-far（未闭合匹配，闭不闭合都能取到值）——供流式 ± 行数估算。
 // 模块级导出纯函数，ai-tool-cards.test.mjs 覆盖。
 export function liveToolParts(args) {
@@ -44,9 +44,11 @@ export function liveToolParts(args) {
     }
     const contentMatch = raw.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)/);
     if (contentMatch) parts.content = decodePartialJsonString(contentMatch[1]);
-    const oldMatch = raw.match(/"old_string"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    // 工具 schema 用 camelCase（ai-tool-defs 的 oldString/newString）：这里曾按
+    // snake_case 取值，流式阶段永远匹配不到，± 行数统计一直不显示。
+    const oldMatch = raw.match(/"oldString"\s*:\s*"((?:[^"\\]|\\.)*)"/);
     if (oldMatch) parts.oldString = decodePartialJsonString(oldMatch[1]);
-    const newMatch = raw.match(/"new_string"\s*:\s*"((?:[^"\\]|\\.)*)/);
+    const newMatch = raw.match(/"newString"\s*:\s*"((?:[^"\\]|\\.)*)/);
     if (newMatch) parts.newString = decodePartialJsonString(newMatch[1]);
     return parts;
 }
@@ -673,6 +675,10 @@ export function createAIToolCards(ctx) {
             case 'session_read': return {verb: '读会话', icon: 'sidechat'};
             case 'session_list': return {verb: '会话列表', icon: 'list'};
             case 'session_send': return {verb: '会话投递', icon: 'sidechat'};
+            case 'orchestration_plan': return {verb: '编排计划', icon: 'branch'};
+            case 'orchestration_report': return {verb: '编排回报', icon: 'branch'};
+            case 'orchestration_status': return {verb: '编排状态', icon: 'branch'};
+            case 'orchestration_control': return {verb: '编排控制', icon: 'branch'};
             case 'preference_list': return {verb: '偏好列表', icon: 'bookmark'};
             case 'preference_write': return {verb: '记录偏好', icon: 'bookmark-plus'};
             case 'preference_remove': return {verb: '删除偏好', icon: 'trash'};
@@ -1065,11 +1071,11 @@ export function createAIToolCards(ctx) {
             head.append(add, del);
         } else if (message.name === 'edit_file' && live) {
             // 执行中（审批/落盘前）approval 还没挂：edit_file 参数此时已完整，
-            // old_string → new_string 直接精确算 ±，不必等审批走完
+            // oldString → newString 直接精确算 ±，不必等审批走完（键名是 camelCase）
             try {
                 const input = parseJson(message.arguments, {});
-                if (typeof input.old_string === 'string' && typeof input.new_string === 'string') {
-                    const ops = ctx.computeLineDiff(input.old_string, input.new_string);
+                if (typeof input.oldString === 'string' && typeof input.newString === 'string') {
+                    const ops = ctx.computeLineDiff(input.oldString, input.newString);
                     let added = 0;
                     let removed = 0;
                     for (const op of ops) {

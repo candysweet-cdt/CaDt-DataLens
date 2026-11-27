@@ -184,19 +184,23 @@ test('停止闸门接线：审批 / 分类器回调不许把已停止的卡片�
     assert.match(panel, /function settleInterruptedTool\(/, '结束后仍停在 running 的卡片需要收口兜底');
 });
 
-test('liveToolParts：edit_file 的 old_string（闭合才算完整）与 new_string-so-far', () => {
-    // old_string 已闭合、new_string 还在流式接收
-    const streaming = liveToolParts('{"path":"a.js","old_string":"const a = 1;\nconst b = 2;","new_string":"const a = 1;\nconst b = 2;\nconst c = 3;');
+test('liveToolParts：edit_file 的 oldString（闭合才算完整）与 newString-so-far', () => {
+    // 工具 schema 的键是 camelCase（ai-tool-defs 的 oldString/newString）——
+    // 这里必须用线上真实形态，否则测试会把「按 snake_case 取值」这个 bug 一起固化下来。
+    // oldString 已闭合、newString 还在流式接收
+    const streaming = liveToolParts('{"path":"a.js","oldString":"const a = 1;\nconst b = 2;","newString":"const a = 1;\nconst b = 2;\nconst c = 3;');
     assert.equal(streaming.oldString, 'const a = 1;\nconst b = 2;');
     assert.equal(streaming.newString, 'const a = 1;\nconst b = 2;\nconst c = 3;');
-    // 两个都闭合（new_string 未闭合正则照样能取完整值）
-    const done = liveToolParts('{"path":"a.js","old_string":"x","new_string":"y"}');
+    // 两个都闭合（newString 未闭合正则照样能取完整值）
+    const done = liveToolParts('{"path":"a.js","oldString":"x","newString":"y"}');
     assert.equal(done.oldString, 'x');
     assert.equal(done.newString, 'y');
-    // old_string 尚未闭合 → null（不产出 ± 统计的信号）
-    const oldStreaming = liveToolParts('{"path":"a.js","old_string":"const a =');
+    // oldString 尚未闭合 → null（不产出 ± 统计的信号）
+    const oldStreaming = liveToolParts('{"path":"a.js","oldString":"const a =');
     assert.equal(oldStreaming.oldString, null);
     assert.equal(oldStreaming.newString, null);
+    // 旧 snake_case 参数不再被识别（键名统一后不应留兼容分支）
+    assert.equal(liveToolParts('{"path":"a.js","old_string":"x","new_string":"y"}').oldString, null);
     // 无 edit 字段的工具不受影响
     assert.equal(liveToolParts('{"command":"git status"}').oldString, null);
 });

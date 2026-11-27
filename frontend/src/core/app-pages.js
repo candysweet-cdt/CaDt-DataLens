@@ -32,6 +32,9 @@
 // 同一词在两处指代不同集合会让用户困惑。这里按「页面对象」命名，侧栏按「作用域」命名。
 export const APP_PAGES = [
     {id: 'usage-stats', label: '使用统计', icon: 'chart', group: '统计', desc: 'Token 用量、热力图、模型分布与请求日志'},
+    // 编排：跨会话按依赖图执行的生产线（不是群聊讨论、也不是子代理临时工）。
+    // 看板是长时间停留、要并列对照的重面板，因此是一个应用页面 + 独立虚拟标签族。
+    {id: 'orchestration', label: '编排', icon: 'branch', group: 'AI 工具', desc: '批次依赖、文件所有权、验收/审查与仲裁的跨会话生产线'},
     {id: 'external-tools', label: '外部工具', icon: 'globe', group: 'AI 工具', desc: 'AI 联网能力来源矩阵、服务提供商、MCP 服务器与桌面控制'},
     {id: 'agents', label: '智能体', icon: 'agents', group: 'AI 工具', desc: '群聊（圆桌讨论）成员管理：模型绑定、人设与职责'},
     // 认知索引 / 补丁库的数据物理上就在各个工作区里（.cadt/cognition、.cadt/patches），

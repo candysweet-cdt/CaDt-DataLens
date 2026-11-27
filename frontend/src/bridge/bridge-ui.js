@@ -15,6 +15,7 @@ import {createBridgeGroupMemberView} from './bridge-group-member-view.js';
 import {createBridgeMemoView} from './bridge-memo-view.js';
 import {createBridgeAppPageView} from './bridge-app-page-view.js';
 import {createBridgeDatabaseView} from './bridge-database-view.js';
+import {createBridgeOrchestrationView} from './bridge-orchestration-view.js';
 
 export function createBridgeUI(deps) {
 
@@ -31,6 +32,8 @@ const memoMod = createBridgeMemoView(deps);
 const appPageMod = createBridgeAppPageView(deps);
 // 数据库连接标签页：侧栏「数据库」面板双击工作区条目打开（一个标签 = 一个库会话，视图在 db 域）
 const databaseMod = createBridgeDatabaseView(deps);
+// 编排看板标签页：独立业务对象（doc.orchestrationSpec）；挂载器由 main 注入
+const orchestrationMod = createBridgeOrchestrationView(deps);
 // git 域要开虚拟文档标签：经 Object.create 委托原 deps（保持 getter 惰性），只补一个宿主函数
 const gitDeps = Object.create(deps);
 gitDeps.openVirtualDoc = openVirtualDoc;
@@ -397,7 +400,7 @@ function openBrowserTab(url, profileKey, opts) {
 
 
     return {
-        ...termMod, ...agentMod, ...teamMod, ...sideChatMod, ...groupMemberMod, ...memoMod, ...appPageMod, ...databaseMod, ...gitMod, ...cliMod,
+        ...termMod, ...agentMod, ...teamMod, ...sideChatMod, ...groupMemberMod, ...memoMod, ...appPageMod, ...databaseMod, ...orchestrationMod, ...gitMod, ...cliMod,
         openBrowserTab, openVirtualDoc,
     };
 }

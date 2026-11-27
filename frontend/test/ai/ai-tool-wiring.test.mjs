@@ -178,11 +178,21 @@ test('每个工具至少在一个权限档下发（四档 × 计划模式取并�
         // 白名单桌面工具仍只在「已启用 + 控制模式」时注入
         desktopInstalledOn: () => true,
         desktopEnabledOn: () => true,
+        // 编排：report/control 按会话角色下发；四档并集测试要分别路过执行者 / 审查者 / 仲裁者。
+        orchestrationInfoOf: (session) => (session && session.orchestration) || null,
     });
+    const sessions = [
+        {id: 'plain'},
+        {id: 'worker', scope: 'edit', orchestration: {role: 'work', owns: ['src/**']}},
+        {id: 'reviewer', scope: 'read', orchestration: {role: 'review', owns: []}},
+        {id: 'arbiter', orchestration: {role: 'arbiter', generation: 1}},
+    ];
     const delivered = new Set();
     for (const scope of ['read', 'edit', 'auto', 'full']) {
         for (const planMode of [false, true]) {
-            for (const tool of api.toolsForScope(scope, planMode)) delivered.add(tool.name);
+            for (const session of sessions) {
+                for (const tool of api.toolsForScope(scope, planMode, session)) delivered.add(tool.name);
+            }
         }
     }
     const missing = toolNames.filter((name) => !delivered.has(name));
@@ -234,6 +244,7 @@ const PROSE_TOKENS = {
     oldString: 'edit_file 的参数，read_file 描述里提醒不要带行号',
     file: 'worktree_manage 的参数（conflict_detail 指定主根文件），其他工具描述里只是普通名词',
     ignore: 'cognition_edit 的参数；cognition_status 描述与 hint 指引去用它（Missing 噪音大的收窄出口）',
+    verify: 'orchestration_plan 的批次级验收字段；report / control 描述里只是说“会复跑验收/不要绕过验收”，不是入参',
 };
 
 test('描述里提到的参数名必须已声明', () => {

@@ -13,6 +13,8 @@ package main
 // 不要在同包 init 之间取函数值快照，一律转发。
 
 import (
+	"context"
+
 	"datalens/internal/activity"
 	"datalens/internal/aicatalog"
 	"datalens/internal/aichat"
@@ -31,6 +33,8 @@ import (
 	"datalens/internal/gitinfo"
 	"datalens/internal/mcp"
 	"datalens/internal/memo"
+	"datalens/internal/notify"
+	"datalens/internal/orchestration"
 	"datalens/internal/reading"
 	"datalens/internal/sessionindex"
 	"datalens/internal/sessionstore"
@@ -41,6 +45,57 @@ import (
 )
 
 func init() {
+	// ---- 多会话编排（internal/orchestration）----
+	// 状态真源落 <appdata>/orchestrations；事件经应用广播、前端按 payload.root 过滤。
+	// supervisor 的 session_gone 只查会话目录是否存在，不向 UI 询问“还在跑吗”。
+	notifier := &notify.Notifier{}
+	orchestration.Configure(appDataRoot(), orchestration.Deps{
+		Emit: func(event string, payload any) { emitAppEvent(event, payload) },
+		Notify: func(title, body, payload string) {
+			_ = notifier.NotifySystemToast(title, body, payload, false)
+		},
+		SessionExists: sessionstore.SessionExists,
+		WorkspaceAvailable: func(workspace string) bool {
+			key := pathKeyForCompare(workspace)
+			if key == "" {
+				return false
+			}
+			for _, st := range winReg.List() {
+				if st.Startup().Mode != windowModeMain || st.Window() == nil || st.Workspace() == "" {
+					continue
+				}
+				if pathKeyForCompare(st.Workspace()) == key {
+					return true
+				}
+			}
+			return false
+		},
+		Snapshot: func(workspace string) (orchestration.SnapshotResult, error) {
+			res, err := wipeGuardService.Snapshot(workspace)
+			if err != nil {
+				return orchestration.SnapshotResult{}, err
+			}
+			return orchestration.SnapshotResult{
+				Mode: string(res.Mode), Name: res.Name, Path: res.Path, Files: res.Files,
+				Bytes: res.Bytes, Skipped: res.Skipped, Excluded: res.Excluded,
+			}, nil
+		},
+		SessionTokens: func(sessionID string) int64 {
+			tokens, _ := usagestats.SessionTokens(sessionID)
+			return tokens
+		},
+		Logf: writeAppLog,
+	}, orchestration.CallDeps{
+		WorkspaceForCall: func(ctx context.Context) string {
+			st := stateForCaller(ctx)
+			if st == nil {
+				return ""
+			}
+			return st.Workspace()
+		},
+		WindowForCall: callerWindowName,
+	})
+
 	// ---- AI 传输与对话（internal/aitransport + internal/aichat）----
 	// 注入诊断日志、应用版本、日志目录、流看门狗挂载点。
 	aitransport.Logf = writeAppLog

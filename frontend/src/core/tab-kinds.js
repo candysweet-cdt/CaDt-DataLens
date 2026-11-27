@@ -41,6 +41,9 @@ export const TAB_KINDS = [
     {marker: 'agentTeam', kind: 'team', icon: 'agents', label: '智能体团队'},
     {marker: 'sideChat', kind: 'sidechat', icon: 'sidechat', label: '支线对话'},
     {marker: 'groupMember', kind: 'groupmember', icon: 'group', label: '群聊成员'},
+    // 编排看板的独立标签页（也作为应用页面入口存在）：doc.orchestrationSpec 指定聚焦的编排。
+    {marker: 'orchestration', kind: 'orchestration', icon: 'branch', label: '编排',
+        resolve: (doc) => ({icon: 'branch', label: (doc && doc.orchestrationSpec && doc.orchestrationSpec.title) || '编排'})},
     // 应用页面（使用统计 / 外部工具 / 定时任务 / 操作记录 / 补丁库…）：一个类型按 doc.appPage 细分，
     // 图标与标签从 core/app-pages.js 的注册表取。视图工厂在 bridge 域。
     {marker: 'appPage', kind: 'apppage', icon: 'doc', label: '应用页面',

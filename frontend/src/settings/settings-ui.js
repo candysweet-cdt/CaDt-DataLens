@@ -883,7 +883,7 @@ function selectSettingsPane(pane) {
     const aiGroup = document.getElementById('snav-ai');
     if (aiGroup) {
         // 外部工具、智能体已迁为应用页面标签页（core/app-pages.js），不再是设置子页
-        const inAI = pane === 'models' || pane === 'gen-models' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences';
+        const inAI = pane === 'models' || pane === 'gen-models' || pane === 'ai' || pane === 'orchestration' || pane === 'persona' || pane === 'context' || pane === 'preferences';
         if (inAI && !aiGroup.classList.contains('expanded')) {
             aiGroup.classList.add('expanded');
             const parent = aiGroup.querySelector('.snav-parent');
@@ -904,7 +904,7 @@ function selectSettingsPane(pane) {
         // 开发者页只剩日志与调试控制台；补丁库已迁为内容区标签页（应用页面 → 补丁库）
         // 外部工具同理已迁（应用页面 → 外部工具），AI 子页不再有它
     }
-    if (pane === 'ai' || pane === 'models' || pane === 'gen-models' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
+    if (pane === 'ai' || pane === 'models' || pane === 'gen-models' || pane === 'orchestration' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
         if (!deps.aiPanel) deps.initAIPanel();
         if (deps.aiPanel && typeof deps.aiPanel.refreshSettings === 'function') {
             try { deps.aiPanel.refreshSettings(); } catch (e) {}

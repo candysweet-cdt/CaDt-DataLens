@@ -19,6 +19,7 @@ import (
 
 	"datalens/internal/appconfig"
 	"datalens/internal/cmdbridge"
+	"datalens/internal/orchestration"
 	"datalens/internal/tray"
 	"datalens/internal/winutil"
 )
@@ -227,6 +228,7 @@ func (a *App) teardownAppServices() {
 		return
 	}
 	a.stopTray()
+	orchestration.StopDefault()
 	a.mcpCloseAll()         // MCP 子进程全量关闭（总预算 8s，超时靠 taskkill 兜底）
 	a.AppServices.StopAll() // 插件后台服务全量停止（取消即杀整棵进程树）
 	a.Watcher.UnwatchAll()  // 全部工作区监听槽（按窗口键控，退出时统一收口）

@@ -1,10 +1,10 @@
 // backend.d.ts：Wails 绑定面类型——**自动生成，不要手改**。
 //
-// 生成：node scripts/gen-backend-types.mjs（名单来自 testdata/app_bindings_baseline.txt，431 个方法）
+// 生成：node scripts/gen-backend-types.mjs（名单来自 testdata/app_bindings_baseline.txt，446 个方法）
 // 名单由 app_bindings_guard_test.go 校验，前端 FQN 是 main.App.<Method>；
 // 运行时经 Call.ByName 动态解析（frontend/src/core/wails-runtime.js 的 createBackendProxy）。
 //
-// 本次签名覆盖：精确 274 / 含 unknown 157 / 签名冲突 0 / 未找到 0
+// 本次签名覆盖：精确 279 / 含 unknown 167 / 签名冲突 0 / 未找到 0
 // 含 unknown 的行上方有 @go 注释，写明 Go 原始签名与待补的结构体名。
 //
 // 用法（阶梯 1 之后，jsconfig 仍保持 checkJs:false）：
@@ -473,6 +473,31 @@ export interface Backend {
     OpenSettingsInMainWindow(pane: string): Promise<void>;
     OpenWithDefaultApp(path: string): Promise<void>;
     OpenWorkspaceForConversation(dir: string, sessionID: string): Promise<void>;
+    OrchestrationAbortStart(reqJSON: string): Promise<void>;
+    /** @go OrchestrationAuthorizeWrite(token string, path string) → (WriteResult, error) // 待补: WriteResult */
+    OrchestrationAuthorizeWrite(token: string, path: string): Promise<unknown>;
+    /** @go OrchestrationClaimBatch(ctx context.Context, reqJSON string) → (ClaimResponse, error) // 待补: ClaimResponse */
+    OrchestrationClaimBatch(reqJSON: string): Promise<unknown>;
+    /** @go OrchestrationControl(ctx context.Context, reqJSON string) → (ControlResult, error) // 待补: ControlResult */
+    OrchestrationControl(reqJSON: string): Promise<unknown>;
+    /** @go OrchestrationCreate(ctx context.Context, reqJSON string) → (CreateResult, error) // 待补: CreateResult */
+    OrchestrationCreate(reqJSON: string): Promise<unknown>;
+    OrchestrationDelete(id: string): Promise<void>;
+    /** @go OrchestrationGet(ctx context.Context, id string) → (*StatusView, error) // 待补: StatusView */
+    OrchestrationGet(id: string): Promise<unknown>;
+    /** @go OrchestrationList(ctx context.Context) → ([]Summary, error) // 待补: Summary */
+    OrchestrationList(): Promise<unknown[]>;
+    /** @go OrchestrationPlanPreview(ctx context.Context, reqJSON string) → (PlanPreview, error) // 待补: PlanPreview */
+    OrchestrationPlanPreview(reqJSON: string): Promise<unknown>;
+    /** @go OrchestrationReport(token string, payloadJSON string) → (ReportResult, error) // 待补: ReportResult */
+    OrchestrationReport(token: string, payloadJSON: string): Promise<unknown>;
+    OrchestrationReportArbiterUsage(id: string, sessionID: string, generation: number, used: number, window: number): Promise<void>;
+    OrchestrationSetArbiter(id: string, sessionID: string, reason: string): Promise<void>;
+    /** @go OrchestrationStartBatch(ctx context.Context, reqJSON string) → (StartResponse, error) // 待补: StartResponse */
+    OrchestrationStartBatch(reqJSON: string): Promise<unknown>;
+    OrchestrationTurnEvent(reqJSON: string): Promise<void>;
+    /** @go OrchestrationUserControl(ctx context.Context, reqJSON string) → (ControlResult, error) // 待补: ControlResult */
+    OrchestrationUserControl(reqJSON: string): Promise<unknown>;
     /** @go ParseReadingDocx(path string) → (*ReadingDocx, error) // 待补: ReadingDocx */
     ParseReadingDocx(path: string): Promise<unknown>;
     /** @go PatchApply(planID string, files []string, hunks map[string][]int, mode string) → (*patch.PatchApplyResult, error) // 待补: PatchApplyResult */

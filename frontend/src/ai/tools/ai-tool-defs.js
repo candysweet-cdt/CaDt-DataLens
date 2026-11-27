@@ -42,7 +42,7 @@ export const AI_TOOL_DEFS = {
     },
     get_file_outline: {
         name: 'get_file_outline',
-        description: '取一个源码文件的结构大纲：分节导航（带序号、起始行-结束行）+ 顶层函数/箭头/case 分支索引（带行号）。用于超大文件（如 main.js、ai-panel.js）先摸清「哪段是干啥的」再精准 read_file，避免盲读上万行。只读、不返回正文，行号实时解析不会漂移。path 为相对范围根的文件路径或已授权的工作区外绝对路径，授权规则与 read_file 相同。符号索引支持分页：默认每页 200 条（上限 500），结果回报「本次返回 N 条 / 共 M 条 / offset」，未取完时用 offset+返回条数续取，避免撑爆上下文；section 传分节标题的子串可只看某段的符号（分节导航始终全量，带序号便于选段）；sectionsOnly:true 时只返回分节导航（最省 token）。二进制 / >10 MB 文件不支持。要具体内容仍用 read_file；找文本用 search_text，找文件用 glob。',
+        description: '取一个源码文件的结构大纲：分节导航（带序号、起始行-结束行）+ 顶层函数/箭头/case 分支索引（带行号）。用于超大文件（如 main.js、ai-panel.js）先摸清「哪段是干啥的」再精准 read_file，避免盲读上万行。只读、不返回正文，行号实时解析不会漂移。path 为相对范围根的文件路径或已授权的工作区外绝对路径，授权规则与 read_file 相同。符号索引支持分页：默认每页 200 条（上限 500），结果回报「本次返回 N 条 / 共 M 条 / offset」，未取完时用 offset+返回条数续取，避免撑爆上下文；section 传分节标题的子串可只看某段的符号（分节导航始终全量，带序号便于选段）；sectionsOnly:true 时只返回分节导航（最省 token）。二进制文件不支持；超过 100 MB 后端拒绝打开。大纲只返回结构化摘要、不返回正文，因此 10–100 MB 的大文件也可取大纲（read_file 读正文仍受 10 MB 限制）。要具体内容仍用 read_file；找文本用 search_text，找文件用 glob。',
         parameters: {
             type: 'object',
             properties: {
@@ -1079,8 +1079,186 @@ export const AI_TOOL_DEFS = {
             required: [],
         },
     },
+    // ---- 多会话编排（docs/finished-plans/orchestration.md）----
+    // 四个工具各司其职：plan 是成本门禁（任何档位强制审批）；report 只给持票据的执行会话；
+    // status 只读；control 只给当前仲裁者，且每次越过批准边界的动作都要再确认。
+    orchestration_plan: {
+        name: 'orchestration_plan',
+        description: '提交一份多批次编排计划并请求用户批准。这是会新建多个独立会话、烧大量 token、改大量文件、跑很久的动作，'
+            + '**任何权限档都会强制弹审批卡**，不要因为看到“已批准”就跳过，也不要重试绕过。'
+            + '先与用户把目标与边界聊清；每批写成可独立验收的工作单：id（字母数字._-，≤64）、title、spec（本批完整任务说明）、'
+            + 'owns（相对工作区的可写 glob，只有 * 与 **；空数组 = 只读设计批次）、dependsOn（只依赖 work 批次）、verify（exe + argv，不走 shell）。'
+            + '不要自己编造“已完成”的依赖，不要把一个文件同时交给两个可能并行的批次。'
+            + '批准后由确定性 Router 按依赖与文件所有权推进；你只负责判断性仲裁，不执行具体批次。'
+            + '与群聊（讨论）、spawn_agent（临时工）不同：编排是跨会话的生产线。',
+        parameters: {
+            type: 'object',
+            properties: {
+                title: {type: 'string', description: '编排标题（给用户看的一句话）'},
+                goal: {type: 'string', description: '一句话总目标（仲裁者交接时会把这份目标带给新会话）'},
+                batches: {
+                    type: 'array',
+                    description: '工作批次数组（1–20 个）。依赖必须无环；review 批次由系统自动生成，不要自己写。',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            id: {type: 'string', description: '批次 id（字母数字 ._-，≤64，计划内唯一）'},
+                            title: {type: 'string', description: '批次标题'},
+                            spec: {type: 'string', description: '本批完整任务说明（派单时原样注入新会话；不要把全局手册塞进来）'},
+                            owns: {type: 'array', items: {type: 'string'}, description: '本批可写路径 glob（相对工作区；支持 * / **；空数组 = 只读）'},
+                            dependsOn: {type: 'array', items: {type: 'string'}, description: '依赖的 work 批次 id；只注入直接依赖的上游摘要'},
+                            verify: {
+                                type: 'array',
+                                description: '验收命令（exe + argv，禁 shell 包装器 / 管道 / &&）。编排器会自己复跑，不采信执行者自报。',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        file: {type: 'string', description: '可执行文件（PATH 名或绝对路径）'},
+                                        args: {type: 'array', items: {type: 'string'}, description: '参数数组'},
+                                        cwd: {type: 'string', description: '工作目录（相对工作区，必须留在工作区内）'},
+                                        timeoutMs: {type: 'integer', description: '单条超时毫秒（默认 300000）'},
+                                    },
+                                    required: ['file'],
+                                },
+                            },
+                            timeoutMs: {type: 'integer', description: '本批执行超时毫秒（默认 20 分钟，上限 2 小时）'},
+                            model: {
+                                type: 'object',
+                                description: '模型分配（只有用户在审批卡上授权白名单后才生效；白名单外会被拒绝）',
+                                properties: {
+                                    first: {type: 'string', description: '首次尝试模型 ref；省略 = 用审批时固定的仲裁模型'},
+                                    retry: {type: 'string', description: '重派模型 ref；省略 = 同 first'},
+                                },
+                            },
+                        },
+                        required: ['id', 'title', 'spec', 'owns'],
+                    },
+                },
+                policy: {
+                    type: 'object',
+                    description: '可选策略；默认并发 2、单批 2 次尝试、审查门开、不自动换模型。审批卡可改。',
+                    properties: {
+                        scope: {type: 'string', enum: ['read', 'edit', 'auto', 'full'], description: 'Worker 权限档（只能继承或更严）'},
+                        maxParallel: {type: 'integer', description: '并发批次数（默认 2）'},
+                        maxAttemptsPerBatch: {type: 'integer', description: '单批尝试上限（默认 2，硬上限 2）'},
+                        budgetTokens: {type: 'integer', description: 'token 预算（事后熔断：超出后停止派发，不保证绝不超）'},
+                        batchTimeoutMs: {type: 'integer', description: '单批超时毫秒（默认 20 分钟）'},
+                        review: {type: 'boolean', description: '审查门；默认开，只有用户明确要求关才传 false'},
+                        autoRun: {type: 'boolean', description: '自主执行：禁止 awaiting_user；默认 false，必须由用户在审批卡上勾选'},
+                        snapshotBeforeStart: {type: 'boolean', description: '开始前快照；默认 false（大项目可能几百 MB）'},
+                    },
+                },
+            },
+            required: ['title', 'goal', 'batches'],
+        },
+    },
+    orchestration_report: {
+        name: 'orchestration_report',
+        description: '编排批次的结构化收尾回报。**本批必须以调用它收尾，否则编排器视为未完成（no_report）并重派。**'
+            + 'status=done 表示你已经完成 spec；编排器会自己复跑 verify 并派独立审查会话，不要自评“已通过”。'
+            + 'status=blocked 表示卡在判断性问题（需要改 owns / 改 spec / 取舍方案），必须写 blockingIssue，编排器会交给仲裁者而不是自动重试。'
+            + 'status=awaiting_user 只在协作模式下可用，必须带 question；自主执行模式会直接拒绝。'
+            + 'reportId 由你生成，网络/IPC 失败重试时复用同一个值（幂等）；不要伪造 batchId（票据绑定，填别人的会被拒）。'
+            + 'verifySelf 只是给审查者看的证据，不是验收判决。',
+        parameters: {
+            type: 'object',
+            properties: {
+                batchId: {type: 'string', description: '本会话被派发的批次 id（票据校验，不能填别人的）'},
+                reportId: {type: 'string', description: '本次回报的幂等键；重试请复用'},
+                status: {type: 'string', enum: ['done', 'blocked', 'awaiting_user'], description: '完成 / 卡住 / 等用户'},
+                changedFiles: {type: 'array', items: {type: 'string'}, description: '自述改了哪些文件（仅供审查参考，实际以写闸 writeLog 为准）'},
+                verifySelf: {
+                    type: 'array',
+                    description: '你实际跑过的命令与结果（证据，不是验收依据）',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            cmd: {type: 'string'},
+                            exitCode: {type: 'integer'},
+                            summary: {type: 'string'},
+                        },
+                    },
+                },
+                notes: {type: 'string', description: '一句话说明做了什么与关键结论（会作为下游批次的上游摘要）'},
+                blockingIssue: {type: 'string', description: 'status=blocked 时必填：卡在哪、需要谁做什么'},
+                question: {
+                    type: 'object',
+                    description: 'status=awaiting_user 时必填',
+                    properties: {
+                        text: {type: 'string', description: '要用户拍板的问题'},
+                        options: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    label: {type: 'string'},
+                                    recommended: {type: 'boolean'},
+                                },
+                            },
+                        },
+                        timeoutSec: {type: 'integer', description: '等待秒数；省略 = 设置里 ask_user 的默认超时'},
+                        timeoutAction: {type: 'string', enum: ['recommended', 'wait', 'abort', 'ai_decide'], description: '超时后动作；省略 = ask_user 默认'},
+                    },
+                    required: ['text'],
+                },
+                autonomousChoice: {type: 'string', description: '自主模式下做了有争议的选择时必填：选了什么 + 理由'},
+                review: {
+                    type: 'object',
+                    description: '仅审查批次可带：blocking 阻断 / shouldFix 应修 / suggestions 建议',
+                    properties: {
+                        blocking: {type: 'array', items: {type: 'object'}},
+                        shouldFix: {type: 'array', items: {type: 'object'}},
+                        suggestions: {type: 'array', items: {type: 'object'}},
+                    },
+                },
+            },
+            required: ['batchId', 'reportId', 'status'],
+        },
+    },
+    orchestration_status: {
+        name: 'orchestration_status',
+        description: '只读查询当前工作区的编排：省略 id 返回编排列表与进度；给 id 返回批次状态、attempts、失败分类和最近事件。'
+            + '不知道编排 id、想确认“现在卡在哪 / 哪批失败了”时用它；不要用它推进或修改状态。',
+        parameters: {
+            type: 'object',
+            properties: {
+                orchestrationId: {type: 'string', description: '编排 id；省略 = 列当前工作区的编排'},
+            },
+        },
+    },
+    orchestration_control: {
+        name: 'orchestration_control',
+        description: '仲裁者对编排执行有副作用的控制动作（只有当前仲裁者可用，且每次调用都会弹确认卡——它可能停掉别人的会话或改变已批准边界）。'
+            + 'pause/resume/stop 是整体动作；skip 跳过某批；retry 重置 attempts 并重派；update_batch 只改尚未派发的批次；'
+            + 'answer 回答某批的 awaiting_user；resolve_arbitration 用 eventId 关闭一条待仲裁事件。'
+            + '拿不准时先 orchestration_status；不要用它绕过 verify 或用户批准的范围。',
+        parameters: {
+            type: 'object',
+            properties: {
+                orchestrationId: {type: 'string', description: '编排 id'},
+                action: {type: 'string', enum: ['pause', 'resume', 'stop', 'skip', 'retry', 'update_batch', 'answer', 'resolve_arbitration'], description: '控制动作'},
+                batchId: {type: 'string', description: 'skip / retry / update_batch / answer 的目标批次'},
+                expectedEventId: {type: 'string', description: 'resolve_arbitration 用：L2 事件里的 eventId'},
+                answer: {type: 'string', description: 'answer 的答案；resolve_arbitration 的处置说明'},
+                batch: {
+                    type: 'object',
+                    description: 'update_batch 的新草稿（只允许改尚未派发的批次）',
+                    properties: {
+                        id: {type: 'string'},
+                        title: {type: 'string'},
+                        spec: {type: 'string'},
+                        owns: {type: 'array', items: {type: 'string'}},
+                        dependsOn: {type: 'array', items: {type: 'string'}},
+                        verify: {type: 'array', items: {type: 'object'}},
+                        timeoutMs: {type: 'integer'},
+                        model: {type: 'object'},
+                    },
+                },
+            },
+            required: ['orchestrationId', 'action'],
+        },
+    },
 };
-
 // spawn_agent 的 per-call 模型档：候选非空时才把 model 参数与候选清单拼进 def。
 // AI_TOOL_DEFS 是模块级常量（工具表原样发给 API），必须 clone——就地改会让「一个会话开了
 // 自选」污染其它会话与测试。候选为空直接返回同一个常量对象（零分配，请求载荷也不变）。
@@ -1188,6 +1366,10 @@ export const AI_TOOL_CATALOG = {
     agent_compact: {group: 'task', blurb: '压缩子代理上下文，长任务续跑前腾空间'},
     session_list: {group: 'session', blurb: '列本窗口可投递的会话（id/标题/状态/分组），给 session_send / session_read 拿 id；支持按状态/未读/标题过滤'},
     session_send: {group: 'session', blurb: '会话间投递'},
+    orchestration_plan: {group: 'orchestration', blurb: '把大改造拆成带依赖与文件所有权的批次计划，强制审批后跨会话执行'},
+    orchestration_report: {group: 'orchestration', blurb: '执行/审查批次的强制收尾回报（不调用视为未完成）'},
+    orchestration_status: {group: 'orchestration', blurb: '只读查询当前工作区编排进度、失败分类与最近事件'},
+    orchestration_control: {group: 'orchestration', blurb: '仲裁者的暂停/恢复/停止/跳过/重派/改未派批次（每次确认）'},
     schedule_list: {group: 'task', blurb: '定时任务管理'},
     schedule_create: {group: 'task', blurb: '定时任务管理'},
     schedule_delete: {group: 'task', blurb: '定时任务管理'},
@@ -1223,6 +1405,7 @@ export const AI_TOOL_GROUPS = [
     {key: 'memory', title: '记忆、偏好与技能'},
     {key: 'env', title: '环境变量'},
     {key: 'task', title: '任务、协作与自动化'},
+    {key: 'orchestration', title: '多会话编排（成本门禁）', note: '编排是跨会话生产线：发起必审批，执行会话只拿本批 spec 与 owns；Worker 不能跑命令、终端或 MCP。审查门默认开，验收由编排器复跑。'},
     {key: 'session', title: '会话、提醒与通知'},
     {key: 'cognition', title: '工作区认知索引（可选启用）', note: '给 AI 的跨会话语义层：每个文件一行 F 职责 / R 强关联 / A 对外契约 / S 暗约束。开关在 设置 → AI → 上下文与记忆；数据目录不建议建。找代码内容用 search_text / glob（索引不存代码内容），聊天历史用 session_search。'},
 ];
@@ -1238,6 +1421,11 @@ export function createAIToolDefs(ctx) {
     // 认知索引（可选启用，默认关）：设置 settings.aiCognition === true 才下发（§5.2）。
     // 测试与无宿主上下文的调用缺省按开（与 subAgentRounds / videoCapableOf 同一降级口径）。
     const cognitionOn = typeof ctx.cognitionOn === 'function' ? ctx.cognitionOn : () => true;
+    // 编排归属由前端运行时挂在会话上（不持久化票据本身）；缺省返回 null，测试/无宿主时
+    // 编排工具仍可见（plan/status），report/control 由各自的角色门控。
+    const orchestrationInfoOf = typeof ctx.orchestrationInfoOf === 'function'
+        ? ctx.orchestrationInfoOf
+        : () => null;
     function toolsForScope(scope, planMode, session) {
         const list = [
             AI_TOOL_DEFS.list_dir,
@@ -1374,6 +1562,33 @@ export function createAIToolDefs(ctx) {
         // read_video 夹在 read_image 与 search_text 之间（保持目录/载荷的稳定顺序）：
         // 会话能接收视频才注册，否则连定义都不下发，模型既看不到也调不到。
         if (videoCapableOf(session)) list.splice(3, 0, AI_TOOL_DEFS.read_video);
+        // 编排：plan / status 对所有会话可见；report 只给持票据的 Worker/审查者；
+        // control 只给当前仲裁者。Worker 工具表随后再做一次硬裁剪（命令 / 终端 / MCP /
+        // 补丁 / worktree 全部拿不到），这是写闸承诺的一部分，不靠 prompt 约束。
+        list.push(AI_TOOL_DEFS.orchestration_plan, AI_TOOL_DEFS.orchestration_status);
+        const orc = orchestrationInfoOf(session);
+        const orcRole = orc && orc.role ? String(orc.role) : '';
+        if (!planMode && (orcRole === 'work' || orcRole === 'review')) {
+            list.push(AI_TOOL_DEFS.orchestration_report);
+        }
+        if (!planMode && orcRole === 'arbiter') {
+            list.push(AI_TOOL_DEFS.orchestration_control);
+        }
+        if (orcRole === 'work' || orcRole === 'review') {
+            const allowed = new Set([
+                'list_dir', 'read_file', 'get_file_outline', 'read_image', 'read_video',
+                'search_text', 'glob', 'memory_list', 'memory_read', 'preference_list',
+                'session_history', 'session_search', 'session_read', 'skill_use', 'skill_list',
+                'env_list', 'web_search', 'web_fetch', 'cognition_read', 'cognition_status',
+                'orchestration_report', 'orchestration_status', 'notify_send', 'timer_list',
+            ]);
+            if (orcRole === 'work' && AI_WRITE_SCOPES.includes(scope) && Array.isArray(orc.owns) && orc.owns.length) {
+                allowed.add('write_file');
+                allowed.add('edit_file');
+            }
+            return list.filter((def) => def && allowed.has(def.name));
+        }
+        // read_video 已在上方编排裁剪前注入；这里直接返回完整工具表。
         return list;
     }
 

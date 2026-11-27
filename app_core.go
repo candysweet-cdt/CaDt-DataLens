@@ -43,6 +43,7 @@ import (
 	"datalens/internal/mcpsamples"
 	"datalens/internal/memo"
 	"datalens/internal/notify"
+	"datalens/internal/orchestration"
 	"datalens/internal/patch"
 	"datalens/internal/plugins"
 	"datalens/internal/previewassets"
@@ -96,19 +97,20 @@ type (
 	workspaceMarkService = workspacemark.Service
 	cognitionBindings    = cognition.Bindings
 
-	mavenService        = mavenproject.Service
-	sandboxService      = sandbox.Service
-	runProjectService   = runproject.Service
-	sqlviewService      = sqlview.Service
-	updateService       = update.Service
-	envvarsService      = envvars.Service
-	patchService        = patch.Service
-	webtoolsService     = webtools.Service
-	structuredirService = structuredir.Service
-	dbclientService     = dbclient.Service
-	gitinfoService      = gitinfo.Service
-	desktopmcpService   = desktopmcp.Service
-	winutilService      = winutil.Service
+	mavenService         = mavenproject.Service
+	sandboxService       = sandbox.Service
+	runProjectService    = runproject.Service
+	sqlviewService       = sqlview.Service
+	updateService        = update.Service
+	envvarsService       = envvars.Service
+	patchService         = patch.Service
+	webtoolsService      = webtools.Service
+	structuredirService  = structuredir.Service
+	dbclientService      = dbclient.Service
+	gitinfoService       = gitinfo.Service
+	desktopmcpService    = desktopmcp.Service
+	winutilService       = winutil.Service
+	orchestrationService = orchestration.Service
 )
 
 type App struct {
@@ -165,6 +167,7 @@ type App struct {
 	*gitinfoService                              // Git 浅集成与图谱（internal/gitinfo）
 	*desktopmcpService                           // 桌面控制（windows-mcp）安装与诊断（internal/desktopmcp）
 	*winutilService                              // 系统光标等纯平台能力（internal/winutil）
+	*orchestrationService                        // 多会话编排控制面（internal/orchestration）
 	ctx                    context.Context
 	aiTimersMu             sync.Mutex
 	aiTimers               *aitimer.Registry
@@ -191,7 +194,7 @@ type FileData = fileio.FileData
 func NewApp() *App {
 	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, AppServices: appservices.New(), Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}, Service: &sessionstore.Service{}, GroupStore: &aigroups.GroupStore{}, Client: &mcp.Client{}, memoService: &memo.Service{}, sessionindexService: &sessionindex.Service{}, activityService: &activity.Service{}, usagestatsService: &usagestats.Service{}, previewassetsService: &previewassets.Service{}, aiArtifactService: &aiartifact.Service{}, aiBackingService: &aibacking.Service{}, aiCatalogService: &aicatalog.Service{}, aiGenService: &aigen.Service{}, aiImagePolicyService: &aiimagepolicy.Service{}, aiUsageService: &aiusage.Service{}, aiWorklogService: &aiworklog.Service{}, aiMemoryService: &aimemory.Service{}, aiPermissionsService: &aipermissions.Service{}, workspaceMarkService: &workspacemark.Service{}, cognitionBindings: cognition.NewBindings(func(format string, args ...any) {
 		applog.Write("info", "cognition: "+format, args...)
-	}), mavenService: &mavenproject.Service{}, sandboxService: &sandbox.Service{}, runProjectService: &runproject.Service{}, sqlviewService: &sqlview.Service{}, updateService: &update.Service{}, envvarsService: &envvars.Service{}, patchService: &patch.Service{}, webtoolsService: &webtools.Service{}, structuredirService: &structuredir.Service{}, dbclientService: &dbclient.Service{}, gitinfoService: &gitinfo.Service{}, desktopmcpService: &desktopmcp.Service{}, winutilService: &winutil.Service{}}
+	}), mavenService: &mavenproject.Service{}, sandboxService: &sandbox.Service{}, runProjectService: &runproject.Service{}, sqlviewService: &sqlview.Service{}, updateService: &update.Service{}, envvarsService: &envvars.Service{}, patchService: &patch.Service{}, webtoolsService: &webtools.Service{}, structuredirService: &structuredir.Service{}, dbclientService: &dbclient.Service{}, gitinfoService: &gitinfo.Service{}, desktopmcpService: &desktopmcp.Service{}, winutilService: &winutil.Service{}, orchestrationService: &orchestration.Service{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -260,6 +263,10 @@ var aiServicesOnce sync.Once
 
 func (a *App) ensureAIServices() {
 	aiServicesOnce.Do(func() {
+		// 多会话编排：加载磁盘真源并做冷启动恢复，随后 supervisor/auditor 各自起循环。
+		if err := orchestration.StartDefault(); err != nil {
+			writeAppLog("warn", "编排引擎启动失败：%v", err)
+		}
 		// AI 定时任务调度器：主窗口与 AI 悬浮窗各自扫描，执行去重由前端裁决
 		aischedule.Start()
 		// 插件后台服务：启动已声明且 autoStart 的服务（声明由前端加载插件后 Sync 推送；

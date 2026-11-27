@@ -44,6 +44,14 @@ export const EVENT_SCOPES = Object.freeze({
 
     // 工作区 / 资源
     'workspace-changed': 'workspace',
+    // 编排：派发 / 状态变化 / 统一停止 / 仲裁事件 / 交接 / 审计，全部按 payload.root
+    // 路由到归属工作区窗口（同工作区多窗口靠 ClaimBatch 互斥，只会有一个起轮）。
+    'orchestration-dispatch': 'workspace',
+    'orchestration-changed': 'workspace',
+    'orchestration-stop': 'workspace',
+    'orchestration-arbiter-event': 'workspace',
+    'orchestration-arbiter-handoff': 'workspace',
+    'orchestration-audit': 'workspace',
     // 注意：resource-changed 目前实际以 onApp 全窗广播消费（watch.Emit 未带 sender，
     // onResource 的 owns 谓词通道已建未接）——消费端有 kind/租约幂等兜底。改接线前
     // 先给 Go 侧 watch 事件带上归属，不要只动这张表（2026-11-21 审查 P2-4）。
