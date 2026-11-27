@@ -1018,6 +1018,7 @@ function leaveCsvTable(doc, mode) {
         applyCsvTableZoom,
         zoomCsvTable,
         flushCsvCellEditor,
+        closeCsvColumnStats,
         tableHistory,
     };
 }

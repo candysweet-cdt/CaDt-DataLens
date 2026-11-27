@@ -90,6 +90,9 @@ const renderCsvTableView = (...a) => csvView.renderCsvTableView(...a);
 const tableHistory = (...a) => csvView.tableHistory(...a);
 const showCsvTableView = (...a) => csvView.showCsvTableView(...a);
 const flushCsvCellEditor = (...a) => csvView.flushCsvCellEditor(...a);
+// 关标签要顺手关掉列统计面板：它挂的是 document 捕获阶段的 keydown 监听，
+// 不清会永久残留（闭包持有整个 doc），之后按 Esc 还会被它 stopPropagation 吞掉。
+const closeCsvColumnStats = (...a) => csvView.closeCsvColumnStats(...a);
 const applyCsvTableZoom = (...a) => csvView.applyCsvTableZoom(...a);
 const zoomCsvTable = (...a) => csvView.zoomCsvTable(...a);
 const enterCsvTable = (...a) => csvView.enterCsvTable(...a);
@@ -179,6 +182,8 @@ const VIRTUAL_TAB_VIEWS = {
     team: (doc) => deps.createAgentTeamView(doc),
     sidechat: (doc) => deps.createSideChatView(doc),
     groupmember: (doc) => deps.createGroupMemberView(doc),
+    // 编排看板（独立业务对象标签页；列表/应用页面入口共用同一挂载器）
+    orchestration: (doc) => deps.createOrchestrationView(doc),
     // 应用页面（使用统计 / 定时任务 …）：一个类型装 N 个功能页，按 doc.appPage 分派在工厂内部
     apppage: (doc) => deps.createAppPageView(doc),
     // 数据库（侧栏会话树打开，方案 §11.8）：数据表 / 查询控制台 / Redis 键查看器三个标签类型，
@@ -1969,6 +1974,7 @@ function closeDocNow(doc, remember = true) {
     else deps.activityLog.log('tab.close', doc.name, {});
     disposeSqlDoc(doc);
     disposePatchView(doc);
+    closeCsvColumnStats(doc);
     // 视频视图：先断源再摘节点，否则解码器与文件句柄要等 GC 才释放
     releaseVideo(doc);
     releaseAudio(doc);

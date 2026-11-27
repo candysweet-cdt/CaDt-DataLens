@@ -549,6 +549,9 @@ export function createReadingMode(deps) {
         }
         const rendered = await render.renderUnit(unit, payload);
         let html = volumeHeaderFor(index, entry) + rendered.html + chapterEndFor(index);
+        // 下面整块换掉 DOM：旧查找高亮/计数指向已脱离文档的节点。
+        // 清一次，避免"高亮全没了、计数还停在旧章的 N/M"。
+        clearFindState();
         if (isPaged()) {
             els.reader.innerHTML = '<div class="rd-paged-viewport"><div class="rd-paged-inner">' + html + '</div></div>';
             repaginate(0);
@@ -580,6 +583,7 @@ export function createReadingMode(deps) {
     async function renderStreamFrom(index, opts) {
         opts = opts || {};
         saveProgress(true);
+        clearFindState();
         streamState = {next: index, count: 0, bytes: 0, busy: false, firstIndex: index};
         currentIndex = index;
         currentUnit = book.chapters[index];
@@ -751,6 +755,7 @@ export function createReadingMode(deps) {
                 content: pendingChunks[chunkIndex],
                 headings: [],
                 rawSlice: !isTxt,
+                noCache: true, // 分块共用 unit.id，走缓存会拿到首块
             });
             chunkIndex++;
             rendered.then((r) => {
@@ -1057,7 +1062,14 @@ export function createReadingMode(deps) {
 
     function closeFindBar() {
         els.findbar.classList.add('hidden');
+        clearFindState();
+    }
+
+    // clearFindState 清查找状态与计数文本。切章/换 DOM 时必须调用：
+    // search.clear() 只清 Range/高亮，计数文本不归它管，会留在旧结果上。
+    function clearFindState() {
         search.clear();
+        if (els.findCount) els.findCount.textContent = '';
     }
 
     function runFind() {

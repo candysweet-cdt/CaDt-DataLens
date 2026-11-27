@@ -3,6 +3,9 @@
 // mock 场景由 URL 参数驱动（?jsonl ?csv ?text ?image ?large ?invalid ?multi ?empty ?gbk ?ai* …）。
 // 由 main.js 在 !hasWails 时动态加载；生产环境永不触碰本模块。
 import {MOCK_DB_CONNECTIONS_KEY, MOCK_SAVE_KEY} from '../core/storage-keys.js';
+// 三点 wipeguard 绑定（WatchWipeguardRoot / UnwatchWipeguardRoot / WorkspaceMarkOpened）
+// 要用它；此前这行 import 被误嵌进上面的 Go 示例模板字符串，运行时恒抛 ReferenceError。
+import {legacyPathKey} from '../core/path-key.js';
 
 const mockScenario = new URLSearchParams(location.search);
 
@@ -210,8 +213,7 @@ export const LEVEL_COMP_CACHE = new Map();
 const sampleGo = `package main
 
 import (
-import {legacyPathKey} from '../core/path-key.js';
-\t"strings"
+	"strings"
 \t"testing"
 \t"time"
 )
@@ -3617,7 +3619,9 @@ const mockBackend = {
     },
     // 异步安装：mock 分三段推事件后收尾（不真下载）
     async MCPDesktopInstallStart() {
-        const rt = window.__wailsRuntime;
+        // 不要用局部 const rt = window.__wailsRuntime：mock 环境里 __wailsRuntime
+        // 从不赋值（恒 undefined），而且它会遮蔽模块级别名 rt（= mockRt），
+        // 结果三条进度事件全部空转，界面进度条不实时刷新。
         const emit = (payload) => {
             if (rt && rt.EventsEmit) rt.EventsEmit('mcp-desktop-install', payload);
         };
@@ -4559,6 +4563,60 @@ const mockBackend = {
         if (enc === 'iso-8859-1') return !/[^\x00-\xff]/.test(content);
         return true;
     },
+    // 编排 mock：让浏览器 dev 能打开审批卡 / 看板，不模拟真实调度（没有模型会话）。
+    _orch: [],
+    async OrchestrationPlanPreview(reqJSON) {
+        const plan = JSON.parse(reqJSON || '{}');
+        return {
+            valid: Array.isArray(plan.batches) && plan.batches.length > 0,
+            errors: Array.isArray(plan.batches) && plan.batches.length > 0 ? [] : ['至少需要一个批次'],
+            warnings: [], plan: plan,
+            waves: (plan.batches || []).map((b) => [b.id]),
+            reviewEnabled: !!(plan.policy && plan.policy.review),
+            auditMinMs: 7200000,
+        };
+    },
+    async OrchestrationCreate(reqJSON) {
+        const plan = JSON.parse(reqJSON || '{}');
+        const id = 'orch-mock-' + (this._orch.length + 1);
+        this._orch.push({
+            id, title: plan.title, goal: plan.goal, status: 'running',
+            workspaces: [plan.workspace], parentSessionId: plan.parentSessionId,
+            policy: plan.policy || {}, stats: {dispatched: 0, done: 0, failed: 0, rework: 0, tokensUsed: 0, rounds: 0},
+            batches: (plan.batches || []).map((b) => ({
+                id: b.id, title: b.title, kind: 'work', spec: b.spec, owns: b.owns || [],
+                dependsOn: b.dependsOn || [], verify: b.verify || [], status: 'pending', attempts: 0,
+                writeLog: [], history: [],
+            })),
+            arbitrationQueue: [], audit: {},
+        });
+        return {id, status: 'running'};
+    },
+    async OrchestrationList() {
+        return this._orch.map((o) => ({
+            id: o.id, title: o.title, goal: o.goal, workspace: o.workspaces[0],
+            parentSessionId: o.parentSessionId, status: o.status,
+            totalWork: o.batches.length, doneWork: o.batches.filter((b) => b.status === 'done').length,
+            failedWork: o.batches.filter((b) => b.status === 'failed').length,
+            createdAt: 0, updatedAt: 0, hasAttention: false,
+        }));
+    },
+    async OrchestrationGet(id) {
+        const o = this._orch.find((x) => x.id === id);
+        if (!o) throw new Error('编排不存在');
+        return {orchestration: o, batches: o.batches, recentEvents: []};
+    },
+    async OrchestrationClaimBatch() { return {ok: false, reason: 'mock 不派发真实会话'}; },
+    async OrchestrationStartBatch() { throw new Error('mock 不派发真实会话'); },
+    async OrchestrationAbortStart() {},
+    async OrchestrationReport() { return {accepted: true, message: 'mock 回报已受理'}; },
+    async OrchestrationAuthorizeWrite() { return {allowed: true}; },
+    async OrchestrationTurnEvent() {},
+    async OrchestrationControl() { return {ok: true, status: 'running', message: 'mock 已受理'}; },
+    async OrchestrationUserControl() { return {ok: true, status: 'running'}; },
+    async OrchestrationDelete(id) { this._orch = this._orch.filter((o) => o.id !== id); },
+    async OrchestrationSetArbiter() {},
+    async OrchestrationReportArbiterUsage() {},
 };
 
 

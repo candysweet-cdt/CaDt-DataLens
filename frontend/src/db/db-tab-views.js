@@ -543,8 +543,16 @@ function createDbTableViewsHost(deps, t, session, paneEl, views, consoleSpec) {
 export function createDbTableTabView(deps, doc) {
     const t = doc.dbTableSpec; // {entryId, entry, db, table, kind}
     let host = null;
+    let pane = null;
     const view = mountWithSession(deps, doc, (ready, hooks) => {
-        // 会话恢复会重新 build：先拆掉上一轮的视图宿主（观察器要断干净）
+        // 会话恢复会重新 build：先拆掉上一轮的视图宿主与网格面板
+        // （面板里有自动刷新定时器与 ResizeObserver，不拆会一直查询旧会话）
+        if (pane) {
+            try {
+                pane.destroy();
+            } catch (_) {}
+            pane = null;
+        }
         if (host) {
             try {
                 host.destroy();
@@ -552,7 +560,7 @@ export function createDbTableTabView(deps, doc) {
             host = null;
         }
         const session = ready.info;
-        const pane = createDbTablePane(
+        pane = createDbTablePane(
             {
                 get backend() { return getSessionState(t.entryId) ? (getSessionState(t.entryId).api || deps.backend) : deps.backend; },
                 flash: deps.flash,
@@ -575,6 +583,14 @@ export function createDbTableTabView(deps, doc) {
     });
     // 统一卸载契约：bridge 的 doc.tabUnmount 会调 doc.dbTabUnmount（dispose 撤会话订阅）
     doc.dbTabUnmount = () => {
+        // 先停面板（自动刷新 setInterval、在飞浏览请求），再拆视图宿主与订阅。
+        // 漏掉这一步会让关标签后定时器永久泄漏、继续查询并弹提示。
+        if (pane) {
+            try {
+                pane.destroy();
+            } catch (_) {}
+            pane = null;
+        }
         if (host) {
             try {
                 host.destroy();
@@ -639,7 +655,15 @@ export function createDbConsoleTabView(deps, doc) {
     body.className = 'db-console-body';
     root.appendChild(body);
 
+    let queryEditor = null; // 编辑器侧资源（Ace + ResizeObserver），卸载时必须显式 dispose
     const view = mountWithSession(deps, doc, (ready, hooks) => {
+        // 断线重连会重建：先销毁上一个编辑器，否则 Ace 实例与尺寸观察器逐次叠加
+        if (queryEditor) {
+            try {
+                queryEditor.dispose();
+            } catch (_) {}
+            queryEditor = null;
+        }
         const session = ready.info;
         headName.textContent = session.name || '数据库';
         headMeta.textContent = kindLabel(session.kind) + (session.server ? ' · ' + session.server : '') +
@@ -654,11 +678,20 @@ export function createDbConsoleTabView(deps, doc) {
             get sessionRecovered() { return hooks.sessionRecovered; },
         });
         query.setSession(session);
+        queryEditor = query;
         return query.el;
     });
 
     body.appendChild(view.el);
-    doc.dbTabUnmount = () => view.dispose();
+    doc.dbTabUnmount = () => {
+        if (queryEditor) {
+            try {
+                queryEditor.dispose();
+            } catch (_) {}
+            queryEditor = null;
+        }
+        view.dispose();
+    };
 
     return root;
 }

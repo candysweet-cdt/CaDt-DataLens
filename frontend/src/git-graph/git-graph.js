@@ -279,6 +279,7 @@ export function createGitGraph(ctx) {
         hasMore: false,
         nextSkip: 0,
         loading: false,
+        loadSeq: 0, // 请求令牌：只有最新一次加载能写回列表
         currentRef: '',       // 空串 = 当前 HEAD
         selectedSha: '',
         refFilter: '',        // 左栏分支过滤词
@@ -666,13 +667,17 @@ export function createGitGraph(ctx) {
             showHint('请先打开一个 git 仓库');
             return;
         }
-        if (state.loading) return;
+        // 翻页仍然互斥（避免同一 nextSkip 被并发追加两次）；切分支/刷新不互斥：
+        // 旧实现用单布尔守卫，加载中切分支会被静默丢弃，表现为"切了没反应"。
+        if (skip > 0 && state.loading) return;
+        const seq = ++state.loadSeq;
         state.loading = true;
         hideHint();
         try {
             const page = await ctx.backend.GitGraphCommits(dir, ref || '', DEFAULT_LIMIT, skip);
-            // 竞态守卫：await 期间切了工作区就丢弃这次结果——否则旧仓的提交会写进
-            // 新仓的列表（`state.loadedDir` 也会被旧值覆盖，下次判断"目录没变"就错了）。
+            // 竞态守卫：await 期间切了工作区或又发起了新请求，就丢弃这次结果——
+            // 否则旧仓/旧分支的提交会写进新列表（`state.loadedDir` 也会被旧值覆盖）。
+            if (seq !== state.loadSeq) return;
             if (dir !== gitDir()) return;
             // 失败判定要跟 Go 侧对齐：available 在跑 git log 之前就置 true（graph.go:79），
             // 坏 ref / 拉取失败只写 reason，所以「有 reason 且零提交」也按失败提示，别当成功收尾。
@@ -700,9 +705,11 @@ export function createGitGraph(ctx) {
         } catch (e) {
             showHint('读取提交历史失败：' + e);
         } finally {
-            // 无论成功 / 失败 / 抛错都复位，避免 loading 被钉死挡住后续所有加载（含刷新）
-            state.loading = false;
-            hideSkeleton();
+            // 只有最新一次请求负责收尾：旧请求晚到复位会把新请求的 loading 抹掉。
+            if (seq === state.loadSeq) {
+                state.loading = false;
+                hideSkeleton();
+            }
         }
     }
 

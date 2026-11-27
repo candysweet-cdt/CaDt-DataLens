@@ -170,12 +170,28 @@ function ensureEcharts() {
     return echartsLoadPromise;
 }
 
+// 已成功加载过的脚本：插件类脚本没有可靠的全局标记（echarts-wordcloud 只是往
+// echarts 注册 series 类型），只能靠这份集合去重。
+const loadedScripts = new Set();
+
 function loadScript(src, globalCheck) {
-    if (globalCheck()) return Promise.resolve();
+    if (loadedScripts.has(src)) return Promise.resolve();
+    if (typeof globalCheck === 'function' && globalCheck()) {
+        loadedScripts.add(src);
+        return Promise.resolve();
+    }
     return new Promise((resolve, reject) => {
         const script = document.createElement('script');
         script.src = src;
-        script.onload = () => globalCheck() ? resolve() : reject(new Error(src + ' 加载失败'));
+        script.onload = () => {
+            // 有 globalCheck 就按它判定；没有（插件类）按「脚本执行完即成功」。
+            if (typeof globalCheck === 'function' && !globalCheck()) {
+                reject(new Error(src + ' 加载失败'));
+                return;
+            }
+            loadedScripts.add(src);
+            resolve();
+        };
         script.onerror = () => reject(new Error(src + ' 加载失败'));
         document.head.appendChild(script);
     });
@@ -193,9 +209,11 @@ export async function renderWordCloudToSvg(code, themeId) {
     const palette = paletteFor(sorted, colors);
     try {
         const echarts = await ensureEcharts();
-        // echarts-wordcloud 注册 series 类型无独立全局可查；脚本加载成功即认为可用，
-        // setOption 不认 type 会抛错 → 被 catch 落到 d3-cloud 兜底。
-        await loadScript('/vendor/wordcloud/echarts-wordcloud.min.js', () => !!window.echarts);
+        // echarts-wordcloud 注册 series 类型，没有独立全局可查：以前这里传
+        // () => !!window.echarts，而 ensureEcharts 刚让它为真 → globalCheck 恒真，
+        // 脚本永不注入，setOption 必抛错后落到 d3-cloud 兜底（插件成了死代码）。
+        // 传 undefined 表示「按脚本自身的加载成功判定」，再用 loadedScripts 去重。
+        await loadScript('/vendor/wordcloud/echarts-wordcloud.min.js');
         // 词多的时候放大画布，避免 echarts 放不下而静默丢词（卡片会按宽度自适应缩放）
         const canvasW = sorted.length > 40 ? 960 : 640;
         const canvasH = sorted.length > 40 ? 540 : 360;

@@ -454,6 +454,16 @@ autoBtn.addEventListener('click', (ev) => {
     })), rect.left, rect.bottom + 2);
 });
 
+// invalidate 作废在飞响应、静默停自动刷新、重建工具栏（会话断开与卸载共用）。
+function invalidate() {
+    cancelActiveBrowse();
+    loadSeq++; // 在飞响应作废；重连后由宿主重建面板
+    editMode = false;
+    setAutoRefresh(0, true); // 静默停自动刷新（重连重建后默认关，用户可再开）
+    rebuildToolbar();
+    renderStatus();
+}
+
 function setAutoRefresh(ms, silent) {
     autoRefreshMs = ms;
     if (autoTimer) {
@@ -1065,13 +1075,14 @@ init();
 return {
     el,
     /** 会话断开时由页面调用（隐藏编辑簇并停自动刷新）。 */
-    invalidate() {
-        cancelActiveBrowse();
-        loadSeq++; // 在飞响应作废；重连后由宿主重建面板
-        editMode = false;
-        setAutoRefresh(0, true); // 静默停自动刷新（重连重建后默认关，用户可再开）
-        rebuildToolbar();
-        renderStatus();
+    invalidate,
+    /**
+     * 标签页卸载时调用：停自动刷新定时器 + 作废在飞请求。
+     * 之前只有 invalidate() 且全仓无调用方，关标签后 setInterval 会一直跑。
+     */
+    destroy() {
+        invalidate();
+        el.remove();
     },
 };
 }

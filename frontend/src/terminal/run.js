@@ -1013,6 +1013,11 @@ export function createRunController(deps) {
         }
         stopTimer(session);
         if (session.rafId) cancelAnimationFrame(session.rafId);
+        // 清掉本会话的步骤等待器：关闭时若 RunStop 没回 run-exit（或被复用 id 覆盖），
+        // startStep 的 promise 会永久 pending 并接管住整个会话对象。
+        for (const suffix of ['-build', '-run']) {
+            exitWaiters.delete(session.id + suffix);
+        }
         session.wrapEl.remove();
         session.tabEl.remove();
         sessions.delete(id);

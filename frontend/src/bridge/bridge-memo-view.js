@@ -217,6 +217,10 @@ function onButton(btn, onClick, tip) {
 }
 
 // ===== 渲染 =====
+// lastMemoBodyHeight：上一帧 .memo-body 的实际高度（像素）。buildItem 在 body 入树
+// 之前就要判定折叠，只能靠它兜底。
+let lastMemoBodyHeight = 0;
+
 function render(view) {
     if (view.disposed || !view.root.isConnected) return;
     const root = view.root;
@@ -252,6 +256,10 @@ function render(view) {
     }
     doc.blocks.forEach((block) => body.appendChild(buildBlock(view, block)));
     root.appendChild(body);
+    // buildItem 在入树之前就测量 .memo-body（那时 querySelector 恒 null，只能用
+    // window.innerHeight，中等长度长条目就不折叠）。这里补测一次真实高度存起来，
+    // 下一次重建即可按正确视口判定。
+    if (body.clientHeight > 0) lastMemoBodyHeight = body.clientHeight;
 
     // footer 必须在滚动恢复之前入树：body 是 flex:1，footer 缺席时 body 会被撑高一个
     // footer 的高度，恢复的 scrollTop 就被 clamp 到偏小的 max（视口上移约 43px，滚动条
@@ -699,7 +707,9 @@ function buildItem(view, block, item) {
     // 超长条目默认折叠：渲染高度超过 1 个视窗（memo-body 可视高度）时，先只显示一屏 + 渐隐，
     // 点「展开全文」看完整内容。展开状态按条目 id 记忆，重渲染不弹回。
     const body = view.root && view.root.querySelector('.memo-body');
-    const viewportH = (body && body.clientHeight) || window.innerHeight || 600;
+    // 首次渲染时 body 还没入树（clientHeight=0），回退到上一帧测到的高度，
+    // 再回退窗口高度——直接用 window.innerHeight 会让面板内的长条目判不出折叠。
+    const viewportH = (body && body.clientHeight) || lastMemoBodyHeight || window.innerHeight || 600;
     if (shouldFoldMemoItem(item.text, viewportH)) {
         const foldKey = item.id;
         text.classList.add('memo-item-foldable');

@@ -342,6 +342,8 @@ export function createDebugConsole(opts = {}) {
     }, true);
 
     // 独立窗口：轮询主窗口写入的中继日志（首次从尾部历史开始）
+    let remoteTimer = null;
+    let remoteKick = null;
     if (remote) {
         let offset = -1;
         const poll = async () => {
@@ -359,11 +361,24 @@ export function createDebugConsole(opts = {}) {
                 }
             } catch (e) {}
         };
-        setInterval(poll, 300);
-        setTimeout(poll, 20);
+        remoteTimer = setInterval(poll, 300);
+        remoteKick = setTimeout(poll, 20);
     }
 
     applyFilters();
 
-    return {push, open, close, toggle, isOpen: () => opened};
+    // dispose 停掉中继轮询：之前只有 setInterval、没有任何清理入口，
+    // 同一文档里重建控制台或在停靠模式复用时会叠加多个轮询。
+    function dispose() {
+        if (remoteTimer) {
+            clearInterval(remoteTimer);
+            remoteTimer = null;
+        }
+        if (remoteKick) {
+            clearTimeout(remoteKick);
+            remoteKick = null;
+        }
+    }
+
+    return {push, open, close, toggle, dispose, isOpen: () => opened};
 }

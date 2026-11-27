@@ -77,6 +77,7 @@ const sqlAceEl = document.createElement('div');
 sqlAceEl.className = 'db-sql-ace';
 sqlAceWrap.appendChild(sqlAceEl);
 let sqlEditor = null; // Ace 实例（可用时）
+let sqlResizeObserver = null; // 容器尺寸观察器：dispose 时必须 disconnect
 let sqlInput = null;  // textarea 兜底（Ace 不可用时）
 let sqlCompletion = null;
 
@@ -94,10 +95,13 @@ try {
         try { sqlEditor.setFontSize((deps.settings && deps.settings.editorFont) || 15); } catch (e) {}
         sqlEditor.session.setMode('ace/mode/sql');
         try { sqlEditor.setOption('placeholder', placeholderText(null)); } catch (e) {}
-        // 容器脱离/进入 DOM、三栏尺寸变化都要 resize（Ace 只监听 window resize 不够）
+        // 容器脱离/进入 DOM、三栏尺寸变化都要 resize（Ace 只监听 window resize 不够）。
+        // 实例必须存下来：不 disconnect 的话浏览器会一直持有 wrap → 闭包 → 编辑器，
+        // 断线重连重建时旧实例全部滞留。
         try {
             if (typeof ResizeObserver === 'function') {
-                new ResizeObserver(() => { try { sqlEditor.resize(); } catch (e) {} }).observe(sqlAceWrap);
+                sqlResizeObserver = new ResizeObserver(() => { try { sqlEditor.resize(); } catch (e) {} });
+                sqlResizeObserver.observe(sqlAceWrap);
             }
         } catch (e) {}
         // 执行键位：Ctrl/Cmd+Enter（原 textarea keydown 的等价物）
@@ -302,7 +306,13 @@ async function run(forceConfirm) {
         if (r.rows && r.rows.length) parts.push(r.rows.length + ' 行' + (r.truncated ? '（截断）' : ''));
         if (r.message) parts.push(r.message);
         parts.push(formatElapsed(r.elapsedMs));
-        status.textContent = parts.join(' · ');
+        // partial：批量里前面的语句已生效、后面的失败。结果照常展示，
+        // 但状态行必须点明「部分执行」，否则用户会以为整批都成功了。
+        if (outcome && outcome.status === 'partial') {
+            status.textContent = '部分执行 · ' + (outcome.message || '有语句失败');
+        } else {
+            status.textContent = parts.join(' · ');
+        }
         // 写语句留痕：连接/库/类型摘要，不含参数值（方案 §5.3）
         if (outcome && outcome.writes > 0 && deps.logActivity) {
             deps.logActivity('db.exec', sessionLabel(session), {kind: session.kind, writes: outcome.writes, statements: outcome.statements});
@@ -346,5 +356,18 @@ cancelBtn.addEventListener('click', () => {
 confirmOk.addEventListener('click', () => run(true));
 confirmNo.addEventListener('click', hideConfirm);
 
-return {el, setSession, refresh: () => resultGrid.refresh()};
+// dispose 解绑编辑器侧资源（ResizeObserver / Ace 实例）。
+// 卸载链 db-tab-views 会在 tabUnmount 时调用。
+function dispose() {
+    if (sqlResizeObserver) {
+        try { sqlResizeObserver.disconnect(); } catch (e) {}
+        sqlResizeObserver = null;
+    }
+    if (sqlEditor) {
+        try { sqlEditor.destroy(); } catch (e) {}
+        sqlEditor = null;
+    }
+}
+
+return {el, setSession, refresh: () => resultGrid.refresh(), dispose};
 }

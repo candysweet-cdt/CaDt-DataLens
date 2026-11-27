@@ -279,7 +279,10 @@ export function createReadingRender(deps) {
     // payload: {kind: 'md'|'txt'|'docx'|'epub', content, headings, blocks, mtime}
     async function renderUnit(unit, payload) {
         const id = unit.id || unitIdOf(unit.rel, unit.offset, payload.kind === 'docx' || payload.kind === 'epub');
-        const cached = cacheGet(id, payload.mtime);
+        // noCache：同一 unit 的不同分块共用 unit.id，若走缓存，第 2/3 块会命中首块的
+        // 缓存把首块 HTML 再插一遍（"继续阅读"永远读不到后续内容）。分块是一次性的，
+        // 不缓存即可。
+        const cached = payload.noCache ? null : cacheGet(id, payload.mtime);
         if (cached) return {html: cached.html, headings: cached.headings, cached: true};
         let html = '';
         const kind = payload.kind;
@@ -314,7 +317,7 @@ export function createReadingRender(deps) {
             html = '<p>' + escapeHtml(String(payload.content || '')) + '</p>';
         }
         const entry = {html, headings: payload.headings || [], bytes: html.length * 2, mtime: payload.mtime || 0};
-        cachePut(id, entry);
+        if (!payload.noCache) cachePut(id, entry);
         return {html, headings: entry.headings, cached: false};
     }
 

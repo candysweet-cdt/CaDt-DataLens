@@ -2701,6 +2701,31 @@ aside[data-sidebar-view="app-pages"] #app-pages-panel { display: flex; flex: 1; 
 .ai-session-title-row .ai-session-title { flex: 1; min-width: 0; }
 /* 支线对话：缩进一级并带徽标（排序已保证紧跟母会话；母会话删除后回落为普通会话） */
 .ai-session-item.ai-session-branch { padding-left: 20px; }
+/* 编排批次：缩进同支线；父行徽标兼作进度显示，右侧箭头是折叠开关 */
+.ai-session-item.ai-session-orch-batch { padding-left: 20px; }
+.ai-session-badge.orch {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.ai-session-badge.orch.attention,
+.ai-session-badge.orch-batch.attention {
+    color: #d9534f;
+    background: color-mix(in srgb, #d9534f 14%, transparent);
+}
+.ai-session-orch-toggle {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+.ai-session-orch-toggle:hover { background: color-mix(in srgb, var(--muted) 14%, transparent); color: var(--fg); }
 .ai-session-badge {
     flex: none;
     padding: 0 5px;
