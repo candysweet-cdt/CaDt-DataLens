@@ -28,6 +28,8 @@ const read = (rel) => readFileSync(join(srcRoot, rel), 'utf8');
 const groupsSrc = read('editor/editor-groups.js');
 const writingSrc = read('writing/writing-ui.js');
 const mainSrc = read('main.js');
+// appTabViewOf / APP_TAB_KIND_LABELS 已拆到 shell/app-action-context.js（超线治理第 3 批）
+const appActionSrc = read('shell/app-action-context.js');
 const bridgeSrc = readdirSync(join(srcRoot, 'bridge'))
     .filter((name) => name.endsWith('.js'))
     .map((name) => read('bridge/' + name))
@@ -59,7 +61,9 @@ function sliceObjectLiteral(text, signature) {
     const start = text.indexOf(signature);
     assert.ok(start >= 0, '找不到对象字面量：' + signature);
     const rest = text.slice(start + signature.length);
-    const end = rest.indexOf('\n};');
+    // 兼容顶格 `};` 与缩进 `    };`（模块内常量在 factory 里，闭合带缩进）。
+    // 缩进只吃空格/制表符，不能吃换行——否则会跨过最近的闭合匹配到更后面的。
+    const end = rest.search(/\n[ \t]*\};/);
     assert.ok(end >= 0, signature + ' 的闭合括号没找到（结构变了就更新本守卫）');
     return rest.slice(0, end);
 }
@@ -69,7 +73,7 @@ const closeDocBody = sliceTopFunction(groupsSrc, 'function closeDocNow(doc, reme
 const buildTabBody = sliceTopFunction(groupsSrc, 'function buildGroupTab(g, doc, strip) {');
 const viewDispatchBody = sliceObjectLiteral(groupsSrc, 'const VIRTUAL_TAB_VIEWS = {');
 const viewOptionsBody = sliceTopFunction(writingSrc, 'function viewOptionsFor(fmt, doc) {');
-const appTabViewBody = sliceTopFunction(mainSrc, 'function appTabViewOf(doc) {');
+const appTabViewBody = sliceTopFunction(appActionSrc, 'function appTabViewOf(doc) {');
 const viewDocBody = sliceTopFunction(bridgeSrc, 'function openVirtualDoc(name, content, opts) {');
 
 const markers = TAB_KINDS.map((s) => s.marker).sort();
@@ -161,8 +165,9 @@ test('openVirtualDoc 产出的文档仍是「无路径」文档', () => {
 });
 
 test('每个 viewKind 都能在 APP_TAB_KIND_LABELS 里找到标签', () => {
-    const labels = sliceObjectLiteral(mainSrc, 'const APP_TAB_KIND_LABELS = {');
-    const known = new Set([...labels.matchAll(/^\s{4}([A-Za-z]+)\s*:/gm)].map((m) => m[1]));
+    const labels = sliceObjectLiteral(appActionSrc, 'const APP_TAB_KIND_LABELS = {');
+    // 键的缩进不必固定：main.js 里是 4 空格，模块里（factory 内）是 8 空格
+    const known = new Set([...labels.matchAll(/^[ \t]+([A-Za-z]+)\s*:/gm)].map((m) => m[1]));
     // viewKind 的取值来源：显式传 `viewKind: '...'` 与 openVirtualDoc 的兜底值
     const used = new Set([...srcAll.matchAll(/viewKind:\s*'([A-Za-z]+)'/g)].map((m) => m[1]));
     const fallback = /viewKind = options\.viewKind \|\| '([A-Za-z]+)'/.exec(bridgeSrc);

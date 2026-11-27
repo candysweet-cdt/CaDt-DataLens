@@ -9,6 +9,8 @@ import {readFileSync} from 'node:fs';
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 const main = read('../../src/main.js');
+// appAction* 已拆到 shell/app-action-context.js（超线治理第 3 批）
+const appAction = read('../../src/shell/app-action-context.js');
 const panel = read('../../src/ai/ai-panel.js');
 const constants = read('../../src/ai/core/ai-constants.js');
 const store = read('../../src/ai/session/ai-session-store.js');
@@ -70,17 +72,17 @@ test('ensureBrowserTab 惰性重建时清除接管态', () => {
 });
 
 test('get_state 的浏览器标签暴露精确定位字段', () => {
-    const start = main.indexOf('function appActionDocInfo(doc)');
+    const start = appAction.indexOf('function appActionDocInfo(doc)');
     assert.ok(start > 0, '找不到 appActionDocInfo');
-    const body = main.slice(start, start + 700);
+    const body = appAction.slice(start, start + 700);
     assert.ok(body.includes('info.browserUrl'), '暴露 URL 供定位');
     assert.ok(body.includes('info.browserTabId'), '暴露 id 供精确定位');
 });
 
 test('浏览器标签定位辅助存在且四选一', () => {
-    const start = main.indexOf('function appActionFindBrowserDoc(ref)');
+    const start = appAction.indexOf('function appActionFindBrowserDoc(ref)');
     assert.ok(start > 0, '找不到定位辅助函数');
-    const body = main.slice(start, start + 900);
+    const body = appAction.slice(start, start + 900);
     for (const key of ['r.id', 'r.name', 'r.url', 'r.index']) {
         assert.ok(body.includes(key), '定位辅助要支持 ' + key);
     }

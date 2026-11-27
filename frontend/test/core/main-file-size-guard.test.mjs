@@ -17,6 +17,7 @@ import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {createViewRoot} from '../../src/shell/view-root.js';
 import {createWipeguardRoots} from '../../src/shell/wipeguard-roots.js';
+import {createAppActionContext} from '../../src/shell/app-action-context.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const main = readFileSync(here + '../../src/main.js', 'utf8');
@@ -24,7 +25,9 @@ const main = readFileSync(here + '../../src/main.js', 'utf8');
 const mainLines = main.split('\n').length - (main.endsWith('\n') ? 1 : 0);
 
 // 拆分完成时的行数快照。**只许往下调**（拆得更多了就改小并说明）；上调等于给堆逻辑开绿灯。
-const MAIN_BASELINE_LINES = 8110;
+// 8110 → 7791：拆出 shell/app-action-context.js（app_control 动作前置，超线治理第 3 批）。
+// 注：基线含工作区里另一会话的编排功能改动（+38 行），仍是净减 319 行。
+const MAIN_BASELINE_LINES = 7791;
 
 // 去掉注释行后再匹配：否则 `// 旧写法：function currentRoot()` 这类说明会误报。
 const mainCode = main.split('\n')
@@ -62,6 +65,24 @@ test('已迁出的域不得回流到 main.js（按 function 声明锚定，排�
         ['watchWipeguardRoot', 'shell/wipeguard-roots.js'],
         ['releaseWipeguardWatch', 'shell/wipeguard-roots.js'],
         ['unwatchWipeguardRoot', 'shell/wipeguard-roots.js'],
+        // app_control 动作前置（第 3 批）
+        ['appActionDocInfo', 'shell/app-action-context.js'],
+        ['appActionFindBrowserDoc', 'shell/app-action-context.js'],
+        ['appTabViewOf', 'shell/app-action-context.js'],
+        ['appActionDocCaret', 'shell/app-action-context.js'],
+        ['appActionResolveDoc', 'shell/app-action-context.js'],
+        ['appActionDispatchClick', 'shell/app-action-context.js'],
+        ['appActionDispatchKey', 'shell/app-action-context.js'],
+        ['appActionDescribeNode', 'shell/app-action-context.js'],
+        ['appActionEditableTarget', 'shell/app-action-context.js'],
+        ['appActionDocText', 'shell/app-action-context.js'],
+        ['appActionTermTail', 'shell/app-action-context.js'],
+        ['appActionAIConfig', 'shell/app-action-context.js'],
+        ['appActionAgentSnapshot', 'shell/app-action-context.js'],
+        ['appActionWorkspacePath', 'shell/app-action-context.js'],
+        ['appActionGroupBrief', 'shell/app-action-context.js'],
+        ['appActionResolveGroup', 'shell/app-action-context.js'],
+        ['appActionInstallUrlFromName', 'shell/app-action-context.js'],
     ];
     const offenders = movedOut
         .filter(([name]) => new RegExp('^\\s*(async\\s+)?function\\s+' + name + '\\s*\\(', 'm').test(mainCode))
@@ -94,9 +115,10 @@ test('依赖必须传函数形状（传 getter 属性会在运行时炸）', () 
         assert.fail(factory + ' 的接线块没闭合');
         return '';
     }
-    const joined = factoryBlock('createViewRoot') + '\n' + factoryBlock('createWipeguardRoots');
+    const joined = factoryBlock('createViewRoot') + '\n' + factoryBlock('createWipeguardRoots') +
+        '\n' + factoryBlock('createAppActionContext');
     assert.ok(!/\bget\s+\w+\s*\(\)\s*\{/.test(joined),
-        '这两个模块的接线不能用 getter 属性：模块契约是「函数」形式（deps.xxx()）。'
+        '这三个模块的接线不能用 getter 属性：模块契约是「函数」形式（deps.xxx()）。'
         + '传 getter 会让 deps.xxx 直接是值，deps.xxx() 抛 TypeError —— '
         + '而这在 npm test / typecheck / node --check 里都看不出来。改用 `xxx: () => yyy`。');
     // 正向确认：关键依赖确实是函数形状
@@ -147,6 +169,31 @@ test('wipeguard-roots 模块能用函数形状 deps 跑通（运行时契约）'
     assert.equal(wg.tryMarkNotify('k', 1000, 100), false, '首次不在冷却期 → 放行');
     assert.equal(wg.tryMarkNotify('k', 1050, 100), true, '冷却期内 → 拦截');
     assert.equal(wg.tryMarkNotify('k', 1200, 100), false, '过期后 → 放行');
+});
+
+test('app-action-context 模块能用函数形状 deps 跑通（运行时契约）', () => {
+    const docs = [{id: 'd1', name: 'a.json', path: 'D:/repo/a.json', mode: 'code'}];
+    const mod = createAppActionContext({
+        docs: () => docs,
+        file: () => docs[0],
+        findDocByPath: (p) => docs.find((d) => d.path === p) || null,
+        currentRoot: () => 'D:/repo',
+        aiPanel: () => null,
+        aiGroupRuntime: () => null,
+        backend: () => null,
+    });
+    // 关键入口真跑一遍——静态文本匹配抓不到 deps 契约错
+    assert.equal(mod.appActionDocInfo(docs[0]).path, 'D:/repo/a.json');
+    assert.equal(mod.appActionDocInfo(null), null);
+    assert.equal(mod.appActionResolveDoc('active').path, 'D:/repo/a.json', 'active 应解析到 file');
+    assert.equal(mod.appActionResolveDoc('D:/repo/a.json').path, 'D:/repo/a.json', '路径应走 findDocByPath');
+    assert.equal(mod.appActionWorkspacePath('sub/b.json'), 'D:/repo\\sub/b.json', '相对路径按当前根解析');
+    assert.equal(mod.appActionWorkspacePath('D:/abs.json'), 'D:/abs.json', '绝对路径原样返回');
+    assert.equal(mod.appTabViewOf(docs[0]), null, '文件标签不是虚拟视图');
+    assert.deepEqual(mod.appTabViewOf({name: '计划', viewKind: 'plan', path: null}),
+        {kind: 'plan', label: '计划文档', name: '计划'});
+    assert.throws(() => mod.appActionAIConfig(), /AI 面板未初始化/, '面板未初始化应明确报错');
+    assert.throws(() => mod.appActionResolveGroup('x'), /群聊运行时未初始化/);
 });
 
 test('main.js 行数只减不增', () => {
