@@ -24,7 +24,7 @@ export function panelPaneKey(pluginId, panelId) {
     return 'plugin-' + pluginId + '-' + panelId;
 }
 
-export function registerPluginSettingsPanel(pluginId, spec) {
+export function registerPluginSettingsPanel(pluginId, spec, pluginName) {
     const owner = String(pluginId || '').trim();
     if (!owner) bad('缺少插件 id');
     if (!isPlainObject(spec)) bad('需要一个设置面板对象');
@@ -36,6 +36,8 @@ export function registerPluginSettingsPanel(pluginId, spec) {
     const record = {
         key,
         pluginId: owner,
+        // 插件显示名：进 render(container, ctx) 的基座（ctx.plugin.name），缺省回落 id。
+        pluginName: String(pluginName || owner).trim() || owner,
         id,
         label: String(spec.label || spec.id || '设置').trim().slice(0, 40),
         render: spec.render,

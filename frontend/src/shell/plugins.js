@@ -3,6 +3,7 @@
 import {registerPluginFormat, unregisterAllPluginFormats} from '../core/formats.js';
 import {themeRegistry} from '../core/theme-registry.js';
 import {createHookBus} from '../core/hook-bus.js';
+import {PLUGIN_CTX_ORIGINS, pluginCtxBase, withCtx} from './plugin-ctx.js';
 import {createPluginContainer} from './plugin-container.js';
 import {orderByDependencies} from './plugin-dependencies.js';
 import {clearPluginAIProviders, getPluginAIProviders, registerPluginAIProvider} from './plugin-ai-providers.js';
@@ -188,11 +189,22 @@ function apiFor(plugin) {
             if (commandClassifiers.has(fullId)) {
                 throw pluginError(plugin, `分类器 ${id} 已注册`);
             }
+            // 存一层包装：插件能拿到自己的身份（ctx.plugin）与 origin:'classifier'，宿主传的
+            // {cwd, toolName, strictness, threshold, sessionId, workspace} 原样叠加（域字段优先，
+            // 身份恒取基座）。fn 先取出来再调，保持原有的「this 不指向注册对象」语义
+            // ——旧实现是直接存 spec.classify，别让这次包装悄悄改掉插件的 this。
+            const classifyFn = spec.classify;
             commandClassifiers.set(fullId, {
                 id: fullId,
                 pluginId: plugin.id,
                 label: String(spec.label || id).trim().slice(0, 40),
-                classify: spec.classify,
+                classify: (command, runtimeCtx) => classifyFn(command, withCtx(pluginCtxBase({
+                    pluginId: plugin.id,
+                    pluginName: plugin.name,
+                    workspace: runtimeCtx && runtimeCtx.workspace,
+                    sessionId: runtimeCtx && runtimeCtx.sessionId,
+                    origin: PLUGIN_CTX_ORIGINS.classifier,
+                }), runtimeCtx)),
             });
         },
         // 注册可插拔 AI provider：{id, name, account, models, prepare(ctx)}。
@@ -250,7 +262,7 @@ function apiFor(plugin) {
         // 注册插件专属设置面板：{id, label, render(container, ctx)}。
         // ctx 提供 flash 与本插件服务操作，详见 docs/plugins/README.md「插件专属设置面板」。
         registerSettingsPanel(spec) {
-            return registerPluginSettingsPanel(plugin.id, spec);
+            return registerPluginSettingsPanel(plugin.id, spec, plugin.name);
         },
         // 服务操作（按本插件内的短 id）。返回 Promise。
         startService(id) { return startService(plugin.id, id); },
@@ -291,6 +303,8 @@ function apiFor(plugin) {
             docConverters.set(fullId, {
                 id: fullId,
                 pluginId: plugin.id,
+                // 显示名要存下来：导出 ctx 的 ctx.plugin.name 取它（漏了就会回落成插件 id）
+                pluginName: plugin.name,
                 label: String(spec.label || id).trim().slice(0, 60),
                 extensions: Array.isArray(spec.extensions) ? spec.extensions.map(String).filter(Boolean) : [],
                 convert: spec.convert,

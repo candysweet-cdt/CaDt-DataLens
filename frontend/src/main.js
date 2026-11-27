@@ -6,7 +6,7 @@ import hljs from 'highlight.js/lib/common';
 import {detectFormat, formats, isSupportedFile, pluginFormats} from './core/formats.js';
 import {installTooltip, setTooltipActionHandler} from './core/tooltip.js';
 import {createExplorer} from './explorer/explorer.js';
-import {createStructurePanel, parseStructure} from './editor/structure.js';
+import {createStructurePanel, parseStructureWithOutline} from './editor/structure.js';
 import {createContextMenu, inSubmenuCone, pointInRect, SUBMENU_CONE_CLOSE_DELAY_MS} from './shell/contextmenu.js';
 import {bindEditableContextMenuFallback} from './shell/edit-menu.js';
 import {copyImageBlobToClipboard} from './core/image-clipboard.js';
@@ -45,6 +45,7 @@ import {commandAppliesTo, commandCategoryLabel, evalCommandWhen, matchCommandSho
 import * as pluginToolsMod from './shell/plugin-tools.js';
 import * as pluginContextMod from './shell/plugin-context.js';
 import {createPluginImporter} from './shell/plugin-importer.js';
+import {createPluginCommandEnv} from './shell/plugin-command-env.js';
 import {createMarkdownRenderer} from './core/markdown.js';
 import {
     showPatchView, hidePatchView, disposePatchView, refreshPatchView,
@@ -217,8 +218,7 @@ let memoWorkspaceEventHook = null; // workspace-changed → 工作区便签重�
 let memoResourceEventHook = null;  // resource-changed → 全局便签目录监听重读
 let memoFlushHook = null;          // 关窗 / 页面隐藏 → 冲掉防抖保存
 let dbSidebarRenderHook = null;    // 侧栏切到「数据库」面板 → 重绘工作区清单（dbUi 建得晚，先挂 null）
-let mavenUi = null;                // Maven 工具窗口（下方创建）；applySidebarUI / 工作区切换经这里间接调
-let mavenSidebarRenderHook = null; // 侧栏切到「Maven」面板 → 重绘项目树（同款间接层）
+let mavenUi = null, mavenSidebarRenderHook = null; // Maven 工具窗口（下方创建）与侧栏渲染钩子（间接层，建得晚）
 let memoJumpHook = null;           // --memo CLI / app-open-memo 事件 → 定位跳转
 let memoPendingFlag = false;       // 有未落盘修改（writing-ui 的 anyDirty 经 getter 读它）
 
@@ -638,7 +638,6 @@ const els = {
     structurePanel: document.getElementById('structure-panel'),
     structureBody: document.getElementById('structure-body'),
     structureTitle: document.querySelector('#structure-panel .sb-title'),
-    structureSource: document.getElementById('structure-source'),
     structureRefresh: document.getElementById('structure-refresh'),
     structureCollapse: document.getElementById('structure-collapse'),
     structureExport: document.getElementById('structure-export'),
@@ -892,8 +891,8 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
                 aiPanel: {
                     open: aiOpen,
                     mode: aiPanel && aiPanel.getMode ? aiPanel.getMode() : '',
-                    // 透传调用者会话 id：列表里 caller=true 的是调用者自己，active=true 只是面板当前查看的会话
-                    sessions: aiPanel && aiPanel.bridgeListSessions ? aiPanel.bridgeListSessions(callerSessionId) : [],
+                    sessions: aiPanel && aiPanel.bridgeListSessionsBrief ? aiPanel.bridgeListSessionsBrief(callerSessionId) : [],
+                    workspaces: aiPanel && aiPanel.bridgeListWorkspaces ? aiPanel.bridgeListWorkspaces() : [],
                 },
                 theme: settings.theme,
                 codeStyle: settings.codeStyle || CODE_STYLE_AUTO,
@@ -2043,12 +2042,10 @@ const defaultSettings = {
     fixedKeys: true,
     autoSave: false,
     openMode: 'tab',
-    // 点窗口 X 的行为：exit 直接退出 / tray 最小化到托盘（后端 config.json 为真源）
-    closeAction: 'exit',
+    // 点窗口 X 的行为：ask 每次询问（默认）/ exit 直接退出 / tray 最小化到托盘（后端 config.json 为真源）
+    closeAction: 'ask',
     sidebarMode: 'tree',
     sidebarView: 'files',
-    // 结构面板在「文件 + AI 助手」同时存在时的来源偏好（file / session）
-    structureSource: 'file',
     showSidebar: false,
     csvTableMigrated: false,
     keyWidth: 160,
@@ -2134,7 +2131,7 @@ const defaultSettings = {
     orchMaxAttempts: 2,
     orchBatchTimeoutSec: 1200,
     orchAuditIdleSec: 7200,
-    orchReview: true,
+    orchReview: true, orchFinalReview: false,
     orchBudgetTokens: 0,
     aiShowUsage: true,
     // composer 状态栏额度胶囊（全局外显开关，默认关；需账号启用用量查询才有数据）
@@ -2253,14 +2250,12 @@ settings.autoSave = !!settings.autoSave;
 // openMode 仅支持 tab：「一个文件一个窗口」在 v3 一进程多窗口下会造成同工作区
 // 双开，轻量查看窗评估前禁用（2026-11-21 用户裁定）；旧配置里的 window 值回落。
 settings.openMode = 'tab';
-// 关闭行为（exit 直接退出 / tray 最小化到托盘）：非法值回落退出——藏窗口是不可见的坑，
+// 关闭行为（ask 每次询问 / exit 直接退出 / tray 最小化到托盘）：非法值回落退出——藏窗口是不可见的坑，
 // 宁可退出也不要让用户找不到程序。真相在后端 config.json（见 SetCloseAction）。
-if (settings.closeAction !== 'tray') settings.closeAction = 'exit';
+if (settings.closeAction !== 'tray' && settings.closeAction !== 'ask' && settings.closeAction !== 'exit') settings.closeAction = 'exit';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
-// sidebarView 白名单放行 'maven'：触发判定是异步的，启动时还没算完——放行后由 Maven 面板
-// 在识别失败时自动退回 files（localStorage 单槽跨窗残留的兜底见方案 §5.3）。
+// sidebarView 白名单放行 'maven'：触发判定异步，识别失败时面板自动退回 files（兜底见方案 §5.3）
 if (!['files', 'git', 'structure', 'chats', 'maven'].includes(settings.sidebarView)) settings.sidebarView = 'files';
-if (settings.structureSource !== 'session') settings.structureSource = 'file';
 settings.showSidebar = !!settings.showSidebar;
 settings.treeGuides = !!settings.treeGuides;
 settings.treeCounts = !!settings.treeCounts;
@@ -2558,7 +2553,7 @@ const writingUI = createWritingUI({
     // 关窗脏标记把便签的防抖窗口算进去（anyDirty 可能在 bridgeUI 解构前被调用，读早期 flag 防 TDZ）
     get memoHasPending() { return () => memoPendingFlag; },
 });
-const {CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, applyRunProfile, applyWritingFormat, applyWritingMode, canSplitDoc, cancelAutoSave, closeFootPopover, editorLocale, effectiveToolEnv, flash, fmtSize, formatDisplayName, insertSceneSeparator, isHtmlDoc, isSqlSupportedDoc, isSvgDoc, jumpToPosition, markdownRenderer, mdPreviewWidthLabel, normalizeLegacySqlMode, openConfirmDialog, openGotoDialog, openWritingNameDialog, renderEnvVarsPane, renderFmtTable, renderFormatPane, renderLangPane, renderMarkdownHtml, renderMermaidBlocks, renderPluginsPane, renderRunPane, resolveMarkdownImages, scheduleAutoSave, scheduleCursorPosition, scheduleWritingCaret, setDirty, splitKindFor, toggleWritingMode, toolEnvFor, updateAiWidthWidget, updateBackendDirty, updateCursorPosition, updateTabDirty, updateWindowTitle, updateWritingStats, viewDisabled, viewLabel, viewOptionsFor, writingFormatable} = writingUI;
+const {CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, applyRunProfile, applyWritingFormat, applyWritingMode, canSplitDoc, cancelAutoSave, closeFootPopover, editorLocale, effectiveToolEnv, flash, fmtSize, formatDisplayName, insertSceneSeparator, isHtmlDoc, isSqlSupportedDoc, isSvgDoc, jumpToPosition, markdownRenderer, mdPreviewWidthLabel, normalizeLegacySqlMode, openCloseConfirmDialog, openConfirmDialog, openGotoDialog, openWritingNameDialog, renderEnvVarsPane, renderFmtTable, renderFormatPane, renderLangPane, renderMarkdownHtml, renderMermaidBlocks, renderPluginsPane, renderRunPane, resolveMarkdownImages, scheduleAutoSave, scheduleCursorPosition, scheduleWritingCaret, setDirty, splitKindFor, toggleWritingMode, toolEnvFor, updateAiWidthWidget, updateBackendDirty, updateCursorPosition, updateTabDirty, updateWindowTitle, updateWritingStats, viewDisabled, viewLabel, viewOptionsFor, writingFormatable} = writingUI;
 const editorGroupsMod = createEditorGroups({
     set currentMode(v) { currentMode = v; },
     set dirty(v) { dirty = v; },
@@ -2635,7 +2630,6 @@ const editorGroupsMod = createEditorGroups({
     get pathWithinValue() { return pathWithinValue; },
     get pendingDocViews() { return pendingDocViews; },
     get plainTextExtensions() { return plainTextExtensions; },
-    get refreshStructureSources() { return refreshStructureSources; },
     get reloadActive() { return reloadActive; },
     get renderMarkdownHtml() { return renderMarkdownHtml; },
     get renderMermaidBlocks() { return renderMermaidBlocks; },
@@ -2729,7 +2723,7 @@ const structurePanelCtrl = createStructurePanelController({
     get exportStructureTree() { return exportStructureTree; },
     get file() { return file; },
     get iconSvg() { return iconSvg; },
-    get parseStructure() { return parseStructure; },
+    get parseStructure() { return parseStructureWithOutline; },
     get selectLineInDoc() { return selectLineInDoc; },
     get settings() { return settings; },
     set settings(v) { settings = v; },
@@ -2755,11 +2749,6 @@ const rememberStructureResult = (...a) => structurePanelCtrl.rememberStructureRe
 const parseStructureCached = (...a) => structurePanelCtrl.parseStructureCached(...a);
 const scheduleStructureRefresh = (...a) => structurePanelCtrl.scheduleStructureRefresh(...a);
 const initStructurePanel = (...a) => structurePanelCtrl.initStructurePanel(...a);
-const structureSources = (...a) => structurePanelCtrl.structureSources(...a);
-const structureOutlineSnapshot = (...a) => structurePanelCtrl.structureOutlineSnapshot(...a);
-const syncStructureChrome = (...a) => structurePanelCtrl.syncStructureChrome(...a);
-const refreshStructureSources = (...a) => structurePanelCtrl.refreshStructureSources(...a);
-const toggleStructureSource = (...a) => structurePanelCtrl.toggleStructureSource(...a);
 const structureTreeText = (...a) => structurePanelCtrl.structureTreeText(...a);
 const showStructureExportMenu = (...a) => structurePanelCtrl.showStructureExportMenu(...a);
 const toggleStructureExportLineNums = (...a) => structurePanelCtrl.toggleStructureExportLineNums(...a);
@@ -2950,6 +2939,8 @@ const pluginImporter = createPluginImporter({
     openConfirmDialog,
     flash: (...args) => flash(...args),
     get backend() { return backend; },
+    // 导入器 ctx 的 workspace：与命令 / 视图同口径取「当前根」（多工作区下是聚焦会话的仓库）
+    get workspaceFolder() { return currentRoot(); },
     openVirtualDoc: (...args) => openVirtualDoc(...args),
     activityLog,
 });
@@ -3558,7 +3549,6 @@ function applySidebarUI() {
     const filesVisible = !!settings.showSidebar && currentSidebarView() === 'files';
     if (explorer) explorer.setVisible(filesVisible);
     if (structurePanel) structurePanel.setVisible(!!settings.showSidebar && currentSidebarView() === 'structure');
-    refreshStructureSources();
     requestAnimationFrame(() => {
         if (!editor) return;
         try {
@@ -4460,8 +4450,6 @@ function initAIPanel() {
                 if (terminalUI.open) fitActiveTerm();
             } catch (e) {}
         },
-        // 面板开合 / 显示方式 / 消息流变化：结构面板据此决定显示文件结构还是会话结构
-        onPanelStateChange: () => refreshStructureSources(),
         // 会话回合开始 / 结束：驱动「AI 工作时自动收起编辑区」（默认关，见 settings.aiAutoCollapseEditor）
         onTurnStateChange: (running, sessionId, isCurrent) => applyAutoCollapse(running, sessionId, isCurrent),
     });
@@ -4636,6 +4624,7 @@ function initAIPanel() {
                 refreshCognitionPageIfVisible();
             }
             lastCog = nowCog;
+            if (mavenUi) mavenUi.revalidate(); // Maven 图标随设置重算（补扫后即出现；revalidate 内部含已就绪跳过）
         });
         // MCP 客户端：Go 侧世代/状态事件都推全量快照，面板整表替换（ai-mcp.js §5.4）
         appEvents.onApp('mcp-tools-changed', (snapshot) => {
@@ -5549,7 +5538,7 @@ const cognitionPageInstances = new WeakMap();
 const appPageMounters = {
     'usage-stats': (root) => settingsPaneUsageStats.mount(root),
     // 编排看板：应用页面与独立标签页共用挂载器；域实例惰性创建。
-    'orchestration': (root) => ensureOrchestrationHost().mountBoard(root, currentRoot() || ''),
+    'orchestration': (root, workspace) => ensureOrchestrationHost().mountBoard(root, workspace || currentRoot() || ''),
     // perWorkspace 页：第二个参数是标签页绑定的固定根（认知索引 / 补丁库）。
     // 每个标签页新建独立实例——页面模块有模块级状态，共用会让两个标签互相覆盖。
     'patches': (root, ws) => makePatchesPane(ws).mount(root, ws),
@@ -5749,9 +5738,10 @@ elsSettings.openMode.addEventListener('change', () => {
     applySettings();
     renderTabs();
 });
-// 关闭窗口时：直接退出 / 最小化到托盘（applySettings 里的 syncCloseAction 推给后端落盘）
+// 关闭窗口时：每次询问 / 直接退出 / 最小化到托盘（applySettings 里的 syncCloseAction 推给后端落盘）
 elsSettings.closeAction.addEventListener('change', () => {
-    settings.closeAction = elsSettings.closeAction.value === 'tray' ? 'tray' : 'exit';
+    const v = elsSettings.closeAction.value;
+    settings.closeAction = v === 'tray' || v === 'ask' ? v : 'exit';
     applySettings();
     if (settings.closeAction === 'tray') flash('点 X 将最小化到托盘，右键托盘图标可退出');
 });
@@ -6245,48 +6235,33 @@ const formatConvert = createFormatConvert({
 const {convertMenuItems, repairJsonAction} = formatConvert;
 
 // ---- 插件命令的上下文环境 ----
-// 传给插件命令的 run(env) / when(env)：一次性只读快照，插件据此决定可用性与行为。
-function pluginCommandEnv() {
-    let hasSelection = false;
-    try {
-        if (currentMode === 'code' && editor && editor.aceEditor) {
-            hasSelection = !!editor.aceEditor.getSelectedText();
-        } else if (textArea) {
-            hasSelection = textArea.selectionStart !== textArea.selectionEnd;
-        }
-    } catch (e) {
-        hasSelection = false;
-    }
-    let editorFocused = false;
-    try {
-        editorFocused = !!(currentMode === 'code' && editor && editor.aceEditor && editor.aceEditor.isFocused());
-    } catch (e) {
-        editorFocused = false;
-    }
-    return {
-        hasFile: !!file,
-        formatId: file && file.format ? file.format.id : '',
-        hasSelection,
-        readonly: !!file && isDocReadOnly(file, settings),
-        workspace: workspaceFolder || '',
-        editorFocused,
-    };
-}
+// 构造体拆到 shell/plugin-command-env.js（组合根只做接线）：传函数而不是值，
+// 因为 currentMode / editor / textArea / file / settings 都是本文件里会整体替换的绑定。
+const pluginCommandEnv = createPluginCommandEnv({
+    currentMode: () => currentMode,
+    editor: () => editor,
+    textArea: () => textArea,
+    file: () => file,
+    settings: () => settings,
+    workspace: () => currentRoot() || '',
+    isDocReadOnly,
+});
 
 // 编辑器右键菜单里的插件命令：本函数组装好菜单项交给 editor-menus.js 展开，
 // 保持 editor 域不依赖插件域。分隔线只在确有命令时插入。
 function pluginEditorMenuItems() {
     const list = getPluginCommands().filter((cmd) => commandAppliesTo(cmd, 'editorContext'));
     if (!list.length) return [];
-    const env = pluginCommandEnv();
     const items = [];
     for (const cmd of list) {
-        if (!evalCommandWhen(cmd, env)) continue;
+        // env 按命令现算：when() 要能读到 env.plugin（身份），共用一份快照就拿不到。
+        if (!evalCommandWhen(cmd, pluginCommandEnv(cmd))) continue;
         items.push({
             label: cmd.label,
             description: cmd.description || undefined,
             icon: cmd.icon || undefined,
-            action: () => cmd.run(env),
+            // run 时重算一次：菜单开着的时候选区 / 焦点可能已经变了
+            action: () => cmd.run(pluginCommandEnv(cmd)),
         });
     }
     return items.length ? [{sep: true}, ...items] : [];
@@ -6302,7 +6277,7 @@ function flattenPaletteItems(prefix, item, out) {
         return;
     }
     if (typeof item.action !== 'function') return;
-    out.push({label: prefix + '： ' + item.label, shortcut: item.shortcut || '', action: item.action});
+    out.push({...item, label: prefix + '： ' + item.label, shortcut: item.shortcut || ''}); // 展开透传 icon/iconHtml/iconClass 供命令面板渲染图标
 }
 
 function paletteActions() {
@@ -6346,13 +6321,12 @@ function paletteActions() {
     // when 不满足的直接不出现（与内置动作 disabled 即跳过同一口径）。
     const pluginCmds = getPluginCommands();
     if (pluginCmds.length) {
-        const env = pluginCommandEnv();
         for (const cmd of pluginCmds) {
-            if (!evalCommandWhen(cmd, env)) continue;
+            if (!evalCommandWhen(cmd, pluginCommandEnv(cmd))) continue;
             actions.push({
                 label: commandCategoryLabel(cmd) + '： ' + cmd.label,
                 shortcut: cmd.shortcut ? cmd.shortcut.label : '',
-                action: () => cmd.run(pluginCommandEnv()),
+                action: () => cmd.run(pluginCommandEnv(cmd)),
             });
         }
     }
@@ -6600,16 +6574,18 @@ function menuItems(kind) {
             if (!toolCmds.length) {
                 items.push({sep: true}, {label: '（暂无插件命令）', disabled: true});
             } else {
-                const env = pluginCommandEnv();
-                items.push({sep: true}, ...toolCmds.map((cmd) => ({
-                    label: cmd.label,
-                    icon: cmd.icon || undefined,
-                    shortcut: cmd.shortcut ? cmd.shortcut.label : '',
-                    // 标记来源：命令面板遍历菜单时据此跳过，改用插件自己的分组前缀
-                    pluginCommand: true,
-                    disabled: !evalCommandWhen(cmd, env),
-                    action: () => cmd.run(env),
-                })));
+                items.push({sep: true}, ...toolCmds.map((cmd) => {
+                    const cmdEnv = pluginCommandEnv(cmd);
+                    return {
+                        label: cmd.label,
+                        icon: cmd.icon || undefined,
+                        shortcut: cmd.shortcut ? cmd.shortcut.label : '',
+                        // 标记来源：命令面板遍历菜单时据此跳过，改用插件自己的分组前缀
+                        pluginCommand: true,
+                        disabled: !evalCommandWhen(cmd, cmdEnv),
+                        action: () => cmd.run(pluginCommandEnv(cmd)),
+                    };
+                }));
             }
             return items;
         }
@@ -7186,7 +7162,8 @@ window.addEventListener('keydown', (e) => {
         if (pluginCmd) {
             e.preventDefault();
             e.stopPropagation();
-            pluginCmd.run(pluginEnv);
+            // 命中后再按该命令重算一份（基座里补上 plugin 身份）；匹配阶段还不知道会命中谁
+            pluginCmd.run(pluginCommandEnv(pluginCmd));
             return;
         }
     }
@@ -7325,6 +7302,18 @@ if (rt) {
             '；' + actionWord + '将终止这些任务' + (r.dirty ? '并丢弃未保存的修改' : '') + '。';
     }
 
+    // close-choice：ask 模式点 X 的三选一（取消 / 退出应用 / 最小化到托盘）。勾选「不再询问」
+    // 即把 closeAction 改成所选值并 applySettings（统一落盘通道），之后点 X 直接执行不再弹框。
+    const rememberClose = (remember, value) => { if (remember) { settings.closeAction = value; applySettings(); } };
+    appEvents.onWindow('close-choice', (reasons) => {
+        flushCsvCellEditor();
+        if (memoFlushHook) memoFlushHook();
+        openCloseConfirmDialog(closeReasonsText(reasons || {}, '退出'), {
+            cancel: () => {},
+            exit: (remember) => { rememberClose(remember, 'exit'); if (backend.ForceQuitAll) backend.ForceQuitAll(); },
+            tray: (remember) => { rememberClose(remember, 'tray'); if (backend.MinimizeToTray) backend.MinimizeToTray(); },
+        });
+    });
     appEvents.onWindow('confirm-close', (reasons) => {
         flushCsvCellEditor();
         // 快捷便签：挂着的防抖保存在弹确认框前先落盘（自动保存语义，之后无论选哪个退出按钮都不丢）

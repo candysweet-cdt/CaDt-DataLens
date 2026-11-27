@@ -66,6 +66,38 @@ module.exports = { apply(cadt) { /* 同脚本体内可用的一切 */ } };
 > 注意：入口不是 ES 模块，`import` / `export` 语法会直接语法错误。`apply` 可以是 async，
 > 但宿主等待有 5 秒上限（超时按加载失败处理，其余插件继续），不要在里面做长任务。
 
+### 回调上下文（ctx）
+
+插件回调**不是只收参数**——每个入口还会拿到一份上下文对象，里面至少有以下「基座」键：
+
+| 键 | 含义 |
+|---|---|
+| `ctx.plugin` | `{id, name}`：自己的身份。写跨入口共享的工具函数时直接读它，不必各入口传一遍。安装目录仍用 `cadt.getPluginDir()` |
+| `ctx.workspace` | 当前工作区根（绝对路径）。没有工作区时是**空串**，不是 `undefined` |
+| `ctx.sessionId` | 所属 AI 会话 id；命令 / 视图 / 导入器 / 导出 这类非 AI 入口是空串 |
+| `ctx.origin` | 谁在调你：`command` / `editor` / `open` / `export` / `tool` / `prompt` / `settings` / `classifier` |
+| `ctx.flash(msg, isError)` | 提示能力。**只在有的入口上存在**（视图 / 导入器 / 导出 / 设置面板），命令与 AI 工具没有 |
+
+在此之上，各入口追加自己的域字段：
+
+| 入口 | 回调 | 额外 ctx | 非 AI 入口的 `origin` |
+|---|---|---|---|
+| `addCommand` | `run(env)` / `when(env)` | `hasFile` / `formatId` / `hasSelection` / `readonly` / `editorFocused` | `command` |
+| `registerViewer` | `mount(container, ctx)` | 只读渲染：`getData` / `getSelection` / `setSelection` / `getTheme` / `onChange` / `requestSave`（唯一写回通道）/ `flash`；`source` 与 `doc` 是同一个 `{path, name, size}` 对象 | `editor` |
+| `registerImporter` | `convert(ctx)` | `ext` / `path` / `name` / `size` / `readTextFile` / `readBinaryFile` / `flash` / `source:'open'` | `open` |
+| `registerDocConverter` | `convert(ctx)` | `title` / `suggestedName` / `html` / `images` / `chooseSavePath` / `writeTextFile` / `writeBinaryFile` / `flash` / `source`（当前唯一消费方是便签导出，取值 `'memo'`） | `export` |
+| `registerTool` | `execute(args, ctx)` | `scope` / `signal`（没有 `flash`：工具要么返回文本，要么抛错） | `tool` |
+| `registerAIContext` | `text(ctx)` | `scope` | `prompt` |
+| `registerSettingsPanel` | `render(container, ctx)` | `flash` / `startService` / `stopService` / `getServiceStatus` / `getServiceLogs` / `openExternal` | `settings` |
+| `registerCommandClassifier` | `classify(command, ctx)` | `cwd` / `toolName` / `strictness` / `threshold` / `sessionId` | `classifier` |
+
+（第二表只列**域字段**；每个 ctx 都另有上表的基座键。）
+
+两条约定：
+
+- **只加键，不改键。** `ctx.source` 在导入器 / 导出转换器上是**字符串场景名**，在自定义视图上是**文件对象**——历史包袱，不会再改（改了就是破坏性变更）。新代码请用 `ctx.origin`（场景）与 `ctx.doc`（视图里的文件对象），语义不再混。同理，旧键会一直保留：插件读旧键照常工作。
+- **有些回调刻意没有 ctx**：`registerFormat` 的 `parse(text)` / `stringify(value)`（纯函数，结构面板、表格、worker 都会调，可能不在主线程）、`registerDbDriver` 的 `connect(config)`（数据源配置）、`registerAIProvider` 的 `prepare(ctx)`（请求补丁上下文，只有 `accountId` 等请求侧字段）。给它们塞宿主能力等于开一条绕过脏标记 / 审批的通道。
+
 ### 依赖声明与执行顺序
 
 清单里可以声明依赖的其他插件：

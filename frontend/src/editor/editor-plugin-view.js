@@ -10,6 +10,7 @@
 //   3. >10 MB 与二进制档不挂插件视图（判定单一来源在 shell/plugin-viewers.js）；
 //   4. 主题切换调 setTheme，不重挂。
 import {isDocReadOnly} from '../core/readonly.js';
+import {PLUGIN_CTX_ORIGINS, pluginCtxBase, withCtx} from '../shell/plugin-ctx.js';
 import {
     getPluginViewerByMode, isPluginViewMode, pluginViewerBlockedReason, viewerIdFromMode,
 } from '../shell/plugin-viewers.js';
@@ -129,12 +130,23 @@ function buildContext(doc, viewer) {
             }
         }
     };
-    return {
+    // 身份与位置走 shell/plugin-ctx.js 的基座（plugin / workspace / origin 恒存在）；
+    // source 是历史键（对象形态，{path,name,size}），doc 是同一对象的语义明确别名——
+    // 导入器 / 导出转换器那边 source 是字符串场景名，两者不能同名同义，见 plugin-ctx.js 头注释。
+    const docRef = {path: doc.path || '', name: doc.name || '', size: Number(doc.size || 0) || 0};
+    return withCtx(pluginCtxBase({
+        pluginId: viewer.pluginId,
+        pluginName: viewer.pluginName,
+        workspace: deps.workspaceFolder || '',
+        sessionId: '',
+        origin: PLUGIN_CTX_ORIGINS.editor,
+    }), {
         viewerId: viewer.id,
         mode: viewer.mode,
         pluginId: viewer.pluginId,
         pluginName: viewer.pluginName,
-        source: {path: doc.path || '', name: doc.name || '', size: Number(doc.size || 0) || 0},
+        source: docRef,
+        doc: docRef,
         readOnly: isDocReadOnly(doc, deps.settings),
         getData: () => docText(doc),
         getSelection: () => docSelection(doc),
@@ -147,7 +159,7 @@ function buildContext(doc, viewer) {
         },
         requestSave: (text) => requestSave(doc, text),
         flash: (msg, isError) => deps.flash(String(msg == null ? '' : msg), !!isError),
-    };
+    });
 }
 
 function ensureHost(doc) {

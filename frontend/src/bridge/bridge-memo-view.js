@@ -10,6 +10,7 @@ import {escapeHtml} from '../core/escape.js';
 import {kvGet, kvSet} from '../core/kv-store.js';
 import {MEMO_SCOPE_KEY} from '../core/storage-keys.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
+import {PLUGIN_CTX_ORIGINS, pluginCtxBase, withCtx} from '../shell/plugin-ctx.js';
 import {getPluginDocConverters} from '../shell/plugins.js';
 import {memoDocxBase64} from './memo-docx.js';
 import {
@@ -1514,7 +1515,15 @@ async function runDocConverter(view, converter) {
             base64: url.slice(at + 7),
         });
     }
-    const ctx = {
+    // 身份与位置走 shell/plugin-ctx.js 的基座；source:'memo' 是历史键（字符串场景名），
+    // 保留不动，另有 origin:'export' 与新入口统一口径。
+    const ctx = withCtx(pluginCtxBase({
+        pluginId: converter.pluginId,
+        pluginName: converter.pluginName,
+        workspace: workspaceRootOf(),
+        sessionId: '',
+        origin: PLUGIN_CTX_ORIGINS.export,
+    }), {
         source: 'memo',
         title: '快捷便签 · ' + scopeLabel,
         suggestedName,
@@ -1532,7 +1541,7 @@ async function runDocConverter(view, converter) {
             await deps.backend.SaveDataURL(p, 'data:' + (mime || 'application/octet-stream') + ';base64,' + String(base64 || ''));
         },
         flash: (message, isErr) => deps.flash(String(message == null ? '' : message), !!isErr),
-    };
+    });
     try {
         await converter.convert(ctx);
     } catch (e) {

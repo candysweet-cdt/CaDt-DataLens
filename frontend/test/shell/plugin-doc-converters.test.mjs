@@ -17,6 +17,8 @@ test('文档转换器：注册 → 可列举 → 重载清空', async () => {
     assert.equal(list.length, 1);
     assert.equal(list[0].id, 't1:doc', '全 id 带插件前缀');
     assert.equal(list[0].pluginId, 't1');
+    // 显示名必须存进记录：导出 ctx 的 ctx.plugin.name 取它，漏了就会回落成插件 id
+    assert.equal(list[0].pluginName, 'T1');
     assert.equal(list[0].label, 'Word(.doc)');
     assert.deepEqual(list[0].extensions, ['doc']);
 

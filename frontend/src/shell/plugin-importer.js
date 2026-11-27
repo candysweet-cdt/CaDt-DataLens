@@ -2,6 +2,7 @@
 // 从 main.js 拆出（phase4 M3），函数体逐字搬移；纯函数直接 import，UI/后端能力经 deps 注入。
 
 import {extOf} from '../terminal/run.js';
+import {PLUGIN_CTX_ORIGINS, pluginCtxBase, withCtx} from './plugin-ctx.js';
 import {findImporterFor, hexDumpToBase64} from './plugin-importers.js';
 
 export function createPluginImporter(deps) {
@@ -32,8 +33,17 @@ export function createPluginImporter(deps) {
     }
 
     // 导入器拿到的读接口：复用既有绑定（OpenFile / ReadImageAsDataURL），不新造 Go 绑定。
-    function importerReadContext(base, path, data) {
-        return {
+    // 身份与位置来自 shell/plugin-ctx.js 的基座；source:'open' 是历史键（字符串场景名），
+    // 保留不动，另有 origin:'open' 与新入口统一口径（见 plugin-ctx.js 头注释）。
+    function importerReadContext(base, path, data, plugin) {
+        const meta = plugin && typeof plugin === 'object' ? plugin : {};
+        return withCtx(pluginCtxBase({
+            pluginId: meta.pluginId,
+            pluginName: meta.pluginName,
+            workspace: deps.workspaceFolder || '',
+            sessionId: '',
+            origin: PLUGIN_CTX_ORIGINS.open,
+        }), {
             source: 'open',
             ext: extOf(base),
             path,
@@ -49,7 +59,7 @@ export function createPluginImporter(deps) {
                 return file.content == null ? '' : file.content;
             },
             readBinaryFile: (p) => readFileBase64(String(p || '').trim()),
-        };
+        });
     }
 
     // 二进制读取：优先走读图通道（data URL 自带 base64，≤32 MB）；其余类型退回 OpenFile 的
@@ -89,7 +99,7 @@ export function createPluginImporter(deps) {
         deps.flash('正在用「' + importer.label + '」导入 ' + base + '…');
         let result;
         try {
-            result = await importer.convert(importerReadContext(base, path, data));
+            result = await importer.convert(importerReadContext(base, path, data, importer));
         } catch (e) {
             deps.flash('导入失败，已按二进制视图打开：' + ((e && e.message) || e), true);
             return null;

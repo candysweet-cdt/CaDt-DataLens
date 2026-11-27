@@ -260,7 +260,7 @@ function openBrowserTab(url, profileKey, opts) {
     if (deps.backend.GetCloseAction) {
         try {
             const action = await deps.backend.GetCloseAction();
-            if (action === 'tray' || action === 'exit') {
+            if (action === 'tray' || action === 'exit' || action === 'ask') {
                 deps.settings.closeAction = action;
                 deps.applySettings();
             }
