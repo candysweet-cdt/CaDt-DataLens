@@ -113,3 +113,11 @@ test('收起态留白：composer 在收起态降 min-height', () => {
     assert.match(css, /\.ai-composer:has\(> #ai-takeover > \.ai-takeover-bar\) \{[^}]*min-height: 0/,
         '收起态细条时输入框容器不再被 96px 撑高');
 });
+
+test('ask_user 问题数上限为 8：主面板与子代理提问解析两处同步', () => {
+    const parse = fnBody(panel, 'function parseAskQuestions(input)', 'function normalizeAsk');
+    assert.match(parse, /source\.slice\(0, 8\)/, '主面板解析上限 8');
+    const subagents = readFileSync(fileURLToPath(new URL('src/ai/agent/ai-subagents.js', root)), 'utf8');
+    const subAsk = fnBody(subagents, 'function subAskQuestions(input)', 'function askAnswerText');
+    assert.match(subAsk, /list\.slice\(0, 8\)/, '子代理提问解析上限同为 8');
+});

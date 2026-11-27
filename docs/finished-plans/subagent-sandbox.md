@@ -2,6 +2,7 @@
 
 > 状态：**已实施：阶段 A–D 已于 2026-11-17 落地（见 §4 实施记录）；方案 C 确认采用，2026-11-17 按真机实测修订**
 > 决策：2026-11-17 —— 作者在对齐 dsh（`D:\OraSkyC\Project\OpenSource\deepseek-harness`）实现后选择「接受 shell 分裂，继续 C」。本文档是唯一实施依据；§7 保留原复核意见作为过程记录，§8 记录推翻它的实测数据。
+> 决策修订（2026-11-27）：子代理缺省权限由「继承父档」改为「封顶 auto」（`min(auto, 父档)`），full 档不再默认继承完全权限；显式传 `sandbox:'full'` 仍是逃生舱，且会给主代理投一条非阻塞警告。同时给子代理命令留痕加轻量审计摘要（命令族 + cwd，不记正文/参数）。理由见 §3.1 与 §6-1。原「full 继承」决策保留在下文作为历史记录。
 > 范围：子代理获得命令执行能力，文件效应由 Windows OS 级沙箱强制圈定；不改主会话命令链路、不做子代理审批链路（子代理永远「不问」）、不做 macOS/Linux
 
 ## 1. 背景与现状
@@ -71,7 +72,11 @@ ZCode **没有 OS 级沙箱实现**——`ExecutionSandboxPolicy`（`packages/co
 | read | read-only | 只读契约原样下传 |
 | edit | read-only | edit 档的写审批依赖「人在场」，子代理没有审批通道 |
 | auto | workspace-write | auto 契约即非风险自主执行 |
-| full | danger-full-access | **已拍板：继承父的完全权限**（对齐 dsh「继承宽身份」），提示中如实声明 |
+| full | danger-full-access | 原决策「继承父的完全权限」（对齐 dsh「继承宽身份」）；**2026-11-27 起仅显式 `sandbox:'full'` 才走到这里**，缺省改为封顶 auto（见下） |
+
+> **2026-11-27 缺省封顶 auto**：`subScopeDowngrade` 的缺省值从「父档」改为 `auto`，即子代理权限 = `min(auto, 父档)`。full 档主会话派出的子代理默认落到 auto → `workspace-write`，命令进沙箱、写效应圈在写根内。
+> 理由：full 档子代理此前继承完全权限，命令裸跑不进沙箱、可写工作区外任意路径；而操作留痕不记命令正文/目标路径、子代理转录不落盘（`ai-panel.js`「子代理元数据：转录不落盘」），事后基本无法追溯。auto 的价值不在「限制读」（工作区外读取 auto 与 full 都放行，见 `ai-permissions.js` 的 read 分支），而在把写效应从「整个磁盘」收敛到「一个写根」——在留痕粗糙的现状下，这是唯一可靠的追溯手段。
+> 显式传 `sandbox:'full'` 保留为逃生舱（确实需要子代理跨目录写时），此时 `startSubAgent` 向发起方信箱投一条非阻塞 `scope-warning` 消息（新 `buildFullScopeWarning`，前缀「［子代理权限警告］」，走信箱排队不阻塞派单）。配套轻量留痕：命令类工具记 `cmdFamily` + `cwd`，full 档标 `sandbox:'danger-full-access'`，刻意不记命令正文/参数（防密钥泄露）。
 
 ### 3.2 写根（对齐 dsh，v1 定死）
 
@@ -134,11 +139,12 @@ ZCode **没有 OS 级沙箱实现**——`ExecutionSandboxPolicy`（`packages/co
 4. **阶段 D（收尾）— 撤销工具与设置页说明已实施（2026-11-17）**：`sandbox.Scan` / `sandbox.Revoke`（引擎）+ 根壳 `sandbox_app.go` 的两个绑定 + AI 设置 → 权限 → 「子代理命令沙箱」小节（说明 + 检查 / 清除授权两个按钮）。
    > `Revoke` 只删「完全匹配本应用签名」的条目：能力 SID 的 allow ACE、Everyone 的 `FILE_DELETE_CHILD` deny（按 ACE 逐条重建 ACL，**不能**用 `REVOKE_ACCESS`——那会把 Everyone 的其它授权一起删掉），以及没有其它能力授权时的 Low 标签。若重建后 ACL 为空则放弃并报错（空 DACL = 全员拒绝，比留着残留更糟）。
    > 余量：无（README / CHANGELOG 的用户向说明已随 2026-11-17 的收口补上）。
+5. **阶段 E（Low 标签事故修复）— 已实施（2026-11-27）**：workspace-write 的唯一写根改为每次调用新建的私有临时目录（方向④），Low 标签不再落真实工作区/worktree；`TMP/TEMP` 与 `TempDir` 回显同步指向该目录。新增启动残留自检（延迟 2 秒异步 Scan、用户确认后 Revoke、不阻塞首屏）、包内 `SeSecurityPrivilege` 统一启用、AGENTS.md 联调硬规则与源码守卫测试。详见 `docs/reports/incident-2026-11-27-sandbox-low-label.md`。
 
 ## 5. 风险与代价（如实记录）
 
 - **工程量**：Go 侧 1000–1500 行 + Windows 集成测试，数周级。
-- **永久副作用**：workspace 树被打上 Low 完整性标签且 `dispose` 不撤销，此后**任何** Low IL 进程（别家沙箱、Protected Mode 阅读器）都能写它；`icacls` 无法撤销（`ERROR_NONE_MAPPED 1332`，能力 SID 是派生值解析不了），只能走本包的 `sandbox.Revoke`（设置 → 权限 → 子代理命令沙箱 → 清除授权）。首次授予是 eager 全树传播，大树几十秒。
+- **永久副作用（2026-11-27 已修复）**：原方案把 Low 完整性标签永久打到 workspace 树，导致仓库内所有 exe（含 `node_modules` 构建工具）以 Low 启动。现改为只给每次调用的私有临时目录打标签，执行结束连目录删除，工作区不再残留。历史残留仍可用 `sandbox.Revoke`（设置 → 权限 → 子代理命令沙箱 → 清除授权）清理；启动自检会提示。
 - **shell 分裂**：沙箱档不能用 Git Bash（§8.2 实测），命令语义在档位间不同。这是本方案最贵的产品代价，靠提示词与卡片如实显示兜住。
 - **介质**：FAT/exFAT 卷作为写根直接失败（移动盘常见）；NULL-DACL 目录在 grant/revoke 往返后不等价；写根目录需 caller-owned 且有 `WRITE_OWNER`（仅 Modify 的目录会响亮失败）。
   > 实测补充（子代理 5 层嵌套测试）：失败场景是**工作区目录归另一个账户所有**——目录由本地 `admin` 账户创建、应用以 Microsoft 账户运行，继承来的 `Modify` 不含 `WRITE_DAC`，于是 `auto` 档每个子代理的 `run_command` 都报「沙箱不可用，命令未执行：… 授权写根 … Access is denied」。`t.TempDir()` 下的单测全过（该目录的所有者就是当前账户），说明这不是特权问题（写 SACL 无 `SeSecurityPrivilege` 也可行），而是该目录的 ACL 改不动。
@@ -148,7 +154,7 @@ ZCode **没有 OS 级沙箱实现**——`ExecutionSandboxPolicy`（`packages/co
 
 ## 6. 未决问题
 
-1. ~~full → danger-full-access 是否放行~~ → **已拍板：继承**（§3.1）。
+1. ~~full → danger-full-access 是否放行~~ → 原拍板「继承」（§3.1）；**2026-11-27 修订为缺省封顶 auto、显式 full 才继承 + 非阻塞警告**（§3.1 决策修订段）。
 2. ~~沙箱不可用的兜底~~ → **已拍板：fail-closed 报错**（§3.3-7）。
 3. **主会话命令是否同样接入沙箱**：阶段 D 单独评估（auto 档收益最大，代价是兼容性回归面）。
 4. **命令族白名单是否还要**：v1 不加（效应兜底已够，分类器是启发式不是边界）。若 P2 要加，必须遵守 ZCode 那条约束（§1.2b）：**分类判定要带 shell 上下文**——沙箱档命令跑在 PowerShell 里，bash 的 AST 只读白名单在这里不成立。

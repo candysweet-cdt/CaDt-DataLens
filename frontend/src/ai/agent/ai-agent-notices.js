@@ -73,6 +73,23 @@ export function buildAskNotice(info) {
     return {kind: 'subagent-ask', label: '子代理提问 · ' + name, content: lines.join('\n')};
 }
 
+// 完全权限子代理的警告（非阻塞）：显式给子代理派 full 档时投给发起方的信箱，提醒主代理
+// 该子代理命令不进沙箱、可写工作区外任意路径，且事后留痕不记命令正文 / 目标路径。
+// 首行前缀「［子代理权限警告］」与 detectAppMessage 归类同源约定（改动需同步 ai-app-message.js）。
+export function buildFullScopeWarning(info) {
+    const data = info || {};
+    const name = String(data.name || '子代理').trim() || '子代理';
+    const agentId = String(data.agentId || '').trim();
+    const idBit = agentId ? '（id=' + agentId + '）' : '';
+    return {
+        kind: 'scope-warning',
+        label: '子代理权限警告 · ' + name,
+        content: '［子代理权限警告］已派出完全权限子代理「' + name + '」' + idBit + '。\n' +
+            '该子代理的命令不进 OS 沙箱、可写工作区外任意路径，且操作留痕不记命令正文与目标路径，事后难以追溯。\n' +
+            '若非确需跨目录写，建议改用默认（封顶 auto）；不需要请忽略本条。',
+    };
+}
+
 // 后台命令作业退出通知（background_command 的 cmd-exit 事件驱动，非轮询）：
 // 唤醒发起方读输出、汇报结果。首行前缀「［后台命令 · X］」与 detectAppMessage 的归类
 // 正则同源约定（改动必须同步 ai-app-message.js，否则旧会话重放归不了类）。

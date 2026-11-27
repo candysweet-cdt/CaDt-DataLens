@@ -33,6 +33,10 @@ test('旧会话按固定前缀识别应用消息', () => {
     const guard = detectAppMessage('［工作区防护］10 秒内 73 个文件被删除。\n这是应用文件监听的统计结果…');
     assert.deepEqual(guard, {kind: 'wipeguard', label: '工作区防护 · 大面积文件消失', icon: 'warn'});
     assert.equal(appMessageIcon({kind: 'wipeguard'}), 'warn');
+    // 完全权限子代理警告：固定前缀，历史回放也能归类
+    const warn = detectAppMessage('［子代理权限警告］已派出完全权限子代理「跨目录调查」。\n该子代理命令不进沙箱…');
+    assert.deepEqual(warn, {kind: 'scope-warning', label: '子代理权限警告', icon: 'warn'});
+    assert.equal(appMessageIcon({kind: 'scope-warning'}), 'warn');
     assert.equal(detectAppMessage('普通用户消息'), null);
     assert.equal(detectAppMessage(''), null);
 });

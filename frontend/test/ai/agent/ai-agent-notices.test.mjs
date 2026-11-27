@@ -4,7 +4,21 @@
 import test, {mock} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {buildSettlementNotice, buildAskNotice, buildBgJobExitNotice, buildTerminalExitNotice, formatBgDuration, createAIAgentNotices, NOTICE_DEPTH_MAX, NOTICE_RETRY_DELAYS} from '../../../src/ai/agent/ai-agent-notices.js';
+import {buildSettlementNotice, buildAskNotice, buildFullScopeWarning, buildBgJobExitNotice, buildTerminalExitNotice, formatBgDuration, createAIAgentNotices, NOTICE_DEPTH_MAX, NOTICE_RETRY_DELAYS} from '../../../src/ai/agent/ai-agent-notices.js';
+
+test('buildFullScopeWarning：完全权限子代理警告文案带 id 与风险提示，前缀可归类', () => {
+    const notice = buildFullScopeWarning({name: '跨目录调查', agentId: 'sub-123'});
+    assert.equal(notice.kind, 'scope-warning');
+    assert.match(notice.label, /跨目录调查/);
+    assert.match(notice.content, /^［子代理权限警告］/);
+    assert.match(notice.content, /sub-123/);
+    assert.match(notice.content, /不进 OS 沙箱/);
+    assert.match(notice.content, /工作区外/);
+    // 缺省名与无 id 也成立
+    const bare = buildFullScopeWarning({});
+    assert.match(bare.content, /^［子代理权限警告］/);
+    assert.doesNotMatch(bare.content, /id=/);
+});
 
 function makeHarness(overrides) {
     const opts = overrides || {};

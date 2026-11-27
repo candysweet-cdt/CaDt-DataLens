@@ -32,6 +32,8 @@ export const APP_MESSAGE_ICONS = {
     plan: 'compass',
     // 工作区防护告警：预警图标（应用在检测到大批文件消失时插队投递给运行中的会话）
     wipeguard: 'warn',
+    // 完全权限子代理警告：预警图标（显式派 full 档子代理时提醒主代理）
+    'scope-warning': 'warn',
 };
 
 export function normalizeAppMessage(raw) {
@@ -62,6 +64,11 @@ export function detectAppMessage(content) {
     }
     const git = text.match(/^［Git 快捷操作 · ([^］]+)］/);
     if (git) return {kind: 'git', label: 'Git 快捷操作 · ' + git[1].trim(), icon: ''};
+    // 维护文件大纲快捷操作（ai-outline.js 提示词前缀）：排队重发路径靠前缀认回，
+    // 否则退化成用户胶囊。kind 用独立 outline，图标由 UI 显式传 book-plus。
+    if (/^［快捷操作 · 维护文件大纲］/.test(text)) {
+        return {kind: 'outline', label: '快捷操作 · 维护文件大纲', icon: 'book-plus'};
+    }
     const scheduled = text.match(/^\[定时任务 · ([^\]]+)\]/);
     if (scheduled) return {kind: 'schedule', label: '定时任务 · ' + scheduled[1].trim(), icon: ''};
     if (/^\[浏览器截图（browser_screenshot 工具自动附加）\]/.test(text)) {
@@ -70,6 +77,10 @@ export function detectAppMessage(content) {
     // 工作区防护告警（wipe-guard）：前缀与 ai-panel 的 wipeguardNotifyForWorkspace 同源约定
     if (/^［工作区防护］/.test(text)) {
         return {kind: 'wipeguard', label: '工作区防护 · 大面积文件消失', icon: 'warn'};
+    }
+    // 完全权限子代理警告：前缀与 buildFullScopeWarning 同源约定
+    if (/^［子代理权限警告］/.test(text)) {
+        return {kind: 'scope-warning', label: '子代理权限警告', icon: 'warn'};
     }
     const ask = text.match(/^［子代理提问 · ([^］]+)］/);
     if (ask) return {kind: 'subagent-ask', label: '子代理提问 · ' + ask[1].trim(), icon: ''};

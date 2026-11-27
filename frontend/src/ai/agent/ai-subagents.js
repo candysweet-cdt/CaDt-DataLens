@@ -16,7 +16,7 @@ import {encodeAgentRun, normalizeAgentRuns, resumePlanOf} from './ai-agent-resum
 import {createAgentScope, normalizeAgentPreset} from './ai-agent-preset.js';
 import {AI_TOOL_DEFS, buildSpawnAgentDef} from '../tools/ai-tool-defs.js';
 import {inspectToolArguments} from '../tools/ai-tool-args.js';
-import {buildSettlementNotice, buildAskNotice} from './ai-agent-notices.js';
+import {buildSettlementNotice, buildAskNotice, buildFullScopeWarning} from './ai-agent-notices.js';
 import {compactTranscriptOf, computeCompactCutoffByBudget, compactRetainBudget, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from '../chat/ai-compact.js';
 import {createLoopGuard} from '../chat/ai-loop-guard.js';
 
@@ -221,12 +221,37 @@ export function subAgentScopeOf(parentScope) {
 const SCOPE_STRICTNESS = Object.freeze({full: 0, auto: 1, edit: 2, read: 3});
 
 // 单向降档（spawn_agent 的 sandbox 参数）：取「父档」与「请求档」中更严的一个。
-// 请求档比父档宽（或非法 / 缺省）→ 回退父档，绝不升档。这是纯函数，供派单与测试共用。
+// 请求档比父档宽 → 回退父档，绝不升档。这是纯函数，供派单与测试共用。
+//
+// 缺省封顶 auto（2026-11-27 作者定）：不主动传 sandbox 时，子代理权限 = min(auto, 父档)。
+// 理由：full 档子代理此前继承完全权限，命令裸跑不进沙箱、可写工作区外任意路径，而操作留痕
+// 不记命令正文 / 目标路径、子代理转录不落盘，事后基本无法追溯。默认封顶 auto 把写效应
+// （文件工具 + 命令）收敛到写根，读工作区外两种档位本就都放行，调研能力不受损。
+// 显式传 full 仍是逃生舱（确实需要子代理跨目录写时）——此时主代理会收到一条非阻塞警告消息。
+const DEFAULT_SUB_SCOPE_CAP = 'auto';
 export function subScopeDowngrade(parentScope, requested) {
     const parent = subAgentScopeOf(parentScope);
-    const req = SUB_SCOPES.includes(requested) ? requested : null;
-    if (!req) return parent;
+    const req = SUB_SCOPES.includes(requested) ? requested : DEFAULT_SUB_SCOPE_CAP;
     return SCOPE_STRICTNESS[req] >= SCOPE_STRICTNESS[parent] ? req : parent;
+}
+
+// 命令审计摘要（路 B 轻量版留痕）：只记命令族（第一个可执行名）与 cwd，绝不记命令正文 /
+// 参数——参数可能含密钥、令牌，方案 §5 不记输出正文同理。命令族取不到时返回 null，
+// 留痕就不带这两个字段。这是纯函数，供派单工具循环与测试共用。
+export function commandAuditSummary(toolName, input) {
+    if (toolName !== 'run_command' && toolName !== 'background_command') return null;
+    const data = input && typeof input === 'object' ? input : {};
+    const detail = {};
+    const raw = String(data.command == null ? '' : data.command).replace(/\r\n?/g, '\n').trim();
+    const first = raw.split('\n')[0].trim();
+    const m = first.match(/^([^\s;&|><]+)/);
+    if (m) {
+        const base = m[1].split(/[\\/]/).pop().replace(/\.(exe|cmd|bat|ps1|sh)$/i, '').slice(0, 80);
+        if (base) detail.cmdFamily = base;
+    }
+    const cwd = String(data.cwd == null ? '' : data.cwd).trim();
+    if (cwd) detail.cwd = cwd.slice(0, 260);
+    return Object.keys(detail).length ? detail : null;
 }
 
 // 父权限档 → 子代理沙箱档（方案 docs/finished-plans/subagent-sandbox.md §3.1）。
@@ -619,9 +644,9 @@ export function createAISubagents(ctx) {
         const list = [
             AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.read_image, AI_TOOL_DEFS.search_text,
             AI_TOOL_DEFS.web_search, AI_TOOL_DEFS.web_fetch,
-            // 文件大纲：只读，超大文件先摸结构再精准 read_file。
+            // 代码大纲：只读读取（子代理只读档不挂写工具，maintain 由会话权限档判定）。
             // 放在 read_video 的 splice(4,0) 插入点之后，不动其顺序契约。
-            AI_TOOL_DEFS.get_file_outline,
+            AI_TOOL_DEFS.code_outline,
             AI_TOOL_DEFS.memory_list, AI_TOOL_DEFS.memory_read,
             // 主会话计时器的只读快照：子代理与孙代理共享本表，只有读权（不能启动 / 停止 / 打标记）
             AI_TOOL_DEFS.timer_list,
@@ -828,8 +853,12 @@ export function createAISubagents(ctx) {
         const entry = modelTarget ? modelTarget.entry : entryOf(parentSession);
         if (!profile) throw new Error('无可用 AI 配置');
         const toolMessage = ctx.toolMessage;
+        // id 先落到局部变量：对象字面量里的 agentCtx 要用它当 owner，若在 sub 初始化期间
+        // 直接写 sub.id 会触发暂时性死区（Cannot access 'sub' before initialization，
+        // 压缩后变量名形如 ur）——对象字面量求值完成前 const sub 尚未初始化。
+        const subId = aiNowId('sub-');
         const sub = {
-            id: aiNowId('sub-'),
+            id: subId,
             key: aiNowId('agent-'),
             toolCallId: toolMessage.toolCallId || aiNowId('agent-'),
             depth,
@@ -852,7 +881,7 @@ export function createAISubagents(ctx) {
             inbox: newSubInbox(),
             // 每 live agent 的扁平注册层 agent.ctx（S6）：工具 / 提示 / 变量只对该 agent 可见，
             // 终态时由 finalizeSubAgent dispose，不残留、不串到别的 agent。
-            agentCtx: createAgentScope({owner: sub.id, realm: ''}),
+            agentCtx: createAgentScope({owner: subId, realm: ''}),
         };
         toolMessage.agent = {
             key: sub.key,
@@ -926,6 +955,13 @@ export function createAISubagents(ctx) {
         const sandboxPolicy = subSandboxPolicy(sub.session);
         sub.sandboxMode = sandboxPolicy ? sandboxPolicy.mode : '';
         toolMessage.agent.sandboxMode = sub.sandboxMode;
+        // 完全权限子代理：给发起方投一条非阻塞警告消息（走信箱，忙则排队到下一轮边界，
+        // 不打断当前轮、不阻塞派单）。仅 danger-full-access 触发——默认封顶 auto 后，
+        // 只有显式传 sandbox:'full' 才会走到这里，是用户/主代理的知情确认。
+        if (sub.sandboxMode === 'danger-full-access') {
+            const hub = noticesLike();
+            if (hub) hub.deliverAgentNotice(parentSession, buildFullScopeWarning({name: sub.name, agentId: sub.id}));
+        }
         sub.flow = {
             sessionId: sub.id,
             baseRound: 1,
@@ -1129,9 +1165,10 @@ export function createAISubagents(ctx) {
                 continue;
             }
             let result = null;
+            let parsed = {};
             const toolExecStart = Date.now();
             try {
-                const parsed = call.arguments ? JSON.parse(call.arguments) : {};
+                parsed = call.arguments ? JSON.parse(call.arguments) : {};
                 result = await executeTool(call.name, parsed, {session: sub.session, toolMessage, stream: s, agentDepth: sub.depth});
             } catch (e) {
                 toolMessage.status = 'error';
@@ -1145,11 +1182,16 @@ export function createAISubagents(ctx) {
             // 操作留痕：子代理工具执行摘要（不记返回正文）。activityStatus 是工具给出的
             // 「留痕状态覆盖」——沙箱拒绝 / 沙箱不可用 / 作业归属拒绝各自成一种 status，
             // 优先于 done / error；子代理的命令无人可问，留痕是唯一的审计面。
+            // 路 B 轻量版：命令类工具带命令族 + cwd（不含正文 / 参数，防密钥泄露），
+            // full 档标 sandbox:'danger-full-access' 让「未沙箱裸跑」在留痕里可见。
+            const audit = commandAuditSummary(call.name, parsed);
             logActivity('ai.tool', call.name, {
                 status: toolMessage.activityStatus || (toolMessage.status === 'error' ? 'error' : 'done'),
                 ms: Math.max(0, Date.now() - toolExecStart),
                 depth: sub.depth,
                 ...(toolMessage.sandbox ? {sandbox: toolMessage.sandbox} : {}),
+                ...(sub.sandboxMode === 'danger-full-access' ? {sandbox: 'danger-full-access'} : {}),
+                ...(audit || {}),
             });
             subTranscriptPush(sub, {role: 'tool', name: call.name, text: String(toolMessage.content || '').slice(0, 600)});
         }
@@ -2265,7 +2307,7 @@ export function createAISubagents(ctx) {
     function subAskQuestions(input) {
         const list = Array.isArray(input && input.questions) ? input.questions : [];
         const out = [];
-        for (const q of list.slice(0, 5)) {
+        for (const q of list.slice(0, 8)) {
             const text = aiTextOf(q && q.question).trim();
             if (!text) continue;
             const options = Array.isArray(q && q.options)

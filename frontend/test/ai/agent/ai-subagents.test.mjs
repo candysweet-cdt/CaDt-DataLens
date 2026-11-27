@@ -3,7 +3,36 @@
 // 这里锁住「改一处就会悄悄变味」的三条判定。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, subScopeDowngrade, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, waitWakeText, waitTimeoutText, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agvToolDefaultCollapsed, agentViewTabName, agentViewRuntimeText, agentToolArgBrief, parseTranscriptLines, AI_INBOX_WAIT_MAX_SEC} from '../../../src/ai/agent/ai-subagents.js';
+import {readFileSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, subScopeDowngrade, commandAuditSummary, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, waitWakeText, waitTimeoutText, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agvToolDefaultCollapsed, agentViewTabName, agentViewRuntimeText, agentToolArgBrief, parseTranscriptLines, AI_INBOX_WAIT_MAX_SEC} from '../../../src/ai/agent/ai-subagents.js';
+
+// 源码静态守卫：const sub = { ... } 对象字面量求值期间，const sub 尚未初始化，
+// 块内任何 `sub.` 自引用都会抛 TDZ（Cannot access 'sub' before initialization，
+// 压缩后变量名形如 ur）。2026-11-27 实测事故：agentCtx: createAgentScope({owner: sub.id})
+// 让所有 spawn_agent 失败，纯函数测试与 tsc 都抓不到，只有打包运行才暴露。
+// 修法：id 先落到局部常量（subId），字面量里引用它。本守卫锁住这个不变量。
+test('startSubAgent：const sub 字面量块内不得自引用 sub.', () => {
+    const srcPath = fileURLToPath(new URL('../../../src/ai/agent/ai-subagents.js', import.meta.url));
+    const src = readFileSync(srcPath, 'utf8');
+    const start = src.indexOf('const sub = {');
+    assert.ok(start >= 0, '应能定位到 const sub 字面量');
+    // 从 `{` 起做花括号配平，取出整个字面量块（忽略字符串/注释里的括号对本判定足够——
+    // 该块内没有含裸花括号的字符串字面量；若将来加了，配平会提前结束，届时再收紧解析器）。
+    const braceAt = src.indexOf('{', start);
+    let depth = 0;
+    let end = -1;
+    for (let i = braceAt; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') {
+            depth--;
+            if (depth === 0) {end = i; break;}
+        }
+    }
+    assert.ok(end > braceAt, '字面量块应闭合');
+    const block = src.slice(braceAt, end + 1);
+    assert.doesNotMatch(block, /\bsub\s*\./, 'sub 字面量块内出现 sub. 自引用会触发 TDZ，先用局部常量承载 id');
+});
 
 test('takeInboxBatch：插队（step）先于排队（turn），各自保持入队顺序', () => {
     const inbox = {
@@ -343,20 +372,43 @@ test('subScopeDowngrade：请求档比父档宽时被忽略（不升档红线）
     assert.equal(subScopeDowngrade('auto', 'full'), 'auto');
 });
 
-test('subScopeDowngrade：同档、缺省与非法值都回退父档', () => {
+test('subScopeDowngrade：同档原样返回，非法值按缺省封顶 auto', () => {
     // 同档：请求等于父档，原样返回
     for (const scope of ['read', 'edit', 'auto', 'full']) {
         assert.equal(subScopeDowngrade(scope, scope), scope);
     }
-    // 缺省 / 非法：回退父档（继承）
-    assert.equal(subScopeDowngrade('auto', undefined), 'auto');
-    assert.equal(subScopeDowngrade('auto', null), 'auto');
-    assert.equal(subScopeDowngrade('auto', ''), 'auto');
+    // 非法值等同缺省：封顶 auto（不再回退父档）
     assert.equal(subScopeDowngrade('auto', 'danger-full-access'), 'auto');
     assert.equal(subScopeDowngrade('auto', 'read-only'), 'auto');
     // 父档本身非法时先归一成 read，再降档仍 read
     assert.equal(subScopeDowngrade('weird', 'full'), 'read');
     assert.equal(subScopeDowngrade('weird', 'read'), 'read');
+});
+
+test('subScopeDowngrade：缺省封顶 auto（min(auto, 父档)）', () => {
+    // 核心新语义：不传 sandbox 时，full 父档的子代理降到 auto，其余档位不变
+    assert.equal(subScopeDowngrade('full', undefined), 'auto');
+    assert.equal(subScopeDowngrade('full', null), 'auto');
+    assert.equal(subScopeDowngrade('full', ''), 'auto');
+    assert.equal(subScopeDowngrade('auto', undefined), 'auto');
+    assert.equal(subScopeDowngrade('edit', undefined), 'edit');
+    assert.equal(subScopeDowngrade('read', undefined), 'read');
+    // 显式 full 仍是逃生舱：full 父档派 full 子代理不被拦
+    assert.equal(subScopeDowngrade('full', 'full'), 'full');
+});
+
+test('commandAuditSummary：只记命令族与 cwd，不记正文/参数', () => {
+    assert.equal(commandAuditSummary('read_file', {path: 'x'}), null);
+    assert.deepEqual(commandAuditSummary('run_command', {command: 'go test ./...', cwd: 'D:/proj'}),
+        {cmdFamily: 'go', cwd: 'D:/proj'});
+    // 路径形式的命令族取末段、去扩展名
+    assert.deepEqual(commandAuditSummary('run_command', {command: 'C:\\tools\\node.exe build.mjs'}),
+        {cmdFamily: 'node'});
+    // 管道/重定向只取第一段命令族，不记后面参数（防密钥泄露）
+    assert.deepEqual(commandAuditSummary('background_command', {command: 'echo secret | curl -d $TOKEN'}),
+        {cmdFamily: 'echo'});
+    // 空命令返回 null
+    assert.equal(commandAuditSummary('run_command', {command: '   '}), null);
 });
 
 // 磁盘转录的格式契约（写盘在 finalizeSubAgent，读回在 loadAgentTranscriptFromDisk）：
