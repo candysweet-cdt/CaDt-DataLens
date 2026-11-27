@@ -82,6 +82,10 @@ export function detectAppMessage(content) {
     if (/^［子代理权限警告］/.test(text)) {
         return {kind: 'scope-warning', label: '子代理权限警告', icon: 'warn'};
     }
+    // 定时任务把会话抬到 full 的提醒：前缀与 ai-schedule.js 的 runScheduledTurn 同源约定
+    if (/^［定时任务权限提醒］/.test(text)) {
+        return {kind: 'scope-warning', label: '定时任务 · 完全权限提醒', icon: 'warn'};
+    }
     const ask = text.match(/^［子代理提问 · ([^］]+)］/);
     if (ask) return {kind: 'subagent-ask', label: '子代理提问 · ' + ask[1].trim(), icon: ''};
     const settled = text.match(/^［子代理通知 · ([^］]+)］/);
