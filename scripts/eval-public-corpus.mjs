@@ -11,9 +11,9 @@
 import {readdirSync, readFileSync, existsSync, statSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {lcDequantize, lcExtractDims, lcScore, LC_FEATURES} from '../frontend/src/ai/ai-local-classifier.js';
-import {LOCAL_CLASSIFIER_THRESHOLDS} from '../frontend/src/ai/ai-permissions.js';
-import {LOCAL_CLASSIFIER_WEIGHTS, LOCAL_CLASSIFIER_QUANT, LOCAL_CLASSIFIER_BIAS} from '../frontend/src/ai/local-classifier-weights.mjs';
+import {lcDequantize, lcExtractDims, lcScore, LC_FEATURES} from '../frontend/src/ai/security/ai-local-classifier.js';
+import {LOCAL_CLASSIFIER_THRESHOLDS} from '../frontend/src/ai/security/ai-permissions.js';
+import {LOCAL_CLASSIFIER_WEIGHTS, LOCAL_CLASSIFIER_QUANT, LOCAL_CLASSIFIER_BIAS} from '../frontend/src/ai/security/local-classifier-weights.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), 'eval-data');
 

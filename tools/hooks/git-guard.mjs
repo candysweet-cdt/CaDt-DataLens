@@ -154,14 +154,33 @@ export function tokenize(segment) {
     return out;
 }
 
-// stripWrappers：去掉前置的环境变量赋值与 sudo/env/time 之类的外壳
+// stripWrappers：去掉前置的环境变量赋值与 sudo/env/time 之类的外壳。
+//
+// env 的 -u / -C / -S 都带一个值（`env -u FOO git checkout x`）：只跳过选项本身，
+// FOO 会留在命令位，baseName 不是 git 就整段放行。外壳可以链式出现（`env -i sudo git …`），
+// 赋值也可能出现在外壳之后（`sudo FOO=1 git …`），所以用循环反复剥离。
+const ENV_VALUE_OPTS = new Set(['-u', '-C', '-S', '--unset', '--chdir']);
+
 function stripWrappers(tokens) {
     let i = 0;
-    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i += 1;
-    while (i < tokens.length && WRAPPERS.has(baseName(tokens[i]))) {
-        i += 1;
-        while (i < tokens.length && tokens[i].startsWith('-')) i += 1;
-        if (i < tokens.length && /^\d+$/.test(tokens[i])) i += 1; // `time -p 5 cmd` 里的秒数
+    for (;;) {
+        let moved = false;
+        while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) {
+            i += 1;
+            moved = true;
+        }
+        if (i < tokens.length && WRAPPERS.has(baseName(tokens[i]))) {
+            const wrapper = baseName(tokens[i]);
+            i += 1;
+            while (i < tokens.length && tokens[i].startsWith('-')) {
+                const opt = tokens[i];
+                i += 1;
+                if (wrapper === 'env' && ENV_VALUE_OPTS.has(opt) && i < tokens.length) i += 1;
+            }
+            if (i < tokens.length && /^\d+$/.test(tokens[i])) i += 1; // `time -p 5 cmd` 里的秒数
+            moved = true;
+        }
+        if (!moved) break;
     }
     return tokens.slice(i);
 }

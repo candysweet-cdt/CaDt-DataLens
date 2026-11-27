@@ -26,7 +26,7 @@
 
 ## 2. 版本号
 
-版本号只有一个真源：`app_core.go` 的 `appVersion`（当前 `v1.2.1`），同步四处：`wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）、`build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION` 与 `build/config.yml` 的 `version`（`wails3 update build-assets` 重新生成资产时的模板源，漏改会回灌旧版本号）。
+版本号只有一个真源：`app_core.go` 的 `appVersion`（当前 `v1.3.0`），同步四处：`wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）、`build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION` 与 `build/config.yml` 的 `version`（`wails3 update build-assets` 重新生成资产时的模板源，漏改会回灌旧版本号）。
 
 这四处消不掉：它们是四个不同阶段、不同工具链的输入，互相读不到（PE 资源靠 syso 在编译期嵌入、NSIS 是打包期独立脚本、`config.yml` 是上游生成器模板、`wails.json` 是 v2 遗留）。所以改成「只改真源 + 机器同步」：
 

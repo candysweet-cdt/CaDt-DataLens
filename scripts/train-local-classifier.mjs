@@ -1,6 +1,6 @@
 // scripts/train-local-classifier.mjs：纯 Node SGD 训练端侧线性分类器 → int8 量化出厂权重。
-// 产出 frontend/src/ai/local-classifier-weights.mjs（生成产物，勿手改）；
-// 特征算法 import 自 frontend/src/ai/ai-local-classifier.js——训练与推理同一套实现，永不漂移。
+// 产出 frontend/src/ai/security/local-classifier-weights.mjs（生成产物，勿手改）；
+// 特征算法 import 自 frontend/src/ai/security/ai-local-classifier.js——训练与推理同一套实现，永不漂移。
 //
 // 硬指标（不达标退出码 1，拒绝产出）：int8 量化后的验证集上——
 //   1) 硬危险类在宽松档（T=0.30）误放数 = 0（rm -rf 类在任何严格度都不允许自动放行）；
@@ -9,8 +9,8 @@
 //
 // 运行：node scripts/train-local-classifier.mjs [--version factory-2026-11-14-1]
 import {generateCorpus, mulberry32, CANARIES, ADVERSARIAL_CANARIES, REGRESSION_CANARIES} from './classifier-corpus.mjs';
-import {LC_FEATURES, lcExtractDims, lcScore, lcSegment, lcScoreCommand, lcDequantize} from '../frontend/src/ai/ai-local-classifier.js';
-import {LOCAL_CLASSIFIER_THRESHOLDS} from '../frontend/src/ai/ai-permissions.js';
+import {LC_FEATURES, lcExtractDims, lcScore, lcSegment, lcScoreCommand, lcDequantize} from '../frontend/src/ai/security/ai-local-classifier.js';
+import {LOCAL_CLASSIFIER_THRESHOLDS} from '../frontend/src/ai/security/ai-permissions.js';
 import {writeFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {dirname, join} from 'node:path';
@@ -238,7 +238,7 @@ function main() {
         process.exit(1);
     }
 
-    const outPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'frontend', 'src', 'ai', 'local-classifier-weights.mjs');
+    const outPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'frontend', 'src', 'ai', 'security', 'local-classifier-weights.mjs');
     const content = [
         '// local-classifier-weights.mjs：内置端侧分类器出厂权重（生成产物，勿手改）。',
         '// 重训：node scripts/train-local-classifier.mjs（语料 scripts/classifier-corpus.mjs，种子 ' + TRAIN_SEED + '/' + VAL_SEED + '）。',

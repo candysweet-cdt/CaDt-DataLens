@@ -167,6 +167,7 @@ try {
     $signToolPath = ""
     $certArgs = @()
     $signLabel = "未签名"
+    $certNeedsSecret = $false
     if (-not $SkipSign) {
         $signToolPath = Resolve-Tool $SignTool "signtool" @(
             "$env:LOCALAPPDATA\cadt-tools\sdk-buildtools\bin\*\x64\signtool.exe",
@@ -179,7 +180,13 @@ try {
 
         if ($Certificate -and (Test-Path $Certificate)) {
             $certArgs = @("/f", (Resolve-Path $Certificate).Path)
-            if ($CertificatePassword) { $certArgs += @("/p", $CertificatePassword) }
+            if ($CertificatePassword) {
+                $certArgs += @("/p", $CertificatePassword)
+                # pfx + 口令：口令只允许出现在本脚本调起的 signtool 命令行里，
+                # 不再拼进 makensis 的 -DSIGN_ARGS（那会写进 NSIS 的 !finalize，
+                # 留在编译记录与 makensis 命令行里，进程列表可见）。
+                $certNeedsSecret = $true
+            }
             $signLabel = "证书文件 " + (Split-Path -Leaf $Certificate)
         } else {
             $thumbprint = $Certificate
@@ -242,7 +249,9 @@ try {
             "-DWAILS_INSTALL_SCOPE=user",
             "-DREQUEST_EXECUTION_LEVEL=user"
         )
-        if (-not $SkipSign) {
+        # 带口令的 pfx 不走 NSIS 内联签名：安装包改为 makensis 之后由本脚本签，
+        # 口令不进 makensis 参数（代价：该模式下卸载程序不带签名）。
+        if (-not $SkipSign -and -not $certNeedsSecret) {
             $nsisArgs += "-DSIGNTOOL=$signToolPath"
             $nsisArgs += "-DSIGN_ARGS=$signArgs"
         }
@@ -253,14 +262,22 @@ try {
         Pop-Location
     }
     if (-not (Test-Path $installerExe)) { throw "安装包未生成：$installerExe" }
+    if (-not $SkipSign -and $certNeedsSecret) {
+        Write-Host "[5/6] 签名安装包（口令不进入 makensis 参数）" -ForegroundColor Cyan
+        & $signToolPath sign /fd sha256 /tr $TimestampUrl /td sha256 @certArgs $installerExe
+        if ($LASTEXITCODE -ne 0) { throw "安装包签名失败（退出码 $LASTEXITCODE）" }
+    }
 
     # ---- 收尾：校验签名 + 打印产物清单 ----
     $sigStatus = "-"
     if (-not $SkipSign) {
         Write-Host "[6/6] 校验签名" -ForegroundColor Cyan
+        # 两次 verify 必须各自断言退出码：$LASTEXITCODE 只保留最后一次，
+        # 只看最后一行会漏掉程序本体验签失败。
         & $signToolPath verify /pa /v $appExe | Select-String "Successfully verified|Issued to|Number of"
+        if ($LASTEXITCODE -ne 0) { throw "程序本体验签未通过（退出码 $LASTEXITCODE）" }
         & $signToolPath verify /pa /v $installerExe | Select-String "Successfully verified|Issued to|Number of"
-        if ($LASTEXITCODE -ne 0) { throw "签名校验未通过（退出码 $LASTEXITCODE）" }
+        if ($LASTEXITCODE -ne 0) { throw "安装包验签未通过（退出码 $LASTEXITCODE）" }
         $sigStatus = (Get-AuthenticodeSignature $installerExe).Status
     } else {
         Write-Host "[6/6] 跳过验签（-SkipSign）" -ForegroundColor DarkGray
