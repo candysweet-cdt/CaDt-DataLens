@@ -107,6 +107,7 @@ export const AI_VIDEO_MIMES = ['video/mp4'];
 export const AI_VIDEO_ESTIMATE_TOKENS = 4000;
 // 后端 ReadVideoAsDataURL 认的扩展名（internal/fileio/fileio.go 的 ReadVideoAsDataURL）。
 const VIDEO_EXT_RE = /\.mp4$/i;
+// ===== 视频路径判断 =====
 export function isReadableVideoPath(path) {
     return VIDEO_EXT_RE.test(String(path || '').trim());
 }
@@ -173,6 +174,7 @@ export const AI_LEGACY_DEFAULT_PROMPTS = [
         '- Follow the host\'s <output_language> directive for user-facing language. Keep code, commands, paths, and identifiers unchanged.',
     ].join('\n'),
 ];
+// ===== 提示词规范化 =====
 export function aiNormalizedPromptText(text) {
     return String(text == null ? '' : text).replace(/\r\n/g, '\n').trim();
 }
@@ -733,6 +735,59 @@ footer{margin-top:28px;color:var(--muted);font-size:12px}
 
 > 规则参考 MIT 许可的 answer-me-with-html（qingyuna）；本内置版已适配 CaDt-DataLens：不需要 Node，也不依赖外置 CLI。`,
     },
+    {
+        name: 'orchestrate',
+        description: '把一个大改造交给内置编排生产线：按依赖拆批次、文件所有权隔离、自动验收与独立审查、失败自动返工。'
+            + '当任务规模超过单个会话的上下文（大重构 / 多阶段迁移 / 跨几十个文件）、用户说「分几批做」「并行做」「你来指挥」「用编排跑」，'
+            + '或你判断手工串行做不完 / 上下文会耗尽时主动推荐；与群聊（讨论）、spawn_agent（临时工）不同，编排是跨会话的生产线。'
+            + '斜杠输入 /orchestrate 可直接进入。',
+        content: [
+            '# 编排生产线（orchestrate）',
+            '',
+            '用内置编排把一个大改造切成可独立验收的批次，交给多个独立会话按依赖图执行。这是会新建多个会话、烧大量 token、改大量文件、跑很久的动作——'
+            + '发起前先与用户把目标和边界聊清，任何权限档都会强制弹审批卡，不要重试绕过。',
+            '',
+            '## 1. 什么时候主动推荐编排',
+            '',
+            '| 场景 | 怎么做 |',
+            '| --- | --- |',
+            '| 任务超过单会话上下文（大重构 / 多阶段迁移 / 几十个文件） | **主动建议**用编排，说明会拆批、隔离文件、自动验收 |',
+            '| 用户说「分几批做 / 并行做 / 你来指挥 / 用编排跑」 | 直接走本流程 |',
+            '| 只是改几个文件、看个 diff、查个问题 | 用 edit_file / write_file / propose_patch，**不要**上编排 |',
+            '| 讨论方案、写文档、一次性问答 | 用群聊或普通会话，**不要**上编排 |',
+            '| 主代理派的一次性小工 | 用 spawn_agent，**不要**上编排 |',
+            '',
+            '推荐时一句话说清收益与代价：拆批隔离防互相覆盖、verify + 独立审查防假绿、失败自动返工；代价是要用户批准边界、会跑较久。用户点头后再调 `orchestration_plan`。',
+            '',
+            '## 2. 发起：调 orchestration_plan',
+            '',
+            '先与用户确认目标与边界，再提交计划。每个 batch 字段：',
+            '',
+            '- `id`：字母数字 ._-，≤64，计划内唯一；`title`：一句话；`spec`：本批完整任务说明（派单时原样注入新会话，别塞全局手册）。',
+            '- `owns`：相对工作区的可写 glob，只有 `*` 与 `**`；**空数组 = 只读设计批次**。不要把同一文件交给两个可能并行的批次。',
+            '- `dependsOn`：只依赖 work 批次，必须无环；不要自己编造「已完成」的依赖。审查批次由系统自动生成，不要自己写。',
+            '- `verify`：`{file, args, cwd, timeoutMs}`（exe + argv，**不走 shell**）；编排器会自己复跑，不采信执行者自报。没配 verify 就没人自动验收。',
+            '- `model`：默认省略（用审批时固定的仲裁模型）；换模型要用户在审批卡上授权白名单后才生效。',
+            '- `policy`：并发数、单批重试上限（≤2）、审查门（默认开）、预算、超时、自主执行、开始前快照——都在审批卡上改，卡上会显示完整 verify 命令与模型分配。',
+            '',
+            '## 3. 批准之后你做什么',
+            '',
+            '批准后有确定性 Router 按依赖与文件所有权推进，你只做判断性仲裁，**不要**自己动手改文件：',
+            '',
+            '- 查进度：`orchestration_status`（省略 id 列全部，给 id 看批次状态 / attempts / 失败分类）；也可看侧栏「应用页面 → 编排」看板。',
+            '- 需要裁决时（某批 blocked / 重派用尽 / 审查不可用）：Router 会把事件投给你并唤醒，用 `orchestration_control` 决定跳过 / 改 spec / 重派 / 回答用户问题 / 关闭事件。',
+            '- `orchestration_control` 每次都弹确认卡（可能停掉别人的会话或改变已批准边界）；拿不准先 `orchestration_status`。',
+            '- 编排整体完成后汇总成果向用户汇报；收尾写工作日志。',
+            '',
+            '## 4. 边界（别踩）',
+            '',
+            '- 编排只产出改动与验收记录，**不做**自动提交 / 自动合并 / 自动回滚；需要后路就在审批卡勾「开始前快照」。',
+            '- 本期只做单工作区；`workspaces` 长度必须为 1。',
+            '- Worker 默认拿不到 Shell / 终端 / MCP / 补丁工具，写文件受 `owns` 闸约束——这是写闸承诺，不靠 prompt 自觉。',
+            '- 审查门默认开：审查会话只读，会做反向验证（「把实现删掉这条测试会不会红」）；审查没跑成不放行。',
+            '- 与群聊（讨论）、spawn_agent（临时工）区分开：编排是跨会话的生产线，三者不要混用。',
+        ].join('\n'),
+    },
 ];
 
 export const AI_BUILTIN_PROMPTS = [
@@ -844,6 +899,7 @@ export const AI_COMMANDS = [
     {name: '/worktree', desc: '直接创建隔离 git worktree（可带用途名，如 /worktree 重构解析器）；之后改动都落在隔离区'},
 ];
 
+// ===== 数值与文本工具 =====
 export function aiClamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
 }
@@ -881,6 +937,7 @@ export function aiEstimateTokens(text) {
     return Math.ceil(ascii / 4 + cjk * 0.75);
 }
 
+// ===== 时间格式化 =====
 export function aiFormatTime(ts) {
     const date = new Date(ts || Date.now());
     const pad = (n) => String(n).padStart(2, '0');
@@ -966,6 +1023,7 @@ export function aiFormatSessionTime(ts) {
     return date.getFullYear() + '/' + (date.getMonth() + 1) + '/' + date.getDate();
 }
 
+// ===== 图片规范化与 token 估算 =====
 export function aiNormalizeImage(raw) {
     if (!raw || typeof raw !== 'object') return null;
     let mime = aiTextOf(raw.mime).trim().toLowerCase();
@@ -1086,10 +1144,12 @@ export function aiImageStats(messages) {
     return {count, tokens};
 }
 
+// ===== 视频 token 估算 =====
 export function aiEstimateVideoTokens() {
     return AI_VIDEO_ESTIMATE_TOKENS;
 }
 
+// ===== 上下文横幅与溢出判断 =====
 // 上下文提醒条的显隐判定：达到压缩阈值即提醒；用户点 × 关闭后按「再涨 5%」档位重新提醒
 // （dismissedAt 为关闭时的整数百分比，会话内记忆）。压到阈值以下自然隐藏，与关闭态互不干扰。
 export function aiCtxBannerShow(percent, threshold, dismissedAt) {
@@ -1149,6 +1209,7 @@ export function aiCtxBannerState(percent, tokens, windowSize) {
     return {state: over ? 'over' : 'suggest', blocked: over, compactBlocked, text};
 }
 
+// ===== 消息动作与文件工具 =====
 // 回复操作按钮的颗粒度（设置 → AI 助手 → 回复操作按钮）：
 // 'full'（默认）每条 assistant 消息都完整出现；'mid-basic' 最后一条完整、中间步骤只留
 // 复制 / 回退；'last-only' 只在最后一条显示完整操作行，中间步骤整行不出现。

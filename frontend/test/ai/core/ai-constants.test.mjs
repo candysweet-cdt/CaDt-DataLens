@@ -2,7 +2,7 @@
 // 以及正文图片引用失效时的会话附图兜底查找（aiFindAttachedImageByRef）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aiCtxBannerShow, aiCtxBannerState, aiFindAttachedImageByRef, aiFormatBytes, aiFormatDuration, aiFormatLiveDuration, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode, APPROVAL_LOST_TEXT, ASK_LOST_TEXT, ENV_ASK_LOST_TEXT, TOOL_INTERRUPTED_TEXT} from '../../../src/ai/core/ai-constants.js';
+import {AI_BUILTIN_SKILLS, aiCtxBannerShow, aiCtxBannerState, aiFindAttachedImageByRef, aiFormatBytes, aiFormatDuration, aiFormatLiveDuration, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode, APPROVAL_LOST_TEXT, ASK_LOST_TEXT, ENV_ASK_LOST_TEXT, TOOL_INTERRUPTED_TEXT} from '../../../src/ai/core/ai-constants.js';
 
 test('aiImageFromSrc: 与 aiImageSrc 往返一致', () => {
     const image = aiImageFromSrc('data:image/png;base64,AAAA', 'seal.png');
@@ -274,4 +274,24 @@ test('aiFormatBytes: B/KB/MB/GB/TB 进制，≥100 档取整，非法值按 0', 
     assert.equal(aiFormatBytes(100 * 1024 * 1024), '100 MB');
     assert.equal(aiFormatBytes(1.1 * 1024 * 1024 * 1024), '1.1 GB');
     assert.equal(aiFormatBytes(2048 * 1024 * 1024 * 1024), '2.0 TB');
+});
+
+test('内置编排技能 orchestrate：名字唯一、description 含主动推荐信号、正文覆盖发起与仲裁关键字段', () => {
+    const names = AI_BUILTIN_SKILLS.map((s) => s.name);
+    assert.equal(new Set(names).size, names.length, '内置技能名不能重复');
+    const skill = AI_BUILTIN_SKILLS.find((s) => s.name === 'orchestrate');
+    assert.ok(skill, '缺内置编排技能 orchestrate');
+    // description 会进系统提示词 <skills> 段——必须写明「何时主动推荐」，AI 才会自己提
+    assert.ok(/主动推荐|主动建议/.test(skill.description), 'description 必须带主动推荐信号');
+    assert.ok(/分几批做|并行做|你来指挥|用编排跑/.test(skill.description), 'description 要含用户常见触发措辞');
+    assert.ok(/orchestrate/.test(skill.description) || /斜杠/.test(skill.description), 'description 要提示斜杠入口');
+    // 正文必须覆盖四个编排工具与关键纪律，否则 skill 只是空壳
+    for (const tool of ['orchestration_plan', 'orchestration_status', 'orchestration_control']) {
+        assert.ok(skill.content.includes(tool), '正文缺工具 ' + tool);
+    }
+    for (const field of ['owns', 'dependsOn', 'verify', 'spec']) {
+        assert.ok(skill.content.includes(field), '正文缺批次字段 ' + field);
+    }
+    assert.ok(/审查/.test(skill.content) && /返工|重派/.test(skill.content), '正文要讲清审查门与返工');
+    assert.ok(/群聊|spawn_agent/.test(skill.content), '正文要区分编排与群聊/子代理');
 });

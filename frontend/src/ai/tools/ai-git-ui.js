@@ -76,14 +76,19 @@ export function createAIGitUi(ctx) {
             flash(blocked, true);
             return;
         }
-        if (!gitEntryState.available) {
+        // 只有真正的 git 动作需要仓库；「其他操作」（维护认知索引 / 更新日志 / 维护文件大纲）
+        // 中除更新日志外都不依赖 git，非 Git 工作区也应可用——只给 isGit 动作强制仓库检查。
+        if (meta.isGit && !gitEntryState.available) {
             refreshGitEntry();
             if (!gitEntryState.available) {
                 flash('当前工作区不在 Git 仓库内', true);
                 return;
             }
         }
-        const prompt = buildGitActionPrompt(action, {root: gitEntryState.root, branch: gitEntryState.branch});
+        const prompt = buildGitActionPrompt(action, {
+            root: gitEntryState.root || scopeRoot(),
+            branch: gitEntryState.branch,
+        });
         if (!prompt) return;
         // 一次性窄豁免：auto 档下常规 git 写命令（add/commit/push/pull）免逐条审批。
         // 令牌按会话归属、15 分钟过期；危险变体与项目规则仍照常拦截（见 ai-panel.js approveCommandForRun）。
