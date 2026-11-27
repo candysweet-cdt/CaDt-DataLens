@@ -215,7 +215,7 @@ func HasFlag(args []string, flag string) bool {
 
 // ParseHarness 判定 --harness（无值布尔开关，与 --ai-float / --debug-console 同款）。
 // harness 形态：主窗口不恢复上次工作区，工作区由各会话自己绑定（见
-// docs/unfinished-plans/agent-host-platform.md §S3）。前端消费它的入口在批次 F。
+// docs/finished-plans/agent-host-platform.md §S3）。前端消费它的入口在批次 F。
 func ParseHarness(args []string) bool {
 	return HasFlag(args, "--harness")
 }

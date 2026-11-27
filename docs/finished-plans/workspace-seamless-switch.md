@@ -1,10 +1,11 @@
 # 工作区无缝切换与无工作区 harness 方案
 
-> **⚠ 本文已并入 `docs/unfinished-plans/agent-host-platform.md`（2026-11-25 整合）**，本文件保留作历史记录，
+> **⚠ 本文已并入 `docs/finished-plans/agent-host-platform.md`（2026-11-25 整合）**，本文件保留作历史记录，
 > 不再维护。整合版把本文与「Agent 宿主平台化」评估合并为统一的分期规划（S0–S7），并保留本文的全部
 > 决策、证据与评审处置。新增内容请写整合版。
 >
-> 状态：**方案已定稿（2026-11-25 拍板），未开工**。本文＝只读评估结论 + 实施方案。
+> 状态：**已取代并归档（2026-11-27）**。本文主体已并入 `agent-host-platform.md` 线 A（S0–S3）并落地，作为历史方案归档。归档核验发现两处方案项未随整合版落地：① 根变更写历史 `<workspace-context-change>` / `pendingRootChange`（§3.3.1、决议 #6）；② 回合根冻结（P2a 升级 A，整回合不再现取根）。其余能力由 `switchRootLight` + `applyViewRoot` 等价承接。
+> 本文＝只读评估结论 + 实施方案。
 > **v6（对齐参考实现，模型级修正）**：只读调研了 opencode / pi / ZCode / codex / cline / deepseek-harness 六个
 > 开源 harness，**它们无一采用「窗口绑定工作区」，全部是「会话自带 cwd/roots，窗口只是视图」**。据此做四处修正：
 > ① **窗口不持有根**，`scopeRootOf(session)` 成为唯一根来源，窗口根降级为投影缓存（§2 / §4.1）；

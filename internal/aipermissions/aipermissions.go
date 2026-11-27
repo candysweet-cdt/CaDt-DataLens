@@ -3,7 +3,7 @@
 // 为什么需要它：permissions.json 是「读-改-写」——前端 saveProjectRules / addProjectRule /
 // removeProjectRule 读全量、改一条、整份写回。前端的 enqueueProjectRulesMutation 只做**窗口内**
 // 串行；v3 一进程多窗口之后，两个窗口各读一份旧表再各自写回，后写的那个会把对方刚加的规则
-// 抹掉（docs/unfinished-plans/agent-host-platform.md 批次 E4）。
+// 抹掉（docs/finished-plans/agent-host-platform.md 批次 E4）。
 //
 // 这里只负责「锁 + 原子替换 + 落盘前先验证是合法对象」这一段：读-改-写的事务语义仍在调用方，
 // 跨窗口串行由 sessionlock 保证（同一把锁，不同进程/不同窗口都排在它后面）。

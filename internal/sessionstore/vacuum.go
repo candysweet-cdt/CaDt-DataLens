@@ -1,4 +1,4 @@
-// vacuum.go：会话正文的「数据整形」（docs/unfinished-plans/session-compaction-disk-growth.md §5.1 S1）。
+// vacuum.go：会话正文的「数据整形」（docs/finished-plans/session-compaction-disk-growth.md §5.1 S1）。
 //
 // 把重放后处于归档态的消息搬进 sidecar（archive.v1.jsonl，append-only，永不整读重写），
 // 主文件原子重写为 header + meta + summary + live 的物化视图——live 段被前端

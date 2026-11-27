@@ -1,8 +1,10 @@
 # Agent 宿主平台与多工作区 Harness（整合方案）
 
-> 状态：**线 A（S0–S3）已实施并合入**；**线 B（S4–S7）未开工，已完成代码级复核**（§2.6，2026-11-27）。
+> 状态：**线 A（S0–S3）+ 线 B（S4–S7）主体已实施并合入**（2026-11-27 归档核验确认）。线 B 主体随提交 `0d148071 feat(plugin): 插件平台原语——依赖注入容器、钩子总线与 Agent 作用域` 落地：S4 DI 容器（`shell/plugin-container.js`）+ 五模式钩子总线（`core/hook-bus.js`）、S5 事件粒度下探、S6 Agent Preset/作用域/跨进程续跑/上下文 digest、S7 插件依赖声明与拓扑排序，均已在代码中并有单测登记。
+> **遗留项（归档时记录）**：① S7 编辑器内联 AI（`aiComplete` 桥 + Ace Ctrl+K 行内 widget）未实现；② S6 插件配置 schema（校验/默认值/UI，按 scope 隔离）未实现；③ 真机端到端演练 D1–D4 与完整终审需人工执行。S6′ Go 侧 agent loop 属文档明确「单独立项、不进本次排期」的设计边界，非欠账。
+> 下方 §2.6 的「线 B 未开工」复核结论为 v8（2026-11-27 早）快照，已被上述实现更新。
 > 本文整合并取代两份前序文档：
-> `docs/unfinished-plans/workspace-seamless-switch.md`（多工作区换手 + harness，v6）与
+> `docs/finished-plans/workspace-seamless-switch.md`（多工作区换手 + harness，v6）与
 > `docs/unfinished-plans/agent-platform-for-writing-plugins.md`（Agent 宿主平台化评估）；
 > 隔离现状的代码依据来自 `docs/reports/workspace-isolation-audit.md`。
 >
@@ -35,7 +37,7 @@
 > 另：上下文去重（原 P1）基本已由 `assembleSystemContext` 的 stable / `turnBlock` 分区达成，只差 digest。
 > S4/S5 人日下调，S6 拆分，S7 略降。
 >
-> 前序版本演进见 `docs/unfinished-plans/workspace-seamless-switch.md`（v2 评审 → v6 对齐六个开源 harness）。
+> 前序版本演进见 `docs/finished-plans/workspace-seamless-switch.md`（v2 评审 → v6 对齐六个开源 harness）。
 
 ---
 

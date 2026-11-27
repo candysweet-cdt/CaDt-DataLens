@@ -1,6 +1,6 @@
 # 工作区隔离机制全局评估
 
-> 用途：`docs/unfinished-plans/agent-host-platform.md`（多工作区换手 + harness + Agent 平台化整合方案）开工前的
+> 用途：`docs/finished-plans/agent-host-platform.md`（多工作区换手 + harness + Agent 平台化整合方案）开工前的
 > 前置评估——**现有隔离到底靠什么成立、改动会碰到哪一层、哪些约束是硬的**。
 > 只读盘点，未改任何源码。行号基于当前工作区状态（注意 `frontend/src/ai/*` 有未提交改动，
 > 与 HEAD 存在位移；按符号名检索更可靠）。
@@ -258,7 +258,7 @@ Wails 多窗口共享同一 WebView2 user data 目录 → localStorage 共享且
 
 **默认实现会重复**：每次换根都重跑中/重档；`lifecycle-hooks.js` 的 `runningByWs` 只防并发、不防先后重复，
 所以切来切去会反复执行同一工作区的 open 钩子。落地方案见
-`docs/unfinished-plans/agent-host-platform.md` §4.6（轻量换根 `switchRootLight` + 重活按工作区去重 +
+`docs/finished-plans/agent-host-platform.md` §4.6（轻量换根 `switchRootLight` + 重活按工作区去重 +
 换手序列化）。对应不变量 I13。
 
 ## 8. 两条最容易被低估的结论

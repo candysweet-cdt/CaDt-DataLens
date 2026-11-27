@@ -1,6 +1,6 @@
 # agent-host-platform 实施复盘
 
-> 对应方案：`docs/unfinished-plans/agent-host-platform.md`（v7）
+> 对应方案：`docs/finished-plans/agent-host-platform.md`（v7）
 > 代码依据：`docs/reports/workspace-isolation-audit.md`
 > 实施时间：2026-11-25 夜 – 11-26
 > 状态：**A–F 全部落地并通过自动化验证；G 真机演练未做（需人工）**

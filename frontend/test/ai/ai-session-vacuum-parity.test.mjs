@@ -1,7 +1,7 @@
 // ai-session-vacuum-parity.test.mjs：vacuum 状态机与 replaySessionLog 的双侧一致性测试（前端侧）。
 // 夹具（fixtures/vacuum-parity.json）的 expect 数值由本文件断言，Go 侧
 //（internal/sessionstore/vacuum_parity_test.go）断言同一份数值——任何一侧语义
-// 漂移都会在这两个测试之一变红（docs/unfinished-plans/session-compaction-disk-growth.md §5.3 要点 3）。
+// 漂移都会在这两个测试之一变红（docs/finished-plans/session-compaction-disk-growth.md §5.3 要点 3）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

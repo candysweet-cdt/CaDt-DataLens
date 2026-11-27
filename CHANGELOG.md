@@ -4,6 +4,34 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 改进（新增 orchestrate 技能：斜杠触发与主动推荐编排）
+
+- 新增内置技能 `orchestrate`：输入 `/orchestrate` 可直接进入编排流程；技能描述进入系统提示词的 `<skills>` 段，AI 在遇到大重构 / 多阶段迁移 / 跨几十个文件、或用户说「分几批做 / 并行做 / 你来指挥 / 用编排跑」时会主动推荐使用编排，并说明收益与代价。
+- 技能正文写明何时用 / 何时不用（与群聊、`spawn_agent` 区分）、`orchestration_plan` 的批次字段（`spec` / `owns` / `dependsOn` / `verify` / `model` / `policy`）、批准后的 `orchestration_status` 查询与 `orchestration_control` 仲裁，以及审查门 / 返工 / 不做自动提交回滚等边界。
+- 新增 `ai-constants.test.mjs` 断言技能名唯一、description 含主动推荐信号、正文覆盖关键工具与字段；`npm test` 相关用例通过。
+
+### 修复（沙箱 Low 标签污染工作区导致构建工具失效）
+
+- **根因修复**：`workspace-write` 不再把真实工作区/worktree 作为写根，改用每次调用新建的私有临时目录；Low 完整性标签只落该目录，执行结束 `Close` + `RemoveAll` 后无痕。`TMP/TEMP` 同步指向该私有目录，避免子进程仍往宿主 `%TEMP%` 写入被拒。详见 `docs/reports/incident-2026-11-27-sandbox-low-label.md`。
+- **启动残留自检**：主窗口首屏完成后延迟 2 秒异步 `SandboxScan`，不参与启动 await 链、不影响启动性能；发现能力 SID/删除 deny/Low 标签残留时提示用户确认，确认后才 `SandboxRevoke`，失败静默记诊断日志。
+- **特权启用**：包内统一 `AdjustTokenPrivileges` 启用 `SeSecurityPrivilege`（`sync.Once` 缓存）；非提权令牌无法启用时 fail-closed 并明确提示以管理员身份运行，不再把裸 Access denied 留给用户猜。
+- **联调纪律**：AGENTS.md 新增硬规则——沙箱测试一律 `t.TempDir()`、人工联调用 `.cadt/tmp/sandbox-*`，禁止把真实工作区作为 workspace-write 写根；新增源码守卫测试机械拦截 `WorkspaceRoot: os.Getwd()` 等高风险写法。
+- **验证**：`go test ./... -timeout 300s`、`npm test`（含 typecheck 与新增启动自检测试）与 `npm run build` 通过；真实工作区 ACL 复核无沙箱残留。
+
+### 改进（子代理默认最小权限 + 完全权限警告 + 命令留痕增强）
+
+- **默认封顶 auto**：`spawn_agent` 不传 `sandbox` 时，子代理权限从「继承父档」改为 `min(auto, 父档)`——full 档主会话派出的子代理默认降到 auto，命令进 OS 沙箱、写效应圈在工作区/写根内。起因：full 档子代理此前继承完全权限，命令裸跑不进沙箱、可写工作区外任意路径，而操作留痕不记命令正文/目标路径、子代理转录不落盘，事后难以追溯；读工作区外两种档位本就都放行，调研能力不受损。显式传 `sandbox:'full'` 仍是逃生舱（保留跨目录写能力）。
+- **完全权限子代理警告**：显式派 full 档子代理时，向发起方会话信箱投一条非阻塞警告消息（新 `scope-warning` 应用消息，预警图标），说明该子代理命令不进沙箱、可写工作区外、事后难追溯；走信箱排队到下一轮边界，不打断当前轮、不阻塞派单。
+- **命令留痕增强（轻量版）**：子代理的 `run_command` / `background_command` 留痕新增 `cmdFamily`（仅命令族，取第一个可执行名）与 `cwd` 两个字段，full 档记 `sandbox:'danger-full-access'` 让「未沙箱裸跑」可见；刻意不记命令正文/参数（防密钥泄露）。操作记录页的详情展开区直接可见。
+- **提示词与测试**：`spawn_agent` 工具描述同步新默认值与警告语义；新增/更新 `ai-subagents`、`ai-agent-notices`、`ai-app-message` 相关测试。`npm test` 全量（含 typecheck 前置门）通过。
+
+### 改进（Git 提交风格首次询问扩到 6 题 + ask_user 上限提升到 8）
+
+- Git 快捷操作的首次风格询问从 4 题扩到最多 6 题：新增「附加行为偏好」多选（允许主题/文件交叉、自动处理合并冲突、推送自动设上游、拉取自动 stash、允许 amend 修正）与「允许推送到哪些远端」多选（仅 `git remote` 检测到多于一个上游远端时才问，只有一个时自动写入该远端、不弹题），超时默认沿用推荐/安全行为。`git-commit-style.json` 升到 v3，新增 `allowCrossFiles` / `autoResolveConflict` / `autoSetUpstream` / `autoStashOnPull` / `allowAmend` 五个字段并复用 `repository` 存允许的远端名数组；同时兼容既有 `remark` 字段（其中的「允许文件交叉」等说明一并遵守）。
+- 提示词按字段联动：勾选后 push/pull 冲突改为逐文件读取冲突标记智能判断并汇报取舍（无法可靠判断处仍回退询问）、无上游自动 `git push -u`、拉取被本地改动阻止时自动 stash 后重试并恢复、batch 分组允许耦合文件同批、amend 仅在用户明确要求时使用；推送按 `repository` 列表逐一 `git push <远端> <分支>`；未勾选一律沿用「先询问 / 不自动处理」默认。
+- `ask_user` 一次提问上限从 5 题提到 8 题：主面板解析（`ai-panel.js`）与子代理提问解析（`ai-subagents.js`）两处同步，工具定义文案同步；这样 Git 首次询问可一次问完 6 题，无需分批。
+- 测试：`frontend/test/ai/tools/ai-git.test.mjs` 新增第 5/6 题、六项字段、四流程行为覆盖断言；`ai-ask-pause.test.mjs` 锁住两处上限为 8；单测通过。
+
 ### 修复（用户消息与后台通知的并发生命周期）
 
 - **起轮单飞与准备态安全**：`startSessionTurn` 按会话 token 真正互斥，重复起轮直接返回 `starting`；切会话、归档、删除、停止均识别起轮中/压缩准备态，避免幽灵流、孤儿对象写入和确认框期间竞态。
@@ -109,7 +137,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ### 改进（设置页信息架构重组：分类按作用域，项级就近，保 AI 工具契约）
 
-- **背景**：设置侧栏的「功能」是伪分类（偏好配置 + 管理工具页 + 写注册表的系统动作同级混装），AI 组同时用了资源接入 / 安全策略 / 运行行为 / 提示词四种维度，三个 pane 超载（`editor-tabs` 6 组、`ai` 8 组、`permissions` 9 组），且多项靠 `set-desc` 文字桥接跨页依赖（「需先在模型账号里启用」「设定本身在个性化页」）。方案见 `docs/unfinished-plans/settings-ia-reorg.md`。
+- **背景**：设置侧栏的「功能」是伪分类（偏好配置 + 管理工具页 + 写注册表的系统动作同级混装），AI 组同时用了资源接入 / 安全策略 / 运行行为 / 提示词四种维度，三个 pane 超载（`editor-tabs` 6 组、`ai` 8 组、`permissions` 9 组），且多项靠 `set-desc` 文字桥接跨页依赖（「需先在模型账号里启用」「设定本身在个性化页」）。方案见 `docs/finished-plans/settings-ia-reorg.md`。
 - **分类骨架**：侧栏 section 从「设置/页面/功能/诊断/其他」重排为「界面与编辑 / AI / 安全与权限 / 集成与自动化 / 维护与诊断」五区；`permissions` 从 AI 组提升为独立区；应用页面分组改名（统计 / AI 工具 / 定时 / 记录 / 补丁），避开与侧栏 section 撞名。
 - **项级就近**（判据：依赖绑定 > 动作链 > 概念归属）：「显示额度胶囊」（账号级，依赖每账号 `usage.enabled`）从 AI 助手移入「模型 → 额度显示」，紧挨账号列表；「显示 Token 用量」（对话级）归 AI「界面」组；「默认桌面控制」的前置安装提示改为「去安装…」按钮直达外部工具应用页面。AI 面板 12 项显示偏好（字号/字体/思考过程/回复按钮等）归入已存在的「界面」组，「聊天行为」只留真行为项；「显示顶部提示条」归通用「外观」；代码补全 3 项独立成组。
 - **超载 pane 用锚点式分类**：写作模式 / 代码截图 / 子代理 / 端侧分类器各加侧栏入口，点击切到原 pane 后滚动定位到对应组——**不改 pane id**，因此 AI 助手的 `open_settings {pane}` 清单、`get_settings_tree` / `set_setting_row` 的行 id 全部保持有效（带显式 id 的控件跨组不漂移）。
@@ -137,7 +165,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - AI 面板右缘新增一条竖直导航滑轨：每个刻度对应一轮用户消息，当前阅读位置高亮；悬停出两段式气泡（标题为用户消息、描述为该轮助手回复预览），点击或方向键/回车定位到对应消息。长会话刻度按轨道高度自动抽稀，插话以菱形区分。
 - 显示条件：设置 → AI → 界面新增「会话消息导航滑轨」开关（默认开启，全局同步），且面板实际宽度 ≥ 600px——停靠分屏默认 380px 不显示，拖宽 / 全屏 / 无文件占满时显示。宽度变化监听覆盖拖宽、形态切换、dock 占满、窗口缩放四处，不依赖 ResizeObserver 单一来源。
 - 复用现有会话大纲骨架（`session-outline.js` 的筛选 / 视口判定 / 跳转），summary 取该轮之后最近一条助手正文预览（零磁盘改动、零 token 成本）；气泡复用全局 tooltip，标题与描述均经 textContent 写入，原始 HTML 不执行。
-- **验证**：typecheck 通过，改动相关 44 项测试全绿（summary 提取 / 刻度映射 / 显隐判定 / 两段式气泡护栏），`npm run build` 成功。方案见 `docs/unfinished-plans/ai-session-rail.md`。
+- **验证**：typecheck 通过，改动相关 44 项测试全绿（summary 提取 / 刻度映射 / 显隐判定 / 两段式气泡护栏），`npm run build` 成功。方案见 `docs/finished-plans/ai-session-rail.md`。
 
 ### 修复（粘贴超大文本发不出去：超过正文上限自动转附件）
 
@@ -903,7 +931,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ### 新增（AI 会话「数据整形」：180 MB 死锁会话的根治——vacuum 归档出栈 + 256 MB 语义反转 + 落盘预算化）
 
-- **背景**：两个历史会话正文涨到 180.71 / 162.59 MB，超过 `AISessionRead` 的 64 MB 上限被拒绝加载，压缩 / 导出 / 清空全被同一堵墙卡死（只删不救）。方案与两轮调研记录见 `docs/unfinished-plans/session-compaction-disk-growth.md`（§5 定稿，S1→S2→S3 全部实施）。
+- **背景**：两个历史会话正文涨到 180.71 / 162.59 MB，超过 `AISessionRead` 的 64 MB 上限被拒绝加载，压缩 / 导出 / 清空全被同一堵墙卡死（只删不救）。方案与两轮调研记录见 `docs/finished-plans/session-compaction-disk-growth.md`（§5 定稿，S1→S2→S3 全部实施）。
 - **S1 vacuum 归档出栈**：新绑定 `AISessionVacuum(id, force)` 把重放后处于归档态的消息搬进 sidecar `archive.v1.jsonl`（append-only，`m` 用 `json.RawMessage` 保字节原文），主文件原子重写为 header + meta + summary + live——live 段被 auto-compact 的 token 阈值结构性约束，主文件从此回到「结构性小于任何上限」的形状。Go 状态机与前端 `replaySessionLog` 逐事件同构（含 v 缺失视为 0、JS 真值、keep clamp、dedupeKey 折叠三条特性级行为），10 条固定夹具双侧测试钉死（`vacuum_parity_test.go` ↔ `ai-session-vacuum-parity.test.mjs`）。两步写（sidecar 追加 → 主文件替换）由 `archive.v1.jsonl.state` 清单做崩溃恢复；进锁重 stat 保证双窗口竞态下第二方 no-op。配套 `AISessionReadArchive`（分页读回）、`AISessionReadForce`（真空角落临时加载）、`AISessionArchiveClear`（清空会话连带侧车）。
 - **消费点接线（先于入口开放）**：归档卡 / 命令面板「查看已归档消息」/ 导出 Markdown / 对话日志自动落盘 / `session_history` 工具查询全部改为「内存归档 + 侧车按需分页」；sessionindex 索引扫描拼接 sidecar（归档在前、主文件在后），归档正文搜索可达。
 - **S2 上限语义反转**：`aiSessionReadLimit` 64 → 256 MB，超限不再「拒绝服务」——错误改带稳定前缀 `session-too-large:`，前端加载路径捕获后自动触发 vacuum 并重读，toast 一次「已自动整理」，此后永久回归常态；**任何体积的会话都能打开并继续聊**。拒载卡片只留给两类真失败：整理执行失败（「重试整理」）与 live 段自身超限（「临时加载」，`AISessionReadForce` 整份读入，载入后 `/compact` 回归常态）。列表不挂任何体积 UI（作者裁定）。

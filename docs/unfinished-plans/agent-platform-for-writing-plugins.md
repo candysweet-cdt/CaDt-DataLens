@@ -1,6 +1,6 @@
 # Agent 宿主平台化：让 CaDt 成为 webnovel-writer v8 类插件的通用底座（评估方案）
 
-> **⚠ 本文已并入 `docs/unfinished-plans/agent-host-platform.md`（2026-11-25 整合）**，本文件保留作历史记录，
+> **⚠ 本文已并入 `docs/finished-plans/agent-host-platform.md`（2026-11-25 整合）**，本文件保留作历史记录，
 > 不再维护。整合版保留本文的 DSH 契约分析、P0/P1/P2 分层与务实路线（sidecar），并把「平台化」与
 > 「多工作区 harness」合并为统一分期（S0–S7），解决两者都改 `ai-panel.js` 的排期冲突。
 >

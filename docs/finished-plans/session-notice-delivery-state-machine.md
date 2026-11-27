@@ -860,7 +860,7 @@ UI 提示与 `outcome` 由调用方决定，但状态清理和信箱恢复只能
 - [session-messaging.md](./session-messaging.md)：保留“一条管道 N 个发送方”、单批 ≤5、用户队列优先、后台不切视图、信箱不持久化等裁决；本文补齐其投递失败后的闭环。
 - [ai-queue-background-flush.md](./ai-queue-background-flush.md)：保留 composer 队列独立语义和“一轮一条”；本文不把信箱并进 composer 队列。
 - [multi-instance-sync.md](./multi-instance-sync.md)：保留回合租约单写者、`other_window`、终态写盘后释放；本文只规定信箱如何等待与重试，不修改锁实现。
-- [session-compaction-disk-growth.md](../unfinished-plans/session-compaction-disk-growth.md)：压缩存储/磁盘语义不变；本文只收口压缩对信箱投递的生命周期影响。
+- [session-compaction-disk-growth.md](./session-compaction-disk-growth.md)：压缩存储/磁盘语义不变；本文只收口压缩对信箱投递的生命周期影响。
 
 ## 18. 最终设计判定
 
