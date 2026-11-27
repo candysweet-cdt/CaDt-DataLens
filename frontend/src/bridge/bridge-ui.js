@@ -16,6 +16,7 @@ import {createBridgeMemoView} from './bridge-memo-view.js';
 import {createBridgeAppPageView} from './bridge-app-page-view.js';
 import {createBridgeDatabaseView} from './bridge-database-view.js';
 import {createBridgeOrchestrationView} from './bridge-orchestration-view.js';
+import {createSandboxStartupCheck} from '../ai/security/ai-sandbox-startup-check.js';
 
 export function createBridgeUI(deps) {
 
@@ -39,6 +40,8 @@ const gitDeps = Object.create(deps);
 gitDeps.openVirtualDoc = openVirtualDoc;
 const gitMod = createBridgeGit(gitDeps);
 const cliMod = createBridgeCliConvert(deps);
+// 启动后的沙箱残留自检：依赖全走 deps 惰性 getter，域模块自治，不往 main.js 回填逻辑。
+const sandboxStartupCheck = createSandboxStartupCheck(deps);
 
 // opts：readOnly（标签页只读锁）、readOnlyFixed（固定只读、不可解锁）、
 // patchReview（只读审阅快照）、reviewNotes（无差异文件说明）、
@@ -339,6 +342,11 @@ function openBrowserTab(url, profileKey, opts) {
         if (deps.aiPanel) deps.aiPanel.open(true);
     } else {
         setTimeout(() => deps.autoCheckUpdateOnStart(), 2000);
+        // 沙箱残留自检（2026-11-27 事故修复）：与自动更新同款延迟异步，
+        // 不 await、不阻塞首屏；只读 Scan，发现残留由用户确认后才 Revoke。
+        if (!harnessWindow) {
+            setTimeout(() => sandboxStartupCheck.check(), 2000);
+        }
         // harness 窗口没有工作区、标签页是空的：AI 面板就是它的主界面，直接打开
         //（与浮窗同款 initAIPanel + open(true)，但保留主窗口的其余行为）。
         if (harnessWindow) {

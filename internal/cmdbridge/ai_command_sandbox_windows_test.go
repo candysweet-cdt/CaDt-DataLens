@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"datalens/internal/sandbox"
 	"datalens/internal/shellpath"
 )
 
@@ -55,11 +56,14 @@ func TestAIRunShellCommandConfinedReadOnly(t *testing.T) {
 }
 
 func TestAIRunShellCommandConfinedWorkspaceWrite(t *testing.T) {
+	// 2026-11-27 事故回归：workspace-write 的唯一写根是私有临时目录，
+	// 传入的 workspaceRoot 只是调用上下文，绝不能被打上 Low 标签。
 	root := t.TempDir()
-	target := filepath.Join(root, "sandbox-probe.txt")
 	app := &Bridge{}
 
-	cmd := "Set-Content -LiteralPath '" + target + "' -Value probe"
+	// 写私有目录（沙箱结果里的 TempDir）——执行期间可写。
+	// 受限令牌下 PowerShell 可能是 ConstrainedLanguage，避免 Join-Path 等方法调用。
+	cmd := "Set-Content -LiteralPath ($env:TEMP + '\\sandbox-probe.txt') -Value probe"
 	res, err := app.AIRunShellCommandConfined(cmd, root, 30000, "", "workspace-write", root, "")
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
@@ -67,22 +71,30 @@ func TestAIRunShellCommandConfinedWorkspaceWrite(t *testing.T) {
 	if res.Code != 0 {
 		t.Fatalf("退出码 %d, stderr=%s", res.Code, res.Stderr)
 	}
-	data, readErr := os.ReadFile(target)
-	if readErr != nil {
-		t.Fatalf("写根内写入失败: %v (stderr=%s)", readErr, res.Stderr)
-	}
-	if !strings.Contains(string(data), "probe") {
-		t.Fatalf("文件内容不对: %q", string(data))
-	}
 	if res.SandboxMode != "workspace-write" {
 		t.Fatalf("SandboxMode = %q", res.SandboxMode)
+	}
+	// 执行返回后私有目录已删除（Close 先 Revoke 再 RemoveAll）。
+	if res.TempDir == "" {
+		t.Fatal("workspace-write 应返回私有写根路径")
+	}
+	if _, statErr := os.Stat(res.TempDir); !os.IsNotExist(statErr) {
+		t.Fatalf("私有写根未在执行后删除: %s (err=%v)", res.TempDir, statErr)
+	}
+	// 真实工作区上不能有任何沙箱痕迹（Granted/DenyPresent/Labeled 全 false）。
+	state, scanErr := sandbox.Scan(root)
+	if scanErr != nil {
+		t.Fatalf("扫描真实工作区失败: %v", scanErr)
+	}
+	if state.Residue() {
+		t.Fatalf("真实工作区被沙箱污染: %+v", state)
 	}
 }
 
 // 写根之外必须被拒——授权边界在真实链路里生效。
 func TestAIRunShellCommandConfinedDeniesOutside(t *testing.T) {
 	root := t.TempDir()
-	outside := filepath.Join(os.TempDir(), "cadt-confined-outside-"+filepath.Base(root)+".txt")
+	outside := filepath.Join(root, "outside.txt")
 	defer os.Remove(outside)
 	app := &Bridge{}
 
@@ -197,7 +209,7 @@ func TestAICommandStartConfinedBadMode(t *testing.T) {
 // 后台作业被沙箱拒绝时，状态要带 sandboxDenied（check_command 据此记 sandbox-denied）。
 func TestAICommandStartConfinedMarksSandboxDenied(t *testing.T) {
 	root := t.TempDir()
-	outside := filepath.Join(os.TempDir(), "cadt-bg-denied-"+filepath.Base(root)+".txt")
+	outside := filepath.Join(root, "outside.txt")
 	defer os.Remove(outside)
 	app := &Bridge{}
 	job, err := app.AICommandStartConfined("Set-Content -LiteralPath '"+outside+"' -Value leak", root, "workspace-write", root, "")

@@ -16,6 +16,27 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// enableSecurityPrivilege 应可重复调用（sync.Once 缓存），且在本机测试环境里
+// 要么成功启用、要么给出明确的 Win32 错误；不能 panic 或返回 nil 却没启用。
+func TestEnableSecurityPrivilege(t *testing.T) {
+	first := enableSecurityPrivilege()
+	second := enableSecurityPrivilege()
+	if first == nil {
+		if second != nil {
+			t.Fatalf("sync.Once 缓存不一致：首次成功，二次失败 %v", second)
+		}
+		return
+	}
+	if second == nil || second.Error() != first.Error() {
+		t.Fatalf("sync.Once 缓存不一致：首次 %v，二次 %v", first, second)
+	}
+	if !strings.Contains(first.Error(), "AdjustTokenPrivileges") &&
+		!strings.Contains(first.Error(), "OpenProcessToken") &&
+		!strings.Contains(first.Error(), "LookupPrivilegeValue") {
+		t.Fatalf("错误应指出具体特权 API：%v", first)
+	}
+}
+
 // 真机测试：会真的建受限令牌、真的改目录 DACL 与完整性标签。
 // 一律用 t.TempDir()，不碰仓库与用户目录。
 
@@ -319,28 +340,29 @@ func TestRevokeNoopOnCleanDir(t *testing.T) {
 	}
 }
 
-// 授权失败要把「缺 WRITE_DAC」翻成可操作说明：裸的 Access is denied 只会让人反复重试。
+// 授权失败要把「缺 WRITE_DAC/WRITE_OWNER」翻成可操作说明：裸的 Access is denied 只会让人反复重试。
+// 不假定 t.TempDir() 的 owner 一定是当前账户——以管理员身份运行时 owner 可能是 Administrators 组。
 func TestDiagnoseGrantFailure(t *testing.T) {
 	me := currentUserSIDString()
 	if me == "" {
 		t.Fatal("取不到当前用户 SID，诊断会退化成通用文案")
 	}
-	owner, err := ownerSIDStringOf(t.TempDir())
-	if err != nil {
-		t.Fatalf("ownerSIDStringOf: %v", err)
-	}
-	if owner != me {
-		t.Fatalf("t.TempDir() 的所有者 %s 与当前账户 %s 不一致，本用例前提不成立", owner, me)
+
+	// 目录存在：无论 owner 是不是当前账户，诊断都必须给出可操作出路
+	// （以管理员身份运行，或 icacls 补完全控制），不能退化成「检查安全软件/只读属性」
+	// 这类误导性提示（实测 owner==me 仍被拒的根因是 UAC 非提权令牌）。
+	existing := diagnoseGrantFailure(t.TempDir())
+	if !strings.Contains(existing, "管理员") && !strings.Contains(existing, "icacls") {
+		t.Errorf("存在目录的诊断应给出「管理员」或「icacls」出路：%q", existing)
 	}
 
-	self := diagnoseGrantFailure(t.TempDir())
-	if !strings.Contains(self, "所有者") {
-		t.Errorf("自有目录的诊断应指出「当前账户就是所有者」：%q", self)
-	}
-
+	// 目录不存在：读不到所有者，应用通用文案，且同样给出管理员提示。
 	missing := diagnoseGrantFailure(filepath.Join(t.TempDir(), "not-there"))
 	if !strings.Contains(missing, "无法读取目录所有者") {
 		t.Errorf("读不到所有者时应用通用文案：%q", missing)
+	}
+	if !strings.Contains(missing, "管理员") {
+		t.Errorf("通用文案也应提示以管理员身份运行：%q", missing)
 	}
 }
 

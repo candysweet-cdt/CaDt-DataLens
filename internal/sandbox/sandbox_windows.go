@@ -65,7 +65,43 @@ const (
 	ownerSecurityInformation = 0x00000001
 	daclSecurityInformation  = 0x00000004
 	labelSecurityInformation = 0x00000010
+	sePrivilegeEnabled       = 0x00000002
 )
+
+// enableSecurityPrivilege 在当前进程令牌上启用 SeSecurityPrivilege（写 SACL/完整性标签需要）。
+// AdjustTokenPrivileges 只能启用令牌里已存在的特权，不能凭空添加；非提权令牌通常没有它，
+// 此时返回明确错误，调用方保持 fail-closed。用 sync.Once 缓存，避免每次授权重复调用。
+var (
+	securityPrivilegeOnce sync.Once
+	securityPrivilegeErr  error
+)
+
+func enableSecurityPrivilege() error {
+	securityPrivilegeOnce.Do(func() {
+		var token windows.Token
+		if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY, &token); err != nil {
+			securityPrivilegeErr = fmt.Errorf("OpenProcessToken: %w", err)
+			return
+		}
+		defer token.Close()
+		name, err := windows.UTF16PtrFromString("SeSecurityPrivilege")
+		if err != nil {
+			securityPrivilegeErr = err
+			return
+		}
+		var luid windows.LUID
+		if err := windows.LookupPrivilegeValue(nil, name, &luid); err != nil {
+			securityPrivilegeErr = fmt.Errorf("LookupPrivilegeValue: %w", err)
+			return
+		}
+		state := windows.Tokenprivileges{PrivilegeCount: 1}
+		state.Privileges[0] = windows.LUIDAndAttributes{Luid: luid, Attributes: sePrivilegeEnabled}
+		if err := windows.AdjustTokenPrivileges(token, false, &state, 0, nil, nil); err != nil {
+			securityPrivilegeErr = fmt.Errorf("AdjustTokenPrivileges: %w", err)
+		}
+	})
+	return securityPrivilegeErr
+}
 
 // Sandbox 是一次执行用的受限进程环境：令牌 + 写根授权 + 私有 temp + Job。
 // 一次执行一个实例，用完必须 Close（撤 temp 授权、杀进程树、关令牌）。
@@ -142,6 +178,12 @@ func New(p Policy) (*Sandbox, error) {
 
 	// 授权：read-only 一个都不给；workspace-write 给写根（standing）与 temp（可撤销）。
 	if p.Mode == WorkspaceWrite && s.workspaceSID != nil {
+		// 写完整性标签（SACL）需要 SeSecurityPrivilege；非提权令牌通常没有，
+		// AdjustTokenPrivileges 也无法凭空添加，失败必须 fail-closed。
+		if err := enableSecurityPrivilege(); err != nil {
+			_ = s.Close()
+			return nil, fmt.Errorf("%w: 启用 SeSecurityPrivilege 失败（需以管理员身份运行本应用）: %v", ErrUnavailable, err)
+		}
 		if err := grantWrite(s.workspace, s.workspaceSID, lowSID, worldSID); err != nil {
 			_ = s.Close()
 			return nil, fmt.Errorf("%w: 授权写根 %s: %v%s", ErrUnavailable, s.workspace, err, diagnoseGrantFailure(s.workspace))
@@ -168,7 +210,16 @@ func New(p Policy) (*Sandbox, error) {
 func (s *Sandbox) Enforcement() string { return EnforcementPartial }
 
 // TempDir 返回本次执行实际使用的私有临时目录（未授权时为空）。
-func (s *Sandbox) TempDir() string { return s.tempDir }
+// workspace-write 无独立 temp 时，唯一写根就是私有目录，返回它。
+func (s *Sandbox) TempDir() string {
+	if s.tempDir != "" {
+		return s.tempDir
+	}
+	if s.policy.Mode == WorkspaceWrite {
+		return s.workspace
+	}
+	return ""
+}
 
 // Configure 把令牌与启动标志装到 cmd 上。
 //
@@ -187,7 +238,7 @@ func (s *Sandbox) Configure(cmd *exec.Cmd) error {
 		Token:         syscall.Token(s.token),
 		CreationFlags: uint32(flags),
 	}
-	if s.tempDir != "" {
+	if s.tempDir != "" || (s.policy.Mode == WorkspaceWrite && s.workspace != "") {
 		base := cmd.Env
 		if base == nil {
 			base = os.Environ()
@@ -225,7 +276,14 @@ func ensureHiddenConsole() error {
 
 // Env 在给定环境块上重写 TMP/TEMP 指向私有临时目录（大小写无关，对齐 ZCode 合同）。
 func (s *Sandbox) Env(base []string) []string {
-	if s.tempDir == "" {
+	// 2026-11-27 事故修复：workspace-write 的唯一写根可以是私有临时目录
+	// （此时 tempDir 为空），TMP/TEMP 必须指向该写根，否则子进程仍往宿主 %TEMP%
+	// 写入并会被完整性/ACL 边界拒绝。
+	writableTemp := s.tempDir
+	if writableTemp == "" && s.policy.Mode == WorkspaceWrite {
+		writableTemp = s.workspace
+	}
+	if writableTemp == "" {
 		return base
 	}
 	base = envvars.SanitizeChildEnv(base) // 应用私有变量（宿主 MCP 凭据等）不进沙箱
@@ -241,7 +299,7 @@ func (s *Sandbox) Env(base []string) []string {
 		}
 		out = append(out, kv)
 	}
-	return append(out, "TMP="+s.tempDir, "TEMP="+s.tempDir)
+	return append(out, "TMP="+writableTemp, "TEMP="+writableTemp)
 }
 
 // Start 配置并启动子进程，然后把它放进 kill-on-close 的 Job。
@@ -777,6 +835,12 @@ func Revoke(root string) (*GrantState, error) {
 			info |= windows.SECURITY_INFORMATION(daclSecurityInformation)
 		}
 		if labeled {
+			// 清完整性标签同样需要 SeSecurityPrivilege；缺特权时给出可操作错误，
+			// 不能把裸 Access denied 留给用户猜。
+			if err := enableSecurityPrivilege(); err != nil {
+				sec.release()
+				return fmt.Errorf("清理完整性标签需要 SeSecurityPrivilege（请以管理员身份运行本应用）: %w", err)
+			}
 			// 传 nil SACL + LABEL 位 = 清掉完整性标签
 			info |= windows.SECURITY_INFORMATION(labelSecurityInformation)
 		}
@@ -852,10 +916,18 @@ func buildACL(aces [][]byte) ([]byte, *windows.ACL, error) {
 // ---------- 授权失败诊断 ----------
 //
 // workspace-write 要在写根上写 DACL（能力 SID 的 allow ACE + Everyone 的 deny ACE）与
-// 完整性标签，这需要该目录的 WRITE_DAC —— 目录所有者天然持有，别人得被显式授予。
-// 工作区由另一个账户创建时（例如本地 admin 建的目录、当前登录的是 Microsoft 账户），
-// 当前账户拿到的往往只是继承来的 Modify，而 Modify 不含「更改权限」，于是 grantWrite 报
-// 裸的 Access is denied。这种情况下重试一万次也一样，只能把「缺什么、怎么补」翻出来。
+// 完整性标签（SACL），前者需要 WRITE_DAC、后者需要 WRITE_OWNER。两者都只来自目录所有者的
+// 隐式权限或显式授权；普通的 Modify 不含「更改权限」，于是 grantWrite 报裸的 Access is denied。
+//
+// 两种常见成因，诊断文案都要给出可操作出路：
+//   - 目录属于另一个账户：当前账户只拿到继承的 Modify，需由所有者补授 WRITE_DAC/WRITE_OWNER；
+//   - 当前账户就是所有者（owner == me）却仍被拒：几乎总是 UAC 非提权令牌所致——提权时
+//     Administrators 组是 deny-only，owner 隐式的 WRITE_DAC/WRITE_OWNER 来自该组成员身份，
+//     于是随之一并失效。这不是安全软件或只读属性能解释的，重试无用，需以管理员身份运行本应用
+//     （或由管理员显式给当前账户补一条带 WRITE_DAC/WRITE_OWNER 的完全控制 ACE）。
+//
+// 参考：dsh 的 sandbox-windows-acl 把「owner + WRITE_DAC + WRITE_OWNER」作为硬前置并 fail-closed；
+// codex 则在一次性提权 setup 里把 WRITE_DAC 预授给真实用户，使后续非提权刷新可自行改 ACL。
 
 // ownerSIDStringOf 取目录所有者 SID 字符串（S-1-5-21-…），用于与当前账户比对。
 func ownerSIDStringOf(path string) (string, error) {
@@ -907,14 +979,20 @@ func currentUserSIDString() string {
 func diagnoseGrantFailure(path string) string {
 	owner, ownerErr := ownerSIDStringOf(path)
 	me := currentUserSIDString()
+	grantCmd := "（请以管理员身份运行本应用；或由管理员执行 icacls \"" + path +
+		"\" /grant \"*" + me + ":(OI)(CI)F\" 给当前账户补完全控制）"
 	switch {
 	case ownerErr != nil || owner == "" || me == "":
-		return "（无法读取目录所有者，无法判断是否缺「更改权限」）"
+		return "（无法读取目录所有者，无法判断是否缺「更改权限」；" +
+			"若以普通用户身份运行，请尝试以管理员身份运行本应用）"
 	case owner == me:
-		return "（当前账户就是该目录的所有者却仍被拒绝：检查安全软件拦截、目录只读属性或 ACL 保护）"
+		// owner==me 却仍被拒，几乎总是 UAC 非提权令牌把 Administrators 设为 deny-only，
+		// 连带 owner 隐式的 WRITE_DAC/WRITE_OWNER 一起失效（已用受限令牌对照实验证实）。
+		return "（当前账户就是该目录的所有者，但非提权令牌下 Administrators 组被禁用，" +
+			"owner 隐式的 WRITE_DAC/WRITE_OWNER 随之失效，无法改目录 ACL。" + grantCmd + "）"
 	}
-	return "（该目录属于另一个账户，写 ACL 需要它的「更改权限」(WRITE_DAC)：" +
-		"请以所有者身份运行本应用，或由管理员执行 icacls \"" + path + "\" /grant \"*" + me + ":(OI)(CI)WD\"）"
+	return "（该目录属于另一个账户，写 DACL 需要 WRITE_DAC、写完整性标签需要 WRITE_OWNER；" +
+		"请以所有者身份运行本应用，或由管理员执行 icacls \"" + path + "\" /grant \"*" + me + ":(OI)(CI)F\"）"
 }
 
 // ---------- Job ----------

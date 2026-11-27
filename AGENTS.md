@@ -46,6 +46,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
   - 判定口径：只认**命令位置**的 `git`——`grep "git checkout"`、`git log --grep=…`、提交信息里出现这个词都不拦；`Write`/`Edit` 正文不经过这条判定。
   - 边界：护栏不是沙箱（换别名、改配置都能绕）。真正的纪律是「**未提交的改动不是可丢的东西**」：同文件多会话叠加改动时，任何整文件回退都必须先备份 + 用户确认。要再加同类命令（`reset --hard`、`clean -fd`、`stash drop`…）在脚本的 `BLOCKED_SUBCOMMANDS` 表里加一条即可，`--check` 可当场验证。
 - **`.workbuddy/` 下只有 `settings.json` 可以入库**（hook / 权限规则要对所有会话生效），其余是本机状态（见 `.gitignore` 的 `.workbuddy/*` + `!.workbuddy/settings.json`）。
+- **沙箱联调禁止打真实工作区**：workspace-write 会在写根上落下能力 SID allow ACE、Everyone `FILE_DELETE_CHILD` deny 与 Low 完整性标签；Low 标签会继承给整棵树，使仓库内所有 exe（含 `node_modules` 构建工具）以 Low 启动，导致构建工具无法删除 Medium 临时文件。自动化测试一律用 `t.TempDir()`；人工联调用 `.cadt/tmp/sandbox-*` 下的隔离目录并在脚本头断言 `pwd`。**确需真实工作区时必须先 `sandbox.Scan` 记录基线、事后 `sandbox.Revoke`，且只限维护者明确授权**。起因：2026-11-27 提权联调把 Low 标签贴到仓库根，`vite build` 报 Access denied，见 `docs/reports/incident-2026-11-27-sandbox-low-label.md`。
 
 ### 代码规模与质量红线（写码必读）
 

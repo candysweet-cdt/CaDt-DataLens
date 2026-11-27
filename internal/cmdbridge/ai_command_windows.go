@@ -248,19 +248,20 @@ func (b *Bridge) AICommandStartConfined(command, cwd, mode, workspaceRoot, shell
 	}
 	tempDir := ""
 	if parsed == sandbox.WorkspaceWrite {
-		if root == "" {
-			return nil, fmt.Errorf("sandbox: workspace-write 需要工作区根")
-		}
+		// 2026-11-27 事故修复：Low 完整性标签绝不能落到真实工作区/仓库根，
+		// 否则整棵树的 exe（含 node_modules 构建工具）都会以 Low 启动。
+		// workspace-write 的唯一写根改为本次调用的私有临时目录，删目录即无痕。
 		dir, mkErr := os.MkdirTemp("", "cadt-sandbox-")
 		if mkErr != nil {
 			return nil, fmt.Errorf("sandbox: 建私有临时目录失败：%w", mkErr)
 		}
 		tempDir = dir
+		root = dir
 	}
 	sb, err := sandbox.New(sandbox.Policy{
 		Mode:          parsed,
 		WorkspaceRoot: root,
-		TempDir:       tempDir,
+		TempDir:       "",
 		ShareConsole:  true,
 	})
 	if err != nil {
@@ -343,13 +344,14 @@ func (b *Bridge) AIRunShellCommand(command, cwd string, timeoutMs int, runId, sh
 }
 
 // AIRunShellCommandConfined 在 OS 沙箱里执行一条 AI 命令：写效应被圈定在
-// workspaceRoot 与本次执行的私有 temp 内。
+// 本次执行的私有临时目录内。
 //
-//   - mode=read-only：不给任何写根（私有 temp 也不授权，与 dsh 一致）；
-//   - mode=workspace-write：授权 workspaceRoot + 每次调用新建的私有 temp；
+//   - mode=read-only：不给任何写根；
+//   - mode=workspace-write：只授权每次调用新建的私有临时目录，Low 标签不落真实工作区
+//     （2026-11-27 事故修复，见 docs/reports/incident-2026-11-27-sandbox-low-label.md）；
 //   - mode=danger-full-access：不圈定，直接走 AIRunShellCommand（含 Git Bash）。
 //
-// 沙箱建不起来一律返回错误（fail-closed），绝不降级裸跑。私有 temp 由本函数创建并在
+// 沙箱建不起来一律返回错误（fail-closed），绝不降级裸跑。私有目录由本函数创建并在
 // 返回前删除，前端无须（也不应该）传路径进来，少一个可注入面。
 // shell 语义同 AIRunShellCommand；沙箱档显式请求 Git Bash 直接报错。
 func (b *Bridge) AIRunShellCommandConfined(command, cwd string, timeoutMs int, runId, mode, workspaceRoot, shell string) (*AIShellCommandResult, error) {
@@ -375,17 +377,14 @@ func (b *Bridge) AIRunShellCommandConfined(command, cwd string, timeoutMs int, r
 	if root == "" {
 		root = strings.TrimSpace(cwd)
 	}
-	tempDir := ""
 	if parsed == sandbox.WorkspaceWrite {
-		if root == "" {
-			return nil, fmt.Errorf("sandbox: workspace-write 需要工作区根")
-		}
+		// 与后台入口一致：唯一写根是本次调用的私有目录，Low 标签不落真实工作区。
 		dir, mkErr := os.MkdirTemp("", "cadt-sandbox-")
 		if mkErr != nil {
 			return nil, fmt.Errorf("sandbox: 建私有临时目录失败：%w", mkErr)
 		}
-		tempDir = dir
-		// 私有 temp 只服务本次执行：构建缓存、临时产物执行完即弃。
+		root = dir
+		// 私有目录只服务本次执行：构建缓存、临时产物执行完即弃。
 		defer os.RemoveAll(dir)
 	}
 
@@ -396,7 +395,7 @@ func (b *Bridge) AIRunShellCommandConfined(command, cwd string, timeoutMs int, r
 	sb, err := sandbox.New(sandbox.Policy{
 		Mode:          parsed,
 		WorkspaceRoot: root,
-		TempDir:       tempDir,
+		TempDir:       "",
 		ShareConsole:  true,
 	})
 	if err != nil {
