@@ -372,3 +372,51 @@ func TestAddAllWith(t *testing.T) {
 		}
 	})
 }
+
+// CAS 快照与 L1 备份共用 objects/：GC 的引用集必须同时覆盖 manifest。
+// 只按 L1 行构造（L1 保 7 天、快照保 28 天），7 天前的快照 blob 会被当孤儿清掉，
+// 点"还原快照"得到 blob 读取失败——这条兜底恢复正是整个包存在的意义。
+func TestEnforceKeepsSnapshotBlobs(t *testing.T) {
+	s := newTestService(t)
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "a.txt"), []byte("A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := s.Snapshot(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 造一条 8 天前的 L1 行，让 enforce 真正进入清理分支
+	old, err := s.Backup(BackupCall{Tool: "edit_file", WS: ws, RelPath: "other.txt", Content: "stale", Existed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ := s.ensureRoot()
+	rows := readIndex(root)
+	for i := range rows {
+		if rows[i].ID == old.EntryID {
+			rows[i].At = time.Now().Add(-8 * 24 * time.Hour).UnixMilli()
+		}
+	}
+	if err := rewriteIndexForTest(root, rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.enforce(root); err != nil {
+		t.Fatal(err)
+	}
+
+	// 快照仍能还原：blob 没被当成孤儿回收
+	if err := os.WriteFile(filepath.Join(ws, "a.txt"), []byte("WIPED"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SnapshotRestore(ws, snap.Name); err != nil {
+		t.Fatalf("L1 清理后快照应仍可还原：%v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(ws, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "A" {
+		t.Fatalf("还原内容不符：%q", data)
+	}
+}

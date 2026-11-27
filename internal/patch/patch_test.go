@@ -64,6 +64,21 @@ func simplePatch(rel string) string {
 
 // ===== 解析 =====
 
+// GNU `diff -u` 的文件头带 TAB + 时间戳；整段当路径会命中"含冒号"的绝对路径判定，
+// 外部补丁一律 blocked。
+func TestParseDiffTimestampHeader(t *testing.T) {
+	text := "--- x.txt\t2026-11-27 10:00:00.000000000 +0800\n" +
+		"+++ x.txt\t2026-11-27 10:00:01.000000000 +0800\n" +
+		"@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"
+	doc := mustParse(t, text)
+	if len(doc.Files) != 1 {
+		t.Fatalf("文件数 = %d", len(doc.Files))
+	}
+	if doc.Files[0].RawOld != "x.txt" || doc.Files[0].RawNew != "x.txt" {
+		t.Fatalf("时间戳未被剥离：old=%q new=%q", doc.Files[0].RawOld, doc.Files[0].RawNew)
+	}
+}
+
 func TestParsePatchBasic(t *testing.T) {
 	doc := mustParse(t, simplePatch("x.txt"))
 	if len(doc.Files) != 1 {
@@ -138,6 +153,9 @@ func TestStripPatchPath(t *testing.T) {
 		{"..\\evil.txt", 0, "", PatchErrPathDenied},
 		{"C:/windows/x.txt", 0, "", PatchErrPathDenied},
 		{".GIT/config", 0, "", PatchErrPathDenied},
+		// 保护按路径段判定：子模块/嵌套仓库里的 .git 也不能写
+		{"a/b/.git/config", 0, "", PatchErrPathDenied},
+		{"vendor/x/.cadt/patches/p1.json", 0, "", PatchErrPathDenied},
 		{".cadt/permissions.json", 0, "", PatchErrPathDenied},
 		{"x/trailing./y.txt", 0, "", PatchErrPathDenied},
 	}

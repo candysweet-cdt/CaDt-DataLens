@@ -203,13 +203,14 @@ func BuildPatchPlan(doc *PatchDoc, root, patchID, summary, patchPath string, opt
 		return nil, NewPatchError(PatchErrPathDenied, "工作区根目录不存在")
 	}
 	plan := &patchPlan{
-		PlanID:    NewPatchRunID("plan"),
-		PatchID:   patchID,
-		Summary:   summary,
-		Root:      root,
-		PatchPath: patchPath,
-		CreatedAt: time.Now(),
-		External:  opts.External,
+		PlanID:           NewPatchRunID("plan"),
+		PatchID:          patchID,
+		Summary:          summary,
+		Root:             root,
+		PatchPath:        patchPath,
+		CreatedAt:        time.Now(),
+		External:         opts.External,
+		IgnoreWhitespace: opts.IgnoreWhitespace,
 	}
 	strip := opts.StripLevel
 	if strip < 0 {
@@ -340,7 +341,17 @@ func BuildPatchPlan(doc *PatchDoc, root, patchID, summary, patchPath string, opt
 			for hi := range src.Hunks {
 				pf.Hunks[hi] = patchHunkPlan{Index: hi, Status: "ok", ApplyAtLine: 1}
 			}
-			text := joinPatchLines(hunkNewLinesAll(src.Hunks), true)
+			// 新建文件的尾换行要跟补丁意图一致：补丁最后一行带
+			// "\ No newline at end of file" 时不能再自作主张补一个 \n
+			//（否则哈希与意图不符，还会触发写入时静默重算哈希）。
+			final := true
+			if n := len(src.Hunks); n > 0 {
+				last := src.Hunks[n-1]
+				if len(last.Lines) > 0 && last.Lines[len(last.Lines)-1].NoEOL {
+					final = false
+				}
+			}
+			text := joinPatchLines(hunkNewLinesAll(src.Hunks), final)
 			pf.ResultText = text
 			pf.ResultHash = SHA256Hex(buildBytesOrNil(text, target))
 			plan.Files = append(plan.Files, pf)

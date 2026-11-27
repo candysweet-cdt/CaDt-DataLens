@@ -84,7 +84,7 @@ func ParsePatchText(text string) (*PatchDoc, error) {
 			if err := finishHunk(); err != nil {
 				return nil, err
 			}
-			oldPath := strings.TrimSpace(raw[4:])
+			oldPath := stripDiffPathTimestamp(raw[4:])
 			if cur < 0 || (doc.Files[cur].RawOld != "" && len(doc.Files[cur].Hunks) > 0) {
 				doc.Files = append(doc.Files, patchFile{Kind: "modify"})
 				cur = len(doc.Files) - 1
@@ -99,7 +99,7 @@ func ParsePatchText(text string) (*PatchDoc, error) {
 			if cur < 0 {
 				return nil, &PatchError{Code: PatchErrParse, Msg: "+++ 之前没有对应的 ---", Detail: fmt.Sprintf("第 %d 行", lineNo)}
 			}
-			newPath := strings.TrimSpace(raw[4:])
+			newPath := stripDiffPathTimestamp(raw[4:])
 			doc.Files[cur].RawNew = newPath
 			if isDevNull(newPath) && doc.Files[cur].Kind == "modify" {
 				doc.Files[cur].Kind = "delete"
@@ -199,6 +199,17 @@ func atoiSafe(s string) int {
 	return n
 }
 
+// stripDiffPathTimestamp 处理普通 `diff -u` 的文件头：GNU diff 会在路径后跟一个
+// TAB 与时间戳（`--- a/x.txt	2026-11-27 10:00:00.000000000 +0800`）。整段当路径
+// 会命中「不允许绝对路径或盘符」的冒号判定，外部补丁一律 blocked。
+// 只按 TAB 切：路径本身可能含空格（git 对含空格的路径加引号、不走这条分支）。
+func stripDiffPathTimestamp(field string) string {
+	if i := strings.IndexByte(field, '\t'); i >= 0 {
+		field = field[:i]
+	}
+	return strings.TrimSpace(field)
+}
+
 func isDevNull(p string) bool { return strings.TrimSpace(p) == "/dev/null" }
 
 func parseGitDiffHeader(line string) (string, string) {
@@ -294,11 +305,15 @@ func stripPatchPath(raw string, strip int) (string, *PatchError) {
 		}
 	}
 	lower := strings.ToLower(clean)
-	if lower == ".git" || strings.HasPrefix(lower, ".git/") {
-		return "", &PatchError{Code: PatchErrPathDenied, Msg: "不允许修改 .git 目录", Detail: raw}
+	// 保护要按**路径段**判定，而不是只看首段：`a/b/.git/config`（子模块 / 嵌套仓库）
+	// 与 `vendor/x/.cadt/patches/...` 此前都能完整通过。
+	for _, seg := range strings.Split(lower, "/") {
+		if seg == ".git" {
+			return "", &PatchError{Code: PatchErrPathDenied, Msg: "不允许修改 .git 目录", Detail: raw}
+		}
 	}
-	if strings.HasPrefix(lower, ".cadt/patches/") || lower == ".cadt/patches" ||
-		lower == ".cadt/permissions.json" {
+	if strings.Contains(lower, ".cadt/patches/") || strings.HasSuffix(lower, ".cadt/patches") ||
+		strings.HasSuffix(lower, ".cadt/permissions.json") {
 		return "", &PatchError{Code: PatchErrPathDenied, Msg: "不允许修改补丁目录或权限配置", Detail: raw}
 	}
 	return clean, nil

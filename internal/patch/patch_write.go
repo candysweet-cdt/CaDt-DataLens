@@ -10,9 +10,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"datalens/internal/atomfile"
+	"datalens/internal/chardec"
 	"datalens/internal/recycle"
 )
 
@@ -55,8 +57,13 @@ func writePatchFileAtomic(abs string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		// 非致命
+	// 保留原文件权限：硬编码 0644 会把可执行位一起抹掉（脚本/二进制补丁）。
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(abs); err == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		// 非致命：Windows 上权限位基本不生效
 	}
 	return atomfile.Replace(tmpName, abs)
 }
@@ -112,7 +119,9 @@ func ApplyPatchPlan(plan *patchPlan, files []string, hunksByFile map[string][]in
 					sel[i] = true
 				}
 				target := pf.Target
-				out, segs, failIdx, reason := applyHunks(target.Lines, pf.PatchFile.Hunks, sel, pf.Offset, false)
+				// 子集重算沿用预检的 ignoreWS：硬编码 false 会让"按忽略空白定位出的
+				// offset"在严格匹配下判成上下文不匹配，与预检结论自相矛盾。
+				out, segs, failIdx, reason := applyHunks(target.Lines, pf.PatchFile.Hunks, sel, pf.Offset, plan.IgnoreWhitespace)
 				if failIdx >= 0 {
 					if mode == "partial" {
 						skipped = append(skipped, PatchFileResult{RelPath: pf.RelPath, Status: "skipped", Reason: reason})
@@ -197,7 +206,8 @@ func ApplyPatchPlan(plan *patchPlan, files []string, hunksByFile map[string][]in
 		if OnWriteBackup != nil {
 			OnWriteBackup(plan.Root, pf.RelPath, pf.Abs, raw)
 		}
-		if werr := os.WriteFile(dest, raw, 0o644); werr != nil {
+		// 原子写：写到一半掉电会留下截断的备份，撤销时被当成"备份损坏"。
+		if werr := atomfile.WriteFileAtomicMode(dest, raw, 0o644); werr != nil {
 			res.Code = PatchErrNoBackup
 			res.Message = "备份失败：" + werr.Error()
 			return res, nil
@@ -209,7 +219,12 @@ func ApplyPatchPlan(plan *patchPlan, files []string, hunksByFile map[string][]in
 		})
 	}
 	if b, err := json.MarshalIndent(manifest, "", "  "); err == nil {
-		_ = os.WriteFile(manifestPath, b, 0o644)
+		// manifest 是撤销的唯一索引：非原子写会让"应用记录损坏"，撤销直接失效。
+		if werr := atomfile.WriteFileAtomicMode(manifestPath, b, 0o644); werr != nil {
+			res.Code = PatchErrApplyIO
+			res.Message = "补丁清单写入失败：" + werr.Error()
+			return res, nil
+		}
 	}
 
 	// WAL：applying 先落盘
@@ -268,6 +283,16 @@ func ApplyPatchPlan(plan *patchPlan, files []string, hunksByFile map[string][]in
 		}
 		return bad
 	}
+	// fail 是失败路径的唯一出口：先回滚，再按「是否有文件没恢复」决定错误码。
+	// 回滚未恢复时改写成 PatchErrRollback——patchcli 只在看到这个码时才打印
+	// 「⚠ 有文件未能恢复」并列出备份目录；此前该码从未被赋值，那段提示是死代码，
+	// 用户只看到"写入失败"，不知道工作区处于半应用状态。
+	fail := func(code, message string) (*PatchApplyResult, error) {
+		bad := rollback()
+		res.Unrestored = bad
+		res.Code, res.Message = resolveRollbackFailure(code, message, bad)
+		return res, nil
+	}
 
 	for _, it := range todo {
 		pf := it.pf
@@ -275,25 +300,16 @@ func ApplyPatchPlan(plan *patchPlan, files []string, hunksByFile map[string][]in
 		if pf.Target != nil && pf.Target.Exists {
 			cur, rerr := os.ReadFile(pf.Abs)
 			if rerr != nil {
-				res.Code = PatchErrFileLocked
-				res.Message = fmt.Sprintf("%s：无法读取（可能被占用）", pf.RelPath)
-				res.Unrestored = rollback()
-				return res, nil
+				return fail(PatchErrFileLocked, fmt.Sprintf("%s：无法读取（可能被占用）", pf.RelPath))
 			}
 			if SHA256Hex(cur) != pf.Target.Hash {
-				res.Code = PatchErrConcurrent
-				res.Message = fmt.Sprintf("%s：文件在应用过程中被其他程序修改", pf.RelPath)
-				res.Unrestored = rollback()
-				return res, nil
+				return fail(PatchErrConcurrent, fmt.Sprintf("%s：文件在应用过程中被其他程序修改", pf.RelPath))
 			}
 		}
 		if pf.Kind == "delete" {
 			if err := recycle.Move(pf.Abs); err != nil {
 				if rerr := os.Remove(pf.Abs); rerr != nil {
-					res.Code = PatchErrApplyIO
-					res.Message = fmt.Sprintf("%s：删除失败（%s）", pf.RelPath, rerr)
-					res.Unrestored = rollback()
-					return res, nil
+					return fail(PatchErrApplyIO, fmt.Sprintf("%s：删除失败（%s）", pf.RelPath, rerr))
 				}
 			}
 			written = append(written, pf)
@@ -304,11 +320,13 @@ func ApplyPatchPlan(plan *patchPlan, files []string, hunksByFile map[string][]in
 		}
 		if pf.Kind == "add" {
 			if err := os.MkdirAll(filepath.Dir(pf.Abs), 0o755); err != nil {
-				res.Code = PatchErrApplyIO
-				res.Message = fmt.Sprintf("%s：无法创建父目录（%s）", pf.RelPath, err)
-				res.Unrestored = rollback()
-				return res, nil
+				return fail(PatchErrApplyIO, fmt.Sprintf("%s：无法创建父目录（%s）", pf.RelPath, err))
 			}
+		}
+		// 编码可表示性预检：目标文件是 GBK/GB18030 时，补丁里夹带的字符可能编不出来。
+		// chardec 走 ReplaceUnsupported（静默替换成 0x1A），随后哈希重算又把损坏"洗白"。
+		if pf.Target != nil && pf.Target.Exists && !chardec.CanEncode(pf.ResultText, pf.Target.Enc) {
+			return fail(PatchErrApplyIO, fmt.Sprintf("%s：结果包含 %s 编码无法表示的字符，已中止（避免静默替换后损坏文件）", pf.RelPath, pf.Target.Enc))
 		}
 		data := buildBytesOrNil(pf.ResultText, pf.Target)
 		if SHA256Hex(data) != pf.ResultHash {
@@ -321,10 +339,7 @@ func ApplyPatchPlan(plan *patchPlan, files []string, hunksByFile map[string][]in
 				res.Skipped++
 				continue
 			}
-			res.Code = PatchErrApplyIO
-			res.Message = fmt.Sprintf("%s：写入失败（%s）", pf.RelPath, err)
-			res.Unrestored = rollback()
-			return res, nil
+			return fail(PatchErrApplyIO, fmt.Sprintf("%s：写入失败（%s）", pf.RelPath, err))
 		}
 		// 写入后读回校验
 		if back, err := os.ReadFile(pf.Abs); err == nil && SHA256Hex(back) != pf.ResultHash {
@@ -334,10 +349,7 @@ func ApplyPatchPlan(plan *patchPlan, files []string, hunksByFile map[string][]in
 				res.Files = append(res.Files, PatchFileResult{RelPath: pf.RelPath, Status: "skipped", Reason: "写入后校验不一致，已回滚"})
 				continue
 			}
-			res.Code = PatchErrConcurrent
-			res.Message = fmt.Sprintf("%s：写入后校验不一致（文件可能被其他程序覆盖）", pf.RelPath)
-			res.Unrestored = rollback()
-			return res, nil
+			return fail(PatchErrConcurrent, fmt.Sprintf("%s：写入后校验不一致（文件可能被其他程序覆盖）", pf.RelPath))
 		}
 		written = append(written, pf)
 		res.Files = append(res.Files, PatchFileResult{RelPath: pf.RelPath, Status: "applied", Added: pf.Added, Removed: pf.Removed})
@@ -370,6 +382,17 @@ func ApplyPatchPlan(plan *patchPlan, files []string, hunksByFile map[string][]in
 	res.RevertID = id
 	res.BackupDir = backupDir
 	return res, nil
+}
+
+// resolveRollbackFailure 决定失败提示的最终错误码与文案。
+// 回滚有残留时必须改用 PatchErrRollback：CLI 只在这个码下打印「有文件未能恢复」
+// 与备份目录，用户才知道工作区不是"完全没动过"。
+func resolveRollbackFailure(code, message string, unrestored []string) (string, string) {
+	if len(unrestored) == 0 {
+		return code, message
+	}
+	return PatchErrRollback, fmt.Sprintf("%s；以下文件回滚失败，工作区可能处于半应用状态：%s",
+		message, strings.Join(unrestored, "、"))
 }
 
 func mustReadOrNil(path string) []byte {
@@ -436,7 +459,13 @@ func RevertPatchByID(root, patchID, onConflict string) (*PatchRevertResult, erro
 				raw, rerr := os.ReadFile(p.abs)
 				if rerr == nil && p.entry.ResultHash != "" && SHA256Hex(raw) != p.entry.ResultHash && onConflict != "force" {
 					if onConflict == "stash" {
-						_ = os.WriteFile(p.abs+".revert-backup", raw, 0o644)
+						// 备份必须先成功才允许覆盖：此前这里 `_ = os.WriteFile` 吞掉错误，
+						// 随后照样强制覆盖——用户选了"另存后撤销"，改动却被静默抹掉且无备份。
+						if werr := atomfile.WriteFileAtomicMode(p.abs+".revert-backup", raw, 0o644); werr != nil {
+							res.Code = PatchErrApplyIO
+							res.Message = p.entry.RelPath + "：改动备份写入失败（" + werr.Error() + "），已放弃撤销"
+							return res, nil
+						}
 					} else {
 						res.Code = PatchErrConcurrent
 						res.Message = p.entry.RelPath + " 在应用后被修改，已放弃撤销（可选择另存或强制覆盖）"
@@ -457,7 +486,12 @@ func RevertPatchByID(root, patchID, onConflict string) (*PatchRevertResult, erro
 		cur, rerr := os.ReadFile(p.abs)
 		if rerr == nil && p.entry.ResultHash != "" && SHA256Hex(cur) != p.entry.ResultHash && onConflict != "force" {
 			if onConflict == "stash" {
-				_ = os.WriteFile(p.abs+".revert-backup", cur, 0o644)
+				// 同上：备份不成功就不覆盖，避免"另存后撤销"变成静默丢失。
+				if werr := atomfile.WriteFileAtomicMode(p.abs+".revert-backup", cur, 0o644); werr != nil {
+					res.Code = PatchErrApplyIO
+					res.Message = p.entry.RelPath + "：改动备份写入失败（" + werr.Error() + "），已放弃撤销"
+					return res, nil
+				}
 			} else {
 				res.Code = PatchErrConcurrent
 				res.Message = p.entry.RelPath + " 在应用后被修改，已放弃撤销（可选择另存或强制覆盖）"
@@ -487,6 +521,23 @@ func RevertPatchByID(root, patchID, onConflict string) (*PatchRevertResult, erro
 			res.Message = "备份读取失败：" + p.entry.RelPath
 			return res, nil
 		}
+		// 加锁后复核：检查阶段与加锁阶段之间，外部程序可能又改了文件。
+		// 没有这一步，那段"先全部检查"只是缩小了窗口，并没有关掉它。
+		if p.entry.ResultHash != "" && onConflict != "force" {
+			if cur, cerr := os.ReadFile(p.abs); cerr == nil && SHA256Hex(cur) != p.entry.ResultHash {
+				if onConflict == "stash" {
+					if werr := atomfile.WriteFileAtomicMode(p.abs+".revert-backup", cur, 0o644); werr != nil {
+						res.Code = PatchErrApplyIO
+						res.Message = p.entry.RelPath + "：改动备份写入失败（" + werr.Error() + "），已放弃撤销"
+						return res, nil
+					}
+				} else {
+					res.Code = PatchErrConcurrent
+					res.Message = p.entry.RelPath + " 在应用后被修改，已放弃撤销（可选择另存或强制覆盖）"
+					return res, nil
+				}
+			}
+		}
 		if err := writePatchFileAtomic(p.abs, raw); err != nil {
 			res.Code = PatchErrApplyIO
 			res.Message = "还原失败：" + p.entry.RelPath
@@ -504,9 +555,15 @@ func RevertPatchByID(root, patchID, onConflict string) (*PatchRevertResult, erro
 
 // ===== 命名与 id =====
 
+// patchIDSeq 给同一时间桶内的连续调用提供区分位：原实现只用 100µs 粒度的
+// 纳秒余数，同一桶内两次调用会拿到同一 ID，backup/<id> 与 manifest/<id>.json
+// 互相覆盖（MkdirAll 不校验存在性）。
+var patchIDSeq atomic.Uint32
+
 func NewPatchRunID(prefix string) string {
 	now := time.Now()
-	return fmt.Sprintf("%s%s-%04d", prefix, now.Format("20060102-150405"), now.Nanosecond()/1e5%10000)
+	seq := patchIDSeq.Add(1) % 1000
+	return fmt.Sprintf("%s%s-%04d-%03d", prefix, now.Format("20060102-150405"), now.Nanosecond()/1e5%10000, seq)
 }
 
 func SlugifyPatchSummary(summary string) string {

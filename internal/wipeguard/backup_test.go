@@ -1,6 +1,7 @@
 package wipeguard
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -358,5 +359,41 @@ func TestClearAll(t *testing.T) {
 	}
 	if rows, _ = s.List(ws); len(rows) != 1 {
 		t.Fatalf("清空后新备份不可用")
+	}
+}
+
+// 写前备份必须存磁盘原始字节：call.Content 是解码后的文本（BOM 已剥、GBK 已转
+// Unicode），直接存会在还原时写成 UTF-8 无 BOM，字节不保真。
+func TestBackupKeepsRawBytes(t *testing.T) {
+	s := newTestService(t)
+	ws := t.TempDir()
+	abs := filepath.Join(ws, "bom.txt")
+	original := append([]byte{0xEF, 0xBB, 0xBF}, []byte("中文内容\r\n")...)
+	if err := os.WriteFile(abs, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Backup(BackupCall{
+		Tool:    "edit_file",
+		WS:      ws,
+		RelPath: "bom.txt",
+		AbsPath: abs,
+		Content: "中文内容\r\n", // 解码后的文本（无 BOM）
+		Existed: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(abs, []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Restore(res.EntryID, ws); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("还原字节不保真：\n got=%v\nwant=%v", got, original)
 	}
 }

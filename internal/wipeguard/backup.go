@@ -86,7 +86,15 @@ func (s *Service) Backup(call BackupCall) (BackupResult, error) {
 	if !s.current().Enabled {
 		return BackupResult{Skipped: "disabled"}, nil
 	}
+	// 优先取磁盘原始字节：call.Content 是解码后的文本（fileio 已剥 BOM、
+	// 把 GBK 解成 Unicode），直接存会在还原时写成 UTF-8 无 BOM——带 BOM/GBK 的
+	// 文件不保真。读不到（文件已被删/被锁）才退回 Content。
 	data := []byte(call.Content)
+	if call.Existed && call.AbsPath != "" {
+		if raw, err := os.ReadFile(call.AbsPath); err == nil {
+			data = raw
+		}
+	}
 	row := IndexRow{
 		ID:      newEntryID(),
 		WS:      WorkspaceKey(call.WS),
@@ -383,11 +391,8 @@ func (s *Service) enforce(root string) error {
 		}
 	}()
 	lines := make([][]byte, 0, len(keep))
-	referenced := make(map[string]bool, len(keep))
+	referenced := referencedBlobs(root, keep)
 	for _, r := range keep {
-		if r.Blob != "" {
-			referenced[r.Blob] = true
-		}
 		line, err := json.Marshal(r)
 		if err == nil {
 			lines = append(lines, line)
@@ -404,6 +409,58 @@ func (s *Service) enforce(root string) error {
 	gcOrphanBlobs(filepath.Join(root, "objects"), referenced)
 	s.logf("info", "备份清理完成：删 %d 行，保留 %d 行", dropped, len(keep))
 	return nil
+}
+
+// referencedBlobs 汇总 objects/ 的全部存活引用：L1 索引行 + 所有 CAS manifest。
+// 两者共用同一个 blob 库，但保留期不同（L1 7 天、快照 28 天）。只按 L1 行构造
+// 引用集，会把仍被快照引用的 blob 当孤儿删掉——"还原快照"变成 blob 读取失败，
+// 而这条兜底恢复正是整个包存在的理由。
+func referencedBlobs(root string, rows []IndexRow) map[string]bool {
+	ref := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		if r.Blob != "" {
+			ref[r.Blob] = true
+		}
+	}
+	addSnapshotBlobs(ref, filepath.Join(root, "snapshots"))
+	return ref
+}
+
+// addSnapshotBlobs 把 snapshots/<ws>/*.manifest.json 引用的 blob 并入引用集。
+// 读不出来的 manifest 视为不存在（它已损坏，不该阻止其它 blob 回收）。
+func addSnapshotBlobs(ref map[string]bool, snapshotsDir string) {
+	dirs, err := os.ReadDir(snapshotsDir)
+	if err != nil {
+		return // 没有快照（或平台不支持该目录）：没有额外引用
+	}
+	for _, d := range dirs {
+		if !d.IsDir() {
+			continue
+		}
+		wsDir := filepath.Join(snapshotsDir, d.Name())
+		files, err := os.ReadDir(wsDir)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".manifest.json") {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(wsDir, f.Name()))
+			if err != nil {
+				continue
+			}
+			var m casManifest
+			if json.Unmarshal(raw, &m) != nil {
+				continue
+			}
+			for _, e := range m.Entries {
+				if e.Blob != "" {
+					ref[e.Blob] = true
+				}
+			}
+		}
+	}
 }
 
 // gcOrphanBlobs 删除未被任何存活行引用的 blob 与空分片目录。

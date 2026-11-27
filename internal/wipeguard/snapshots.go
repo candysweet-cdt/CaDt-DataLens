@@ -51,12 +51,12 @@ type ModeInfo struct {
 
 // SnapshotResult 一次快照的产出。
 type SnapshotResult struct {
-	Mode   Mode   `json:"mode"`
-	Name   string `json:"name"`   // tar / manifest 文件名（snapshots/<ws>/ 下）
-	Path   string `json:"path"`   // 绝对路径
-	Files  int    `json:"files"`  // 本次覆盖的文件数
-	Bytes  int64  `json:"bytes"`  // 产物大小
-	Skipped string `json:"skipped,omitempty"`  // 未产生快照的原因（disabled / preimage）
+	Mode     Mode   `json:"mode"`
+	Name     string `json:"name"`               // tar / manifest 文件名（snapshots/<ws>/ 下）
+	Path     string `json:"path"`               // 绝对路径
+	Files    int    `json:"files"`              // 本次覆盖的文件数
+	Bytes    int64  `json:"bytes"`              // 产物大小
+	Skipped  string `json:"skipped,omitempty"`  // 未产生快照的原因（disabled / preimage）
 	Excluded string `json:"excluded,omitempty"` // 已产生快照但被跳过的无法索引文件（tar/manifest 不含它们）
 }
 
@@ -447,7 +447,6 @@ func (s *Service) snapshotCas(ws string) (SnapshotResult, error) {
 		Files: len(manifest.Entries), Bytes: int64(len(buf)), Excluded: excludedNote}, nil
 }
 
-
 // storeBlobBytes 按 sha256 内容寻址落盘（与 L1 writeBlob 同库；已存在即复用）。
 func (s *Service) storeBlobBytes(root string, data []byte) error {
 	sum := sha256Of(data)
@@ -637,6 +636,10 @@ func (s *Service) pruneSnapshots(root, dir string) {
 			}
 		}
 	}
+	// 删掉 manifest 后它独占的 blob 就没人引用了，顺手回收一次：否则这些 blob
+	// 要等到下一次 L1 清理才可能被扫到，期间白占空间；反向也保证误删不可能——
+	// 引用集同时覆盖 L1 索引与剩余 manifest（见 referencedBlobs）。
+	gcOrphanBlobs(filepath.Join(root, "objects"), referencedBlobs(root, readIndex(root)))
 	if err := protectRoot(root); err != nil {
 		s.logf("warn", "快照清理后重套 ACL 失败：%v", err)
 	}
@@ -650,9 +653,9 @@ func pruneStaggered(entries []SnapshotEntry, now time.Time, totalCap int64) map[
 	copy(sorted, entries)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].At < sorted[j].At })
 	keepNames := make(map[string]bool, len(sorted))
-	hourBucket := map[int64]string{}  // 最近 1h：5 分钟一桶，保最新
-	dayBucket := map[int64]string{}   // 1h–7d：天一桶
-	weekBucket := map[int64]string{}  // 7d–28d：周一桶
+	hourBucket := map[int64]string{} // 最近 1h：5 分钟一桶，保最新
+	dayBucket := map[int64]string{}  // 1h–7d：天一桶
+	weekBucket := map[int64]string{} // 7d–28d：周一桶
 	var total int64
 	for _, e := range sorted {
 		age := now.Sub(time.UnixMilli(e.At))

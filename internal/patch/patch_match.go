@@ -151,6 +151,9 @@ type patchPlan struct {
 	Added     int
 	Removed   int
 	External  bool
+	// IgnoreWhitespace 是预检时的匹配选项：应用/撤销阶段重算 hunk 子集必须沿用
+	// 同一套口径，否则「忽略空白定位出来的 offset」会被严格匹配判成上下文不匹配。
+	IgnoreWhitespace bool
 
 	// RawText 非空表示这是「文本补丁」计划（虚拟 diff 文档：审阅 / Git 差异拼接），
 	// 没有盘上的补丁文件；PatchRepreview 直接用这份文本，不走 readPatchFileText。
