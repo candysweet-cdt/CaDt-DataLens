@@ -80,7 +80,7 @@ test('withCtx 对空基座 / 空域字段安全（不 mutate 入参）', () => {
 test('origin 枚举覆盖全部回调入口（新增入口时这里会红）', () => {
     assert.deepEqual(
         Object.keys(PLUGIN_CTX_ORIGINS).sort(),
-        ['classifier', 'command', 'editor', 'export', 'open', 'prompt', 'settings', 'tool']);
+        ['classifier', 'command', 'editor', 'export', 'open', 'prompt', 'settings', 'tool', 'workspace']);
     for (const [key, value] of Object.entries(PLUGIN_CTX_ORIGINS)) {
         assert.equal(key, value, 'origin 的键与值必须同名，插件才能用字符串比较');
     }

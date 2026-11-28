@@ -83,6 +83,11 @@ export function clearPluginSkills() {
     skills.clear();
 }
 
+/** @param {string} pluginId */
+export function removePluginSkillsByOwner(pluginId) {
+    for (const [key, rec] of skills) if (rec.pluginId === pluginId) skills.delete(key);
+}
+
 /** 原始记录（含 content 函数），供需要懒求值的消费方使用。 */
 export function getPluginSkillRecords() {
     return [...skills.values()];

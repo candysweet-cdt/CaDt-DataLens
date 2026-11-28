@@ -38,6 +38,39 @@ test('ContextProvider：注册/求值/转义/上限/撤销', () => {
     clearContextProviders();
 });
 
+test('ContextProvider：text(ctx) 带插件自身身份（ctx.plugin），不被宿主空壳覆盖', () => {
+    clearContextProviders();
+    let seen = null;
+    registerContextProvider('my-plugin', '我的插件', {
+        id: 'chapter',
+        text: (ctx) => { seen = ctx; return '正文'; },
+    });
+    renderContextProviders({plugin: {id: '', name: ''}, sessionId: 's1', workspace: 'D:/ws'});
+    assert.deepEqual(seen.plugin, {id: 'my-plugin', name: '我的插件'});
+    assert.equal(seen.sessionId, 's1');
+    assert.equal(seen.workspace, 'D:/ws');
+    assert.equal(seen.origin, 'prompt');
+    clearContextProviders();
+});
+
+test('ContextProvider：合计上限按转义后长度计（& 放大不突破预算）', () => {
+    clearContextProviders();
+    registerContextProvider('p1', 'P1', {id: 'amp', text: () => '&'.repeat(16000)});
+    const out = renderContextProviders({});
+    assert.equal(out.truncated, true);
+    // 渲染后的单块正文不应突破 MAX_PROVIDER_CHARS（8KiB）
+    const body = out.text.split('\n')[1];
+    assert.ok(body.length <= 8 * 1024, '转义后长度需受限，实测 ' + body.length);
+    clearContextProviders();
+});
+
+test('ContextProvider：注册数量上限（单插件 16 / 总 64）', () => {
+    clearContextProviders();
+    for (let i = 0; i < 16; i += 1) registerContextProvider('p1', 'P1', {id: 'c' + i, text: () => 'x'});
+    assert.throws(() => registerContextProvider('p1', 'P1', {id: 'over', text: () => 'x'}), /上限/);
+    clearContextProviders();
+});
+
 test('ContextProvider：单条抛错跳过，不影响其他', () => {
     clearContextProviders();
     registerContextProvider('p1', 'P1', {id: 'bad', text: () => { throw new Error('x'); }});

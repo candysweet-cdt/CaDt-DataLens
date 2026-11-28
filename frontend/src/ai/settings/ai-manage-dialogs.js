@@ -489,7 +489,7 @@ export function createAIManageDialogs(ctx) {
                 main.appendChild(nameRow);
                 main.appendChild(dialogNode('div', 'ai-mgr-meta', skill.description));
                 const actions = dialogNode('div', 'ai-mgr-actions');
-                if (!skill.builtin) {
+                if (!skill.builtin && skill.path) {
                     actions.appendChild(dialogButton('打开', 'dlg-btn', () => openPath(skill.path)));
                     actions.appendChild(dialogButton('目录', 'dlg-btn', () => {
                         const dir = aiPathDir(skill.path);

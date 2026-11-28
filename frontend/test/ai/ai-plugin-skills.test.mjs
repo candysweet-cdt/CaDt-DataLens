@@ -51,9 +51,15 @@ test('去重契约：工作区同名技能压过插件技能（rank 小者先到
 
 test('接线守卫：ai-panel.js 有 rank 300 / source label / 合并 / 缓存失效订阅', () => {
     assert.match(panelSrc, /plugin:\s*300/, 'AI_SKILL_RANKS 需要 plugin=300');
+    // 六档 rank 逐一钉住，防生产把 workspace/app/builtin 的 rank 改错而测试仍绿
+    assert.match(panelSrc, /workspace:\s*100/);
+    assert.match(panelSrc, /workspaceAgents:\s*200/);
+    assert.match(panelSrc, /app:\s*400/);
+    assert.match(panelSrc, /userAgents:\s*500/);
+    assert.match(panelSrc, /builtin:\s*600/);
     assert.match(panelSrc, /source === 'plugin'.*?return '插件'/, 'skillSourceLabel 需识别 plugin');
     assert.match(panelSrc, /getPluginSkillList\(/, 'listSkillsRaw 需合并插件技能');
-    assert.match(panelSrc, /cadt-plugins-loaded[\s\S]{0,300}invalidateSkillsCache/, '插件加载完成需失效技能缓存');
+    assert.match(panelSrc, /addEventListener\('cadt-plugins-loaded'[\s\S]{0,120}invalidateSkillsCache/, '插件加载完成需失效技能缓存');
 });
 
 test('接线守卫：plugins.js 导出 registerSkill/readTextAsset 并在重载时清空技能', () => {

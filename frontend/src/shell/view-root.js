@@ -40,6 +40,7 @@ import {isMultiWorkspace} from '../core/root-scope.js';
  * @param {() => any} deps.memoWorkspaceChanged 便签作用域变更
  * @param {(level: string, msg: string) => void} deps.logFrontend 前端日志
  * @param {(path: any) => string} deps.sessionPathKey 路径比较键
+ * @param {(root: string) => void} [deps.onRootChanged] 视图根真正变化后的回调（插件事件用）
  */
 export function createViewRoot(deps) {
     // 视图跟随根：聚焦会话的工作区。**不写 workspaceFolder**（见文件头）。
@@ -89,6 +90,9 @@ export function createViewRoot(deps) {
         }
         lastFocusedRoot = next;
         viewRootOrphan = false;
+        // 插件工作区 opened 事件：视图根真正变化时发一次（覆盖所有 applyViewRoot 调用路径，
+        // 包括多工作区提前 return 的分支）。同根短路 / 空根不发。
+        if (typeof deps.onRootChanged === 'function') deps.onRootChanged(next);
         followingSessionWorkspace = true;
         try {
             deps.logFrontend('info', '[视图跟随] 切到 ' + next);

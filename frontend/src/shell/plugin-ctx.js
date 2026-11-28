@@ -29,6 +29,7 @@ export const PLUGIN_CTX_ORIGINS = Object.freeze({
     prompt: 'prompt',     // AI 上下文（进系统提示词）
     settings: 'settings', // 插件专属设置面板
     classifier: 'classifier', // 命令风险分类器（classify）
+    workspace: 'workspace', // 工作区生命周期事件（onWorkspaceEvent）
 });
 
 /**

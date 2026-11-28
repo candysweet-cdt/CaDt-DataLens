@@ -4,6 +4,7 @@
 // ContextProvider 是「随会话/轮变化的大块上下文」（如本章任务书、当前草稿摘要），按轮求值、
 // 单独限长（默认 8 KiB）、带来源标记，走同一条 <plugin_context> 渲染链但不占稳定区配额。
 // 内容按数据处理（不是系统指令），见 plugin-context.js 的转义口径。
+import {PLUGIN_CTX_ORIGINS, pluginCtxBase, withCtx} from './plugin-ctx.js';
 
 export const MAX_PROVIDERS_PER_PLUGIN = 16;
 export const MAX_PROVIDERS_TOTAL = 64;
@@ -84,27 +85,38 @@ export function renderContextProviders(runtimeCtx) {
     let total = 0;
     let truncated = false;
     for (const record of providers.values()) {
+        // 按记录重建基座：插件在 text(ctx) 里读 ctx.plugin 应拿到自己的身份，不是宿主空壳
+        const callCtx = withCtx(pluginCtxBase({
+            pluginId: record.pluginId,
+            pluginName: record.pluginName,
+            workspace: src.workspace,
+            sessionId: src.sessionId,
+            origin: PLUGIN_CTX_ORIGINS.prompt,
+        }), src);
         let text = '';
         try {
-            text = String(record.text(src) || '').trim();
+            text = String(record.text(callCtx) || '').trim();
         } catch (e) {
             continue;
         }
         if (!text) continue;
-        if (text.length > MAX_PROVIDER_CHARS) {
-            text = text.slice(0, MAX_PROVIDER_CHARS);
+        // 先全局转义属性与正文，闭合标签的 < 已被转成 &lt;，跳不出数据区。
+        const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+        const safe = esc(text);
+        // 按**转义后**长度计数/截断：原文里的 & < > " 会被放大（最长 6 倍），
+        // 按原文计数会让实际注入的提示词突破 16 KiB 预算。
+        let rendered = safe;
+        if (rendered.length > MAX_PROVIDER_CHARS) {
+            rendered = rendered.slice(0, MAX_PROVIDER_CHARS);
             truncated = true;
         }
-        if (total + text.length > MAX_PROVIDER_CHARS * 2) {
+        if (total + rendered.length > MAX_PROVIDER_CHARS * 2) {
             truncated = true;
             break;
         }
-        total += text.length;
-        // 与 plugin-context.js 同款转义：先全局转义属性与正文，闭合标签的 < 已被转义成 &lt;，
-        // 无法跳出 <plugin_context> 数据区（顺序反了会把逃逸串再转义一遍）。
-        const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+        total += rendered.length;
         out.push('<plugin_context plugin="' + esc(record.pluginName) + '" id="' + esc(record.id) + '">\n'
-            + esc(text) + '\n</plugin_context>');
+            + rendered + '\n</plugin_context>');
     }
     return {
         text: out.length ? out.join('\n') : '',

@@ -11,7 +11,7 @@ import {PLUGIN_CTX_ORIGINS, pluginCtxBase} from './plugin-ctx.js';
 export function emitWorkspaceEvent(bus, kind, root, payload) {
     if (!bus || typeof bus.emit !== 'function') return;
     const event = kind === 'opened' ? 'workspace/opened' : 'workspace/changed';
-    const ctx = pluginCtxBase({workspace: root, origin: PLUGIN_CTX_ORIGINS.settings});
+    const ctx = pluginCtxBase({workspace: root, origin: PLUGIN_CTX_ORIGINS.workspace});
     bus.emit(event, {
         ...ctx,
         root: String(root || ''),

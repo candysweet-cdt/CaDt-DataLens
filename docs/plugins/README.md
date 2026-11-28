@@ -137,7 +137,7 @@ const text = await cadt.readTextAsset('skills/webnovel-write/SKILL.md');
 
 | API | 声明 | 作用 |
 | --- | --- | --- |
-| `registerContextProvider({id, label?, text(ctx)})` | 按轮求值的上下文 | 进系统提示词，与 `registerAIContext` 的稳定知识分开；单条默认 ≤8 KiB，内容按数据处理 |
+| `registerContextProvider({id, label?, text(ctx)})` | 按轮求值的上下文 | 进系统提示词，与 `registerAIContext` 的稳定知识分开；单条默认 ≤8 KiB、合计 ≤16 KiB（超出截断并标 truncated），内容按数据处理 |
 | `onWorkspaceEvent(name, fn)` | `name` ∈ `changed` / `opened` | 订阅工作区文件变化 / 打开切换；映射到钩子总线，返回解绑函数 |
 | `registerPage({id, label?, icon?, group?, desc?, mount(root, workspace), perWorkspace?})` | 应用页面标签页 | 插件声明独立功能页，进「应用页面」入口与标签页；id 自动加插件前缀；`perWorkspace` 页按工作区开多份 |
 | `registerFileAction({id, label?, extensions?, contexts?, run(ctx)})` | 文件树右键动作 | 按路径/扩展名出现在右键菜单（已接入） |

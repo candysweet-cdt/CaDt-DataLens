@@ -1,6 +1,6 @@
 # CaDt 通用插件供给接口设计（平台扩展面总览）
 
-> 状态：**设计草案，大部分未实施**（2026-11-28 基于现有插件 API 与宿主能力整理，同日评审后补正）——唯一已落地的是 **§5.2 的统一回调 ctx**（`shell/plugin-ctx.js` + 八个入口接线，2026-11-28）；§3 列出的新增接口（`registerSkill` / `readTextAsset` / 写回契约 / 子代理可用插件工具 / `onWorkspaceEvent` / `registerPage` / `registerContextProvider` 等）**全部仍是待办**。P0 前两项（`registerSkill` / `readTextAsset`）见 `plugin-host-extension-p0.md`；**子代理侧（能力快照 / preset / 受控写）已独立成文** `subagent-capabilities-redesign.md`。
+> 状态：**部分已实施**（2026-11-28）——**已落地**：§5.2 统一回调 ctx（`shell/plugin-ctx.js` + 八入口）、`registerSkill`、`readTextAsset`、`addCommand` 写回契约、`onWorkspaceEvent`、`registerPage`、`registerContextProvider`、`registerFileAction`（详见 `docs/plugins/README.md`「平台扩展接口」的「已接宿主消费点」标注）。**待办**：子代理可用插件工具（归 `subagent-capabilities-redesign.md`）；§3 标 P2 的 7 个接口（FileDecorator / EditorDecoration / InlineSuggest / Task / Progress / BackgroundJob / WorkspaceInitializer）注册表已就绪但宿主消费点待立项。P0 两项详细设计见 `plugin-host-extension-p0.md`；子代理侧见 `subagent-capabilities-redesign.md`。
 > 目标：定义 CaDt 作为通用插件平台，除写作外的各类场景可以供给哪些接口、按什么优先级补、哪些能力故意不开放。本文是平台级总览，不替代 `docs/plugins/README.md` 的具体 API 手册。
 > 结论先行：**现有接口已覆盖「文件格式 / 可视化 / 命令 / AI 工具 / 数据源 / 后台服务 / 导入导出 / 外观 / 设置」**。下一步最有价值的扩展不是继续加零散 API，而是补齐 **编辑器交互、AI 技能与工作流、工作区生命周期、侧栏面板、文件操作、任务与通知** 六类通用场景。
 >
@@ -40,7 +40,7 @@
 | 设置 | `registerSettingsPanel` | 插件专属设置页 | 表单控件遵循全局规范 |
 | 命令风险 | `registerCommandClassifier` | 端侧命令危险概率分类 | 无 deny 权；核心统一裁决 |
 | 平台原语 | `provide/require/inject/effect` | 服务依赖、组合、生命周期 | 点分服务名；owner 撤销 |
-| 回调上下文 | `pluginCtxBase` / `withCtx`（`shell/plugin-ctx.js`） | 八个回调入口共享 `{plugin:{id,name,dir}, workspace, sessionId, origin, flash?}` 基座，各自再加域方法 | 命令 / AI 工具没有 `flash`；`source` 一义多义保留，用 `origin` / `doc` 消歧（§5.2） |
+| 回调上下文 | `pluginCtxBase` / `withCtx`（`shell/plugin-ctx.js`） | 八个回调入口共享 `{plugin:{id,name}, workspace, sessionId, origin, flash?}` 基座，各自再加域方法 | 命令 / AI 工具没有 `flash`；`source` 一义多义保留，用 `origin` / `doc` 消歧（§5.2） |
 | 钩子 | `on/emit/waterfall/parallel/serial/bail` | 进程内事件通信与决策接管；核心已埋 `agent/pre-step`、`agent/request`、`agent/request-error` 三个 waterfall | 不跨窗口；同步模式注意 async；**宿主事件（工作区切换等）尚未转发进总线** |
 | 进程桥 | `runCommandSync/runCommand` | 执行脚本/命令、流式输出 | 插件拥有同等系统权限 |
 | 资产 | `getPluginDir/readAsset` | 取安装目录、读图片**与受限文本/数据资产**（Go 白名单含 `.md .txt .json .js .mjs .csv .yaml`，返回 data URL、数据类 48 MB） | 缺统一文本入口与文本级闸门（要插件自己 base64 解码）；脚本类 `.py/.sh/.ps1` 不在白名单 |

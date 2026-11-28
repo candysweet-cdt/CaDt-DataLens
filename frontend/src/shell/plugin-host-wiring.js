@@ -1,7 +1,9 @@
 // plugin-host-wiring.js：插件平台扩展在宿主侧的统一接线（供 main.js 一次调用）。
 // 目的：把 8 个新接口的「import + deps 注入 + 事件转发」集中到 shell 域，
 // 让组合根 main.js 只留一行 init，守住「只减不增」的行数基线。
+import {PLUGIN_CTX_ORIGINS, pluginCtxBase, withCtx} from './plugin-ctx.js';
 import {registerContextProvider as regCtxProvider, clearContextProviders, removeContextProvidersByOwner} from './plugin-context-provider.js';
+import {registerPluginSkill, clearPluginSkills, removePluginSkillsByOwner} from './plugin-skills.js';
 import {registerPluginPage, clearPluginPages, pluginPagesAsAppPages, pluginPageMounters, getPluginPages, removePluginPagesByOwner} from './plugin-pages.js';
 import {registerFileDecorator as regFileDecorator, registerFileAction as regFileAction,
     clearFileDecorators, clearFileActions, actionsFor, removeFileExtensionsByOwner} from './plugin-file-actions.js';
@@ -49,6 +51,17 @@ export function clearAllPlatformExtensions() {
     clearWorkspaceInitializers();
 }
 
+/** 文件树动作 + 各自的 ctx 基座（供 explorer 消费，explorer 域不 import shell）。 */
+export function actionsWithCtx(path, workspace) {
+    return actionsFor(path).map((a) => ({
+        ...a,
+        ctx: withCtx(pluginCtxBase({
+            pluginId: a.pluginId, pluginName: a.pluginName,
+            workspace, origin: PLUGIN_CTX_ORIGINS.command,
+        }), {path: String(path || ''), name: String(path || '').split(/[\\/]/).pop() || '', isDir: false}),
+    }));
+}
+
 /**
  * 半插件失败时按 owner 撤销平台扩展（ContextProvider 会进系统提示词、Page 会进导航，
  * 残留到下次全局 clear 的危害大于命令）。各模块的 clear 是全清，这里按 pluginId 精确删。
@@ -56,6 +69,7 @@ export function clearAllPlatformExtensions() {
 export function revokePlatformOwner(pluginId) {
     const id = String(pluginId || '');
     if (!id) return;
+    removePluginSkillsByOwner(id);
     removeContextProvidersByOwner(id);
     removePluginPagesByOwner(id);
     removeFileExtensionsByOwner(id);

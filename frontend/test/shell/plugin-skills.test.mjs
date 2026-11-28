@@ -110,7 +110,7 @@ test('when 条件：false 不出现；抛错当不满足；ctx 传给 when/conte
     assert.equal(none.length, 0);
 });
 
-test('content 错误隔离：抛错 / 超时 / 空串 / 非字符串都只跳过该条', async () => {
+test('content 错误隔离：抛错 / 空串 / 非字符串都只跳过该条', async () => {
     reset();
     registerPluginSkill('p1', 'P1', spec('ok'));
     registerPluginSkill('p1', 'P1', spec('throw', {content: () => { throw new Error('boom'); }}));
@@ -118,6 +118,18 @@ test('content 错误隔离：抛错 / 超时 / 空串 / 非字符串都只跳过
     registerPluginSkill('p1', 'P1', spec('num', {content: () => 12345}));
     const list = await getPluginSkillList({workspace: 'D:/ws'});
     assert.deepEqual(list.map((s) => s.name), ['ok']);
+});
+
+test('content 超时（>1 s）只跳过该条，不拖慢其他技能', async () => {
+    reset();
+    registerPluginSkill('p1', 'P1', spec('ok'));
+    registerPluginSkill('p1', 'P1', spec('slow', {
+        content: () => new Promise((resolve) => setTimeout(() => resolve('太慢'), 1200)),
+    }));
+    const start = Date.now();
+    const list = await getPluginSkillList({workspace: 'D:/ws'});
+    assert.deepEqual(list.map((s) => s.name), ['ok'], '超时那条被跳过');
+    assert.ok(Date.now() - start < 1150, '不应等满 1.2 s（并发 + 1 s 单点超时）');
 });
 
 test('content 支持 async 并并发求值（不串行等待）', async () => {

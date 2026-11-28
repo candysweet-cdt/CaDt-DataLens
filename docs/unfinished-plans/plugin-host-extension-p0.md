@@ -1,6 +1,6 @@
 # CaDt 插件宿主扩展（P0）：技能注册与文本资产读取（方案）
 
-> 状态：**未实施**（2026-11-28 完成代码现状核对与方案设计，同日评审后补正；仅文档，未改宿主代码）
+> 状态：**已实施**（2026-11-28；`registerSkill` / `readTextAsset` 已落地，见 `frontend/src/shell/plugin-skills.js`、`plugin-text-asset.js` 与 `plugins.js` 的 apiFor；测试见 `plugin-skills.test.mjs` / `plugin-text-asset.test.mjs` / `ai-plugin-skills.test.mjs`）。本文保留为设计存档。
 > 目标：补齐插件作为「能力供给方」最缺的两个通用接口——`registerSkill`（插件声明可被 `/技能名` 调用的技能）、`readTextAsset`（读随包文本资产）。两者都不绑定具体业务：写作插件只是**首个验证场景**（v8 类插件移植后要能直接 `/webnovel-write 63`），翻译、批注、数据分析类插件同样受益。
 > 定位：本文是 `plugin-platform-extension-catalog.md` 里 P0 各项的详细设计，不替代那份平台总览。
 > **子代理侧已迁出**：子代理能力/权限体系独立成文 → `docs/finished-plans/subagent-capabilities-redesign.md`（§3.3 只留指针）。

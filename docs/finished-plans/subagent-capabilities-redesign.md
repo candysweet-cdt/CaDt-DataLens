@@ -182,11 +182,11 @@ cadt.registerAgentPreset({
 
 ### 4.4 与现有 `ai-agent-preset.js` 的关系：扩展，不另立
 
-`normalizeAgentPreset` / `createAgentScope`（S6 平台原语，`ai-subagents.js:884` 已在用）保留为唯一 preset 归一化入口：
+`normalizeAgentPreset`（S6 平台原语）保留为唯一 preset 归一化入口：
 
 - `normalizeAgentPreset` 的输入形状**扩展** `fs / delegation` 字段（`tools / promptSections / variables / realm` 语义不变）；
 - 阶段一新增的 `agent-capabilities.js` 只做快照的**合成、收窄、校验、序列化**（preset × 派单参数 × 父级约束 → `DelegatedCapabilities`），消费 `normalizeAgentPreset` 的输出，**不另立第二套 preset 注册表**——两套 preset 概念并存会重蹈 scope 五重耦合的覆辙；
-- `createAgentScope` 继续做每 live agent 的工具/提示/变量注册层；能力快照是它的**输入**之一，不是替代。
+- ~~`createAgentScope` 继续做每 live agent 的工具/提示/变量注册层~~ **实施修订（2026-11-28 审查）**：本条按字面接线（建 / 灌 / dispose）后确认 `agentCtx` 是**零读者的空转层**——可变注册层与「启动时固定、不能从会话内放宽」的快照原则（§2 原则 2）互斥，不可能成为权威；工具面由快照投影（`subToolsForCapabilities`）、提示片段由 `subSystemPromptFor` 按快照直读注册表（`getAgentPreset(caps.preset)` → `presetPromptSections`）。已拆除子代理路径的全部接线，原语保留（纯函数 + 单测，模块头注注明现状），待真实消费者（如 per-agent 变量 / 提示覆盖）出现再接线。
 
 ## 5. 工具面与执行 guard
 

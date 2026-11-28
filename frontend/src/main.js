@@ -741,6 +741,8 @@ const viewRootMod = createViewRoot({
     memoWorkspaceChanged: () => memoWorkspaceChanged,
     logFrontend: (...args) => logFrontend(...args),
     sessionPathKey: (path) => sessionPathKey(path),
+    // 视图根真正变化时发插件 opened 事件（覆盖所有 applyViewRoot 路径，含多工作区分支）
+    onRootChanged: (root) => pluginHostWiring.emitEvent(getPluginHookBus(), 'opened', root, null),
 });
 const {
     currentRoot, applyViewRoot, followSessionWorkspace, followActiveSession, installSessionFollow,
@@ -2839,7 +2841,7 @@ const explorerOps = createExplorerOps({
     get aiReferenceFileMenuItems() { return aiReferenceFileMenuItems; },
     // 插件文件树右键动作（按路径/扩展名命中）
     get pluginFileActionsFor() {
-        return (path) => pluginHostWiring.actionsFor(path);
+        return (path) => pluginHostWiring.actionsWithCtx(path, currentRoot() || '');
     },
     get backend() { return backend; },
     get baseNameOf() { return baseNameOf; },
@@ -3390,7 +3392,7 @@ function openFolderWorkspace(dir) {
     // workspaceFolder 写脏，而 currentRoot 之前优先读它 → 顶部徽标与文件树显示两个不同仓库。
     if (isMultiWorkspace()) {
         rememberRecentOpen(dir, baseNameOf(dir) || dir, true);
-        applyViewRoot(dir);
+        applyViewRoot(dir); // onRootChanged 钩子会发插件 opened 事件
         return;
     }
     if (workspaceFolder && sessionPathKey(dir) !== sessionPathKey(workspaceFolder)) {
@@ -3403,7 +3405,7 @@ function openFolderWorkspace(dir) {
     workspaceFolder = dir;
     // 窗口注册表：本窗口可匹配工作区更新（fire-and-forget；失败由日志吸收）
     syncWindowRegRegistration(dir);
-    // 插件工作区事件：切换（含首次打开）转发进钩子总线
+    // 插件 opened：单工作区不走 applyViewRoot，这里显式发；多工作区由 onRootChanged 钩子发
     pluginHostWiring.emitEvent(getPluginHookBus(), 'opened', dir, null);
     // Maven 图标显隐随工作区重算（pom 探测 + 工具链惰性扫描在面板内做，见 maven-panel.js）
     if (mavenUi) mavenUi.syncTrigger();
@@ -6251,7 +6253,6 @@ const formatConvert = createFormatConvert({
     get openPath() { return openPath; },
 });
 const {convertMenuItems, repairJsonAction} = formatConvert;
-
 // 插件命令 ctx + 执行/写回（执行体在 shell/plugin-command-*.js，组合根只留接线）
 const cmdHostDeps = {currentMode: () => currentMode, editor: () => editor, textArea: () => textArea, file: () => file, settings: () => settings, workspace: () => currentRoot() || '', isDocReadOnly, flash: (...a) => flash(...a), openVirtualDoc: (...a) => openVirtualDoc(...a), markDocDirty: (d) => markDocDirty(d), updateStatus: () => updateStatus()};
 const {pluginCommandEnv, runPluginCommand} = createPluginCommandHost(cmdHostDeps);
