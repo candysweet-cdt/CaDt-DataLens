@@ -504,6 +504,7 @@ export function createAISubagents(ctx) {
         steerSubAgent: (...args) => steerSubAgent(...args),
         queueSubAgentMessage: (...args) => queueSubAgentMessage(...args),
         reviveSubAgent: (...args) => reviveSubAgent(...args),
+        resumeAgentRun: (...args) => resumeAgentRun(...args),
         stopSubAgent: (...args) => stopSubAgent(...args),
         // 详情视图的手动停止：级联停掉该代理派出的全部下级（自停 / 自动停止仍走 stopSubAgent）
         stopSubAgentDeep: (...args) => stopSubTree(...args),
@@ -1118,7 +1119,7 @@ export function createAISubagents(ctx) {
             if (!root) throw new Error('当前没有工作区范围：隔离 worktree 建在主根的 .cadt/worktree/ 下，请先打开文件夹');
             let added;
             try {
-                added = await backend.GitWorktreeAdd(root, sub.name, sub.id);
+                added = await backend.GitWorktreeAdd(root, sub.name, sub.id, false);
             } catch (e) {
                 throw new Error('创建子代理隔离 worktree 失败：' + ((e && e.message) || e));
             }
@@ -1621,6 +1622,9 @@ export function createAISubagents(ctx) {
             sandboxMode: sub.sandboxMode || '',
             preset: sub.capabilities ? sub.capabilities.preset : '',
             capabilities: sub.capabilities || null,
+            // 隔离区随记录登记（2026-11-28 实机验证 P1）：终态后 worktreeNamesForSession
+            // 读 record.worktree——漏了它，子代理结算后隔离区变孤儿（export/discard 都够不着）
+            worktree: sub.worktree || null,
             parentSessionId: sub.parentSessionId,
             rootSessionId: sub.rootSessionId,
             state,
@@ -2675,6 +2679,7 @@ export function createAISubagents(ctx) {
                 sandboxMode: run.sandboxMode,
                 preset: run.presetId || '',
                 capabilities: run.capabilities || null,
+                worktree: detail.worktree || null,
                 parentSessionId: run.parentSessionId,
                 rootSessionId: run.rootSessionId,
                 // 一律 interrupted：不假装还在跑，也不假装已完成。

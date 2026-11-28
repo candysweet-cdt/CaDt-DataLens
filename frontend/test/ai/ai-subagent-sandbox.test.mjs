@@ -390,3 +390,25 @@ test('P5 run_command 分支：沙箱时跳过审批并调 AIRunShellCommandConfi
     assert.ok(denyAt > 0 && callAt > denyAt,
         '沙箱分支必须先过项目 deny 规则（只取 deny，不问、不跑分类器）');
 });
+
+test('P18 续跑接线补全 + 终态记录带隔离区登记（2026-11-28 实机验证 P1/P6）', () => {
+    // P6：resumeAgentRun 曾全仓零 UI 消费者——「重启后可续跑」只有落盘半截，入口不存在；
+    // restoreAgentRuns 只在启动 hydrate 窗口跑，懒加载会话永不重建可续记录。
+    const sub = sourceOf('ai/agent/ai-subagents.js');
+    const view = sourceOf('ai/agent/ai-agent-view.js');
+    const panel = sourceOf('ai/ai-panel.js');
+    // ① 视图 extras 注入 + 详情视图按钮
+    assert.ok(sub.includes('resumeAgentRun: (...args) => resumeAgentRun(...args)'),
+        'resumeAgentRun 必须注入详情视图 extras');
+    assert.ok(view.includes('extras.resumeAgentRun'), '视图必须消费 resumeAgentRun');
+    assert.ok(view.includes("resume.className = 'ai-agv-resume hidden'"), '详情视图必须有续跑按钮（默认隐藏）');
+    assert.ok(view.includes('record.resumeAvailable === true'), '续跑按钮必须按 resumeAvailable 门控');
+    // ② 懒加载会话也恢复可续记录（不再只限启动 hydrate 窗口）
+    const ensureFn = sliceBetween(panel, 'function ensureSessionLoaded(', 'function scheduleSessionListRefresh(');
+    assert.ok(ensureFn.includes('restoreAgentRuns(session)'), '懒加载 hydrate 后必须恢复可续记录（幂等）');
+    // ③ interrupted 态要有可读文案（曾落进空字符串）
+    assert.ok(view.includes("interrupted: '已中断（进程重启）'"), '状态表必须包含 interrupted');
+    // P1：终态记录与恢复记录都要带 worktree（否则结算后隔离区变孤儿，export/discard 够不着）
+    assert.ok(sub.includes('worktree: sub.worktree || null'), 'pushSubAgentRecord 必须登记 worktree');
+    assert.ok(sub.includes('worktree: detail.worktree || null'), 'restoreAgentRuns 必须登记 worktree');
+});

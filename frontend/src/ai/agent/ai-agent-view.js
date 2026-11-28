@@ -42,6 +42,8 @@ export function createAIAgentView(ctx, extras) {
     const steerSubAgent = extras.steerSubAgent;
     const queueSubAgentMessage = extras.queueSubAgentMessage;
     const reviveSubAgent = extras.reviveSubAgent;
+    // 进程重启后的续跑入口（能力快照方案 §8.2 / 实机验证 P6）：对 resumeAvailable 记录一键接手
+    const resumeAgentRun = typeof extras.resumeAgentRun === 'function' ? extras.resumeAgentRun : null;
     const stopSubAgent = extras.stopSubAgent;
     // 用户手动停止：连同它派出的下级一起停（自停 / 循环守卫自动停止不走这里）
     const stopSubAgentDeep = typeof extras.stopSubAgentDeep === 'function' ? extras.stopSubAgentDeep : stopSubAgent;
@@ -629,7 +631,7 @@ export function createAIAgentView(ctx, extras) {
         }
         const gate = live ? {ok: true, reason: ''} : canReviveRecord(record);
         const canType = gate.ok;
-        const stateText = {running: '运行中', done: '已完成', error: '失败', stopped: '已停止'}[live ? 'running' : record.state] || '';
+        const stateText = {running: '运行中', done: '已完成', error: '失败', stopped: '已停止', interrupted: '已中断（进程重启）'}[live ? 'running' : record.state] || '';
         let wrap = view.composer && view.composer.subId === key ? view.composer.el : null;
         if (!wrap) {
             wrap = document.createElement('div');
@@ -641,6 +643,19 @@ export function createAIAgentView(ctx, extras) {
             send.type = 'button';
             send.className = 'ai-agv-send';
             send.textContent = '发送';
+            // 续跑：仅对「进程重启，可续跑」的记录显示（resumeAvailable 在恢复时置位）
+            const resume = document.createElement('button');
+            resume.type = 'button';
+            resume.className = 'ai-agv-resume hidden';
+            resume.textContent = '续跑';
+            resume.dataset.tip = '进程重启后继续上次未完成的任务：接手已有进展，不重复已完成的部分（能力按快照恢复，不扩大）';
+            resume.addEventListener('click', () => {
+                const rec = view.subId ? subAgentRecords.get(view.subId) : null;
+                if (!rec || !resumeAgentRun) return;
+                const r = resumeAgentRun(rec.id);
+                flash(r.ok ? '已续跑子代理「' + (rec.name || '') + '」，消息已投递' : (r.error || '续跑失败'), !r.ok);
+                renderAgentView(view);
+            });
             const submit = (urgent) => {
                 const text = String(input.value || '').trim();
                 if (!text) return;
@@ -667,7 +682,7 @@ export function createAIAgentView(ctx, extras) {
                 submit(e.ctrlKey || e.metaKey);
             });
             send.addEventListener('click', () => submit(false));
-            wrap.append(input, send);
+            wrap.append(resume, input, send);
             view.composer = {subId: key, el: wrap};
         }
         // 状态可能变（running → done / 被停止）：每次渲染同步可用性与文案
@@ -678,10 +693,20 @@ export function createAIAgentView(ctx, extras) {
             input.placeholder = !canType
                 ? (gate.reason === 'recycled'
                     ? '上下文已回收（终态记录超出上限），无法继续'
-                    : '该子代理已' + stateText + '，不能再接收消息')
-                : (live ? '给子代理补充线索：Enter 排队 · Ctrl+Enter 插队' : '它已完成，发消息会唤醒它继续：Enter 发送');
+                    : '该子代理已' + (stateText || record.state) + '，不能再接收消息')
+                : (live ? '给子代理补充线索：Enter 排队 · Ctrl+Enter 插队'
+                    : (record && record.resumeAvailable === true
+                        ? '进程重启，可续跑：点「续跑」接手，或直接输入新指示（Enter 发送会唤醒）'
+                        : '它已完成，发消息会唤醒它继续：Enter 发送'));
         }
         if (send) send.disabled = !canType;
+        // 续跑按钮的显隐随记录状态同步（running → done / 恢复态变化都会走到这）
+        const resumeBtn = wrap.querySelector('.ai-agv-resume');
+        if (resumeBtn) {
+            const resumable = !live && !!record && record.resumeAvailable === true;
+            resumeBtn.classList.toggle('hidden', !resumable);
+            resumeBtn.disabled = !resumable;
+        }
         wrap.classList.toggle('disabled', !canType);
         return wrap;
     }

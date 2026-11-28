@@ -6018,25 +6018,35 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     border-radius: 1px;
     background: var(--muted);
     opacity: .55;
-    transition: width .12s ease, opacity .12s ease, background .12s ease;
+    /* 聚光灯渐变：hover 项与上下相邻项的长度变化全靠这条 transition 平滑过渡 */
+    transition: width .14s ease, opacity .14s ease, background .14s ease;
 }
+/* hover / 键盘聚焦 / 当前轮：同一档突出（16px、text 色），hover 项不比当前轮更粗 */
 .ai-rail-tick:hover::before,
-.ai-rail-tick:focus-visible::before {
-    width: 16px;
-    background: var(--text);
-    opacity: 1;
-}
-.ai-rail-tick:focus-visible { outline: none; }
+.ai-rail-tick:focus-visible::before,
 .ai-rail-tick-active::before {
     width: 16px;
     background: var(--text);
     opacity: 1;
 }
-/* 插话刻度同样用短横线（不再用菱形）：hover 时略微加长，与常规轮次的区别交给气泡文案 */
+.ai-rail-tick:focus-visible { outline: none; }
+/* 鼠标浏览滑轨时当前轮高亮让位给 hover 聚光灯；hover/focus 到当前轮本身时仍突出 */
+.ai-rail-track:hover .ai-rail-tick-active:not(:hover):not(:focus-visible)::before {
+    width: 12px;
+    background: var(--muted);
+    opacity: .55;
+}
+/* 聚光灯：hover 项的上下相邻刻度只变长（14px），不变亮——颜色/透明度保持普通态，
+   亮色只留给 hover 项本身。+ 选下一项、:has(+ :hover) 选上一项。 */
+.ai-rail-track:hover .ai-rail-tick:hover + .ai-rail-tick::before,
+.ai-rail-track:hover .ai-rail-tick:has(+ .ai-rail-tick:hover)::before {
+    width: 14px;
+}
+/* 插话刻度默认略宽以区分常规轮次；hover 时与常规 hover 同档（16px） */
 .ai-rail-tick-steer::before { width: 14px; }
 .ai-rail-tick-steer:hover::before,
 .ai-rail-tick-steer:focus-visible::before,
-.ai-rail-tick-steer.ai-rail-tick-active::before { width: 18px; }
+.ai-rail-tick-steer.ai-rail-tick-active::before { width: 16px; }
 
 /* 缩放手柄：停靠=左缘；吸附=左缘+顶缘；悬浮=八向 */
 /* z-index 高于 .ai-bottom-stack(25)：手柄贯穿面板全高，底部输入区的同色铺底
@@ -12536,6 +12546,19 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     cursor: pointer;
 }
 .ai-agv-send:disabled { opacity: .45; cursor: not-allowed; }
+.ai-agv-resume {
+    flex: none;
+    padding: 5px 10px;
+    font-size: 11.5px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+.ai-agv-resume:hover { border-color: var(--accent); color: var(--accent); }
+.ai-agv-resume:disabled { opacity: .45; cursor: not-allowed; }
+.ai-agv-resume.hidden { display: none; }
 .ai-agv-composer.disabled { background: var(--panel); }
 
 /* 子代理详情标签页（内容区）：外壳只负责铺满，正文沿用上面 .ai-agv-* 的排版。

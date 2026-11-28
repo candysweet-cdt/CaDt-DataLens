@@ -81,7 +81,8 @@ export function buildSessionOutlineItems(messages, options) {
             index: i,
             round: round || 1,
             ts: Number(message.ts) || Number(message.turnStartedAt) || 0,
-            text: text || media,
+            // 气泡标题走同一套单行截断：超长提示词/粘贴的长文不能整段撑满 tooltip。
+            text: oneLine(text || media),
             // 导航滑轨气泡的描述行：该轮助手回复正文预览（无回复则空串）。
             // 与 text 不同，summary 依赖全量 messages，截断后仍按原始 index 取值。
             summary: assistantPreviewAfter(list, i),

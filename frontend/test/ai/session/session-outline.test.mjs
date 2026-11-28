@@ -58,6 +58,18 @@ test('旧会话无 app 元数据时按 label/正文前缀认回快捷操作', ()
     assert.equal(isShortcutMessage({role: 'user', content: '普通消息'}), false);
 });
 
+test('气泡标题截断到 160 字符，超长提示词不会撑满 tooltip', () => {
+    const long = '一段很长的用户消息 '.repeat(60);
+    const out = buildSessionOutlineItems([
+        {role: 'user', content: long},
+        {role: 'user', app: {kind: 'git', label: 'G'.repeat(200)}, content: '快捷操作'},
+    ]);
+    assert.equal(out.items[0].text.length, 161); // 160 字符 + 省略号
+    assert.ok(out.items[0].text.endsWith('…'));
+    assert.ok(!out.items[0].text.includes('\n'), '标题必须是单行');
+    assert.equal(out.items[1].text.length, 161, '快捷操作 label 同样要截断');
+});
+
 test('视觉契约：定位跳转时快捷操作卡片也会闪烁高亮', () => {
     const css = readFileSync(new URL('../../../src/style.css', import.meta.url), 'utf8');
     assert.match(css, /\.ai-msg\.ai-msg-flash\.ai-app-msg \.ai-app-msg-card \{ animation: ai-msg-flash/);

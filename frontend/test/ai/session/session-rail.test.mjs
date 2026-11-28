@@ -124,4 +124,17 @@ test('视觉契约：短横线、即时 tooltip、隐藏滑轨滚动条且固定
     assert.ok(!/rotate\(45deg\)/.test(css.slice(css.indexOf('.ai-rail-tick'), css.indexOf('.ai-resize'))),
         '插话刻度也用横线，不再用菱形');
     assert.match(css, /\.ai-rail-track \{[^}]*overflow-y:\s*scroll;[^}]*scrollbar-width:\s*none/s, '滑轨内容必须可滚动但不显示第二条滚动条');
+    assert.match(css, /\.ai-rail-tick::before \{[^}]*transition:[^}]*width[^}]*\}/s,
+        '聚光灯渐变要有过渡动画');
+    assert.match(css, /\.ai-rail-tick:hover::before,\s*\.ai-rail-tick:focus-visible::before,\s*\.ai-rail-tick-active::before \{\s*width:\s*16px/s,
+        'hover 项与当前轮同一档突出，不额外加粗');
+    assert.match(css, /\.ai-rail-track:hover \.ai-rail-tick-active:not\(:hover\):not\(:focus-visible\)::before/s,
+        '鼠标浏览滑轨时当前轮高亮要取消，只留 hover 聚光灯');
+    assert.match(css, /\.ai-rail-track:hover \.ai-rail-tick:hover \+ \.ai-rail-tick::before[^}]*width:\s*14px/s,
+        'hover 项下一相邻刻度要适度变长');
+    assert.match(css, /:has\(\+ \.ai-rail-tick:hover\)::before/s, 'hover 项上一相邻刻度也要适度变长');
+    // 相邻项只变长不变亮：规则块里不得出现 background / opacity 提亮
+    const neighbor = css.match(/\.ai-rail-track:hover \.ai-rail-tick:hover \+ \.ai-rail-tick::before,\s*\.ai-rail-track:hover \.ai-rail-tick:has\(\+ \.ai-rail-tick:hover\)::before\s*\{([^}]*)\}/s);
+    assert.ok(neighbor, '缺少相邻刻度规则');
+    assert.doesNotMatch(neighbor[1], /background|opacity/, '相邻刻度只变长，不变亮（不加 text 色/提透明度）');
 });
