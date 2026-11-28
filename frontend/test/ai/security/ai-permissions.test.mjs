@@ -322,7 +322,7 @@ test('留痕 actor：自动放行不许记成「用户批准」', () => {
         assert.equal(permissionAuditActor(source), 'ai', source + ' 应是 AI 自动判定');
     }
     // 宿主强制与内置默认 → system
-    for (const source of ['worktree-isolation', 'agent-worktree', 'default']) {
+    for (const source of ['worktree-isolation', 'agent-caps', 'agent-full', 'agent-caps-go', 'default']) {
         assert.equal(permissionAuditActor(source), 'system', source + ' 应是宿主 / 内置');
     }
     // 未知 / 空来源保守归 ai：宁可少记人的功劳，也不能把自动放行记成人工批准

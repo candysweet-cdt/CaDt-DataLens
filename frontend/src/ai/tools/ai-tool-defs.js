@@ -611,7 +611,7 @@ export const AI_TOOL_DEFS = {
     },
     spawn_agent: {
         name: 'spawn_agent',
-        description: '派出一个子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离）。注意：子代理是当前会话任务树里的临时协作者，不是新的独立 AI 会话；用户要的是面板里一个全新的独立会话/话题时，用 app_control 的 ai_new_session，不是本工具。默认阻塞：等它跑完，把最终结论作为工具结果返回。mode=background 时派单即返回（不回等），做完自动通知你、期间你可以继续干活——适合一轮里同时派多个方向；要停下等回报就用 wait_agent（等的是自己收件箱里的新输入）。子代理默认只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网 / 记忆读取 / 技能 / 再派子代理），不能写文件或执行命令。isolation=worktree 时给子代理建一个独立隔离 git worktree：挂上 write_file / edit_file，写效应圈定在它自己的 .cadt/worktree/<slug>/ 前缀内（前缀外会被拒绝）、写操作自动应用——适合「多个方向并行试改，看结果再定」；它的改动不会进主根，完成后你用 worktree_manage 的 export（带 name=<slug>）导出补丁审阅回灌，或 discard 丢弃。子代理并发数（所有层级同时运行中的子代理总和）与层级上限（整棵树最多几层，主代理算第 1 层，你直接派出的子代理是第 2 层）受「设置 → AI 助手 → 子代理」限制：阻塞模式到并发上限会等空位，后台模式直接报错让你稍后再派（可等现有子代理完成再试）。你以子代理身份再派单时，maxRounds 不传会继承你自己的轮次上限（主代理派单才用设置默认）——多层审计 / 调研里中间层不会先于下级耗尽预算。sandbox 可把子代理权限档往严收（如把 auto 档的子代理限成 read 做纯调查，收紧命令写效应与读边界）；只能降不能升——父档更严时此值被忽略，绝不会给子代理松绑。不传 sandbox 时默认封顶 auto：子代理命令进 OS 沙箱、写效应圈在工作区内；确实需要子代理跨目录写时显式传 full，此时主代理会收到一条非阻塞权限警告消息。',
+        description: '派出一个子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离）。注意：子代理是当前会话任务树里的临时协作者，不是新的独立 AI 会话；用户要的是面板里一个全新的独立会话/话题时，用 app_control 的 ai_new_session，不是本工具。默认阻塞：等它跑完，把最终结论作为工具结果返回。mode=background 时派单即返回（不回等），做完自动通知你、期间你可以继续干活——适合一轮里同时派多个方向；要停下等回报就用 wait_agent（等的是自己收件箱里的新输入）。子代理的能力由 preset 在派出时定死（工具面 / 写边界 / 命令沙箱 / 能否再派下层），无法从会话内放宽：不传 preset 用 host.default——只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网 / 记忆读取 / 技能 / 再派子代理）+ 沙箱命令（可跑 go test / npm test 验证，写效应圈在工作区内），无写工具；host.read-only 纯只读（无命令通道）；host.full-write 完全权限（可写工作区外、命令不进沙箱，仅当前会话是完全权限档时可派，派出时主代理会收到一条非阻塞权限警告消息）；插件注册的角色 preset（如写作插件的正文起草）按其声明的工具面与可写范围工作，首次使用工作区写入型角色时用户会看到一次能力确认卡。isolation=worktree 时给子代理建一个独立隔离 git worktree：挂上 write_file / edit_file，写效应圈定在它自己的 .cadt/worktree/<slug>/ 前缀内（前缀外会被拒绝）、写操作自动应用——适合「多个方向并行试改，看结果再定」；它的改动不会进主根，完成后你用 worktree_manage 的 export（带 name=<slug>）导出补丁审阅回灌，或 discard 丢弃。子代理并发数（所有层级同时运行中的子代理总和）与层级上限（整棵树最多几层，主代理算第 1 层，你直接派出的子代理是第 2 层）受「设置 → AI 助手 → 子代理」限制：阻塞模式到并发上限会等空位，后台模式直接报错让你稍后再派（可等现有子代理完成再试）。你以子代理身份再派单时，maxRounds 不传会继承你自己的轮次上限（主代理派单才用设置默认）——多层审计 / 调研里中间层不会先于下级耗尽预算。preset 只能选已注册的角色：未注册的名字直接报错并附候选清单；声明了超出当前会话权限档能力的 preset 同样派单失败（错误信息说明缺哪层权限），不会静默降档。',
         parameters: {
             type: 'object',
             properties: {
@@ -623,15 +623,14 @@ export const AI_TOOL_DEFS = {
                     enum: ['blocking', 'background'],
                     description: 'blocking（默认）= 等它完成后拿结论；background = 立即返回，完成后自动通知（多路并行调查用这个）',
                 },
+                preset: {
+                    type: 'string',
+                    description: '子代理能力角色（preset id）：决定工具面、写边界、命令沙箱与能否再派下层，派出时定死。不传用 host.default（只读探索 + 沙箱命令，无写工具）；host.read-only 纯只读无命令通道；host.full-write 完全权限（仅当前会话为完全权限档时可派）；插件注册的角色（如 webnovel.drafting 正文起草）按插件声明的工具面与可写范围工作。未注册的名字直接报错并附候选清单',
+                },
                 isolation: {
                     type: 'string',
                     enum: ['worktree'],
-                    description: 'worktree = 给子代理建独立隔离 git worktree 并挂写工具（改动只落它的前缀，回灌需你 export 审阅）；不传 = 只读子代理',
-                },
-                sandbox: {
-                    type: 'string',
-                    enum: ['read', 'edit', 'auto', 'full'],
-                    description: '把子代理权限档往严收（单向降档）：取「父会话档」与「此值」中更严的一个生效。传比父档宽的值无效（不升档）。省略 = 封顶 auto（默认，命令进沙箱、写效应圈在工作区）；显式传 full = 完全权限（不进沙箱、可写工作区外，主代理会收到一条非阻塞警告消息）',
+                    description: 'worktree = 给子代理建独立隔离 git worktree（写效应只落它的前缀，回灌需你 export 审阅）；不传 = 按 preset 的写边界工作',
                 },
             },
             required: ['name', 'task'],
@@ -1095,7 +1094,7 @@ export const AI_TOOL_DEFS = {
             + 'owns（相对工作区的可写 glob，只有 * 与 **；空数组 = 只读设计批次）、dependsOn（只依赖 work 批次）、verify（exe + argv，不走 shell）。'
             + '不要自己编造“已完成”的依赖，不要把一个文件同时交给两个可能并行的批次。'
             + '批准后由确定性 Router 按依赖与文件所有权推进；你只负责判断性仲裁，不执行具体批次。'
-            + '可选终审：全部批次收尾后再派 1–3 个只读终审会话，检查整体目标与跨批接线，通过后编排才算完成。'
+            + '审查只在全部批次收尾后统一做：可选终审派 1–3 个只读审查会话，检查整体目标与跨批接线，通过后编排才算完成；不要再安排逐批自动审查。'
             + '与群聊（讨论）、spawn_agent（临时工）不同：编排是跨会话的生产线。',
         parameters: {
             type: 'object',
@@ -1104,7 +1103,7 @@ export const AI_TOOL_DEFS = {
                 goal: {type: 'string', description: '一句话总目标（仲裁者交接时会把这份目标带给新会话）'},
                 batches: {
                     type: 'array',
-                    description: '工作批次数组（1–20 个）。依赖必须无环；review 批次由系统自动生成，不要自己写。',
+                    description: '工作批次数组（1–20 个）。依赖必须无环；审查不是批次，不要自己写审查批次。',
                     items: {
                         type: 'object',
                         properties: {
@@ -1142,14 +1141,13 @@ export const AI_TOOL_DEFS = {
                 },
                 policy: {
                     type: 'object',
-                    description: '可选策略；默认并发 2、单批 2 次尝试、审查门开、不自动换模型。审批卡可改。',
+                    description: '可选策略；默认并发 2、单批 2 次尝试、不逐批审查、不自动换模型。审批卡可改。',
                     properties: {
                         scope: {type: 'string', enum: ['read', 'edit', 'auto', 'full'], description: 'Worker 权限档（只能继承或更严）'},
                         maxParallel: {type: 'integer', description: '并发批次数（默认 2）'},
                         maxAttemptsPerBatch: {type: 'integer', description: '单批尝试上限（默认 2，硬上限 2）'},
                         budgetTokens: {type: 'integer', description: 'token 预算（事后熔断：超出后停止派发，不保证绝不超）'},
                         batchTimeoutMs: {type: 'integer', description: '单批超时毫秒（默认 20 分钟）'},
-                        review: {type: 'boolean', description: '逐批审查门；默认开，只有用户明确要求关才传 false'},
                         finalReview: {type: 'boolean', description: '全部批次完成后的子代理终审；默认 false，由用户在审批卡上勾选'},
                         finalReviewCount: {type: 'integer', description: '终审子代理数（1–3）；仅 finalReview=true 时生效'},
                         finalReviewModel: {type: 'string', description: '终审模型 ref；省略 = 继承母会话（仍需用户授权模型白名单）'},
@@ -1164,7 +1162,7 @@ export const AI_TOOL_DEFS = {
     orchestration_report: {
         name: 'orchestration_report',
         description: '编排批次的结构化收尾回报。**本批必须以调用它收尾，否则编排器视为未完成（no_report）并重派。**'
-            + 'status=done 表示你已经完成 spec；编排器会自己复跑 verify 并派独立审查会话，不要自评“已通过”。'
+            + 'status=done 表示你已经完成 spec；编排器会自己复跑 verify，用户开启终审时还会在全部批次收尾后派独立只读终审，不要自评“已通过”。'
             + 'status=blocked 表示卡在判断性问题（需要改 owns / 改 spec / 取舍方案），必须写 blockingIssue，编排器会交给仲裁者而不是自动重试。'
             + 'status=awaiting_user 只在协作模式下可用，必须带 question；自主执行模式会直接拒绝。'
             + 'reportId 由你生成，网络/IPC 失败重试时复用同一个值（幂等）；不要伪造 batchId（票据绑定，填别人的会被拒）。'
@@ -1237,7 +1235,7 @@ export const AI_TOOL_DEFS = {
     },
     orchestration_control: {
         name: 'orchestration_control',
-        description: '仲裁者对编排执行有副作用的控制动作（只有当前仲裁者可用，且每次调用都会弹确认卡——它可能停掉别人的会话或改变已批准边界）。'
+        description: '仲裁者对编排执行有副作用的控制动作（只有当前仲裁者可用）。完全权限下普通控制动作直接执行；其它权限档会弹 composer 确认卡（stop 在完全权限下仍确认一次，因为它会终止其他会话）。'
             + 'pause/resume/stop 是整体动作；skip 跳过某批；retry 重置 attempts 并重派；update_batch 只改尚未派发的批次；'
             + 'answer 回答某批的 awaiting_user；resolve_arbitration 用 eventId 关闭一条待仲裁事件。'
             + '拿不准时先 orchestration_status；不要用它绕过 verify 或用户批准的范围。',
@@ -1308,7 +1306,7 @@ export function buildSpawnAgentDef(choices, defaultRounds) {
 // 工具目录数据：<tool_catalog> 段的分组归属与一句话调度文案（模型靠目录学调度语义）。
 // 与 AI_TOOL_DEFS 按 name 一一对应，key 顺序即各组内的展示顺序；同组内文案相同的相邻条目
 // 渲染时合并成一行「name1 / name2：文案」。独立成表而不是内联进 def：def 对象会被原样发给
-// API（toolsForScope 与 ai-subagents 的 subToolsForScope 都是直接 push def），内联字段会漏进
+// API（toolsForScope 与 ai-subagents 的 subToolsForCapabilities 都是直接 push def），内联字段会漏进
 // 请求载荷。作者规则（2026-11-15）：新增工具必须同步写进目录，漏了 ai-tool-defs.test.mjs 会红。
 export const AI_TOOL_CATALOG = {
     list_dir: {group: 'read', blurb: '列目录与文件大小；depth 传 2–8 可递归出树，一次摸清多层结构'},
@@ -1367,7 +1365,7 @@ export const AI_TOOL_CATALOG = {
     plan_mode: {group: 'task', blurb: '仅当用户要求先规划或方案要用户拍板时，先只读规划再等批准'},
     submit_plan: {group: 'task', blurb: '进入计划模式后用它分节提交计划文档（未进计划模式会被拒）'},
     ask_user: {group: 'task', blurb: '必须由用户拍板的关键选择'},
-    spawn_agent: {group: 'task', blurb: '并行调查 / 多视角审查（只读子代理；isolation=worktree 给它独立草稿区可写，回灌仍要你 export 审阅；sandbox=单向降档收紧权限）'},
+    spawn_agent: {group: 'task', blurb: '并行调查 / 多视角审查（能力由 preset 定死：host.default 只读探索+沙箱命令，host.full-write 完全权限需父档 full；isolation=worktree 给独立草稿区可写，回灌仍要你 export 审阅）'},
     agent_send: {group: 'task', blurb: '给子代理补线索（排队）/ 插队纠正 / 唤醒已完成子代理继续'},
     agent_tree: {group: 'task', blurb: '查看团队树（各层级 id / 状态 / 你是哪一行）'},
     agent_stop: {group: 'task', blurb: '停止子代理（可级联下级 / 省略 id 全停）并收集过程记录'},
@@ -1378,7 +1376,7 @@ export const AI_TOOL_CATALOG = {
     orchestration_plan: {group: 'orchestration', blurb: '把大改造拆成带依赖与文件所有权的批次计划，强制审批后跨会话执行'},
     orchestration_report: {group: 'orchestration', blurb: '执行/审查批次的强制收尾回报（不调用视为未完成）'},
     orchestration_status: {group: 'orchestration', blurb: '只读查询编排批次树：批次状态、失败分类、子会话 id/运行态与最近事件'},
-    orchestration_control: {group: 'orchestration', blurb: '仲裁者的暂停/恢复/停止/跳过/重派/改未派批次（每次确认）'},
+    orchestration_control: {group: 'orchestration', blurb: '仲裁者的暂停/恢复/停止/跳过/重派/改未派批次（完全权限直接执行，stop 仍确认）'},
     schedule_list: {group: 'task', blurb: '定时任务管理'},
     schedule_create: {group: 'task', blurb: '定时任务管理'},
     schedule_delete: {group: 'task', blurb: '定时任务管理'},
@@ -1414,7 +1412,7 @@ export const AI_TOOL_GROUPS = [
     {key: 'memory', title: '记忆、偏好与技能'},
     {key: 'env', title: '环境变量'},
     {key: 'task', title: '任务、协作与自动化'},
-    {key: 'orchestration', title: '多会话编排（成本门禁）', note: '编排是跨会话生产线：发起必审批，执行会话只拿本批 spec 与 owns；Worker 不能跑命令、终端或 MCP。审查门默认开，验收由编排器复跑。'},
+    {key: 'orchestration', title: '多会话编排（成本门禁）', note: '编排是跨会话生产线：发起必审批，执行会话只拿本批 spec 与 owns；Worker 不能跑命令、终端或 MCP。审查只在全部完成后统一终审，验收由编排器复跑。'},
     {key: 'session', title: '会话、提醒与通知'},
     {key: 'cognition', title: '工作区认知索引（可选启用）', note: '给 AI 的跨会话语义层：每个文件一行 F 职责 / R 强关联 / A 对外契约 / S 暗约束。开关在 设置 → AI → 上下文与记忆；数据目录不建议建。找代码内容用 search_text / glob（索引不存代码内容），聊天历史用 session_search。'},
 ];
@@ -1466,7 +1464,7 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.schedule_list,
             AI_TOOL_DEFS.reminder_list,
             // 计时器：纯会话态（不碰工作区文件、不产生进程），到点经系统消息唤醒，所有范围档可用
-            // timer_list 只读快照：主代理与子/孙代理共享同一时钟（子代理工具集另见 subToolsForScope）
+            // timer_list 只读快照：主代理与子/孙代理共享同一时钟（子代理工具集另见 subToolsForCapabilities）
             AI_TOOL_DEFS.timer_list,
             AI_TOOL_DEFS.start_timer,
             AI_TOOL_DEFS.stop_timer,

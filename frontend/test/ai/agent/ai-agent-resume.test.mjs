@@ -4,13 +4,26 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
     encodeAgentRun, normalizeAgentRuns, mergeAgentRun, resumePlanOf, wasInterrupted,
-    AI_AGENT_RUN_MAX, AI_AGENT_RUN_MSG_MAX,
+    AI_AGENT_RUN_MAX, AI_AGENT_RUN_MSG_MAX, AI_AGENT_RUN_VERSION,
 } from '../../../src/ai/agent/ai-agent-resume.js';
+import {serializeCapabilities} from '../../../src/ai/agent/agent-capabilities.js';
+
+// v2 快照必带的能力快照（§8.1）：缺它 resumePlanOf 拒绝续跑（§8.2）
+const CAPS = {
+    preset: 'host.default',
+    tools: {allow: ['read_file', 'search_text'], deny: []},
+    fs: {mode: 'read-only', workspaceRoot: 'D:/w', writableRoots: [], readRoots: null},
+    execution: {approval: 'never', command: 'sandboxed'},
+    delegation: {canSpawn: true, maxDepth: 3},
+    interaction: {askParent: true},
+    granted: {pluginId: 'host', parentSessionId: 's1', at: 1234},
+};
 
 function makeSub(over = {}) {
     return {
         id: 'sub-1', key: 'k1', toolCallId: 'call-1', name: '侦察兵', task: '看一遍仓库',
-        depth: 1, mode: 'background', state: 'running', sandboxMode: 'read',
+        depth: 1, mode: 'background', state: 'running', sandboxMode: 'read-only',
+        capabilities: CAPS,
         parentSessionId: 's1', rootSessionId: 's1', maxRounds: 40, startedAt: 1000,
         session: {
             workspace: 'D:/w', scope: 'read', ctxLimit: 0, profileId: 'p1', modelId: 'm1',
@@ -21,8 +34,14 @@ function makeSub(over = {}) {
     };
 }
 
-test('encodeAgentRun：保留重建所必需的字段', () => {
+test('encodeAgentRun：v2 快照携带能力快照与授权来源（§8.1）', () => {
     const run = encodeAgentRun(makeSub(), 'running');
+    assert.equal(run.v, AI_AGENT_RUN_VERSION);
+    assert.equal(run.presetId, 'host.default');
+    assert.deepEqual(run.capabilities, serializeCapabilities(CAPS));
+    assert.deepEqual(run.grantedBy, {pluginId: 'host', parentSessionId: 's1'});
+    assert.equal(run.grantedAt, 1234);
+    // 字段保留
     assert.equal(run.id, 'sub-1');
     assert.equal(run.state, 'running');
     assert.equal(run.baseRound, 2);
@@ -31,6 +50,9 @@ test('encodeAgentRun：保留重建所必需的字段', () => {
     assert.equal(run.run.modelId, 'm1');
     assert.equal(run.run.messages.length, 2);
     assert.equal(run.run.scope, 'read');
+    // 无快照（异常）：capabilities 为 null，归一后不可续
+    const bare = encodeAgentRun(makeSub({capabilities: undefined}), 'running');
+    assert.equal(bare.capabilities, null);
 });
 
 test('encodeAgentRun：转录超限时首条必留、其余取尾部', () => {
@@ -71,13 +93,40 @@ test('mergeAgentRun：同 id 替换并置顶，不改变入参', () => {
     assert.ok(list.length <= AI_AGENT_RUN_MAX);
 });
 
-test('resumePlanOf：可续与三种不可续原因', () => {
+test('resumePlanOf：可续与不可续原因（v1 版本过旧 / v2 缺能力快照都拒绝，§8.2）', () => {
     const base = encodeAgentRun(makeSub(), 'running');
     assert.equal(resumePlanOf(base).ok, true);
     assert.match(resumePlanOf({...base, state: 'done'}).reason, /已完成/);
     assert.match(resumePlanOf({...base, rounds: 40, maxRounds: 40}).reason, /轮次预算/);
     assert.match(resumePlanOf({...base, run: {...base.run, messages: []}}).reason, /转录/);
     assert.match(resumePlanOf({...base, run: {...base.run, profileId: ''}}).reason, /模型账号/);
+    // v1 旧快照：不做降级恢复（§10.1 无兼容层），一律拒绝续跑
+    const v1 = {...base, v: 1, capabilities: null};
+    assert.match(resumePlanOf(v1).reason, /快照版本过旧，请重新派单/);
+    // v2 但能力快照缺失 / 坏结构：缺关键字段拒绝续跑
+    assert.match(resumePlanOf({...base, capabilities: null}).reason, /能力快照/);
+    assert.match(resumePlanOf({...base, capabilities: {preset: 'x'}}).reason, /能力快照/);
+});
+
+test('normalizeAgentRuns：v1 保留展示但带 v:1 + 无能力快照；v2 解析能力快照', () => {
+    const v2 = encodeAgentRun(makeSub(), 'running');
+    const v1 = {
+        id: 'sub-old', parentSessionId: 's1', v: 1, name: '旧代理', task: '旧任务',
+        state: 'interrupted', sandboxMode: 'read-only', maxRounds: 40,
+        updatedAt: 1,
+        run: {workspace: 'D:/w', scope: 'read', profileId: 'p1', modelId: 'm1',
+            messages: [{role: 'user', content: '旧任务'}]},
+    };
+    const list = normalizeAgentRuns([v1, v2]);
+    assert.equal(list.length, 2);
+    const old = list.find((r) => r.id === 'sub-old');
+    assert.equal(old.v, 1);
+    assert.equal(old.capabilities, null);
+    assert.match(resumePlanOf(old).reason, /版本过旧/);
+    const fresh = list.find((r) => r.id === 'sub-1');
+    assert.equal(fresh.v, AI_AGENT_RUN_VERSION);
+    assert.equal(fresh.capabilities.preset, 'host.default');
+    assert.equal(fresh.presetId, 'host.default');
 });
 
 test('wasInterrupted：只认进程退出时仍在 running 的快照', () => {

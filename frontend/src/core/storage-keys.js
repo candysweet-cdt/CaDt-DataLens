@@ -44,6 +44,9 @@ export const AI_MSG_QUEUE_KEY = 'datalens-ai-msg-queue';
 export const AI_TODOS_BADGE_KEY = 'datalens-ai-todos-current-badge';
 // 定额查询结果的短缓存（额度查询有网络开销与频率限制）。
 export const AI_USAGE_CACHE_KEY = 'cadt.ai-usage-cache.v2';
+// 子代理 preset 能力确认记录（能力快照方案 §6.3）：动态键构造器，后缀是
+// encodeURIComponent(插件id).encodeURIComponent(presetId).encodeURIComponent(工作区)。
+export const AI_AGENT_PRESET_GRANT_KEY_PREFIX = 'cadt.ai.agent-preset-grant.';
 
 // ---------------- 窗口与会话（shell） ----------------
 // 标签页 / 分组 / 分屏布局快照。两个槽：普通窗口一个、harness 窗口一个——单槽时 harness 的
@@ -91,6 +94,10 @@ export const DYNAMIC_KEY_PREFIXES = Object.freeze([
     AI_DRAFT_KEY_PREFIX,
     AI_WS_DRAFT_KEY_PREFIX,
     SCHED_FIRE_KEY_PREFIX,
+    // 子代理 preset 能力确认记录（能力快照方案 §6.3）：完整键 = 前缀 + owner:presetId:工作区:声明摘要，
+    // 拼接与摘要逻辑在 ai/agent/ai-agent-preset-registry.js 的 grantKey（构造器不进本文件：
+    // 它认识业务形状，超出这里的「键名字面量 + 纯拼接」边界）
+    AI_AGENT_PRESET_GRANT_KEY_PREFIX,
 ]);
 
 // @ts-check 下 builder 的入参一律先归一成字符串：调用方传 null / undefined / 数字都能拼出稳定的键

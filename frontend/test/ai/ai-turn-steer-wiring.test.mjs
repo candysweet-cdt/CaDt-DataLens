@@ -303,17 +303,26 @@ test('formatSteerMessage：文案合同（while you were working / mid-turn）',
     assert.match(queue, /This is a mid-turn message/);
 });
 
-test('上下文弹层「压缩上下文」按钮：会话运行中禁用（与 startCompact 门禁同源）', () => {
+test('上下文弹层「压缩上下文」按钮：只按当前会话的流 + 全局压缩任务禁用（与 startCompact 门禁同源）', () => {
     const sync = sliceFunction(panel, 'function syncCtxCompactButton() {');
-    // 门禁口径与 startCompact 的 anyStreaming() / oneShot 一致
-    assert.match(sync, /anyStreaming\(\) \|\| !!oneShot/);
+    // 生成判断按「当前查看会话」自己的流，不再用全局 anyStreaming()；oneShot 是全局单例仍全局拦
+    assert.match(sync, /const viewing = currentSession\(\);/);
+    assert.match(sync, /!!\(viewing && streamOf\(viewing\.id\)\) \|\| !!oneShot/);
+    assert.doesNotMatch(sync, /anyStreaming\(\)/);
     assert.match(sync, /el\.ctxPopCompact\.disabled = busy/);
-    assert.match(sync, /el\.ctxPopCompact\.dataset\.tip = '请先停止当前生成，再压缩上下文'/);
+    assert.match(sync, /'已有压缩任务在进行中'/);
+    assert.match(sync, /'请先停止当前生成，再压缩上下文'/);
     // 流开始/结束（setStreamingUI）与弹层打开（paintCtxPop）两处都要同步，覆盖弹层开着时别的会话起轮
     const streaming = sliceFunction(panel, 'function setStreamingUI() {');
     assert.match(streaming, /syncCtxCompactButton\(\)/);
     const paint = sliceFunction(panel, 'function paintCtxPop(session, systemText) {');
     assert.match(paint, /syncCtxCompactButton\(\)/);
+    // startCompact 门禁同口径：生成按目标会话 streamOf，oneShot 仍全局
+    const compact = sliceFunction(panel, 'function startCompact(options) {');
+    assert.match(compact, /const session = \(options && options\.session\) \|\| currentSession\(\);/);
+    assert.match(compact, /if \(session && streamOf\(session\.id\)\)/);
+    assert.doesNotMatch(compact, /if \(anyStreaming\(\)\)/);
+    assert.match(compact, /if \(oneShot\)/);
     // 视觉：禁用态压暗（.dlg-btn:disabled 只改 cursor，看不出来）
     const css = read('../../src/style.css');
     assert.match(css, /\.ai-ctx-compact:disabled \{ opacity: \.45; \}/);

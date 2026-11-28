@@ -289,7 +289,7 @@ test('AI 子代理域在 mock ctx 下可构造（捕获工厂执行期的 Refere
         // 块模型纯函数是模块级导出（宿主经 extras 注入给视图模块），一并核对
         const pureExports = [
             'takeInboxBatch', 'inboxMessageText', 'canReviveRecord', 'isStaleRecord',
-            'subAgentScopeOf', 'agentToolArgBrief', 'agentMessageBlocks', 'agentTranscriptBlocks',
+            'subReadScopeOf', 'agentToolArgBrief', 'agentMessageBlocks', 'agentTranscriptBlocks',
             'agentRecordBlocks', 'agentBlockSig',
         ];
         const missingPure = pureExports.filter((key) => typeof mod[key] === 'undefined');

@@ -17,6 +17,13 @@ export const PRESET_SECTION_TEXT_MAX = 8000;
 export const PRESET_TOOLS_MAX = 128;
 export const PRESET_VARS_MAX = 64;
 export const PRESET_REALM_MAX = 64;
+export const PRESET_ROOTS_MAX = 32;
+
+// 子代理能力维度的合法取值（方案 docs/unfinished-plans/subagent-capabilities-redesign.md §3）。
+// fs.mode 是写边界档位；execution.command 是命令通道形态；两者在派单合成（agent-capabilities.js）
+// 时与父档上限取交——preset 声明更宽会直接派单失败，这里只归一化不判权限。
+export const PRESET_FS_MODES = ['read-only', 'workspace-write', 'danger-full-access'];
+export const PRESET_COMMAND_EXECUTIONS = ['sandboxed', 'denied'];
 
 function textOf(value) {
     return typeof value === 'string' ? value : (value == null ? '' : String(value));
@@ -32,10 +39,13 @@ const REALM_RULE = /^[a-z0-9][a-z0-9._:/-]*$/i;
 /**
  * 归一化一份声明式 preset。
  * 输入形状（均可缺省）：
- *   {id, name, persona, promptSections: [{id, text}], tools: [string], realm, variables: {k:v}}
+ *   {id, name, persona, promptSections: [{id, text}], tools: [string], realm, variables: {k:v},
+ *    fs: {mode, writableRoots, followParent?},          // 写边界声明（能力快照 §3）
+ *    delegation: {canSpawn, maxDepth},                  // 再派子代理的授权
+ *    execution: {command},                              // 命令通道形态
+ *    interaction: {askParent}}                          // 能否 ask_user 向父代理提问
  * 输出字段全部有值，数组/对象为新建副本（不引用入参），便于冻结与比较。
  * @param {any} raw
- * @returns {{id:string,name:string,persona:string,promptSections:Array<{id:string,text:string}>,tools:string[],realm:string,variables:Record<string,string>}}
  */
 export function normalizeAgentPreset(raw) {
     const source = raw && typeof raw === 'object' ? raw : {};
@@ -70,6 +80,31 @@ export function normalizeAgentPreset(raw) {
             count += 1;
         }
     }
+    // 能力维度（§3）：缺省全取最窄值——插件没声明写边界就是只读，没声明再派权就不能再派。
+    // followParent 是宿主内置 host.default 专用语义（fs.mode 跟随父档上限取交），插件声明无效。
+    const fsSource = source.fs && typeof source.fs === 'object' && !Array.isArray(source.fs) ? source.fs : {};
+    const fs = {
+        mode: PRESET_FS_MODES.includes(fsSource.mode) ? fsSource.mode : 'read-only',
+        writableRoots: [] /** @type {string[]} */,
+        followParent: fsSource.followParent === true,
+    };
+    if (Array.isArray(fsSource.writableRoots)) {
+        for (const root of fsSource.writableRoots) {
+            const r = clampText(root, 520).trim();
+            if (r && fs.writableRoots.length < PRESET_ROOTS_MAX) fs.writableRoots.push(r);
+        }
+    }
+    const delegationSource = source.delegation && typeof source.delegation === 'object' ? source.delegation : {};
+    const delegation = {
+        canSpawn: delegationSource.canSpawn === true,
+        maxDepth: Math.max(0, Math.min(64, Math.round(Number(delegationSource.maxDepth)) || 0)),
+    };
+    const executionSource = source.execution && typeof source.execution === 'object' ? source.execution : {};
+    const execution = {
+        command: PRESET_COMMAND_EXECUTIONS.includes(executionSource.command) ? executionSource.command : 'sandboxed',
+    };
+    const interactionSource = source.interaction && typeof source.interaction === 'object' ? source.interaction : {};
+    const interaction = {askParent: interactionSource.askParent !== false};
     return {
         id,
         name: clampText(source.name, PRESET_NAME_MAX).trim() || id || '未命名预设',
@@ -78,6 +113,10 @@ export function normalizeAgentPreset(raw) {
         tools,
         realm,
         variables,
+        fs,
+        delegation,
+        execution,
+        interaction,
     };
 }
 

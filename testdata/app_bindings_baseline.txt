@@ -448,3 +448,4 @@ WipeGuardSnapshotList
 WipeGuardSnapshotRestore
 WipeGuardStatus
 WorkspaceMarkOpened
+WriteBoundaryCheck

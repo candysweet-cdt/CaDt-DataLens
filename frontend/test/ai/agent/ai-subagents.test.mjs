@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
-import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, subScopeDowngrade, commandAuditSummary, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, waitWakeText, waitTimeoutText, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agvToolDefaultCollapsed, agentViewTabName, agentViewRuntimeText, agentToolArgBrief, parseTranscriptLines, AI_INBOX_WAIT_MAX_SEC} from '../../../src/ai/agent/ai-subagents.js';
+import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subReadScopeOf, commandAuditSummary, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, waitWakeText, waitTimeoutText, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agvToolDefaultCollapsed, agentViewTabName, agentViewRuntimeText, agentToolArgBrief, parseTranscriptLines, AI_INBOX_WAIT_MAX_SEC} from '../../../src/ai/agent/ai-subagents.js';
 
 // 源码静态守卫：const sub = { ... } 对象字面量求值期间，const sub 尚未初始化，
 // 块内任何 `sub.` 自引用都会抛 TDZ（Cannot access 'sub' before initialization，
@@ -223,16 +223,17 @@ test('resolveSubAgentRounds：配置缺省 → 内置 200；单次缺省 → 配
     assert.equal(resolveSubAgentRounds('abc', 120), 120, '解析不了回落配置值');
 });
 
-test('subAgentScopeOf：权限档继承父会话，只读由工具白名单保证', () => {
-    // 完全权限下子代理也必须能读工作区外文件——否则 spawn 出去做跨目录调研会被路径校验拦死
-    assert.equal(subAgentScopeOf('full'), 'full');
-    assert.equal(subAgentScopeOf('auto'), 'auto');
-    assert.equal(subAgentScopeOf('edit'), 'edit');
-    assert.equal(subAgentScopeOf('read'), 'read');
+test('subReadScopeOf：读边界退化为纯字段——full 封顶 auto，其余继承，脏数据回 read', () => {
+    // 完全权限下子代理也必须能读工作区外文件（auto 档 read 分支直接放行）——
+    // 否则 spawn 出去做跨目录调研会被路径校验拦死（§0.3 第 3 条：读沿用 scope 链）
+    assert.equal(subReadScopeOf('full'), 'auto');
+    assert.equal(subReadScopeOf('auto'), 'auto');
+    assert.equal(subReadScopeOf('edit'), 'edit');
+    assert.equal(subReadScopeOf('read'), 'read');
     // 历史会话 / 缺字段 / 脏数据：退回只读，不意外放大读取范围
-    assert.equal(subAgentScopeOf(undefined), 'read');
-    assert.equal(subAgentScopeOf(''), 'read');
-    assert.equal(subAgentScopeOf('admin'), 'read');
+    assert.equal(subReadScopeOf(undefined), 'read');
+    assert.equal(subReadScopeOf(''), 'read');
+    assert.equal(subReadScopeOf('admin'), 'read');
 });
 
 // 子代理详情视图改成内容区标签页后，正文按「块 + 签名」增量渲染：块 key 决定复用，
@@ -353,48 +354,14 @@ test('agentToolArgBrief：取点名到对象的字段，畸形 JSON 与空值返
     assert.equal(agentToolArgBrief('{"path":"   "}'), '');
 });
 
-test('subScopeDowngrade：只严不宽，父档更宽时降档生效', () => {
-    // 降档生效：请求档比父档严
-    assert.equal(subScopeDowngrade('full', 'auto'), 'auto');
-    assert.equal(subScopeDowngrade('full', 'read'), 'read');
-    assert.equal(subScopeDowngrade('auto', 'read'), 'read');
-    assert.equal(subScopeDowngrade('auto', 'edit'), 'edit');
-    assert.equal(subScopeDowngrade('edit', 'read'), 'read');
-});
-
-test('subScopeDowngrade：请求档比父档宽时被忽略（不升档红线）', () => {
-    // 不升档：父档更严，请求更宽一律回退父档
-    assert.equal(subScopeDowngrade('read', 'full'), 'read');
-    assert.equal(subScopeDowngrade('read', 'auto'), 'read');
-    assert.equal(subScopeDowngrade('read', 'edit'), 'read');
-    assert.equal(subScopeDowngrade('edit', 'full'), 'edit');
-    assert.equal(subScopeDowngrade('edit', 'auto'), 'edit');
-    assert.equal(subScopeDowngrade('auto', 'full'), 'auto');
-});
-
-test('subScopeDowngrade：同档原样返回，非法值按缺省封顶 auto', () => {
-    // 同档：请求等于父档，原样返回
-    for (const scope of ['read', 'edit', 'auto', 'full']) {
-        assert.equal(subScopeDowngrade(scope, scope), scope);
+test('subScopeDowngrade 已随能力快照重构删除：防提权改由快照合成规则承担', () => {
+    // 旧「sandbox 参数单向降档」机制删除（方案 §10.1）：沙箱 / 工具面 / 写边界改由
+    // composeAgentCapabilities 在派单时合成（父档上限取交，见 agent-capabilities.test.mjs）。
+    // 这里钉住删除事实，防止旧降档函数回潮。
+    const src = readFileSync(new URL('../../../src/ai/agent/ai-subagents.js', import.meta.url), 'utf8');
+    for (const gone of ['subScopeDowngrade', 'SUB_SCOPES', 'SCOPE_STRICTNESS', 'SUB_SANDBOX_MODE_BY_SCOPE']) {
+        assert.ok(!src.includes(gone), '旧降档机制 ' + gone + ' 不应回归');
     }
-    // 非法值等同缺省：封顶 auto（不再回退父档）
-    assert.equal(subScopeDowngrade('auto', 'danger-full-access'), 'auto');
-    assert.equal(subScopeDowngrade('auto', 'read-only'), 'auto');
-    // 父档本身非法时先归一成 read，再降档仍 read
-    assert.equal(subScopeDowngrade('weird', 'full'), 'read');
-    assert.equal(subScopeDowngrade('weird', 'read'), 'read');
-});
-
-test('subScopeDowngrade：缺省封顶 auto（min(auto, 父档)）', () => {
-    // 核心新语义：不传 sandbox 时，full 父档的子代理降到 auto，其余档位不变
-    assert.equal(subScopeDowngrade('full', undefined), 'auto');
-    assert.equal(subScopeDowngrade('full', null), 'auto');
-    assert.equal(subScopeDowngrade('full', ''), 'auto');
-    assert.equal(subScopeDowngrade('auto', undefined), 'auto');
-    assert.equal(subScopeDowngrade('edit', undefined), 'edit');
-    assert.equal(subScopeDowngrade('read', undefined), 'read');
-    // 显式 full 仍是逃生舱：full 父档派 full 子代理不被拦
-    assert.equal(subScopeDowngrade('full', 'full'), 'full');
 });
 
 test('commandAuditSummary：只记命令族与 cwd，不记正文/参数', () => {

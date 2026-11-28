@@ -46,21 +46,9 @@ export function pathInsideWorkspace(root, path) {
     return full === base || full.startsWith(base + '/');
 }
 
-// 子代理隔离写闸（纯函数）：wt 为子代理会话登记的隔离区，relPath 为相对主根的路径。
-// 前缀内 allow（自动应用——隔离区即审批边界），前缀外 deny（确定性拒绝，不进审批链）。
-export function agentWorktreeWriteVerdict(wt, relPath) {
-    if (!wt || !wt.name) {
-        return {verdict: 'deny', message: '【worktree:error】WORKTREE_SCOPE：子代理没有隔离工作区登记，不能写文件。'};
-    }
-    const prefix = (WORKTREE_REL_DIR + '/' + wt.name).toLowerCase();
-    const relLower = String(relPath || '').toLowerCase();
-    if (relLower === prefix || relLower.startsWith(prefix + '/')) return {verdict: 'allow'};
-    return {
-        verdict: 'deny',
-        message: '【worktree:error】WORKTREE_SCOPE：子代理只能写自己的隔离前缀 ' + worktreeRelPath(wt.name)
-            + '/…（当前：' + relPath + '）。不要写其他路径，把该限制与未完成项写进结论上报主代理。',
-    };
-}
+// 旧「子代理隔离写闸」已随能力快照重构删除（2026-11-28）：worktree 现在是 writableRoots
+// 的一种来源——子代理派单时快照注入前缀（composeAgentCapabilities），写判定统一走
+// ai-panel 的 subWriteVerdict（快筛）+ Go 侧 WriteBoundaryCheck（权威，§5.5）。
 
 // 预测 slug（纯函数，复刻 Go deriveSlug / alnumTail）：label 小写、[^a-z0-9] 折成 -、
 // 截 32、去首尾 -，空则 wt；拼会话 id 末 8 位字母数字。创建审批卡用它显示真实路径——

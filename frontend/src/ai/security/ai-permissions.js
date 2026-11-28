@@ -344,7 +344,11 @@ const PERMISSION_ACTOR_BY_SOURCE = {
     full: 'ai',
     auto: 'ai',
     'worktree-isolation': 'system',
-    'agent-worktree': 'system',
+    // 子代理能力快照的判定来源（agent-caps 快筛 / agent-full 完全权限直通 / agent-caps-go
+    // Go 侧落盘前权威判定）：都是宿主强制（派出时定死的能力边界），不是人拍板。
+    'agent-caps': 'system',
+    'agent-full': 'system',
+    'agent-caps-go': 'system',
     default: 'system',
 };
 

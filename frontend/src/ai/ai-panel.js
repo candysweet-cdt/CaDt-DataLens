@@ -19,6 +19,7 @@ import {detectLanguage, outlineForLanguage, planSectionComments, applySectionEdi
 import {overlayStack} from '../core/overlay-stack.js';
 import {createContextMenu} from '../shell/contextmenu.js';
 import {mergePluginAIRequest, pluginAIAccounts} from '../shell/plugin-ai-providers.js';
+import {mergePluginContextText} from './ai-plugin-context-merge.js';
 import {PLUGIN_CTX_ORIGINS, pluginCtxBase, withCtx} from '../shell/plugin-ctx.js';
 import {copyImageUrlToClipboard} from '../core/image-clipboard.js';
 import {kvGet, kvGetJson, kvRemove, kvSet, kvSetJson} from '../core/kv-store.js';
@@ -294,7 +295,8 @@ import {recordRead, recordWrite, checkWriteFresh} from './security/ai-write-guar
 import {createAIToolDefs} from './tools/ai-tool-defs.js';
 import {createAISystemContext, truncateSkillDescription} from './core/ai-system-context.js';
 import {createAICognition, resolveNeedsReread} from './settings/ai-cognition.js';
-import {createAIWorktree, normalizeWorktreeState, worktreeRelPath, agentWorktreeWriteVerdict, mainRootWriteVerdict} from './tools/ai-worktree.js';
+import {createAIWorktree, normalizeWorktreeState, worktreeRelPath, mainRootWriteVerdict} from './tools/ai-worktree.js';
+import {subWriteVerdict} from './agent/agent-capabilities.js';
 import {createAITodos, shouldSendTodosCheck, todosCheckText, todosCheckTextFromMessage} from './chat/ai-todos.js';
 import {anchorScrollDelta, createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth, STRICT_BOTTOM_PX} from './chat/ai-scroll-follow.js';
 import {createAIChangesUI} from './chat/ai-changes-ui.js';
@@ -481,6 +483,9 @@ export function createAIPanel(options) {
     const openSideChatTab = typeof opts.openSideChatTab === 'function' ? opts.openSideChatTab : null;
     // 「自动化」按钮的宿主出口（main.js 的 openAppPageTab）：定时任务应用页面标签页
     const openAppPageTab = typeof opts.openAppPageTab === 'function' ? opts.openAppPageTab : null;
+    // 编排看板的专用标签页出口（会话列表父行「打开编排」用）；浮窗没有内容区，不提供。
+    const openOrchestrationTab = typeof opts.openOrchestrationTab === 'function' && !window.__aiFloatWindow
+        ? opts.openOrchestrationTab : null;
     // 打开定时任务管理的统一入口（侧栏「自动化」按钮 / /schedule 命令 / 胶囊与对话框的「全部管理」共用）：
     // 虚拟标签页改造后直接开定时任务应用页面；悬浮窗没有内容区、或宿主出口未注入时降级回对话框。
     // 调用都发生在初始化之后（事件回调里），此时 scheduleMod 已就位。
@@ -1511,6 +1516,13 @@ export function createAIPanel(options) {
         if (!syncPluginAIAccounts()) return;
         renderProfileSelect();
         updateComposerState();
+    });
+
+    // 插件技能随插件启用/禁用增减：加载完成事件到达时立即失效技能缓存（面板 + 斜杠两处），
+    // 不等 5 秒 TTL——否则禁用插件后补全仍返回旧技能。invalidateSkillsCache 是函数声明，
+    // 此处可安全引用（回调执行时其依赖的 slashSkillsInvalidate 早已初始化）。
+    window.addEventListener('cadt-plugins-loaded', () => {
+        try { invalidateSkillsCache(); } catch (e) {}
     });
 
     async function bootstrapAIConfig() {
@@ -3796,6 +3808,7 @@ export function createAIPanel(options) {
         backend,
         // 支线对话（阶段 F）与会话信箱（阶段 H）：构造在本模块之后，惰性转发
         openSideChat: (...args) => sidechatMod.openSideChat(...args),
+        openOrchestrationTab,
         promoteSideChat: (...args) => sidechatMod.promoteSideChat(...args),
         clearMailbox: (...args) => noticesMod.clearMailbox(...args),
         pendingNoticeCount: (...args) => noticesMod.outstandingCount(...args),
@@ -4149,6 +4162,8 @@ export function createAIPanel(options) {
         closeDialog: closeAIDialog,
         dialogNode,
         dialogButton,
+        // 弹层里的下拉走设置页同款自绘下拉（原生 select 会露出系统菜单，与周边控件两套观感）
+        enhanceSelect: typeof enhanceSelect === 'function' ? enhanceSelect : null,
         // 弹层复用 chips-pop 机制（kind=timers），内容经 renderChipsPopExtra 钩子由本域提供
         togglePop: (chip) => toggleChipsPop('timers', chip),
         onTimersChanged: () => {
@@ -6513,6 +6528,7 @@ export function createAIPanel(options) {
         const isWorktree = approval.kind === 'worktree';
         const isAction = approval.kind === 'action';
         const isOrchestration = approval.kind === 'orchestration';
+        const isOrchestrationControl = isOrchestration && approval.mode === 'control';
         const dot = document.createElement('span');
         dot.className = 'ai-approval-placeholder-dot';
         const text = document.createElement('span');
@@ -6524,7 +6540,9 @@ export function createAIPanel(options) {
                 : isAction
                     ? '操作待审批，请在下方输入区确认'
                     : (isOrchestration
-                        ? '编排计划待批准，请在下方输入区确认'
+                        ? (isOrchestrationControl
+                            ? '编排控制待确认，请在下方输入区确认'
+                            : '编排计划待批准，请在下方输入区确认')
                         : '更改待审批，请在下方输入区确认应用');
         hint.append(dot, text);
         container.appendChild(hint);
@@ -6537,6 +6555,9 @@ export function createAIPanel(options) {
         session: '本会话授权',
         project: '项目规则',
         full: '完全权限',
+        // 子代理能力快照的放行来源（能力快照方案 §5.3）
+        'agent-caps': '子代理可写范围',
+        'agent-full': '子代理完全授权',
     };
 
     function approvalTraceNote(approval) {
@@ -6771,7 +6792,8 @@ export function createAIPanel(options) {
     function refreshSessionRail() {
         if (!railMod) return;
         railMod.render(outlineMod.snapshot());
-        railMod.syncVisibility(settings.aiSessionRail === true, panel ? panel.offsetWidth : 0);
+        // 宽度取 clientWidth：offsetWidth 含左右 1px 边框，会把阈值提前 2px
+        railMod.syncVisibility(settings.aiSessionRail === true, panel ? panel.clientWidth : 0);
     }
 
     function turnStartAt(session, assistantIndex) {
@@ -7733,7 +7755,8 @@ export function createAIPanel(options) {
     }
 
     // 技能扫描顺序对齐 dsh 的本地提供方：rank 越小越优先。
-    const AI_SKILL_RANKS = {workspace: 100, workspaceAgents: 200, app: 400, userAgents: 500, builtin: 600};
+    // plugin=300：工作区(100/200) 之后、应用(400) 之前；插件不覆盖作者自带技能。
+    const AI_SKILL_RANKS = {workspace: 100, workspaceAgents: 200, plugin: 300, app: 400, userAgents: 500, builtin: 600};
 
     let homeDirPromise = null;
     function getAIHomeDir() {
@@ -7863,24 +7886,11 @@ export function createAIPanel(options) {
         return slot;
     }
 
-    let exePathPromise = null;
-    function getAIExePath() {
-        if (!exePathPromise) {
-            exePathPromise = Promise.resolve(backend.AIExePath ? backend.AIExePath() : '').catch(() => '');
-        }
-        return exePathPromise;
-    }
-
-    async function builtinSkillText(text) {
-        if (!text.includes('{{EXE_PATH}}')) return text;
-        const exe = String(await getAIExePath() || '').trim();
-        return text.split('{{EXE_PATH}}').join(exe || 'datalens.exe');
-    }
-
     function skillSourceLabel(source) {
         if (source === 'builtin') return '内置';
         if (source === 'workspace') return '工作区';
         if (source === 'workspace-agents') return '工作区·通用';
+        if (source === 'plugin') return '插件';
         if (source === 'user-agents') return '用户·通用';
         return '应用';
     }
@@ -7907,7 +7917,7 @@ export function createAIPanel(options) {
                 description: builtin.description,
                 path: '',
                 source: 'builtin',
-                content: await builtinSkillText(builtin.content),
+                content: builtin.content,
                 builtin: true,
                 rank: AI_SKILL_RANKS.builtin,
                 rootOrder: 0,
@@ -7957,6 +7967,29 @@ export function createAIPanel(options) {
                     localOrder,
                 });
                 localOrder += 1;
+            }
+        }
+        // 插件注册的斜杠技能（shell/plugin-skills.js）：与文件技能并列合并。
+        // content() 惰性求值 + 单点超时在纯模块里做；这里只 catch 整体失败（如模块未注入）。
+        if (pluginSkillsMod && typeof pluginSkillsMod.getPluginSkillList === 'function') {
+            let pluginSkills = [];
+            try {
+                pluginSkills = await pluginSkillsMod.getPluginSkillList({
+                    plugin: {id: '', name: ''}, // 基座身份由各技能自己带，这里给空壳占位
+                    workspace: aiProjectRoot(target) || '',
+                    sessionId: target && target.id ? target.id : '',
+                    origin: 'prompt',
+                }) || [];
+            } catch (e) {
+                pluginSkills = [];
+            }
+            for (const skill of pluginSkills) {
+                candidates.push({
+                    ...skill,
+                    builtin: false,
+                    rootOrder: 0,
+                    localOrder: candidates.length,
+                });
             }
         }
         // rank 小者优先；同 rank 按根注册顺序，再按根内条目名顺序，先到先得。
@@ -8113,8 +8146,12 @@ export function createAIPanel(options) {
     // 插件 AI 工具（shell/plugin-tools.js）：注册表与三层授权判定都在纯模块里，
     // 面板只提供两个读口 + 一份授权快照。宿主未注入时降级为「无插件工具」。
     const pluginToolsMod = opts.pluginTools || null;
+    // 插件斜杠技能（shell/plugin-skills.js）：注册表与求值都在纯模块里，面板只合并候选。
+    const pluginSkillsMod = opts.pluginSkills || null;
     // 插件注入的 AI 上下文（shell/plugin-context.js）：与工具注册表同样由宿主注入
     const pluginContextMod = opts.pluginContext || null;
+    // 插件按轮求值的上下文提供者（shell/plugin-context-provider.js）
+    const pluginCtxProviderMod = opts.pluginContextProviders || null;
     // 认知索引（可选启用，默认关）：会话指纹登记 / overview 预取与轮上下文注入都在
     // ai-cognition.js；面板只提供 backend / settings / 范围根三件依赖（§5.3 注入落点约束）。
     const cognitionMod = createAICognition({
@@ -8167,15 +8204,13 @@ export function createAIPanel(options) {
     // settings 属性可变，必须走活引用而不是值快照（splitRoot 教训）。
     const systemCtxMod = createAISystemContext({
         // 插件注入的领域上下文：带上限与来源标记，内容按数据处理（不做指令）
-        pluginContextText: (session) => (pluginContextMod
-            ? pluginContextMod.renderPluginContextBlocks({
-                scope: currentScopeOf(session),
-                sessionId: session && session.id ? session.id : '',
-                // 会话根就是插件眼里的「工作区」：与技能扫描 / 认知 / 记忆同源，
-                // 不要换成窗口根（harness 下窗口根为空，插件会永远读到空串）。
-                workspace: sessionScopeRoot(session) || '',
-            })
-            : {text: '', count: 0, truncated: false}),
+        pluginContextText: (session) => mergePluginContextText(pluginContextMod, pluginCtxProviderMod, {
+            scope: currentScopeOf(session),
+            sessionId: session && session.id ? session.id : '',
+            // 会话根就是插件眼里的「工作区」：与技能扫描 / 认知 / 记忆同源，
+            // 不要换成窗口根（harness 下窗口根为空，插件会永远读到空串）。
+            workspace: sessionScopeRoot(session) || '',
+        }),
         get settings() { return settings; },
         get config() { return config; },
         // 认知索引：守则两态文案（稳定区，ai-cognition.js 纯函数）与轮上下文两块（同步消费预取缓存）
@@ -9346,7 +9381,11 @@ async function requestApproval(session, toolMessage, info) {
                         : approval.kind === 'orchestration'
                             ? (approval.continue
                                 ? '已继续编排计划，等待你的修改意见'
-                                : (approved ? '已批准编排计划，正在创建…' : '用户取消了编排计划'))
+                                : (approved
+                                    ? (approval.mode === 'control'
+                                        ? '已批准编排控制，正在执行…'
+                                        : '已批准编排计划，正在创建…')
+                                    : (approval.mode === 'control' ? '用户取消了编排控制' : '用户取消了编排计划')))
                             : (approved ? '正在应用更改…' : '用户放弃了本次更改');
         // 用户裁定也进审批记录：来源标 user，避免只看到「待审批」看不到结果。
         const auditKind = approval.kind === 'command'
@@ -9909,22 +9948,38 @@ async function requestApproval(session, toolMessage, info) {
                 return worktreeVerdict.message;
             }
         }
-        // 子代理隔离 worktree 写：子代理永不弹卡（没人可答），隔离区即审批边界——
-        // 本子代理前缀内的写确定性放行（自动应用），前缀外确定性拒绝；回灌由主代理经
-        // worktree_manage(action=export, name=…) 走人工 patch 卡。run_command 不挂
-        // （命令通道归 subagent-sandbox 方案）。没有隔离区的子代理维持只读（write 工具不挂）。
+        // 子代理写：按能力快照 fs.mode + writableRoots 快筛（§5.3）——只读确定性拒绝（写工具
+        // 本不该挂载，幻觉调用在这里兜住）、workspace-write 限可写根内、danger-full-access 直通。
+        // 项目 deny 规则先于能力快照（§5.2 guard 链）：子代理不能审批，ask 同样确定性拒绝——
+        // 那是用户的明确禁令 / 要求人工把关的项，写能力再大也不能越过（含 permissions.json
+        // 自改链）。worktree 只是可写根的一种来源（快照在派单时已注入前缀），不再是特判开关；
+        // 主会话的 scope 审批链零改动。前端快筛只做字符串规范化比对，落盘前的权威判定
+        // （符号链接 / TOCTOU）在 Go 侧 WriteBoundaryCheck（§5.5）。
         let decision;
-        const subWorktree = session.parentSessionId ? normalizeWorktreeState(session.worktree) : null;
-        if (subWorktree) {
-            const verdict = agentWorktreeWriteVerdict(subWorktree, rel);
-            if (verdict.verdict === 'deny') {
-                logPermission('write', rel, 'deny', 'agent-worktree', '');
+        const subCaps = session.parentSessionId ? session.capabilities : null;
+        if (subCaps) {
+            const ruleHit = evaluatePermissionRules(rules, 'write', rel);
+            if (ruleHit.decision === 'deny' || ruleHit.decision === 'ask') {
+                logPermission('write', rel, 'deny', 'project', ruleHit.rule);
                 toolMessage.status = 'done';
-                toolMessage.content = '超出子代理隔离前缀';
+                toolMessage.activityStatus = 'denied';
+                toolMessage.content = '项目权限规则禁止写入该文件';
                 refreshToolWrap(session, toolMessage);
-                return verdict.message;
+                return ruleHit.decision === 'ask'
+                    ? '项目权限规则对该路径要求人工审批，子代理没有审批通道：写入被拒绝（规则 ' + ruleHit.rule
+                        + '）。不要重试，在最终结论中说明该限制，由主代理决定如何处理。'
+                    : '项目权限规则禁止写入：' + info.relPath + '（规则 ' + ruleHit.rule + '）';
             }
-            decision = {decision: 'allow', source: 'agent-worktree', rule: ''};
+            const verdict = subWriteVerdict(subCaps, info.path);
+            if (verdict.verdict === 'deny') {
+                logPermission('write', rel, 'deny', 'agent-caps', '');
+                toolMessage.status = 'done';
+                toolMessage.activityStatus = 'denied';
+                toolMessage.content = '超出子代理可写范围';
+                refreshToolWrap(session, toolMessage);
+                return verdict.reason;
+            }
+            decision = {decision: 'allow', source: verdict.source, rule: ''};
         } else {
             decision = decidePermission({
                 scope,
@@ -9995,6 +10050,22 @@ async function requestApproval(session, toolMessage, info) {
                 toolMessage.content = '编排写闸拒绝';
                 refreshToolWrap(session, toolMessage);
                 return verdict.message || '路径不在本批 owns 内，写入被拒绝';
+            }
+        }
+        // 子代理 workspace-write 写入的落盘前权威判定（§5.5）：Go 逐节 Lstat 拒绝 symlink/junction、
+        // EvalSymlinks 归一化后可写根前缀比对——JS 不解析 reparse point，这一遍才是权威；
+        // 前端 subWriteVerdict 只是快筛。full 档不设边界（用户显式授权完全权限）。
+        if (subCaps && subCaps.fs && subCaps.fs.mode === 'workspace-write'
+            && typeof backend.WriteBoundaryCheck === 'function') {
+            try {
+                await backend.WriteBoundaryCheck(JSON.stringify(subCaps.fs.writableRoots || []), info.path);
+            } catch (e) {
+                logPermission('write', rel, 'deny', 'agent-caps-go', '');
+                toolMessage.status = 'done';
+                toolMessage.activityStatus = 'denied';
+                toolMessage.content = '写边界判定拒绝（Go 侧）';
+                refreshToolWrap(session, toolMessage);
+                return '写入被拒绝：' + ((e && e.message) || e);
             }
         }
         try {
@@ -13055,8 +13126,14 @@ async function requestApproval(session, toolMessage, info) {
                     // 后台派单：注册即返回，主代理继续自己的回合；结论以后续通知注入（§4.5 原语 1）
                     const started = await startSubAgent(ctx, input);
                     const sub = started.sub;
+                    // 能力面一句话回执（模型据此知道派出去的是什么角色）：preset + 沙箱档。
+                    // 快照必带 fs（合成失败即派单失败），未知档位按「只读」兜底而不是误导性的「完全权限」。
+                    const caps = sub.capabilities || {};
+                    const fsMode = caps.fs && caps.fs.mode ? caps.fs.mode : 'read-only';
+                    const modeText = fsMode === 'workspace-write' ? '可写'
+                        : (fsMode === 'danger-full-access' ? '完全权限' : '只读');
                     return '已派出后台子代理「' + sub.name + '」（id=' + sub.id + '，' + agentLevelText(sub.depth) + '，轮次上限 ' +
-                        sub.maxRounds + '，权限档 ' + (sub.session.scope || 'read') + '）。\n完成后会自动通知你（进你的收件箱）；期间可继续其他工作，需要补充线索就 agent_send' +
+                        sub.maxRounds + '，能力 ' + (caps.preset || 'host.default') + ' · ' + modeText + '）。\n完成后会自动通知你（进你的收件箱）；期间可继续其他工作，需要补充线索就 agent_send' +
                         '（urgent=true 插队）。要停下等回报用 wait_agent；不需要了用 agent_stop 停止并收集记录。';
                 }
                 const outcome = await runSubAgent(ctx, input);
@@ -13116,14 +13193,18 @@ async function requestApproval(session, toolMessage, info) {
             : '发送';
     }
 
-    // 上下文弹层的「压缩上下文」按钮：会话运行中禁用（与 startCompact 的 anyStreaming / oneShot
-    // 门禁同源）。弹层是常驻 DOM，流开始/结束（setStreamingUI）与弹层打开（paintCtxPop）都要同步，
-    // 否则开着弹层时别的会话起轮、按钮仍可点（点了也会被 startCompact 拒，但外观与交互不一致）。
+    // 上下文弹层的「压缩上下文」按钮：只在「当前会话自己正在生成」或「已有压缩任务在跑」时禁用。
+    // 别的会话在生成不拦当前会话压缩——每会话一条独立流、租约按 sessionId 隔离，全局 anyStreaming()
+    // 是旧单流时代的口径。oneShot 是全局单例，压缩任务本身只能有一个，仍按全局判断。
+    // 弹层是常驻 DOM，流开始/结束（setStreamingUI）与弹层打开（paintCtxPop）都要同步。
     function syncCtxCompactButton() {
         if (!el.ctxPopCompact) return;
-        const busy = anyStreaming() || !!oneShot;
+        const viewing = currentSession();
+        const busy = !!(viewing && streamOf(viewing.id)) || !!oneShot;
         el.ctxPopCompact.disabled = busy;
-        if (busy) el.ctxPopCompact.dataset.tip = '请先停止当前生成，再压缩上下文';
+        if (busy) el.ctxPopCompact.dataset.tip = oneShot
+            ? '已有压缩任务在进行中'
+            : '请先停止当前生成，再压缩上下文';
         else delete el.ctxPopCompact.dataset.tip;
     }
 
@@ -18582,7 +18663,12 @@ async function requestApproval(session, toolMessage, info) {
                 showNote(text, isError);
             }
         };
-        if (anyStreaming()) {
+        const session = (options && options.session) || currentSession();
+        // 生成门禁按「目标会话」判断：别的会话在生成不拦本会话压缩（每会话一条独立流、
+        // 租约按 sessionId 隔离）。oneShot 是全局单例，压缩任务本身只能一个，保持全局拦。
+        // auto 路径的调用方（轮末 maybeAutoCompact / 溢出恢复 whenSessionLeaseFree）已各自
+        // 保证目标会话无流，这里按会话判断不会让后台压缩与生成并发。
+        if (session && streamOf(session.id)) {
             if (!auto) notify('请先停止当前生成，再压缩上下文。', true);
             return false;
         }
@@ -18590,7 +18676,6 @@ async function requestApproval(session, toolMessage, info) {
             if (!auto) notify('已有压缩任务在进行中。', true);
             return false;
         }
-        const session = (options && options.session) || currentSession();
         const profile = profileOf(session);
         if (!session || !profile) {
             if (!auto) notify('请先配置 AI 并创建会话。', true);
@@ -20106,6 +20191,28 @@ async function requestApproval(session, toolMessage, info) {
         return lines.join('\n');
     }
 
+    // 编排审批（计划 / 控制）共用 composer 接管通道；editor 由 orchestration 域提供。
+    function requestOrchestrationApproval(session, toolMessage, editor, mode) {
+        if (!session || !toolMessage || !editor) {
+            return Promise.resolve({approved: false, error: '缺少编排审批上下文'});
+        }
+        if (toolHalted(toolMessage)) return Promise.resolve({approved: false, cancelled: true});
+        const isControl = mode === 'control';
+        const approval = {
+            state: 'pending',
+            kind: 'orchestration',
+            mode: isControl ? 'control' : 'plan',
+            tool: isControl ? 'orchestration_control' : 'orchestration_plan',
+            title: editor.title || (isControl ? '编排控制' : '编排计划审批'),
+            summary: editor.subtitle || '',
+            sessionId: session.id,
+        };
+        orchestrationApprovals.set(toolMessage.toolCallId, editor);
+        return registerPendingApproval(session, toolMessage, approval,
+            (session.title || '会话') + ' · ' + (isControl ? '编排控制待确认' : '编排计划待批准')
+            + (editor.subtitle ? '：' + editor.subtitle : ''));
+    }
+
     // 输入区接管卡（阶段 3 拆出：ai-takeover.js；approvalTakeover* / dismissedPlanApproval / stickBottom 经访问器读写）
     const takeoverMod = createAITakeover({
         el,
@@ -20643,7 +20750,10 @@ async function requestApproval(session, toolMessage, info) {
         openTermTab,
         // 隔离 worktree（spawn isolation='worktree'）：子代理草稿区建在主根 .cadt/worktree/ 下
         getScopeRoot,
-        // 认知索引只读两件的启用门（默认关；edit 不派——子代理拿不到任何写工具的不变量）
+        // 能力确认卡（§6.3）：插件写 preset 首次派单时由主会话审批卡一次性确认——
+        // 确认必须由主代理在场完成，嵌套派单（父是子代理）没有审批通道，会按只读降级
+        requestActionApproval: (session, toolMessage, info) => requestActionApproval(session, toolMessage, info),
+        // 认知索引只读两件的启用门（默认关；写能力由能力快照决定，认知 edit 不在子代理面内）
         cognitionOn: () => cognitionMod.isEnabled(),
         // 子代理详情落在内容区标签页（编辑区收起时由 main.js 的 revealEditorForContent 展开；
         // 不动面板形态）。悬浮窗没有内容区，置 null 让调用方退回面板内覆盖层。
@@ -20740,7 +20850,6 @@ async function requestApproval(session, toolMessage, info) {
     const subAgentMaxDepth = (...args) => subagentsMod.subAgentMaxDepth(...args);
     const subAgentCanSpawn = (...args) => subagentsMod.subAgentCanSpawn(...args);
     const subSystemPromptFor = (...args) => subagentsMod.subSystemPromptFor(...args);
-    const subToolsForScope = (...args) => subagentsMod.subToolsForScope(...args);
     const activeSubCount = (...args) => subagentsMod.activeSubCount(...args);
     const subTranscriptPush = (...args) => subagentsMod.subTranscriptPush(...args);
     const subThrottleRender = (...args) => subagentsMod.subThrottleRender(...args);
@@ -21358,23 +21467,10 @@ async function requestApproval(session, toolMessage, info) {
         },
         // 编排计划审批走 composer 接管区：正文编辑器由 orchestration 域提供，
         // 这里只登记 pendingApprovals（复用审批的阻塞、停止、审计与通知语义）。
-        bridgeRequestOrchestrationPlanApproval: (session, toolMessage, editor) => {
-            if (!session || !toolMessage || !editor) {
-                return Promise.resolve({approved: false, error: '缺少编排审批上下文'});
-            }
-            if (toolHalted(toolMessage)) return Promise.resolve({approved: false, cancelled: true});
-            const approval = {
-                state: 'pending',
-                kind: 'orchestration',
-                tool: 'orchestration_plan',
-                title: editor.title || '编排计划审批',
-                summary: editor.subtitle || '',
-                sessionId: session.id,
-            };
-            orchestrationApprovals.set(toolMessage.toolCallId, editor);
-            return registerPendingApproval(session, toolMessage, approval,
-                (session.title || '会话') + ' · 编排计划待批准' + (editor.subtitle ? '：' + editor.subtitle : ''));
-        },
+        bridgeRequestOrchestrationPlanApproval: (session, toolMessage, editor) =>
+            requestOrchestrationApproval(session, toolMessage, editor, 'plan'),
+        bridgeRequestOrchestrationControlApproval: (session, toolMessage, editor) =>
+            requestOrchestrationApproval(session, toolMessage, editor, 'control'),
         bridgeOrchestrationStartTurn: async (sessionId, prompt) => {
             const session = sessionById(String(sessionId || ''));
             if (!session) throw new Error('编排执行会话不存在：' + sessionId);
@@ -21397,26 +21493,88 @@ async function requestApproval(session, toolMessage, info) {
         bridgeApplyOrchestrationSnapshot: (orchestrationId, parentSessionId, summary, batches) => {
             const id = String(orchestrationId || '');
             const parentId = String(parentSessionId || '');
-            const byBatch = new Map((Array.isArray(batches) ? batches : []).map((b) => [b.id, b]));
+            const batchList = Array.isArray(batches) ? batches : [];
+            const byBatch = new Map(batchList.map((b) => [b.id, b]));
+            const batchIndex = new Map(batchList.map((b, i) => [b.id, i]));
+            const workIndex = new Map(batchList
+                .map((b, i) => [b, i])
+                .filter(([b]) => b.kind !== 'review')
+                .map(([b, i]) => [b.id, i]));
+            const orderOfBatch = (b) => {
+                if (!b) return 0;
+                if (b.kind !== 'review') return Math.max(0, Number(batchIndex.get(b.id)) || 0);
+                if (b.finalReview) return 1000 + Math.max(0, Number(batchIndex.get(b.id)) || 0);
+                return Math.max(0, Number(workIndex.get(b.reviewOf)) || 0) + 0.5;
+            };
             let touched = false;
             for (const s of sessions) {
                 if (!s) continue;
                 if (s.id === parentId || (s.orchestration && s.orchestration.id === id && s.orchestration.role === 'arbiter')) {
                     // 完成事件的 summary 可能先/后于 changed 事件到达：缺省时保留旧值，
                     // 不能用 null 把已经投影好的进度徽标清空。
-                    if (summary) s._orchestrationSummary = summary;
-                    else if (!s._orchestrationSummary) s._orchestrationSummary = null;
-                    touched = true;
+                    if (summary) {
+                        const before = s._orchestrationSummary;
+                        if (!before || JSON.stringify(before) !== JSON.stringify(summary)) {
+                            s._orchestrationSummary = summary;
+                            touched = true;
+                        }
+                    } else if (!s._orchestrationSummary) {
+                        s._orchestrationSummary = null;
+                    }
                 }
                 if (s.orchestration && s.orchestration.id === id && s.orchestration.batchId) {
                     const b = byBatch.get(s.orchestration.batchId);
-                    s._orchestrationBatchStatus = b ? {
+                    const order = orderOfBatch(b);
+                    if (s.orchestration.order !== order) {
+                        s.orchestration.order = order;
+                        touched = true;
+                    }
+                    // 旧 attempt 的快照不能覆盖新 attempt 的投影；attempt 相等才允许更新。
+                    const sessionAttempt = Number(s.orchestration.attempt) || 0;
+                    const snapshotAttempt = b ? (Number(b.attempts) || 0) : 0;
+                    if (sessionAttempt > 0 && snapshotAttempt > 0 && snapshotAttempt < sessionAttempt) continue;
+                    const next = b ? {
                         status: b.status || '', failureReason: b.failureReason || '',
                         attempts: Number(b.attempts) || 0, title: b.title || '',
                     } : null;
-                    touched = true;
+                    const before = s._orchestrationBatchStatus || null;
+                    const changed = (!before && !!next) || (!!before && !next)
+                        || (before && next && (
+                            before.status !== next.status
+                            || before.failureReason !== next.failureReason
+                            || before.attempts !== next.attempts
+                            || before.title !== next.title));
+                    if (changed) {
+                        s._orchestrationBatchStatus = next;
+                        touched = true;
+                    }
                 }
             }
+            // 同一 batch 重派/重审会产生新会话，旧会话仍带着同一个 batchId。
+            // 列表只保留后端当前绑定的 b.sessionId，其余旧 attempt 归档（不删除，历史可查）。
+            let archivedAny = false;
+            const currentByBatch = new Map(batchList
+                .filter((b) => b && b.sessionId)
+                .map((b) => [b.id, b.sessionId]));
+            for (const s of sessions) {
+                const orc = s && s.orchestration;
+                if (!orc || orc.id !== id || !orc.batchId) continue;
+                const keep = currentByBatch.get(orc.batchId);
+                if (!keep || s.id === keep || s.archivedAt || s.id === activeSessionId()) continue;
+                if (isSessionBusy(s.id)) continue;
+                // 只归档「确实落后于当前 attempt」的会话。快照可能早于 StartBatch 到达，
+                // 此时 batch.sessionId 还指向上一个会话；不能把刚建好的当前 attempt 归档。
+                const sessionAttempt = Number(orc.attempt) || 0;
+                const batch = byBatch.get(orc.batchId);
+                const batchAttempt = batch ? (Number(batch.attempts) || 0) : 0;
+                if (sessionAttempt > 0 && batchAttempt > 0 && sessionAttempt >= batchAttempt) continue;
+                s.archivedAt = Date.now();
+                s._orchestrationSuperseded = true;
+                try { noticesMod.clearMailbox(s.id); } catch (e) {}
+                archivedAny = true;
+                touched = true;
+            }
+            if (archivedAny) persistSessions();
             if (touched) renderSessionList();
             return touched;
         },
@@ -21469,11 +21627,19 @@ async function requestApproval(session, toolMessage, info) {
         bridgeSessionUsage: (sessionId) => {
             const session = sessionById(String(sessionId || ''));
             if (!session) return {used: 0, window: 0};
+            // 上下文占用取**最近一次 API 实际用量**，不是整会话 token 累加。
+            // 累加 totalTokens 会把历史每轮的输入输出再乘一遍，227 条消息很容易算出 1207%，
+            // 触发假的仲裁者交接。取最后一条带 usage 的 prompt+completion 才是当前上下文窗口的近似。
             let used = 0;
             try {
-                for (const message of (session.messages || [])) {
-                    const u = message && message.usage;
-                    if (u) used += Number(u.totalTokens || u.promptTokens || 0) || 0;
+                const messages = session.messages || [];
+                for (let i = messages.length - 1; i >= 0; i -= 1) {
+                    const u = messages[i] && messages[i].usage;
+                    if (!u) continue;
+                    const prompt = Number(u.promptTokens) || 0;
+                    const completion = Number(u.completionTokens) || 0;
+                    used = prompt + completion > 0 ? prompt + completion : (Number(u.totalTokens) || 0);
+                    break;
                 }
             } catch (e) {}
             const profile = profileOf(session);

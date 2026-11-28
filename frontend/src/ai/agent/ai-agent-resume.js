@@ -14,10 +14,14 @@
 //   · **不自动续跑**：载入只把状态标成 interrupted 并标记可续。自动起轮会在用户不知情时
 //     消耗 token，且可能重复执行上次未完成的写操作——续跑必须由用户/主代理显式触发。
 
+import {serializeCapabilities, parseCapabilities} from './agent-capabilities.js';
+
 /** 每个会话最多保留多少条运行态快照（与终态记录 LRU 同量级）。 */
 export const AI_AGENT_RUN_MAX = 12;
 /** 单条快照最多保留多少条转录消息（首条 task 另算）。 */
 export const AI_AGENT_RUN_MSG_MAX = 60;
+/** 快照版本：v2 起携带能力快照（DelegatedCapabilities，方案 §8.1）；v1 无能力字段不可续跑（§8.2）。 */
+export const AI_AGENT_RUN_VERSION = 2;
 
 const STATE_OK = new Set(['running', 'interrupted', 'done', 'error', 'stopped']);
 
@@ -51,8 +55,10 @@ export function encodeAgentRun(sub, state) {
     const flow = sub.flow || {};
     const profileId = textOf(session.profileId) || textOf(sub.profile && sub.profile.id);
     const modelId = textOf(session.modelId) || textOf(sub.entry && sub.entry.id);
+    // 能力快照（§8.1）：全绝对路径，恢复时不需重新解析；granted 记授权来源（插件 + 父会话）。
+    const capabilities = serializeCapabilities(sub.capabilities);
     return {
-        v: 1,
+        v: AI_AGENT_RUN_VERSION,
         id: textOf(sub.id),
         key: textOf(sub.key),
         toolCallId: textOf(sub.toolCallId),
@@ -62,6 +68,12 @@ export function encodeAgentRun(sub, state) {
         mode: textOf(sub.mode) || 'blocking',
         state: STATE_OK.has(state) ? state : (STATE_OK.has(sub.state) ? sub.state : 'running'),
         sandboxMode: textOf(sub.sandboxMode),
+        presetId: capabilities ? capabilities.preset : '',
+        capabilities,
+        grantedBy: capabilities
+            ? {pluginId: capabilities.granted.pluginId, parentSessionId: capabilities.granted.parentSessionId}
+            : null,
+        grantedAt: capabilities ? capabilities.granted.at : 0,
         parentSessionId: textOf(sub.parentSessionId),
         rootSessionId: textOf(sub.rootSessionId) || textOf(sub.parentSessionId),
         maxRounds: clampInt(sub.maxRounds, 1, 200, 40),
@@ -111,8 +123,11 @@ export function normalizeAgentRuns(raw) {
         if (!id || !parentSessionId || !run) continue;
         const messages = Array.isArray(run.messages) ? run.messages : [];
         if (!messages.length) continue;
+        // v2 起带能力快照；v1 旧快照保留展示（状态 / 任务可查）但 resumePlanOf 拒绝续跑（§8.2）。
+        const version = Number(item.v) === AI_AGENT_RUN_VERSION ? AI_AGENT_RUN_VERSION : 1;
+        const capabilities = version === AI_AGENT_RUN_VERSION ? parseCapabilities(item.capabilities) : null;
         const record = {
-            v: 1,
+            v: version,
             id,
             key: textOf(item.key),
             toolCallId: textOf(item.toolCallId),
@@ -122,6 +137,8 @@ export function normalizeAgentRuns(raw) {
             mode: textOf(item.mode) || 'blocking',
             state: STATE_OK.has(item.state) ? item.state : 'interrupted',
             sandboxMode: textOf(item.sandboxMode),
+            presetId: textOf(item.presetId) || (capabilities ? capabilities.preset : ''),
+            capabilities,
             parentSessionId,
             rootSessionId: textOf(item.rootSessionId) || parentSessionId,
             maxRounds: clampInt(item.maxRounds, 1, 200, 40),
@@ -177,6 +194,11 @@ export function resumePlanOf(run) {
     if (!textOf(run.id)) return {ok: false, reason: '缺少代理 id'};
     const detail = run.run && typeof run.run === 'object' ? run.run : null;
     if (!detail) return {ok: false, reason: '快照缺少运行态'};
+    // v1 旧快照无能力字段：不做降级恢复（§10.1 无兼容层），一律拒绝续跑让用户重新派单。
+    if (Number(run.v) !== AI_AGENT_RUN_VERSION) return {ok: false, reason: '快照版本过旧，请重新派单'};
+    // v2 但能力快照缺失 / 结构坏：缺关键字段拒绝续跑（§8.2）。归一化阶段已把坏快照解析成
+    // null，这里再校验一次形态（UI 会拿归一后的记录调它，防手造对象绕过）。
+    if (!parseCapabilities(run.capabilities)) return {ok: false, reason: '快照缺少能力快照，请重新派单'};
     if (!Array.isArray(detail.messages) || !detail.messages.length) {
         return {ok: false, reason: '没有可续的转录'};
     }

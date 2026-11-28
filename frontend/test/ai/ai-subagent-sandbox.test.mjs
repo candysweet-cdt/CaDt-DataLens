@@ -1,19 +1,24 @@
-// 子代理命令沙箱的接线护栏（方案 docs/finished-plans/subagent-sandbox.md）。
+// 子代理命令沙箱的接线护栏（能力快照方案 docs/unfinished-plans/subagent-capabilities-redesign.md，
+// 取代旧 subagent-sandbox.md 的 scope→沙箱映射护栏）。
 //
-// 不变量：
-//   P1 父权限档 → 沙箱档：edit 档不给写（子代理没有审批通道），full 档继承完全权限
-//   P2 写根来源：隔离 worktree 的绝对路径优先，其次会话工作区；取不到就留空交给 Go
-//      侧 fail-closed —— 绝不在这里悄悄降级成「不沙箱」
-//   P3 主会话返回 null（主会话的边界是审批链，不是沙箱）
-//   P4 子代理工具表挂 run_command，不挂 background_command（后台作业还没有沙箱版本）
+// 不变量（2026-11-28 能力快照重构后）：
+//   P1 沙箱档来自能力快照 fs.mode（派出时定死）：主会话返回 null（主会话边界是审批链）；
+//      快照缺失按最窄 read-only，绝不降级成「不沙箱」
+//   P2 写根优先取快照 fs.workspaceRoot（派单时解析定死，worktree 优先）；缺失时回退
+//      worktree → 会话工作区 → 范围根，取不到交给 Go 侧 fail-closed
+//   P3 父档 → 快照的映射在 composeAgentCapabilities 合成（见 agent-capabilities.test.mjs），
+//      这里只锁面板消费侧
+//   P4 host.default 子代理工具表挂命令四件套（run / background / check / stop）
 //   P5 run_command 分支：沙箱时跳过审批、调 AIRunShellCommandConfined
+//   P6 background_command 分支：沙箱档走 AICommandStartConfined，且先过项目 deny 规则
+//   P7+ 嵌套投递 / 收件箱 / 收尾轮等编排不变量随原护栏保留
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-import {subSandboxModeOf, subSandboxPolicy} from '../../src/ai/agent/ai-subagents.js';
+import {subSandboxPolicy} from '../../src/ai/agent/ai-subagents.js';
 import {describeSandboxGrant, sandboxHasResidue, sandboxModeLabel} from '../../src/ai/security/ai-sandbox-grant.js';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
@@ -31,59 +36,94 @@ function sliceBetween(text, startMarker, endMarker) {
     return text.slice(start, end);
 }
 
-test('P1 父权限档映射：edit 只读、auto 可写工作区、full 继承完全权限', () => {
-    assert.equal(subSandboxModeOf('read'), 'read-only');
-    assert.equal(subSandboxModeOf('edit'), 'read-only');
-    assert.equal(subSandboxModeOf('auto'), 'workspace-write');
-    assert.equal(subSandboxModeOf('full'), 'danger-full-access');
-    // 未知 / 缺省档位一律按最窄处理
-    assert.equal(subSandboxModeOf(undefined), 'read-only');
-    assert.equal(subSandboxModeOf('yolo'), 'read-only');
-});
-
-test('P3 主会话不沙箱：没有 parentSessionId 就返回 null', () => {
+test('P1 沙箱档来自能力快照：主会话 null，快照缺失按最窄 read-only', () => {
     assert.equal(subSandboxPolicy(null), null);
     assert.equal(subSandboxPolicy({id: 'main', scope: 'auto', workspace: 'C:/ws'}), null);
+    // 子代理无快照（异常 / 旧数据）：最窄处理，绝不悄悄降级成「不沙箱」
+    const narrow = subSandboxPolicy({id: 'sub-1', parentSessionId: 'main', workspace: 'C:/ws'});
+    assert.deepEqual(narrow, {mode: 'read-only', workspaceRoot: 'C:/ws'});
 });
 
-test('P2 写根优先取隔离 worktree 的绝对路径', () => {
-    const policy = subSandboxPolicy({
+test('P2 写根优先取快照 fs.workspaceRoot，缺失回退 worktree → 工作区 → 范围根', () => {
+    const byCaps = subSandboxPolicy({
         id: 'sub-1',
         parentSessionId: 'main',
-        scope: 'auto',
+        capabilities: {fs: {mode: 'workspace-write', workspaceRoot: 'C:/wt', writableRoots: ['C:/wt']}},
+    }, 'C:/fallback');
+    assert.deepEqual(byCaps, {mode: 'workspace-write', workspaceRoot: 'C:/wt'});
+
+    const byWorktree = subSandboxPolicy({
+        id: 'sub-1',
+        parentSessionId: 'main',
         workspace: 'C:/ws',
         worktree: {name: 'wt-a', path: 'C:/ws/.cadt/worktree/wt-a'},
     }, 'C:/fallback');
-    assert.deepEqual(policy, {mode: 'workspace-write', workspaceRoot: 'C:/ws/.cadt/worktree/wt-a'});
-});
+    assert.equal(byWorktree.workspaceRoot, 'C:/ws/.cadt/worktree/wt-a');
 
-test('P2 没有 worktree 时回落到会话工作区，再回落到范围根', () => {
-    const byWorkspace = subSandboxPolicy({id: 'sub-1', parentSessionId: 'main', scope: 'auto', workspace: 'C:/ws'}, 'C:/fallback');
-    assert.equal(byWorkspace.workspaceRoot, 'C:/ws');
-
-    const byFallback = subSandboxPolicy({id: 'sub-1', parentSessionId: 'main', scope: 'auto'}, 'C:/fallback');
+    const byFallback = subSandboxPolicy({id: 'sub-1', parentSessionId: 'main'}, 'C:/fallback');
     assert.equal(byFallback.workspaceRoot, 'C:/fallback');
+
+    // 三处都取不到根时留空（交给 Go 侧 fail-closed，不降级成不沙箱）
+    const empty = subSandboxPolicy({id: 'sub-1', parentSessionId: 'main'}, '');
+    assert.equal(empty.workspaceRoot, '');
 });
 
-test('P2 三处都取不到根时留空（交给 Go 侧 fail-closed，不降级成不沙箱）', () => {
-    const policy = subSandboxPolicy({id: 'sub-1', parentSessionId: 'main', scope: 'auto'}, '');
-    assert.deepEqual(policy, {mode: 'workspace-write', workspaceRoot: ''});
-});
-
-test('P4 子代理工具表挂命令四件套（run / background / check / stop）', () => {
+test('P4 host.default 子代理工具表挂命令四件套（run / background / check / stop）', () => {
     const text = sourceOf('ai/agent/ai-subagents.js');
-    const tools = sliceBetween(text, 'function subToolsForScope(', 'function activeSubCount(');
+    const tools = sliceBetween(text, 'function subToolsForCapabilities(', 'function activeSubCount(');
     for (const name of ['run_command', 'background_command', 'check_command', 'stop_command']) {
         assert.ok(tools.includes('AI_TOOL_DEFS.' + name), '子代理必须能用 ' + name + '（沙箱档执行）');
     }
+    // 命令挂载由快照 execution.command 闸住（denied = 不挂，编排强制收窄的只读面没有命令）
+    assert.ok(tools.includes("caps.execution.command === 'sandboxed'"),
+        '命令四件套必须按快照 execution.command 门控');
+});
+
+test('P4b 工具面投影消费能力快照：写工具只由 allow 决定，不再有 hasWorktree 特判', () => {
+    const text = sourceOf('ai/agent/ai-subagents.js');
+    const tools = sliceBetween(text, 'function subToolsForCapabilities(', 'function activeSubCount(');
+    assert.ok(tools.includes('has(\'write_file\')'), '写工具按快照 allow 投影');
+    assert.ok(tools.includes('caps.tools.allow'), '投影必须读快照 allow 列表');
+    assert.ok(!/hasWorktree/.test(tools), 'worktree 不再是写工具开关（快照在派单时注入前缀与写工具）');
+});
+
+test('P4c 编排会话派生的子代理强制收窄为只读 preset（阶段零硬前置，§10.5）', () => {
+    const text = sourceOf('ai/agent/ai-subagents.js');
+    const resolve = sliceBetween(text, 'function resolveSpawnPreset(', 'async function confirmPresetWriteGrant(');
+    assert.ok(resolve.includes("orcRole === 'work' || orcRole === 'review' || orcRole === 'arbiter'"),
+        '编排三角色派生都要识别');
+    assert.ok(resolve.includes('HOST_PRESET_READ_ONLY'), '强制收窄必须走宿主只读 preset（不信任派单参数）');
+    assert.ok(resolve.includes('不支持 isolation=worktree'), '编排派单不得建 worktree（隔离车道也不给）');
+    const spawn = sliceBetween(text, 'async function startSubAgent(', 'async function runSubAgent(');
+    assert.ok(spawn.includes('canSpawn === false'), '父快照 canSpawn=false 时不能再派（层间只收窄）');
+    assert.ok(spawn.includes('resolveSpawnPreset(input, parentSession)'), '派单入口必须走统一 preset 解析（fail-fast 在并发等待之前）');
+});
+
+test('P4d spawn_agent 派单读取 preset 且旧 sandbox 参数直接报错（§11.3 破坏性明示）', () => {
+    const text = sourceOf('ai/agent/ai-subagents.js');
+    const guard = sliceBetween(text, 'function rejectLegacySandboxArg(', 'async function startSubAgent(');
+    // 旧 sandbox 参数：inspectToolArguments 不校验键名（旧键原样透传），拦截只能在执行分支——
+    // rejectLegacySandboxArg 在派单入口直接抛错给新用法指引，不做静默兼容。
+    assert.ok(guard.includes('input.sandbox'), '拒绝守卫必须读取旧 sandbox 参数');
+    assert.ok(guard.includes('sandbox 参数已删除'), '拒绝信息必须带新用法指引（preset）');
+    // preset 解析与编排收窄在 resolveSpawnPreset（startSubAgent 调用它）
+    assert.ok(guard.includes('input.preset'), '派单解析必须读取 input.preset');
+    const spawn = sliceBetween(text, 'async function startSubAgent(', 'async function runSubAgent(');
+    assert.ok(!spawn.includes('input.sandbox'), 'startSubAgent 主体不得读取旧 sandbox 参数');
+    assert.ok(spawn.includes('rejectLegacySandboxArg(input)'), '派单入口必须调用拒绝守卫');
+    assert.ok(spawn.includes('composeAgentCapabilities'), '派单必须合成能力快照');
+    assert.ok(spawn.includes('sub.session.capabilities = sub.capabilities'), '快照必须挂到会话（写入判定消费）');
+    // P0 回归钉：审批通道与工作区根必须从工厂闭包解构（工具 ctx 会遮蔽工厂 ctx）
+    assert.ok(text.includes('const requestActionApproval = typeof ctx.requestActionApproval'), '确认卡通道必须从工厂 deps 解构');
+    assert.ok(text.includes('const getScopeRoot = typeof ctx.getScopeRoot'), 'worktree 工作区根必须从工厂 deps 解构');
 });
 
 test('read_video 下发按会话视频能力裁剪，执行守卫用同一判定', () => {
     const src = sourceOf('ai/agent/ai-subagents.js');
-    const tools = sliceBetween(src, 'function subToolsForScope(', 'function activeSubCount(');
+    const tools = sliceBetween(src, 'function subToolsForCapabilities(', 'function activeSubCount(');
     assert.ok(tools.includes('videoCapableOf(session)'), '子代理 read_video 必须按会话视频能力注册');
     assert.ok(!/\[[^\]]*AI_TOOL_DEFS\.read_video[^\]]*\]/.test(tools),
-        'read_video 不该在数组字面量里无条件注册，应按能力 splice');
+        'read_video 不该在数组字面量里无条件注册，应按能力插位');
 
     const panel = sourceOf('ai/ai-panel.js');
     const branch = sliceBetween(panel, "case 'read_video': {", "case 'search_text': {");
@@ -92,12 +132,13 @@ test('read_video 下发按会话视频能力裁剪，执行守卫用同一判定
 
 test('P7 子代理挂 wait_agent，且等的是自己的收件箱（不指向具体代理）', () => {
     const text = sourceOf('ai/agent/ai-subagents.js');
-    const tools = sliceBetween(text, 'function subToolsForScope(', 'function activeSubCount(');
+    const tools = sliceBetween(text, 'function subToolsForCapabilities(', 'function activeSubCount(');
     // 2026-11-17 实测：子代理工具表没有 wait_agent，用 background 派单后结果只能靠结算通知回流，
     // 那条路对子代理会话不可靠（B 支一条支线的第 5 层汇报丢失）。能派单就必须能收。
-    const pushLine = tools.split('\n').find((line) => line.includes('AI_TOOL_DEFS.wait_agent'));
-    assert.ok(pushLine && /spawn/i.test(pushLine),
-        '能派单的层必须同时挂 wait_agent，否则 background 派单收不回结论');
+    // spawn/wait/agent_send 三件套都在同一个 canSpawn 条件块里（层级 + 快照双闸）。
+    const spawnBlock = sliceBetween(tools, 'if (canSpawn) {', '\n        }');
+    assert.ok(spawnBlock.includes('AI_TOOL_DEFS.wait_agent'), '能派单的层必须同时挂 wait_agent');
+    assert.ok(spawnBlock.includes('AI_TOOL_DEFS.agent_send'), '能派单的层必须同时挂 agent_send（嵌套提问要能作答）');
 
     // 语义已改为 dsh 的「等自己下一步的新输入」：不再按 agentId 定向等，
     // 因此也不再有祖先判定与自等风险（那套守卫随旧实现一起删掉）。
@@ -146,22 +187,21 @@ test('P11 收件箱来源前缀三方可辨：用户插话 / 主代理消息 / �
         '三种来源都必须有独立前缀，否则嵌套时父代理分不清谁说的');
 });
 
-
 test('P12 嵌套提问可作答：能派单的层同时挂 agent_send，且方向限死自己的下级', () => {
     // 2026-11-17 审查发现：buildAskNotice 教父代理用 agent_send(askId=…) 作答，但子代理工具表
     // 里没有它 —— 嵌套时父是子代理，收得到提问却答不了，只能等 120s 放行。
     const text = sourceOf('ai/agent/ai-subagents.js');
-    const tools = sliceBetween(text, 'function subToolsForScope(', 'function activeSubCount(');
-    // 用「同一条 push 语句里带条件」而不是字符距离——距离断言会被无关的文案改动撞红（刚发生过）
-    const sendLine = tools.split('\n').find((line) => line.includes('AI_TOOL_DEFS.agent_send'));
-    assert.ok(sendLine && sendLine.includes('subAgentCanSpawn(depth)'),
+    const tools = sliceBetween(text, 'function subToolsForCapabilities(', 'function activeSubCount(');
+    // 用「同一条件块里挂载」而不是字符距离——距离断言会被无关的文案改动撞红（刚发生过）
+    const spawnBlock = sliceBetween(tools, 'if (canSpawn) {', '\n        }');
+    assert.ok(spawnBlock.includes('AI_TOOL_DEFS.agent_send'),
         'agent_send 必须与「还能派单」同条件（到层级上限的层没有下级）');
     // 方向守卫：子代理只能发自己的下级，不能给祖先 / 兄弟喊话
     const sendFn = sliceBetween(text, 'function sendToSubAgent(', '// agent_stop 执行体');
     assert.ok(sendFn.includes('agentDescendsFrom('), '子代理调用必须过「是不是我的下级」判定');
     assert.ok(sendFn.includes('viewer.parentSessionId'), '只对子代理视角生效，主代理不受限');
     // 系统提示要教它怎么用（否则模型不会想到去回答）
-    const prompt = sliceBetween(text, 'function subSystemPromptFor(', 'function subToolsForScope(');
+    const prompt = sliceBetween(text, 'function subSystemPromptFor(', 'function subToolsForCapabilities(');
     assert.ok(prompt.includes('askId='), '提示里要给出作答形式');
     assert.ok(prompt.includes('只能发给自己派出的下级'), '提示里要写清方向限制');
 });
@@ -171,10 +211,10 @@ test('P13 收尾轮真的不下发工具，幻觉调用直接收尾（不死循�
     // 仍能调 read_file / spawn_agent，调 ask_user 还会空等父代理 120s。
     const text = sourceOf('ai/agent/ai-subagents.js');
     const round = sliceBetween(text, 'const apiMessages = buildApiMessages(', 'async function runSubToolRound(');
-    assert.ok(/const tools = s\.wrapUp \? \[\] : subToolsForScope\(/.test(round),
+    assert.ok(/const tools = s\.wrapUp \? \[\] : subToolsForCapabilities\(/.test(round),
         'wrapUp 时必须传空工具表');
     assert.ok(round.includes('AISendChat(s.roundId, s.profileCfg, apiMessages, tools,'),
-        '请求要用上面算好的 tools，而不是再调一次 subToolsForScope');
+        '请求要用上面算好的 tools，而不是再调一次投影');
     const toolRound = sliceBetween(text, 'async function runSubToolRound(', 'const toolMessage = {');
     assert.ok(toolRound.includes('if (s.wrapUp)'), '收尾轮收到工具调用要单独处理');
     assert.ok(toolRound.includes("finalizeSubAgent(sub, 'done')"), '拒绝后必须立即收尾，不能进下一轮');
@@ -212,6 +252,26 @@ test('P15 嵌套预算继承：子代理再派单未点名 maxRounds 时继承�
     assert.ok(fn.includes('parentLiveSub.maxRounds'), '未点名时继承派出方自己的轮次上限');
     assert.ok(fn.includes('roundsExplicit'), '显式点名仍优先于继承');
     assert.ok(fn.includes('resolveSubAgentRounds(roundsInput,'), '继承值也必须过统一钳制');
+});
+
+test('P16 子代理写判定消费能力快照：deny 规则在前、Go 权威判定在落盘前（§5.2/§5.5）', () => {
+    const panel = sourceOf('ai/ai-panel.js');
+    const branch = sliceBetween(panel, 'let decision;', 'logPermission(\'write\', rel, decision.decision');
+    // 项目 deny/ask 规则先于能力快照（§5.2）：子代理不能审批，ask 同样确定性拒绝
+    assert.ok(branch.includes("evaluatePermissionRules(rules, 'write', rel)"),
+        '子代理分支必须先过项目 write 规则（deny 与 ask 都拦）');
+    assert.ok(branch.includes('subWriteVerdict(subCaps, info.path)'), '子代理分支必须按快照快筛');
+    assert.ok(branch.includes('session.parentSessionId ? session.capabilities'), '只对子代理会话生效，主会话走审批链');
+    assert.ok(branch.includes('decidePermission({'), '主会话 decidePermission 零改动（§0.3 第 2 条）');
+    assert.ok(!branch.includes('agentWorktreeWriteVerdict'), 'worktree 特判不应回归（快照已注入前缀）');
+    // Go 权威判定在编排写闸之后、落盘之前
+    const write = sliceBetween(panel, 'async function applyWorkspaceWrite(', 'function webToolLimit(');
+    const orchAt = write.indexOf('authorizeWrite');
+    const goAt = write.indexOf('backend.WriteBoundaryCheck(');
+    const saveAt = write.indexOf('backend.SaveFileChecked(');
+    assert.ok(orchAt > 0 && goAt > orchAt && saveAt > goAt,
+        'guard 链顺序：编排写闸 → Go 写边界 → SaveFileChecked（§5.2）');
+    assert.ok(write.includes("subCaps.fs.mode === 'workspace-write'"), 'Go 判定只对 workspace-write 生效（full 不设边界）');
 });
 
 test('P6 background_command 分支：沙箱档走 AICommandStartConfined，且先过项目 deny 规则', () => {
@@ -292,6 +352,21 @@ test('P9 HUD 档位标签、后台拒绝分类与作业归属校验', () => {
 
     const stop = sliceBetween(panel, "case 'stop_command': {", "case 'schedule_create': {");
     assert.ok(stop.includes('rootSessionIdOf(ctx.session)'), 'stop_command 必须校验作业归属，不能按 jobId 乱停');
+});
+
+test('P17 复活重建沙箱档与隔离区登记（2026-11-28 审查补的存量缺口）', () => {
+    // 复活（reviveSubAgent）此前不重建 sub.sandboxMode / sub.worktree：HUD 档位徽标退化、
+    // 终态留痕丢 sandbox 标记、systemPrompt 丢 worktree 段、worktreeNamesForSession
+    // 收集不到该隔离区（export/discard 看不见它）。能力快照随 v2 记录恢复后，这三样
+    // 必须从记录里重建。
+    const text = sourceOf('ai/agent/ai-subagents.js');
+    const revive = sliceBetween(text, 'function reviveSubAgent(', '// agent_send 执行体');
+    assert.ok(revive.includes('sub.capabilities = (sub.session && sub.session.capabilities) || READ_ONLY_CAPABILITIES'),
+        '能力快照必须随记录恢复（缺快照按最窄只读兜底）');
+    assert.ok(revive.includes('sub.sandboxMode = sub.capabilities && sub.capabilities.fs'), '沙箱档必须重建');
+    assert.ok(revive.includes('sub.worktree = (sub.session && sub.session.worktree) || null'), '隔离区登记必须重建');
+    assert.ok(revive.includes('!!sub.worktree'), 'systemPrompt 的 worktree 位必须读重建后的值（不是 record.worktree）');
+    assert.ok(revive.includes("toolMessage.agent.sandboxMode = sub.sandboxMode"), '派单卡片档位照常回显');
 });
 
 test('P5 run_command 分支：沙箱时跳过审批并调 AIRunShellCommandConfined', () => {

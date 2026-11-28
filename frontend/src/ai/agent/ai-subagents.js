@@ -8,12 +8,20 @@ import {createAIHeadHud} from './ai-head-hud.js';
 import {createAITeamView} from '../group/ai-team-view.js';
 import {agentTreeText} from '../group/ai-team-model.js';
 import {normalizeWorktreeState} from '../tools/ai-worktree.js';
-import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT} from '../core/ai-constants.js';
+import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT, AI_SCOPES} from '../core/ai-constants.js';
 import {parseJson} from '../../core/json-safe.js';
 import {aiStreamRetryBudget, shouldAutoRetryStream} from '../chat/ai-stream-retry.js';
 import {encodeAgentEvent} from '../session/ai-session-store.js';
 import {encodeAgentRun, normalizeAgentRuns, resumePlanOf} from './ai-agent-resume.js';
-import {createAgentScope, normalizeAgentPreset} from './ai-agent-preset.js';
+import {createAgentScope, presetPromptSections} from './ai-agent-preset.js';
+import {
+    composeAgentCapabilities, subWriteVerdict, subToolDenyText, READ_ONLY_CAPABILITIES,
+} from './agent-capabilities.js';
+import {
+    getAgentPreset, listAgentPresetIds, knownAgentToolNames, isHostPresetId,
+    hasPresetGrant, recordPresetGrant, subagentProjectableToolNames,
+    HOST_PRESET_DEFAULT, HOST_PRESET_READ_ONLY,
+} from './ai-agent-preset-registry.js';
 import {AI_TOOL_DEFS, buildSpawnAgentDef} from '../tools/ai-tool-defs.js';
 import {inspectToolArguments} from '../tools/ai-tool-args.js';
 import {buildSettlementNotice, buildAskNotice, buildFullScopeWarning} from './ai-agent-notices.js';
@@ -206,33 +214,13 @@ export function subTreeIdsOf(subs, rootId) {
     return out;
 }
 
-// 子代理权限档：**继承父会话**，不写死 readonly。
-// 读的边界（工作区内 / 可访问工作区外）由权限档决定，而「只读」由工具白名单
-// （subToolsForScope）保证——子代理拿不到任何写工具，幻觉调用也会被 allowed 集合挡掉。
-// 所以这里继承父档只放开路径范围：父会话是完全权限时，子代理读工作区外文件不该被拦，
-// 否则跨目录调研只能由主代理逐段喂内容，多一层反而更慢更贵。
-const SUB_SCOPES = ['read', 'edit', 'auto', 'full'];
-export function subAgentScopeOf(parentScope) {
-    return SUB_SCOPES.includes(parentScope) ? parentScope : 'read';
-}
-
-// 权限档严格度（数值越大越严）：full < auto < edit < read。
-// 单向降档的唯一判据——「请求档」不比「父档」宽才生效，否则忽略，守住模型不能自我提权。
-const SCOPE_STRICTNESS = Object.freeze({full: 0, auto: 1, edit: 2, read: 3});
-
-// 单向降档（spawn_agent 的 sandbox 参数）：取「父档」与「请求档」中更严的一个。
-// 请求档比父档宽 → 回退父档，绝不升档。这是纯函数，供派单与测试共用。
-//
-// 缺省封顶 auto（2026-11-27 作者定）：不主动传 sandbox 时，子代理权限 = min(auto, 父档)。
-// 理由：full 档子代理此前继承完全权限，命令裸跑不进沙箱、可写工作区外任意路径，而操作留痕
-// 不记命令正文 / 目标路径、子代理转录不落盘，事后基本无法追溯。默认封顶 auto 把写效应
-// （文件工具 + 命令）收敛到写根，读工作区外两种档位本就都放行，调研能力不受损。
-// 显式传 full 仍是逃生舱（确实需要子代理跨目录写时）——此时主代理会收到一条非阻塞警告消息。
-const DEFAULT_SUB_SCOPE_CAP = 'auto';
-export function subScopeDowngrade(parentScope, requested) {
-    const parent = subAgentScopeOf(parentScope);
-    const req = SUB_SCOPES.includes(requested) ? requested : DEFAULT_SUB_SCOPE_CAP;
-    return SCOPE_STRICTNESS[req] >= SCOPE_STRICTNESS[parent] ? req : parent;
+// 子代理会话 scope（纯读边界，§0.3 第 3 条）：工作区外读授权沿用父会话档的实时判定链
+// （ai-read-roots.js 判定时回查父会话，不快照复制），full 封顶 auto——decidePermission 的
+// read 分支对 auto 直接放行工作区外，读能力与 full 档等价。这个字段**不再参与沙箱 / 工具面 /
+// 写判定**（那是能力快照 fs/tools 的事），沙箱模式见 subSandboxPolicy。
+export function subReadScopeOf(parentScope) {
+    if (parentScope === 'full') return 'auto';
+    return AI_SCOPES.includes(parentScope) ? parentScope : 'read';
 }
 
 // 命令审计摘要（路 B 轻量版留痕）：只记命令族（第一个可执行名）与 cwd，绝不记命令正文 /
@@ -254,30 +242,16 @@ export function commandAuditSummary(toolName, input) {
     return Object.keys(detail).length ? detail : null;
 }
 
-// 父权限档 → 子代理沙箱档（方案 docs/finished-plans/subagent-sandbox.md §3.1）。
-// 本产品没有独立的 sandbox 状态，权限档就是子代理的命令边界：edit 档的写审批依赖
-// 「人在场」，子代理没有审批通道，所以只给 read-only；full 档按决策继承完全权限。
-export const SUB_SANDBOX_MODE_BY_SCOPE = Object.freeze({
-    read: 'read-only',
-    edit: 'read-only',
-    auto: 'workspace-write',
-    full: 'danger-full-access',
-});
-
-export function subSandboxModeOf(scope) {
-    return SUB_SANDBOX_MODE_BY_SCOPE[subAgentScopeOf(scope)] || 'read-only';
-}
-
-// 子代理的沙箱策略；**主会话返回 null**（主会话的边界是审批链，不是沙箱）。
-//
-// workspaceRoot 优先取隔离 worktree 的绝对路径，其次会话工作区，再其次调用方给的范围根。
-// 三者都取不到就留空——由 Go 侧 fail-closed 拒绝 workspace-write，绝不在这里悄悄降级成
-// 「不沙箱」。
+// 子代理的命令沙箱策略；**主会话返回 null**（主会话的边界是审批链，不是沙箱）。
+// 沙箱档来自能力快照 fs.mode（派出时定死），不再从 scope 反推（§5.4）；workspaceRoot 由
+// 快照在派单时解析定死（worktree 优先、其次会话工作区）。快照缺失（异常 / 旧数据）按最窄
+// read-only 处理，绝不在这里悄悄降级成「不沙箱」；取不到根留空 → Go 侧 fail-closed 拒绝。
 export function subSandboxPolicy(session, fallbackRoot) {
     if (!session || !session.parentSessionId) return null;
+    const fs = session.capabilities && session.capabilities.fs ? session.capabilities.fs : READ_ONLY_CAPABILITIES.fs;
     const wt = normalizeWorktreeState(session.worktree);
-    const root = (wt && aiTextOf(wt.path)) || aiTextOf(session.workspace) || aiTextOf(fallbackRoot);
-    return {mode: subSandboxModeOf(session.scope), workspaceRoot: root};
+    const root = aiTextOf(fs.workspaceRoot) || (wt && aiTextOf(wt.path)) || aiTextOf(session.workspace) || aiTextOf(fallbackRoot);
+    return {mode: fs.mode, workspaceRoot: root};
 }
 
 // 工具主参数速览：优先取「点名到具体对象」的字段，避免把整段 JSON 塞进工具行标题。
@@ -392,6 +366,12 @@ export function createAISubagents(ctx) {
     const notifyFailure = typeof ctx.notifyFailure === 'function' ? ctx.notifyFailure : () => {};
     const renderMarkdown = ctx.renderMarkdown;
     const openTermTab = ctx.openTermTab;
+    // 能力确认卡（§6.3）与隔离 worktree 的工作区根：**必须从工厂 deps ctx 解构**——
+    // startSubAgent(ctx, input) 的形参 ctx 是工具 ctx（只有 session/toolMessage/stream），
+    // 会遮蔽工厂 ctx；曾因直接读 ctx.requestActionApproval / ctx.getScopeRoot 导致确认卡
+    // 永不弹、worktree 派单恒抛「没有工作区范围」（2026-11-28 审查实证）。
+    const requestActionApproval = typeof ctx.requestActionApproval === 'function' ? ctx.requestActionApproval : null;
+    const getScopeRoot = typeof ctx.getScopeRoot === 'function' ? ctx.getScopeRoot : null;
     // 详情视图的宿主出口：主窗口在内容区开标签页（bridge-agent-view.js），悬浮窗退回面板覆盖层
     const openAgentTab = typeof ctx.openAgentTab === 'function' ? ctx.openAgentTab : null;
     const isFloatWindow = typeof ctx.isFloatWindow === 'function' ? ctx.isFloatWindow : () => false;
@@ -477,9 +457,28 @@ export function createAISubagents(ctx) {
     // 只留摘要（不可续）的记录上限：降级本身不再占用"活跃记录"配额，
     // 但也不能无限留壳，超出后从最旧的降级记录开始真删。
     const AI_SUB_DEGRADED_MAX = 8;
-    const AI_SUB_SYSTEM_PROMPT = [
+    // 子代理系统提示（§12.1）：只读 / 写授权两套开场白 + 公共尾部，按能力快照拼装；
+    // preset 的 promptSections（persona / 角色文案）追加在末尾。越权防护话术（工具面派出时
+    // 固定）是公共的——写授权只改变「能不能写」，不改变「不能从会话内升权」。
+    // 三套开场白按**实际工具面**（tools.allow 里有没有写工具）选择，不是按 fs.mode：
+    // host.default 在 auto 父档下 fs.mode=workspace-write 但没有写工具（写效应只经沙箱命令），
+    // 按 mode 选会让提示词承诺工具面没有的能力（2026-11-28 审查指出的三处失真）。
+    // commandOn：只读头的「不要执行命令」与命令通道段落自相矛盾，按 execution.command 联动。
+    const AI_SUB_PROMPT_HEADER_READONLY = (commandOn) => [
         '你是主代理派出的只读子代理：独立完成任务后输出最终结论，不与用户直接交互。',
-        '约束：只做只读探索（列目录 / 读文件 / 看图片（本地文件或公网图片 URL）/ 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
+        '约束：只做只读探索（列目录 / 读文件 / 看图片（本地文件或公网图片 URL）/ 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件'
+            + (commandOn ? '；命令通道仅用于只读验证（写效应会被沙箱拒绝）' : '；不要尝试执行命令')
+            + '；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
+    ].join('\n');
+    const AI_SUB_PROMPT_HEADER_WRITE = (rootsText) => [
+        '你是主代理派出的子代理：独立完成任务后输出最终结论，不与用户直接交互。',
+        '约束：文件写入只落在授权的可写范围内（' + rootsText + '），范围外写入会被直接拒绝；其余操作与只读子代理同一边界；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
+    ].join('\n');
+    const AI_SUB_PROMPT_HEADER_FULL = [
+        '你是主代理派出的完全权限子代理：独立完成任务后输出最终结论，不与用户直接交互。',
+        '约束：文件写入没有路径边界（完全授权，可写工作区外任意路径）、命令不进沙箱——只在任务确有必要时动用；操作留痕不记命令正文与目标路径，事后难以追溯；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
+    ].join('\n');
+    const AI_SUB_PROMPT_TAIL = [
         '你的工具范围在派出时已固定，无法从会话内放宽：范围外工具会被直接拒绝——不要换参数或写法重试，在最终结论中说明该限制即可，由主代理决定如何处理。',
         'timer_list 是主会话计时器的只读共享时钟：可用来对齐时间基准（正计时已计时长 / 倒计时剩余），但不能启动、停止或打标记；读数只是调用瞬间的快照，不会阻塞等待，不要靠反复调用来「等 N 秒」。',
         // 投递契约（§4.8）：投递层不截断（阶段 B 移除了 8000 字符上限），结论的紧凑性靠这里自律。
@@ -607,13 +606,27 @@ export function createAISubagents(ctx) {
         return !maxDepth || depth + 1 < maxDepth;
     }
 
-    function subSystemPromptFor(depth, mode, hasWorktree) {
-        let text = AI_SUB_SYSTEM_PROMPT;
+    function subSystemPromptFor(depth, mode, caps, hasWorktree) {
+        const fs = caps && caps.fs ? caps.fs : READ_ONLY_CAPABILITIES.fs;
+        const commandOn = !!(caps && caps.execution && caps.execution.command === 'sandboxed');
+        const allow = new Set(caps && caps.tools && Array.isArray(caps.tools.allow) ? caps.tools.allow : []);
+        const canWriteFiles = allow.has('write_file') || allow.has('edit_file');
+        // 开场白按实际工具面选（见上方三套头部常量的注释）：写工具在 → WRITE / FULL；
+        // 没有写工具 → READONLY（命令段措辞随 execution.command 联动）。
+        let text;
+        if (canWriteFiles && fs.mode === 'danger-full-access') {
+            text = AI_SUB_PROMPT_HEADER_FULL;
+        } else if (canWriteFiles) {
+            text = AI_SUB_PROMPT_HEADER_WRITE((fs.writableRoots || []).join('、') || '（见派单信息）');
+        } else {
+            text = AI_SUB_PROMPT_HEADER_READONLY(commandOn);
+        }
         if (mode === 'background') {
             text += '\n你在后台运行：主代理不会等你结束，完成后由系统把结论通知给它；期间可以安心把探索做完整。';
             text += '\n关键决策点可以用 ask_user 向主代理提问（由主代理决定答案，或转询用户）：等待回答期间你的轮次暂停，约 2 分钟没有回答就请基于现有上下文自行决定并继续。';
         }
-        if (subAgentCanSpawn(depth)) {
+        // 再派下层：层级允许 + 快照 delegation.canSpawn 双闸（快照只收窄不放宽，§3）。
+        if (subAgentCanSpawn(depth) && (!caps || caps.delegation.canSpawn !== false)) {
             text += '\n需要并行 / 隔离调查时可以再用 spawn_agent 派下一层只读子代理（并发数与层级受设置限制）；简单问题直接自己做。'
                 + '\n用 mode=\'background\' 派出后可以 wait_agent 等下一步输入：下级的完成通知会进你的收件箱，'
                 + '任一回报到达时 wait 立即返回，你在下一轮开头读到；不 wait 也可以，通知同样会在下一轮注入。'
@@ -625,27 +638,53 @@ export function createAISubagents(ctx) {
             text += '\n你有一个隔离 git worktree 作为草稿工作区：所有文件改动写到 .cadt/worktree/<slug>/…（相对范围根，路径见派单信息），隔离前缀之外的写会被拒绝；写操作自动应用（隔离区即审批边界），隔离前缀之外一律不要写。'
                 + '\n不要 commit 到隔离分支；完成后在结论里列出你改动的文件清单，由主代理决定是否导出补丁回灌主根。';
         }
-        // 命令通道（所有子代理都有，主会话没有沙箱）：sandbox 档的 shell 是 PowerShell，
-        // 模型必须提前知道，否则会照着 bash 习惯写 ls / grep / sed 然后一头撞死。
-        text += '\n你可以用 run_command 验证结论（跑测试、git log、查版本、看构建是否还过）。命令在 OS 沙箱里执行：'
-            + (hasWorktree
-                ? '写效应只允许落在你的隔离 worktree（.cadt/worktree/<slug>/）内'
-                : '写效应只允许落在本次任务的工作区根内')
-            + '，其余写入由系统拒绝。'
-            + '\n**沙箱里的 shell 是 PowerShell，不是 bash**：用 PowerShell 语法（Get-ChildItem / Select-String / Test-Path），不要用 ls / grep / sed / awk；git、go、npm 等外部命令本身不受影响。'
-            + '\n耗时任务（构建、长测试、watch）用 background_command 起、check_command 轮询、stop_command 收尾，别用 run_command 干等。'
-            + '\n被沙箱拒绝或提示「沙箱不可用」时不要重试、不要绕道用别的工具改文件，在结论里如实写「因沙箱限制未验证」。'
-            + '\n其中报「授权写根 … Access is denied」是宿主机权限问题（工作区目录属于另一个账户，当前账户没有它的「更改权限」），'
-            + '本次会话的命令通道不可用：改用只读工具完成调查，并在结论里说明哪些结论未用命令验证。';
+        if (commandOn) {
+            // 命令通道（沙箱档）：shell 是 PowerShell，模型必须提前知道，否则会照着 bash 习惯写
+            // ls / grep / sed 然后一头撞死。命令边界来自快照 fs.mode（§5.4）。
+            text += '\n你可以用 run_command 验证结论（跑测试、git log、查版本、看构建是否还过）。命令在 OS 沙箱里执行：'
+                + (hasWorktree
+                    ? '写效应只允许落在你的隔离 worktree（.cadt/worktree/<slug>/）内'
+                    : '写效应只允许落在本次任务的工作区根内')
+                + '，其余写入由系统拒绝。'
+                + '\n**沙箱里的 shell 是 PowerShell，不是 bash**：用 PowerShell 语法（Get-ChildItem / Select-String / Test-Path），不要用 ls / grep / sed / awk；git、go、npm 等外部命令本身不受影响。'
+                + '\n耗时任务（构建、长测试、watch）用 background_command 起、check_command 轮询、stop_command 收尾，别用 run_command 干等。'
+                + '\n被沙箱拒绝或提示「沙箱不可用」时不要重试、不要绕道用别的工具改文件，在结论里如实写「因沙箱限制未验证」。'
+                + '\n其中报「授权写根 … Access is denied」是宿主机权限问题（工作区目录属于另一个账户，当前账户没有它的「更改权限」），'
+                + '本次会话的命令通道不可用：改用只读工具完成调查，并在结论里说明哪些结论未用命令验证。';
+        } else {
+            text += '\n你没有命令通道（run_command / background_command 未授权）：不要尝试执行命令；'
+                + '需要验证的结论在最终结论中如实写「未用命令验证」。';
+        }
+        // preset 的提示片段（§4.1 promptSections）：persona / 角色文案追加在基础提示之后；
+        // preset 已卸载时按快照能力降级运行（§8.2），片段自然消失即可，不报错。
+        if (caps && caps.preset) {
+            const entry = getAgentPreset(caps.preset);
+            const sections = entry ? presetPromptSections(entry.preset) : '';
+            if (sections) text += '\n\n' + sections;
+        }
         return text;
     }
 
-    function subToolsForScope(depth, mode, hasWorktree, session) {
+    // 子代理工具面投影（§5.1）：由能力快照 tools.allow/deny 决定「许可」，环境条件决定
+    // 「可用」——视频能力 / 认知开关 / 后台 ask_user / 层级再派都是环境闸，不是权限闸。
+    // 快照在派单时定死（不可变），集合在每个模型步骤前重新解析（兼容插件动态注册的
+    // 环境变化）；已开始的调用继续执行，新步骤使用新集合。
+    function subToolsForCapabilities(sub) {
+        const caps = sub && sub.capabilities ? sub.capabilities : READ_ONLY_CAPABILITIES;
+        const allow = new Set(caps.tools && Array.isArray(caps.tools.allow) ? caps.tools.allow : []);
+        const deny = new Set(caps.tools && Array.isArray(caps.tools.deny) ? caps.tools.deny : []);
+        const has = (name) => allow.has(name) && !deny.has(name);
+        const session = sub.session;
+        const depth = sub.depth;
+        const mode = sub.mode;
+        // 再派下层：层级允许 + 快照 delegation.canSpawn 双闸（快照只收窄不放宽，§3）。
+        const canSpawn = subAgentCanSpawn(depth)
+            && (!caps.delegation || caps.delegation.canSpawn !== false);
+        // 顺序与旧实现一致：read_video 保持 splice(4,0) 位次契约（code_outline 注释同源）。
         const list = [
             AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.read_image, AI_TOOL_DEFS.search_text,
             AI_TOOL_DEFS.web_search, AI_TOOL_DEFS.web_fetch,
-            // 代码大纲：只读读取（子代理只读档不挂写工具，maintain 由会话权限档判定）。
-            // 放在 read_video 的 splice(4,0) 插入点之后，不动其顺序契约。
+            // 代码大纲：只读读取（maintain 由会话权限档判定）。
             AI_TOOL_DEFS.code_outline,
             AI_TOOL_DEFS.memory_list, AI_TOOL_DEFS.memory_read,
             // 主会话计时器的只读快照：子代理与孙代理共享本表，只有读权（不能启动 / 停止 / 打标记）
@@ -653,32 +692,46 @@ export function createAISubagents(ctx) {
             // 团队树只读：子代理看到自己这一支（含自己派出的下级），用于汇报结构 / 拿下级 id
             AI_TOOL_DEFS.agent_tree,
             AI_TOOL_DEFS.skill_use, AI_TOOL_DEFS.env_list,
-        ];
-        // 认知索引只读两件（可选启用，默认关，§5.2）：调查任务可查条目；edit 不派——白名单
-        // 成文不变量「子代理拿不到任何写工具」，发现条目该维护时汇报回父代理去 cognition_edit。
-        if (typeof ctx.cognitionOn === 'function' && ctx.cognitionOn()) {
+        ].filter((def) => has(def.name));
+        // 认知索引只读两件（可选启用，默认关，§5.2）：调查任务可查条目；edit 不派——发现条目
+        // 该维护时汇报回父代理去 cognition_edit（快照写能力不含它）。
+        if (has('cognition_read') && typeof ctx.cognitionOn === 'function' && ctx.cognitionOn()) {
             list.push(AI_TOOL_DEFS.cognition_read, AI_TOOL_DEFS.cognition_status);
         }
         // ask_user 只在后台模式挂载（§4.5 原语 6 的实现陷阱）：阻塞模式的父回合被 await
         // 占住，没人能回答，挂上去必然 120s 超时——按模式硬性区分，不靠提示词自觉。
-        if (mode === 'background') list.push(AI_TOOL_DEFS.ask_user);
-        if (subAgentCanSpawn(depth)) list.push(buildSpawnAgentDef(subAgentModelChoices(), subAgentRoundsDefault()), AI_TOOL_DEFS.wait_agent);
-        // agent_send 与 spawn/wait 同批挂：能派单就必须能收回报、也能回答下级的提问。
-        // 此前只有主代理有它，于是嵌套提问（层3 问 → 层2 答）在层2 手里没有作答工具，
-        // 只能等 120s 超时按 ai_decide 放行（2026-11-17 审查发现，方案文档 §5）。
-        // 只有「还能派单的层」才可能有下级，到层级上限的层给了也没对象；方向限死为自己的下级。
-        if (subAgentCanSpawn(depth)) list.push(AI_TOOL_DEFS.agent_send);
-        // 隔离 worktree 子代理：挂写工具（写效应圈定在自己的隔离前缀内，applyWorkspaceWrite
-        // 里闸；审批链不适用于子代理——隔离区即审批边界，回灌由主代理 export 走人工 patch 卡）。
-        if (hasWorktree) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file);
-        // 命令通道：一律走 OS 沙箱（docs/finished-plans/subagent-sandbox.md），写效应圈在
-        // cwd / 隔离 worktree 内，子代理永不弹审批。沙箱不可用时工具直接报错，不降级裸跑。
+        // 快照 interaction.askParent=false（§0.1 第 3 条拆分）时不挂。
+        if (has('ask_user') && mode === 'background'
+            && (!caps.interaction || caps.interaction.askParent !== false)) list.push(AI_TOOL_DEFS.ask_user);
+        if (canSpawn) {
+            list.push(buildSpawnAgentDef(subAgentModelChoices(), subAgentRoundsDefault()), AI_TOOL_DEFS.wait_agent);
+            // agent_send 与 spawn/wait 同批挂：能派单就必须能收回报、也能回答下级的提问。
+            // 此前只有主代理有它，于是嵌套提问（层3 问 → 层2 答）在层2 手里没有作答工具，
+            // 只能等 120s 超时按 ai_decide 放行（2026-11-17 审查发现，方案文档 §5）。
+            // 只有「还能派单的层」才可能有下级，到层级上限的层给了也没对象；方向限死为自己的下级。
+            list.push(AI_TOOL_DEFS.agent_send);
+        }
+        // 写工具：只由快照 tools.allow 决定（§5.3）——worktree 是隔离方式，不再是写工具开关；
+        // worktree 子代理的快照在派单时已注入 write_file / edit_file 与前缀 writableRoots。
+        if (has('write_file')) list.push(AI_TOOL_DEFS.write_file);
+        if (has('edit_file')) list.push(AI_TOOL_DEFS.edit_file);
+        // 命令通道：快照 execution.command='sandboxed' 才挂（'denied' = 不挂载，§5.4），写效应
+        // 圈在快照 fs 的沙箱根内，子代理永不弹审批。沙箱不可用时工具直接报错，不降级裸跑。
         // 后台三件套必须一起挂：只给 background_command 而不给 check/stop，模型起了作业
         // 也读不到、停不掉（等于把进程扔在后台自生自灭）。
-        list.push(AI_TOOL_DEFS.run_command, AI_TOOL_DEFS.background_command,
-            AI_TOOL_DEFS.check_command, AI_TOOL_DEFS.stop_command);
-        // read_video 夹在 read_image 之后：子代理会话能接收视频才注册（与主会话同判定）
-        if (videoCapableOf(session)) list.splice(4, 0, AI_TOOL_DEFS.read_video);
+        if (caps.execution && caps.execution.command === 'sandboxed') {
+            for (const def of [AI_TOOL_DEFS.run_command, AI_TOOL_DEFS.background_command,
+                AI_TOOL_DEFS.check_command, AI_TOOL_DEFS.stop_command]) {
+                if (has(def.name)) list.push(def);
+            }
+        }
+        // read_video 插位契约与旧实现一致（search_text 之后、web_search 之前）：子代理会话能
+        // 接收视频才注册（与主会话同判定）；上游被快照收窄时按相邻只读工具兜底。
+        if (has('read_video') && videoCapableOf(session)) {
+            const anchor = list.includes(AI_TOOL_DEFS.search_text) ? list.indexOf(AI_TOOL_DEFS.search_text)
+                : (list.includes(AI_TOOL_DEFS.read_image) ? list.indexOf(AI_TOOL_DEFS.read_image) : -1);
+            list.splice(anchor >= 0 ? anchor + 1 : 0, 0, AI_TOOL_DEFS.read_video);
+        }
         return list;
     }
 
@@ -799,6 +852,80 @@ export function createAISubagents(ctx) {
     // 建记录 + 注册 + 启动首轮，**不等待终态**（阶段 B 把 spawn 拆成 start / await 两段）。
     // mode='background'：超限直接报错、立即返回 agentId，主代理继续自己的回合；
     // mode='blocking'（默认）：等待空位后阻塞——行为与旧实现逐字一致，工具结果仍是唯一出口。
+    // 旧 sandbox 参数已删除（能力快照方案 §11.3）：不做静默兼容，直接报错并给新用法指引——
+    // 依赖旧行为的提示词 / 技能必须有失败信号，否则旧逃生舱（sandbox:'full'）静默失效。
+    // inspectToolArguments 不校验参数键名，旧键会原样透传到这里，执行分支是唯一拦截点。
+    function rejectLegacySandboxArg(input) {
+        const legacy = aiTextOf(input && input.sandbox).trim();
+        if (legacy) {
+            throw new Error('spawn_agent 的 sandbox 参数已删除（能力快照方案）：请改用 preset 参数'
+                + '（host.default / host.read-only / host.full-write 或插件角色 id）。本次派单被拒绝，sandbox 值：' + legacy);
+        }
+    }
+
+    // preset 解析（§4 / §10.5 阶段零）：编排会话（Worker / 审查者 / 仲裁者）派生的一切子代理
+    // 强制收窄为只读 preset——宿主侧注入，不信任派单参数（阶段零硬前置：owns 写闸对子代理
+    // 会话 fail-open，见 orchestration-ui.js authorizeWrite；「写闸认子代理 + fail-closed」
+    // 是独立后续项，修好前强制收窄是唯一防线）。未注册的 preset 直接失败，错误信息带
+    // 合法候选清单（§4.2）。放在并发等待之前调用：fail-fast，没理由等空位等完再报错。
+    function resolveSpawnPreset(input, parentSession) {
+        const orcRole = parentSession.orchestration && parentSession.orchestration.role
+            ? String(parentSession.orchestration.role) : '';
+        const forcedReadOnly = orcRole === 'work' || orcRole === 'review' || orcRole === 'arbiter';
+        if (forcedReadOnly && String(aiTextOf(input && input.isolation)).trim() === 'worktree') {
+            throw new Error('编排会话（' + orcRole + '）派生的子代理强制只读，不支持 isolation=worktree 隔离');
+        }
+        const requestedPresetId = forcedReadOnly ? HOST_PRESET_READ_ONLY : aiTextOf(input && input.preset).trim();
+        const presetEntry = getAgentPreset(requestedPresetId || HOST_PRESET_DEFAULT);
+        if (!presetEntry) {
+            throw new Error('preset「' + requestedPresetId + '」未注册或已卸载。可用 preset：'
+                + listAgentPresetIds().join('、'));
+        }
+        return presetEntry;
+    }
+
+    // 能力确认（§6.3）：涉工作区写入的插件 preset，首次派单时走主会话审批卡一次性确认——
+    // 不是每次操作弹卡；确认记录按「插件 + preset + 工作区 + 声明摘要」保存，插件把
+    // writableRoots 改宽后旧确认自动失效、重新弹卡。审批通道读**工厂闭包**的
+    // requestActionApproval（工厂 deps 解构，见上方遮蔽注释）。嵌套派单（父是子代理）没有
+    // 审批通道，未确认一律降级只读。worktree 隔离不受此闸约束：它是隔离车道（改动经
+    // export 人工审批回灌），不是 preset 写能力。返回 grantPresetWrite（是否放行 preset 写能力）。
+    async function confirmPresetWriteGrant(parentSession, parentLiveSub, toolMessage, presetEntry) {
+        if (isHostPresetId(presetEntry.preset.id)) return true;
+        const decl = presetEntry.preset.fs || {};
+        const writeCapable = decl.mode === 'workspace-write'
+            || (Array.isArray(presetEntry.preset.tools)
+                && (presetEntry.preset.tools.includes('write_file') || presetEntry.preset.tools.includes('edit_file')));
+        if (!writeCapable) return true;
+        if (hasPresetGrant(presetEntry.owner, presetEntry.preset.id, parentSession.workspace, decl)) return true;
+        if (parentLiveSub || !requestActionApproval) return false;
+        const rootsText = (decl.writableRoots || []).join('、') || '整个工作区';
+        const answer = await ctx.requestActionApproval(parentSession, toolMessage, {
+            action: 'agent-preset-grant',
+            title: 'AI 请求授予子代理 preset 写入能力',
+            target: 'preset「' + (presetEntry.preset.name || presetEntry.preset.id) + '」（插件 ' + presetEntry.owner + '）',
+            newValue: '工作区写入：' + rootsText,
+            risk: 'high',
+            warnings: [
+                '该 preset 的子代理可以直接修改授权范围内的文件（不再逐次审批）',
+                '可写范围由插件声明：' + rootsText,
+                '拒绝后本次子代理按只读运行；确认按 插件 + preset + 工作区 记住一次，preset 声明改动后需重新确认',
+            ],
+            source: '主代理派单点名 preset：' + presetEntry.preset.id,
+        });
+        if (answer && answer.approved) {
+            recordPresetGrant(presetEntry.owner, presetEntry.preset.id, parentSession.workspace, decl);
+            return true;
+        }
+        if (answer && answer.cancelled) {
+            // 用户按了停止：整次派单中止——「停止」是本轮语义，不是「拒绝写能力」，
+            // 绝不能带着一个用户没拍板的子代理继续跑。
+            throw new Error('用户已停止生成，派单取消。');
+        }
+        // 显式拒绝：本次子代理按只读降级（§6.3 拒绝后恢复默认只读），派单继续
+        return false;
+    }
+
     async function startSubAgent(ctx, input) {
         if (!backend.AISendChat) throw new Error('当前版本不支持子代理');
         const mode = String(aiTextOf(input && input.mode) || 'blocking').toLowerCase() === 'background'
@@ -806,13 +933,22 @@ export function createAISubagents(ctx) {
         const name = aiTextOf(input.name).trim() || '子代理';
         const task = aiTextOf(input.task).trim();
         if (!task) throw new Error('task 不能为空');
+        rejectLegacySandboxArg(input);
         // 预算继承（2026-11-18 bug-hunt 实测缺陷）：嵌套派单（派出方本身是子代理）未点名
         // maxRounds 时继承派出方自己的轮次上限，而不是每层都落回设置默认——否则中间层
         // 预算先耗尽强制收尾，还在跑的下级成孤儿，结论投递两头落空（见 adoptOrphanChildren）。
         // 主代理派单不继承（主会话不是子代理，走设置默认）；显式点名永远优先。
         const spawnCallerSession = (ctx && ctx.session) || null;
+        const parentSession = ctx.session;
         const parentLiveSub = spawnCallerSession && spawnCallerSession.parentSessionId
             ? subAgents.get(spawnCallerSession.id) : null;
+        // 再派下层的快照闸（§3 delegation）：父代理快照 canSpawn=false（如编排强制收窄的
+        // 只读 preset）就不允许再派——层间传递只收窄不放宽。
+        if (parentLiveSub && parentLiveSub.capabilities
+            && parentLiveSub.capabilities.delegation && parentLiveSub.capabilities.delegation.canSpawn === false) {
+            throw new Error('你的能力快照不允许再派子代理（只读授权）：请自己完成调查并在最终结论中汇报');
+        }
+        const presetEntry = resolveSpawnPreset(input, parentSession);
         const roundsExplicit = input ? input.maxRounds : undefined;
         const roundsInput = (roundsExplicit === null || roundsExplicit === undefined || roundsExplicit === '')
             ? (parentLiveSub ? parentLiveSub.maxRounds : undefined)
@@ -820,7 +956,14 @@ export function createAISubagents(ctx) {
         const maxRounds = resolveSubAgentRounds(roundsInput, getConfig().subAgentRounds);
         const parentDepth = aiClampInt(ctx && ctx.agentDepth, 0, AI_SUB_DEPTH_MAX, 0);
         const depth = parentDepth + 1;
-        const maxDepth = subAgentMaxDepth();
+        // 层级上限 = 全局设置与父快照 delegation.maxDepth 取 min（§3：快照只收窄不放宽）。
+        const parentCapsMaxDepth = (parentLiveSub && parentLiveSub.capabilities
+            && Number(parentLiveSub.capabilities.delegation.maxDepth) > 0)
+            ? Number(parentLiveSub.capabilities.delegation.maxDepth) : 0;
+        const globalMaxDepth = subAgentMaxDepth();
+        const maxDepth = globalMaxDepth && parentCapsMaxDepth
+            ? Math.min(globalMaxDepth, parentCapsMaxDepth)
+            : (globalMaxDepth || parentCapsMaxDepth);
         // 层号含主代理（主代理 = 第 1 层），depth 从主代理派出的第 1 层子代理开始算。
         if (maxDepth && depth + 1 > maxDepth) {
             throw new Error('子代理层级已达上限（最多 ' + maxDepth + ' 层，含主代理）');
@@ -836,7 +979,6 @@ export function createAISubagents(ctx) {
             }
             while (activeSubCount() >= limit) await aiDelay(300);
         }
-        const parentSession = ctx.session;
         // 子代理归属到「根会话」：头部智能体团队 / 后台终端按会话展示时，
         // 嵌套子代理派出的任务也算在最初那个会话名下。
         const rootSessionId = rootSessionIdOf(parentSession);
@@ -853,6 +995,7 @@ export function createAISubagents(ctx) {
         const entry = modelTarget ? modelTarget.entry : entryOf(parentSession);
         if (!profile) throw new Error('无可用 AI 配置');
         const toolMessage = ctx.toolMessage;
+        const grantPresetWrite = await confirmPresetWriteGrant(parentSession, parentLiveSub, toolMessage, presetEntry);
         // id 先落到局部变量：对象字面量里的 agentCtx 要用它当 owner，若在 sub 初始化期间
         // 直接写 sub.id 会触发暂时性死区（Cannot access 'sub' before initialization，
         // 压缩后变量名形如 ur）——对象字面量求值完成前 const sub 尚未初始化。
@@ -880,8 +1023,9 @@ export function createAISubagents(ctx) {
             flow: null,
             inbox: newSubInbox(),
             // 每 live agent 的扁平注册层 agent.ctx（S6）：工具 / 提示 / 变量只对该 agent 可见，
-            // 终态时由 finalizeSubAgent dispose，不残留、不串到别的 agent。
-            agentCtx: createAgentScope({owner: subId, realm: ''}),
+            // 终态时由 finalizeSubAgent dispose，不残留、不串到别的 agent。realm 取 preset 的
+            // 隔离域（点分命名空间），preset 的工具 / 提示 / 变量在快照合成后铺进作用域。
+            agentCtx: createAgentScope({owner: subId, realm: presetEntry.preset.realm || ''}),
         };
         toolMessage.agent = {
             key: sub.key,
@@ -916,9 +1060,9 @@ export function createAISubagents(ctx) {
             ctxLimit: Number(parentSession.ctxLimit) || 0,
             systemPrompt: parentSession.systemPrompt || '',
             promptTemplateId: parentSession.promptTemplateId || '',
-            // 权限档：默认继承父会话，spawn_agent 点名 sandbox 时单向降档（只严不宽）。
-            // 完全权限下才能读到工作区外，否则 read_file 的绝对路径会被按「路径超出工作区范围」拒掉。
-            scope: subScopeDowngrade(parentSession.scope, input && input.sandbox),
+            // 权限档退化为纯读边界（§0.3 第 3 条）：full 封顶 auto，其余继承父档；读授权判定时
+            // 实时回查父会话（ai-read-roots），写与工具面由能力快照决定（不再走 scope）。
+            scope: subReadScopeOf(parentSession.scope),
             planMode: false,
             // from:'agent'：派单 task 是主代理模型写的，不是用户输入——「用户点名路径」判定
             // （ai-read-roots.js userNamedPath）据此排除，防止注入经派单文本伪造点名。
@@ -934,13 +1078,44 @@ export function createAISubagents(ctx) {
         };
         sub.profile = profile;
         sub.entry = entry;
+        // 每 agent 注册层铺上 preset 的工具 / 提示 / 变量（S6，§4.4）：能力快照是它的输入之一，
+        // 不是替代——createAgentScope 仍是该 agent 的注册层，normalizeAgentPreset 仍是唯一归一化入口。
+        // 尽力而为：铺装失败只影响 preset 声明的提示片段 / 变量（能力面走快照），不阻断派单。
+        try {
+            sub.agentCtx.applyPreset(presetEntry.preset);
+        } catch (e) {}
         const assistant = newAssistantMessage(profile, entry);
         sub.session.messages.push(assistant);
+        // 能力快照预跑校验（worktreePath 置空）：把 preset 非法工具名 / 父档不足 / 可写根逃逸
+        // 等非法情形全部提前到 GitWorktreeAdd 之前暴露——否则合成失败会把已建的隔离区变成
+        // 磁盘孤儿（sub 未注册，worktree_manage 的 export/discard 都看不见它）。worktree 注入
+        // 分支只做收窄、不引入新的失败源，预跑通过则下方正式合成必过。
+        try {
+            composeAgentCapabilities({
+                preset: presetEntry.preset,
+                owner: presetEntry.owner,
+                parentScope: parentSession.scope,
+                parentSessionId: parentSession.id,
+                workspaceRoot: parentSession.workspace || '',
+                worktreePath: '',
+                parentToolFace: parentLiveSub && parentLiveSub.capabilities
+                    ? parentLiveSub.capabilities.tools.allow
+                    : null,
+                knownTools: knownAgentToolNames(),
+                projectableTools: subagentProjectableToolNames(),
+                globalMaxDepth,
+                parentCapsMaxDepth,
+                grantPresetWrite,
+            });
+        } catch (e) {
+            throw new Error('子代理能力合成失败：' + ((e && e.message) || e));
+        }
         // 隔离 worktree（spawn isolation='worktree'）：给子代理一份独立草稿区，写效应圈定在
         // .cadt/worktree/<slug>/ 内。创建失败让 spawn 直接报错——静默降级会让子代理把改动
         // 写进主根，违背隔离承诺。label 用子代理名（Go 侧 slugify + sub.id 尾段保证唯一）。
+        // getScopeRoot 读工厂闭包（工具 ctx 没有它，见上方遮蔽注释）。
         if (String(aiTextOf(input && input.isolation)).trim() === 'worktree') {
-            const root = typeof ctx.getScopeRoot === 'function' ? ctx.getScopeRoot() : '';
+            const root = getScopeRoot ? aiTextOf(getScopeRoot()) : '';
             if (!root) throw new Error('当前没有工作区范围：隔离 worktree 建在主根的 .cadt/worktree/ 下，请先打开文件夹');
             let added;
             try {
@@ -951,13 +1126,38 @@ export function createAISubagents(ctx) {
             sub.worktree = {name: added.name, branch: added.branch, path: added.path, baseSha: added.baseSha, createdAt: Date.now()};
             sub.session.worktree = sub.worktree;
         }
+        // 能力快照合成（§3 / §10.3）：preset × 派单参数 × 父级约束在派单时一次算死，运行期
+        // 不可变（deep freeze）、续跑不能扩大。相对可写根在这里相对会话工作区解析为绝对路径
+        // 并定死；worktree 已创建后传前缀，快照注入 writableRoots = 前缀 + 写工具（§7 语义纯化）。
+        try {
+            sub.capabilities = composeAgentCapabilities({
+                preset: presetEntry.preset,
+                owner: presetEntry.owner,
+                parentScope: parentSession.scope,
+                parentSessionId: parentSession.id,
+                workspaceRoot: parentSession.workspace || '',
+                worktreePath: sub.worktree ? sub.worktree.path : '',
+                parentToolFace: parentLiveSub && parentLiveSub.capabilities
+                    ? parentLiveSub.capabilities.tools.allow
+                    : null,
+                knownTools: knownAgentToolNames(),
+                projectableTools: subagentProjectableToolNames(),
+                globalMaxDepth,
+                parentCapsMaxDepth,
+                grantPresetWrite,
+            });
+        } catch (e) {
+            throw new Error('子代理能力合成失败：' + ((e && e.message) || e));
+        }
+        sub.session.capabilities = sub.capabilities;
         // 沙箱档位在派出时定死（与工具表、系统提示同源）：HUD 与详情只读它，不再各自推导。
         const sandboxPolicy = subSandboxPolicy(sub.session);
         sub.sandboxMode = sandboxPolicy ? sandboxPolicy.mode : '';
         toolMessage.agent.sandboxMode = sub.sandboxMode;
+        toolMessage.agent.preset = sub.capabilities.preset;
         // 完全权限子代理：给发起方投一条非阻塞警告消息（走信箱，忙则排队到下一轮边界，
-        // 不打断当前轮、不阻塞派单）。仅 danger-full-access 触发——默认封顶 auto 后，
-        // 只有显式传 sandbox:'full' 才会走到这里，是用户/主代理的知情确认。
+        // 不打断当前轮、不阻塞派单）。仅 danger-full-access 触发——唯一入口是宿主内置
+        // host.full-write（仅父档 full 可派），是用户/主代理的知情确认（沿用原逃生舱机制）。
         if (sub.sandboxMode === 'danger-full-access') {
             const hub = noticesLike();
             if (hub) hub.deliverAgentNotice(parentSession, buildFullScopeWarning({name: sub.name, agentId: sub.id}));
@@ -978,7 +1178,7 @@ export function createAISubagents(ctx) {
             wrapUp: false,
             toolCalls: new Map(),
             profileCfg: subAgentConfigFor(profile, entry),
-            systemPrompt: subSystemPromptFor(depth, mode, !!sub.worktree),
+            systemPrompt: subSystemPromptFor(depth, mode, sub.capabilities, !!sub.worktree),
             usage: null,
         };
         subAgents.set(sub.id, sub);
@@ -989,6 +1189,7 @@ export function createAISubagents(ctx) {
             name: sub.name, task: sub.task, state: 'running', startedAt: sub.startedAt,
             mode, rounds: 0, ms: 0, tokens: 0, summary: '',
             sandboxMode: sub.sandboxMode,
+            preset: sub.capabilities.preset,
         });
         notifyBackgroundActivity();
         persistSessions();
@@ -1062,7 +1263,7 @@ export function createAISubagents(ctx) {
         const apiMessages = buildApiMessages(sub.session, index, s.systemPrompt);
         // 收尾轮明确不下发工具（注释承诺的「模型只能输出文本」）。Go 侧三套 body 都是
         // `if len(tools) > 0` 才写 tools 字段，空数组等价于「无工具」，不会让服务商报错。
-        const tools = s.wrapUp ? [] : subToolsForScope(sub.depth, sub.mode, !!sub.worktree, sub.session);
+        const tools = s.wrapUp ? [] : subToolsForCapabilities(sub);
         try {
             const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, tools, getConfig().retryMax);
             if (request && typeof request.then === 'function') {
@@ -1154,12 +1355,13 @@ export function createAISubagents(ctx) {
                 subTranscriptPush(sub, {role: 'tool', name: call.name, text: invalidArgs.slice(0, 600)});
                 continue;
             }
-            // 权限边界（dsh 同款语义）：范围外工具确定性拒绝、不进审批链路；模型侧文案
-            // 明确「不重试、上报父会话」，拒绝本身落操作留痕（不含工具输入）。
-            const allowed = new Set(subToolsForScope(sub.depth, sub.mode, !!sub.worktree, sub.session).map((tool) => tool.name));
+            // 执行前 guard（§5.2）：范围外工具确定性拒绝、不进审批链路（单调拒绝，后续
+            // 插件/监听器不能重新放行）；模型侧文案明确「不重试、上报父会话」并说明缺什么
+            // 权限（§6.1），拒绝本身落操作留痕（不含工具输入）。
+            const allowed = new Set(subToolsForCapabilities(sub).map((tool) => tool.name));
             if (!allowed.has(call.name)) {
                 toolMessage.status = 'error';
-                toolMessage.content = '工具 ' + call.name + ' 超出子代理只读范围（工具范围在派出时已固定，无法从会话内放宽）；不要重试，请在最终结论中说明该限制，由主代理决定如何处理。';
+                toolMessage.content = subToolDenyText(call.name, sub.capabilities);
                 subTranscriptPush(sub, {role: 'tool', name: call.name, text: toolMessage.content.slice(0, 600)});
                 logActivity('ai.tool', call.name, {status: 'denied', ms: 0, depth: sub.depth});
                 continue;
@@ -1418,6 +1620,8 @@ export function createAISubagents(ctx) {
             depth: sub.depth,
             mode: sub.mode || 'blocking',
             sandboxMode: sub.sandboxMode || '',
+            preset: sub.capabilities ? sub.capabilities.preset : '',
+            capabilities: sub.capabilities || null,
             parentSessionId: sub.parentSessionId,
             rootSessionId: sub.rootSessionId,
             state,
@@ -1837,6 +2041,14 @@ export function createAISubagents(ctx) {
             entry: record.entry,
             inbox: newSubInbox(),
         };
+        // 能力快照随记录恢复（v2 快照带全绝对路径，§8.2）；缺快照按最窄只读兜底。
+        // 沙箱档与隔离区也一并重建（存量缺口，2026-11-28 审查补）：复活前 sub.sandboxMode
+        // 为空 → HUD 档位徽标退化、终态留痕丢 sandbox 标记；worktree 只存在于
+        // record.session.worktree → systemPrompt 丢 worktree 段、worktreeNamesForSession
+        // 收集不到该隔离区（export/discard 看不见它）。
+        sub.capabilities = (sub.session && sub.session.capabilities) || READ_ONLY_CAPABILITIES;
+        sub.sandboxMode = sub.capabilities && sub.capabilities.fs ? sub.capabilities.fs.mode : 'read-only';
+        sub.worktree = (sub.session && sub.session.worktree) || null;
         const assistant = newAssistantMessage(record.profile, record.entry);
         sub.flow = {
             sessionId: sub.id,
@@ -1854,7 +2066,7 @@ export function createAISubagents(ctx) {
             wrapUp: false,
             toolCalls: new Map(),
             profileCfg: subAgentConfigFor(record.profile, record.entry),
-            systemPrompt: subSystemPromptFor(record.depth, record.mode, !!record.worktree),
+            systemPrompt: subSystemPromptFor(record.depth, record.mode, (record.session && record.session.capabilities) || null, !!sub.worktree),
             usage: null,
         };
         // 终态记录移出（重新变 live）：事件路由、HUD、LRU 都以 subAgents 为准
@@ -1864,6 +2076,9 @@ export function createAISubagents(ctx) {
         if (toolMessage && toolMessage.agent) {
             toolMessage.agent.state = 'running';
             toolMessage.agent.note = '';
+            // 复活重建（同上注释）：派单卡片的档位与角色名照常回显
+            toolMessage.agent.sandboxMode = sub.sandboxMode;
+            toolMessage.agent.preset = sub.capabilities ? sub.capabilities.preset : '';
         }
         const reg = agentRegistry.get(sub.key);
         if (reg) {
@@ -1932,7 +2147,11 @@ export function createAISubagents(ctx) {
                     '，不能继续；需要的话重新 spawn_agent 派单');
             }
             if (gate.reason === 'recycled') {
-                throw new Error('子代理「' + record.name + '」的上下文已回收（终态记录超出上限），无法继续；请重新派单');
+                // 优先透出真实原因：v1 旧快照的不可续原因是「快照版本过旧」（restoreAgentRuns
+                // 存在 resumeReason / note），笼统的「上下文已回收」会误导诊断方向。
+                const why = record.resumeReason || record.note || '';
+                throw new Error('子代理「' + record.name + '」无法继续'
+                    + (why ? '：' + why : '（终态记录超出上限，上下文已回收）') + '；请重新派单');
             }
             throw new Error('找不到子代理 ' + agentId + '（可能已被清理）');
         }
@@ -2457,6 +2676,8 @@ export function createAISubagents(ctx) {
                 depth: run.depth,
                 mode: run.mode,
                 sandboxMode: run.sandboxMode,
+                preset: run.presetId || '',
+                capabilities: run.capabilities || null,
                 parentSessionId: run.parentSessionId,
                 rootSessionId: run.rootSessionId,
                 // 一律 interrupted：不假装还在跑，也不假装已完成。
@@ -2481,6 +2702,8 @@ export function createAISubagents(ctx) {
                     systemPrompt: detail.systemPrompt,
                     promptTemplateId: detail.promptTemplateId,
                     scope: detail.scope,
+                    // 能力快照随 v2 快照恢复（全绝对路径，§8.2）；v1 旧快照为 null → 不可续跑
+                    capabilities: run.capabilities || null,
                     planMode: false,
                     messages: detail.messages,
                     todos: [],
@@ -2534,7 +2757,7 @@ export function createAISubagents(ctx) {
     }
 
     return {
-        subAgentLimit, subAgentMaxDepth, subAgentCanSpawn, subSystemPromptFor, subToolsForScope,
+        subAgentLimit, subAgentMaxDepth, subAgentCanSpawn, subSystemPromptFor, subToolsForCapabilities, subReadScopeOf,
         activeSubCount, subTranscriptPush, subThrottleRender,
         sessionTitleOf, sessionTitleById, updateHeadIdentity,
         bgJobStateOf, rootSessionIdOf, hudSessionId, bgEntryOwnerId, isBgEntryOfHud, hudBgEntries,

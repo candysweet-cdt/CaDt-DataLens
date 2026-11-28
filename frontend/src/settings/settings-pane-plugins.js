@@ -163,6 +163,11 @@ initPluginRuntime({
     },
     openVirtualDoc: (name, content) => deps.openVirtualDoc(name, content),
     readPluginAsset: (pluginId, relPath) => deps.backend.ReadPluginAsset(pluginId, relPath),
+    // Agent preset 注册（能力快照方案 §4 / §10.4）：注册函数经 main.js 的 deps 注入
+    //（shell 不直接 import ai/ 域），禁用 / 加载失败 / 全量重放时按 owner 撤销
+    registerAgentPreset: (owner, spec) => deps.agentPresetRegister(owner, spec),
+    revokeAgentPresetsOwner: (owner) => deps.agentPresetRevokeOwner(owner),
+    revokeAllAgentPresets: () => deps.agentPresetRevokeAll(),
     onPluginsChanged: () => refreshPluginUI(),
     onThemesChanged: () => {
         if (deps.reconcileThemes()) deps.applySettings();
@@ -451,6 +456,25 @@ async function renderPluginsPane() {
             permBtn.setAttribute('data-open-pane', 'permissions');
             permBtn.setAttribute('data-open-anchor', 'setgrp-ai-tool-perms');
             permBtn.textContent = 'AI 工具权限…';
+            // 子代理 preset 写入授权的撤销入口（能力快照方案 §6.3）：该插件有已确认的写授权
+            // 时显示，一键清掉它的全部确认记录——撤销后下次派单会重新弹能力确认卡
+            const grantCount = typeof deps.agentPresetGrantCount === 'function' ? deps.agentPresetGrantCount(p.id) : 0;
+            if (grantCount > 0) {
+                const grantBtn = document.createElement('button');
+                grantBtn.type = 'button';
+                grantBtn.className = 'dlg-btn plugin-grant-revoke';
+                grantBtn.textContent = '撤销写入确认';
+                grantBtn.dataset.tip = '该插件有 ' + grantCount + ' 条子代理写入授权记录：撤销后下次派单会重新弹确认卡';
+                grantBtn.addEventListener('click', () => {
+                    const n = typeof deps.agentPresetRevokeGrants === 'function' ? deps.agentPresetRevokeGrants(p.id) : 0;
+                    try {
+                        deps.activityLog.log('plugin.change', p.id, {op: 'revoke-agent-preset-grants', count: n});
+                    } catch (e) {}
+                    deps.flash('已撤销插件「' + p.name + '」的 ' + n + ' 条子代理写入确认');
+                    renderPluginsPane();
+                });
+                head.append(grantBtn);
+            }
             head.append(name, ver, author, license, enabledLabel, permBtn, del);
             const desc = document.createElement('div');
             desc.className = 'plugin-desc';

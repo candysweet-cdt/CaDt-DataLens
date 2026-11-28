@@ -6,6 +6,7 @@ import {MOCK_DB_CONNECTIONS_KEY, MOCK_SAVE_KEY} from '../core/storage-keys.js';
 // 三点 wipeguard 绑定（WatchWipeguardRoot / UnwatchWipeguardRoot / WorkspaceMarkOpened）
 // 要用它；此前这行 import 被误嵌进上面的 Go 示例模板字符串，运行时恒抛 ReferenceError。
 import {legacyPathKey} from '../core/path-key.js';
+import {pathWithin} from '../ai/agent/agent-capabilities.js';
 
 const mockScenario = new URLSearchParams(location.search);
 
@@ -4575,6 +4576,22 @@ const mockBackend = {
         if (enc === 'us-ascii') return !/[^\x00-\x7f]/.test(content);
         if (enc === 'iso-8859-1') return !/[^\x00-\xff]/.test(content);
         return true;
+    },
+    // 子代理写边界判定（能力快照方案 §5.5）的 mock：复用生产侧 pathWithin（与 Go 同语义的
+    // 字符串快筛——含 `.`/`..` 段折叠、大小写与分隔符归一、前缀边界），避免「mock 放行、
+    // 真机拒绝」的宽严倒挂。符号链接 / junction 不模拟（dev 无真实文件系统，Go 侧才权威）。
+    async WriteBoundaryCheck(rootsJSON, path) {
+        let roots = [];
+        try { roots = JSON.parse(String(rootsJSON || '[]')); } catch (e) {
+            throw new Error('可写根参数无效（需要 JSON 字符串数组）');
+        }
+        const target = String(path || '');
+        if (!target.trim()) throw new Error('没有写入路径');
+        if (!Array.isArray(roots) || !roots.length) throw new Error('没有可写根（writableRoots 为空），拒绝写入');
+        for (const root of roots) {
+            if (pathWithin(target, root)) return target;
+        }
+        throw new Error('写入路径 "' + target + '" 不在任何可写根内（writableRoots：' + roots.join('、') + '）');
     },
     // 编排 mock：让浏览器 dev 能打开审批卡 / 看板，不模拟真实调度（没有模型会话）。
     _orch: [],

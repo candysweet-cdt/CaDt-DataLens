@@ -67,6 +67,28 @@ export function kvRemove(key) {
 }
 
 /**
+ * kvKeysWithPrefix 列出以 prefix 开头的全部键名（顺序不保证）。
+ * 给「按前缀枚举清理」类入口用（如子代理 preset 写授权的按插件撤销）；
+ * 前缀内的动态键构造归各域模块，这里仍不认识任何业务键。
+ * @param {string} prefix
+ * @returns {string[]}
+ */
+export function kvKeysWithPrefix(prefix) {
+    const s = store();
+    if (!s) return [];
+    const out = [];
+    try {
+        for (let i = 0; i < s.length; i += 1) {
+            const key = s.key(i);
+            if (key && key.startsWith(prefix)) out.push(key);
+        }
+    } catch (e) {
+        return [];
+    }
+    return out;
+}
+
+/**
  * kvGetJson 按 JSON 读；空值 / 损坏值给 fallback（语义同 core/json-safe.js 的 parseJson）。
  * @param {string} key
  * @param {*} [fallback]

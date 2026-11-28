@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {
     WORKTREE_REL_DIR,
     WORKTREE_PATCH_LIMIT,
@@ -9,7 +10,6 @@ import {
     pathInsideWorkspace,
     worktreeBlockText,
     formatWorktreeList,
-    agentWorktreeWriteVerdict,
     mainRootWriteVerdict,
     resolveWorktreeTarget,
     worktreeExportPreviewText,
@@ -122,19 +122,12 @@ test('formatWorktreeList：stats 参数给每个隔离区附改动统计（对�
     assert.ok(!plain.includes('改动：'));
 });
 
-test('agentWorktreeWriteVerdict：子代理写闸——前缀内放行、前缀外确定性拒绝', () => {
-    const wt = {name: 'sub-ab12', baseSha: 'abc'};
-    // 前缀内（大小写 / 反斜杠归一）
-    assert.equal(agentWorktreeWriteVerdict(wt, '.cadt/worktree/sub-ab12/src/a.js').verdict, 'allow');
-    assert.equal(agentWorktreeWriteVerdict(wt, '.CADT/WORKTREE/SUB-AB12/a.js').verdict, 'allow');
-    assert.equal(agentWorktreeWriteVerdict(wt, '.cadt/worktree/sub-ab12').verdict, 'allow');
-    // 前缀外：主根其他路径、同名前缀目录、别的隔离区
-    assert.equal(agentWorktreeWriteVerdict(wt, 'src/main.js').verdict, 'deny');
-    assert.equal(agentWorktreeWriteVerdict(wt, '.cadt/worktree/sub-ab12-x/a.js').verdict, 'deny');
-    assert.equal(agentWorktreeWriteVerdict(wt, '.cadt/worktree/other/a.js').verdict, 'deny');
-    // 没登记 → 拒绝（write 工具本不该挂，双保险）
-    assert.equal(agentWorktreeWriteVerdict(null, '.cadt/worktree/x/a.js').verdict, 'deny');
-    assert.ok(agentWorktreeWriteVerdict(wt, 'src/main.js').message.includes('WORKTREE_SCOPE'));
+test('worktree 写闸已迁能力快照：前缀判定由 writableRoots + subWriteVerdict 承担（此处只留主根闸）', () => {
+    // agentWorktreeWriteVerdict 随能力快照重构删除（2026-11-28）：子代理 worktree 前缀
+    // 由派单快照的 writableRoots 注入，判定收口到 subWriteVerdict（agent-capabilities.js）
+    // 与 Go 侧 WriteBoundaryCheck。这里钉住删除事实，防止旧特判回潮。
+    const src = readFileSync(new URL('../../../src/ai/tools/ai-worktree.js', import.meta.url), 'utf8');
+    assert.ok(!src.includes('agentWorktreeWriteVerdict'), '旧特判不应回归');
 });
 
 test('mainRootWriteVerdict：隔离期间主根只读——只有自己的隔离前缀与 .cadt/tmp 能写', () => {
