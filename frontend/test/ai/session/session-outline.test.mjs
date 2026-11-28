@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSessionOutlineItems, assistantPreviewAfter} from '../../../src/ai/session/session-outline.js';
+import {readFileSync} from 'node:fs';
+import {buildSessionOutlineItems, assistantPreviewAfter, isShortcutMessage} from '../../../src/ai/session/session-outline.js';
 
 // 会话结构（用户消息定位条）的数据整理规则：
 // 只留用户说过的消息，轮次序号连续，超长文本压成一行，条数超上限只保留最近的。
@@ -22,6 +23,44 @@ test('只保留用户消息，系统注记 / 静默注入 / 应用注入 / 模�
     assert.deepEqual(out.items.map((item) => item.round), [1, 2]);
     assert.deepEqual(out.items.map((item) => item.text), ['第一条', '第二条']);
     assert.equal(out.truncated, false);
+});
+
+test('快捷操作（Git + 其他）计入滑轨，定时任务/截图/通知等应用消息不计入', () => {
+    const messages = [
+        {role: 'user', content: '第一轮'},
+        {role: 'user', content: '［Git 快捷操作 · 提交并推送］\n工作区：D:/repo', app: {kind: 'git', label: 'Git 快捷操作 · 提交并推送'}},
+        {role: 'assistant', content: '提交完成'},
+        {role: 'user', content: '［快捷操作 · 维护认知索引］\n维护索引', app: {kind: 'git', label: '快捷操作 · 维护认知索引', icon: 'book-plus'}},
+        {role: 'assistant', content: '索引已更新'},
+        {role: 'user', content: '［快捷操作 · 维护文件大纲］\n维护大纲', app: {kind: 'outline', label: '快捷操作 · 维护文件大纲'}},
+        {role: 'user', content: '[定时任务 · 每日巡检]\n请检查构建', app: {kind: 'schedule', label: '定时任务 · 每日巡检'}},
+        {role: 'user', content: '浏览器截图', app: {kind: 'browser', label: '浏览器截图'}, images: [{}]},
+        {role: 'user', content: '子代理通知', app: {kind: 'subagent', label: '子代理通知'}},
+        {role: 'user', content: '第二轮'},
+    ];
+    const out = buildSessionOutlineItems(messages);
+    assert.deepEqual(out.items.map((item) => item.text), [
+        '第一轮', 'Git 快捷操作 · 提交并推送', '快捷操作 · 维护认知索引', '快捷操作 · 维护文件大纲', '第二轮',
+    ]);
+    assert.deepEqual(out.items.map((item) => item.index), [0, 1, 3, 5, 9]);
+    assert.deepEqual(out.items.map((item) => item.round), [1, 2, 3, 4, 5]);
+    // 快捷操作标题取卡片 label，不是整段提示词；summary 仍是紧随其后的助手回复
+    assert.equal(out.items[1].summary, '提交完成');
+    assert.equal(out.items[2].summary, '索引已更新');
+    assert.equal(out.items[3].summary, '');
+});
+
+test('旧会话无 app 元数据时按 label/正文前缀认回快捷操作', () => {
+    assert.equal(isShortcutMessage({role: 'user', app: {kind: 'git'}, content: 'x'}), true);
+    assert.equal(isShortcutMessage({role: 'user', app: {label: '快捷操作 · 生成更新日志'}, content: 'x'}), true);
+    assert.equal(isShortcutMessage({role: 'user', app: {kind: 'schedule', label: '定时任务 · x'}, content: 'x'}), false);
+    assert.equal(isShortcutMessage({role: 'assistant', app: {kind: 'git'}, content: 'x'}), false);
+    assert.equal(isShortcutMessage({role: 'user', content: '普通消息'}), false);
+});
+
+test('视觉契约：定位跳转时快捷操作卡片也会闪烁高亮', () => {
+    const css = readFileSync(new URL('../../../src/style.css', import.meta.url), 'utf8');
+    assert.match(css, /\.ai-msg\.ai-msg-flash\.ai-app-msg \.ai-app-msg-card \{ animation: ai-msg-flash/);
 });
 
 test('换行与连续空白压成单行，空文本用图片数量兜底', () => {

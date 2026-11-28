@@ -4281,13 +4281,13 @@ a.jsoneditor-poweredBy { display: none !important; }
    不进 overlay-stack）。弹层容器挂在 document.body 且继承编辑器主题类（恒不带 ace_dark），
    bundle 运行时注入 `.ace_editor.ace_autocomplete`（0,2,0）白底规则——选择器必须抬到同
    特异性并加 !important（与 .jsoneditor .ace_* 覆盖同机制）。
-   配色跟编辑器代码主题走（JetBrains 式）：底/字用 --editor-bg/--editor-text、选中行用
-   --ace-selection（编辑器选区色）、meta 用 --ace-gutter（行号槽色）——这些变量由代码主题
-   体系接管（fallback 界面主题变量）：默认「跟随软件主题」档下等于界面主题值（无感），
-   显式选浅色代码主题配深色界面时弹层同步变浅，不再出现深弹层浮浅编辑器 */
+   配色跟「界面主题」走（面板底 + 界面文字），与应用所有浮层（tooltip/菜单）同惯例：
+   深色界面下弹层恒为深色、浅色界面下恒为浅色，不随代码主题（2026-11-28 用户实机反馈否决
+   「跟编辑器代码主题」——深界面配浅色代码主题（如 github-light 的 --editor-bg:#fff）时
+   弹层白底刺眼）。代码主题只影响编辑器区与语法 token，不影响弹层 */
 .ace_editor.ace_autocomplete {
-    background: var(--editor-bg, var(--panel2)) !important;
-    color: var(--editor-text, var(--text)) !important;
+    background: var(--panel2) !important;
+    color: var(--text) !important;
     border: 1px solid var(--border) !important;
     border-radius: 8px;
     box-shadow: 0 10px 28px var(--shadow-strong) !important;
@@ -4298,9 +4298,9 @@ a.jsoneditor-poweredBy { display: none !important; }
     z-index: 200000;
 }
 .ace_editor.ace_autocomplete .ace_line { padding: 2px 12px 2px 10px; line-height: 1.75; }
-.ace_editor.ace_autocomplete .ace_active-line { background: var(--ace-selection, var(--hover)) !important; }
+.ace_editor.ace_autocomplete .ace_active-line { background: var(--hover) !important; }
 .ace_editor.ace_autocomplete .ace_completion-highlight { color: var(--accent) !important; font-weight: 600; }
-.ace_editor.ace_autocomplete .ace_completion-meta { color: var(--ace-gutter, var(--faint)) !important; margin-left: 18px; font-family: var(--ui-font); font-size: 11.5px; }
+.ace_editor.ace_autocomplete .ace_completion-meta { color: var(--faint) !important; margin-left: 18px; font-family: var(--ui-font); font-size: 11.5px; }
 /* 候选行图标（JetBrains 风格）：meta → iconSvg 装饰，editor-completion.js 注入 */
 .cadt-cmpl-icon {
     display: inline-flex;
@@ -6250,7 +6250,8 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     0% { background: color-mix(in srgb, var(--accent) 30%, transparent); }
     100% { background: transparent; }
 }
-.ai-msg.ai-msg-flash .ai-user-bubble { animation: ai-msg-flash 1.4s ease-out; }
+.ai-msg.ai-msg-flash .ai-user-bubble,
+.ai-msg.ai-msg-flash.ai-app-msg .ai-app-msg-card { animation: ai-msg-flash 1.4s ease-out; }
 .ai-msg.user {
     align-self: flex-end;
     max-width: 88%;

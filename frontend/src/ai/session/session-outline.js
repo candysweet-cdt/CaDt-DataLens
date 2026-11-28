@@ -14,6 +14,19 @@ function oneLine(text) {
     return s.slice(0, MAX_TEXT) + '…';
 }
 
+// 快捷操作（Git 快捷操作 + 其他快捷操作：维护认知索引 / 生成更新日志 / 维护文件大纲）
+// 是用户主动发起的一轮，与亲手键入的消息一样计入滑轨。所有快捷操作发送时 app.kind='git'
+// （见 ai-git-ui.js），旧会话的「维护文件大纲」是 kind='outline'；label 前缀作兜底兼容。
+// 定时任务（schedule）、截图（browser/read-image）、信箱通知等其余应用消息不算一轮。
+export function isShortcutMessage(message) {
+    if (!message || message.role !== 'user') return false;
+    const app = message.app;
+    if (!app) return false;
+    const kind = String(app.kind || '');
+    if (kind === 'git' || kind === 'outline') return true;
+    return /^(Git 快捷操作 · |快捷操作 · )/.test(String(app.label || ''));
+}
+
 // 会话消息导航滑轨的气泡描述：取某轮用户消息之后最近一条助手回复的正文预览。
 // 从 userIndex + 1 向后扫：跳过 tool 结果与注入类消息（systemNote/silent/app/model-switch），
 // 遇到下一条真正的用户轮次（含插话 steer）即停——避免把下一轮的回复错配到本轮；
@@ -33,8 +46,9 @@ export function assistantPreviewAfter(messages, userIndex) {
     return '';
 }
 
-// 把 session.messages 压成定位项：只留用户真正说过的话。
-// 系统注记（systemNote）、静默注入（silent）、应用注入的指令（app）、模型切换记录都不算一轮。
+// 把 session.messages 压成定位项：只留用户真正说过的话 + 用户主动发起的快捷操作。
+// 系统注记（systemNote）、静默注入（silent）、非快捷操作的应用注入指令（app）、模型切换
+// 记录都不算一轮；快捷操作（app.kind=git/outline）例外，按用户轮次计入并用卡片 label 作标题。
 // 预览只取正文：开头的 <system-reminder> 宿主环境块随用户消息一起落盘，直接预览会
 // 把整行显示成注记（workspace_context 等）；环境块之后可能还有 <quote> 引用标记，
 // 同样要剥掉只留用户真正说的话（与气泡渲染/编辑重发口径一致），否则整行变成标记原文。
@@ -49,10 +63,14 @@ export function buildSessionOutlineItems(messages, options) {
     for (let i = 0; i < list.length; i += 1) {
         const message = list[i];
         if (!message || message.role !== 'user') continue;
-        if (message.systemNote || message.silent || message.app || message.kind === 'model-switch') continue;
+        const shortcut = isShortcutMessage(message);
+        if (!shortcut && (message.systemNote || message.silent || message.app || message.kind === 'model-switch')) continue;
         const steer = message.steer === true;
         const withoutReminder = splitTurnReminderPrefix(message.content == null ? '' : String(message.content)).body;
-        const text = splitQuotePrefix(withoutReminder).body.replace(/\s+/g, ' ').trim();
+        // 快捷操作正文是整段提示词，气泡标题用卡片上的 label（如「Git 快捷操作 · 提交并推送」）。
+        const text = shortcut
+            ? String((message.app && message.app.label) || '快捷操作')
+            : splitQuotePrefix(withoutReminder).body.replace(/\s+/g, ' ').trim();
         const images = Array.isArray(message.images) ? message.images.length : 0;
         const videos = Array.isArray(message.videos) ? message.videos.length : 0;
         const media = images ? '（' + images + ' 张图片）' : (videos ? '（' + videos + ' 个视频）' : '');
@@ -105,10 +123,14 @@ export function createSessionOutlineController(ctx) {
         };
     }
 
-    // 视口顶部所在的那一轮：scrollTop 落在某条用户消息之内时就认为定位到它
+    // 视口顶部所在的那一轮：scrollTop 落在某条用户消息之内时就认为定位到它。
+    // 只有滑轨里的消息参与高亮：普通用户消息 + 快捷操作卡片（index 在 items 里）；
+    // 定时任务 / 截图 / 通知等应用消息不在 items 里，滚到它们时不高亮任何刻度。
     function activeFromView() {
         if (!el.messages) return -1;
-        const nodes = el.messages.querySelectorAll('.ai-msg.user:not(.archived):not(.ai-app-msg):not(.model-switch)');
+        const valid = new Set(snapshot().items.map((item) => item.index));
+        const nodes = [...el.messages.querySelectorAll('.ai-msg.user:not(.archived):not(.model-switch)')]
+            .filter((node) => valid.has(Number(node.dataset.aiIdx)));
         if (!nodes.length) return -1;
         const top = el.messages.getBoundingClientRect().top;
         const pick = (node) => {
