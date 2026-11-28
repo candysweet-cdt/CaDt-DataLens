@@ -54,6 +54,20 @@ var appBuiltinSkillDirs = []string{
 	"reverse-engineer-anything",
 	"chinese-formal-document-format",
 	"landing-page-design",
+	"cadt-datalens",
+	"code-review",
+	"json-toolkit",
+	"release-notes",
+	"patch-workflow",
+	"cadt-gen-models",
+	"cadt-mcp-samples",
+	"cadt-mcp-config",
+	"web-research",
+	"docx",
+	"pdf",
+	"skill-creator",
+	"plugin-creator",
+	"answer-me-with-html",
 }
 
 type AgentSkillTarget struct {
@@ -121,7 +135,7 @@ func writeSkillDirAt(root, source, dirName, exe string) error {
 		if err != nil {
 			return err
 		}
-		if exe != "" && strings.EqualFold(rel, "SKILL.md") {
+		if exe != "" && dirName == skillDirName && strings.EqualFold(rel, "SKILL.md") {
 			content = []byte(strings.ReplaceAll(string(content), skillExeToken, exe))
 		}
 		dest := filepath.Join(base, rel)
@@ -161,7 +175,12 @@ func materializeBuiltinSkills() string {
 	}
 	target := filepath.Join(root, builtinSkillsRoot)
 	stamp := filepath.Join(target, builtinSkillsStamp)
-	want := Version + "|" + strings.Join(appBuiltinSkillDirs, ",")
+	exe, err := os.Executable()
+	if err != nil {
+		logf("warn", "取当前 exe 路径失败，内置技能按原样释放：%v", err)
+		exe = ""
+	}
+	want := Version + "|" + strings.Join(appBuiltinSkillDirs, ",") + "|" + exe
 	if data, err := os.ReadFile(stamp); err == nil && strings.TrimSpace(string(data)) == want {
 		return target
 	}
@@ -170,7 +189,7 @@ func materializeBuiltinSkills() string {
 			logf("warn", "内置技能 %s 清理失败：%v", dir, err)
 			return ""
 		}
-		if err := writeSkillDirAt(target, "docs/skills/"+dir, dir, ""); err != nil {
+		if err := writeSkillDirAt(target, "docs/skills/"+dir, dir, exe); err != nil {
 			logf("warn", "内置技能 %s 写入失败：%v", dir, err)
 			return ""
 		}

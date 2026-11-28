@@ -2,7 +2,10 @@
 // 以及正文图片引用失效时的会话附图兜底查找（aiFindAttachedImageByRef）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readdirSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
 import {AI_BUILTIN_SKILLS, aiCtxBannerShow, aiCtxBannerState, aiFindAttachedImageByRef, aiFormatBytes, aiFormatDuration, aiFormatLiveDuration, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode, APPROVAL_LOST_TEXT, ASK_LOST_TEXT, ENV_ASK_LOST_TEXT, TOOL_INTERRUPTED_TEXT} from '../../../src/ai/core/ai-constants.js';
+import {VISUAL_RULES} from '../../../src/core/visual-spec.js';
 
 test('aiImageFromSrc: 与 aiImageSrc 往返一致', () => {
     const image = aiImageFromSrc('data:image/png;base64,AAAA', 'seal.png');
@@ -294,4 +297,31 @@ test('内置编排技能 orchestrate：名字唯一、description 含主动推�
     }
     assert.ok(/审查/.test(skill.content) && /返工|重派/.test(skill.content), '正文要讲清审查门与返工');
     assert.ok(/群聊|spawn_agent/.test(skill.content), '正文要区分编排与群聊/子代理');
+});
+
+// 双份护栏：同一技能若既硬编码在 AI_BUILTIN_SKILLS 又有 docs/skills/<name>/SKILL.md，
+// 两者 rank 都是 600、硬编码先到先得——改 md 静默不生效（cadt-datalens 踩过）。
+// 内置技能文件化后，源码里只该留「有硬依赖」的那几项（cadt-ui / inline-visual / orchestrate）。
+test('AI_BUILTIN_SKILLS 与文件化内置技能 docs/skills/* 无重名', () => {
+    const dir = fileURLToPath(new URL('../../../../docs/skills/', import.meta.url));
+    const dirs = readdirSync(dir, {withFileTypes: true})
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+    assert.ok(dirs.length > 0, 'docs/skills 下应至少有一个文件化内置技能目录');
+    const builtinNames = AI_BUILTIN_SKILLS.map((s) => s.name);
+    const duplicated = builtinNames.filter((name) => dirs.includes(name));
+    assert.deepEqual(duplicated, [],
+        '这些技能既有硬编码 content 又有 SKILL.md，硬编码会静默胜出：搬走后要从 AI_BUILTIN_SKILLS 删掉');
+});
+
+// 反向护栏：「无重名」只保证不多，把 inline-visual 之类整条删掉它照样绿。
+// 所以正面钉住「源码里该留哪三项」，并钉住 inline-visual 的正文仍取自 VISUAL_RULES 单一来源。
+test('AI_BUILTIN_SKILLS 只留三项硬编码技能，inline-visual 正文仍取 VISUAL_RULES', () => {
+    assert.deepEqual(AI_BUILTIN_SKILLS.map((s) => s.name), ['cadt-ui', 'inline-visual', 'orchestrate'],
+        '源码里只该留这三项；其余技能走 docs/skills/*/SKILL.md');
+    const inline = AI_BUILTIN_SKILLS.find((s) => s.name === 'inline-visual');
+    assert.equal(inline.content, VISUAL_RULES.inlineVisual,
+        'inline-visual 正文必须与 core/visual-spec.js 的 VISUAL_RULES 单一来源一致');
+    const ui = AI_BUILTIN_SKILLS.find((s) => s.name === 'cadt-ui');
+    assert.ok(/## 动作表/.test(ui.content), 'cadt-ui 正文必须保留动作表（ai-app-actions 守卫按它解析）');
 });

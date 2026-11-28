@@ -86,8 +86,8 @@ func TestBuiltinSkillAssetsPresent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s 嵌入失败：%v", dir, err)
 		}
-		if len(paths) < 2 {
-			t.Fatalf("%s 文件过少：%v", dir, paths)
+		if len(paths) == 0 {
+			t.Fatalf("%s 没有任何文件：%v", dir, paths)
 		}
 		data, err := readEmbedded(source + "/SKILL.md")
 		if err != nil {
@@ -116,6 +116,19 @@ func TestMaterializeBuiltinSkills(t *testing.T) {
 	for _, name := range appBuiltinSkillDirs {
 		if _, err := os.Stat(filepath.Join(dir, name, "SKILL.md")); err != nil {
 			t.Fatalf("%s/SKILL.md 未落盘：%v", name, err)
+		}
+	}
+	// cadt-datalens 是唯一替换 {{EXE_PATH}} 的技能，其余技能原样落盘。
+	mainSkill, err := os.ReadFile(filepath.Join(dir, skillDirName, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("%s/SKILL.md 读取失败：%v", skillDirName, err)
+	}
+	if strings.Contains(string(mainSkill), skillExeToken) {
+		t.Fatalf("%s/SKILL.md 仍含 %s 占位符", skillDirName, skillExeToken)
+	}
+	if exe, exeErr := os.Executable(); exeErr == nil {
+		if !strings.Contains(string(mainSkill), exe) {
+			t.Fatalf("%s/SKILL.md 未包含当前 exe 路径 %q", skillDirName, exe)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, builtinSkillsStamp)); err != nil {

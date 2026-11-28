@@ -4,11 +4,24 @@
 
 | 目录 | 用途 | 分发方式 |
 | --- | --- | --- |
-| `cadt-datalens/` | 教 AI agent（Claude Code、ZCode、Qoder、OpenCode 等）用命令行调用 CaDt-DataLens 打开和定位本地文件 | 「设置 → 系统集成 → 注册全局 Agent Skill」复制到用户技能目录 |
+| `cadt-datalens/` | 教 AI agent（Claude Code、ZCode、Qoder、OpenCode 等）用命令行调用 CaDt-DataLens 打开和定位本地文件 | 「设置 → 系统集成 → 注册全局 Agent Skill」复制到用户技能目录；同时作为应用内置技能释放到应用数据目录 |
 | `cadt-file-layout/` | 内置 AI 助手的文件目录规范：产物落盘位置、三层分区、命名约定、硬禁区与可删除清单 | 应用内置技能，首次列出技能时释放到应用数据目录 |
 | `reverse-engineer-anything/` | REA：对原生二进制、托管程序、Electron/JavaScript、固件、浏览器目标做逆向分析，并按需生成 AgentEnv 环境包 | 应用内置技能，首次列出技能时释放到应用数据目录 |
 | `chinese-formal-document-format/` | 中文正式文档（公文风格）DOCX 排版：只改版式、不改正文，并核验原文未被改动 | 应用内置技能，首次列出技能时释放到应用数据目录 |
 | `landing-page-design/` | 落地页/营销页设计：需求问询、页面结构、转化文案、SEO + 完整视觉系统（字体/间距/圆角/背景/动效）；纯规则无外部依赖 | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `code-review/` | 按严重度审查代码，列出证据与修复建议（只读） | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `json-toolkit/` | 校验、格式化、修复并解释 JSON / JSONL / YAML / TOML / CSV | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `release-notes/` | 根据本次改动生成面向用户的更新日志 / 发布说明 | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `patch-workflow/` | 用 propose_patch 生成 .patch 补丁交给用户审批；含 unified diff 写法、自检清单、失败后的最小修复与重试纪律 | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `cadt-gen-models/` | 帮用户配置生图/视频生成条目：代填除 API Key 外的全部字段，密钥由用户在设置里填写 | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `cadt-mcp-samples/` | 内置 MCP 示例：缺本地 TTS / OCR / ASR 时推荐并用 install_mcp_sample 安装 | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `cadt-mcp-config/` | 帮用户配置本机 MCP 服务器：代填 command/args/cwd 与超时，环境变量值与工具授权由用户完成 | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `web-research/` | 联网检索：web_search 找来源、web_fetch 读正文，最后附 URL 给出结论（只读） | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `docx/` | 创建、编辑、提取 Word 文档，以及 docx↔pdf/Markdown 转换 | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `pdf/` | PDF 生成与处理：合并/拆分、提取文本表格图片、转换、加水印、填表单 | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `skill-creator/` | 为本应用 AI 助手创建或改进技能：把重复工作流沉淀成 SKILL.md | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `plugin-creator/` | 为 CaDt-DataLens 开发插件（plugin.json + cadt.* API） | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `answer-me-with-html/` | 把复杂回答做成一页多面板图文 HTML，写入工作区并在内嵌浏览器打开 | 应用内置技能，首次列出技能时释放到应用数据目录 |
 
 ## cadt-datalens：注册到全局技能目录
 
@@ -31,17 +44,31 @@
 
 ## 内置技能：随应用分发
 
-`cadt-file-layout/`、`reverse-engineer-anything/`、`chinese-formal-document-format/` 与 `landing-page-design/` 通过 `go:embed` 编进 exe。AI 面板首次列出技能时，会把它们释放到：
+`cadt-datalens/`、`cadt-file-layout/`、`reverse-engineer-anything/`、`chinese-formal-document-format/`、`landing-page-design/`、`code-review/`、`json-toolkit/`、`release-notes/`、`patch-workflow/`、`cadt-gen-models/`、`cadt-mcp-samples/`、`cadt-mcp-config/`、`web-research/`、`docx/`、`pdf/`、`skill-creator/`、`plugin-creator/` 与 `answer-me-with-html/` 通过 `go:embed` 编进 exe。AI 面板首次列出技能时，会把它们释放到：
 
 ```text
 %APPDATA%\CandySweet\CaDt-DataLens\builtin-skills\
 ├── .cadt-builtin-version      ← 应用版本标记
+├── cadt-datalens\             ← SKILL.md 里的 {{EXE_PATH}} 释放时替换为真实路径
 ├── cadt-file-layout\
 │   ├── SKILL.md
 │   └── reference\paths.md
 ├── reverse-engineer-anything\
 ├── chinese-formal-document-format\
-└── landing-page-design\
+├── landing-page-design\
+├── code-review\
+├── json-toolkit\
+├── release-notes\
+├── patch-workflow\
+├── cadt-gen-models\
+├── cadt-mcp-samples\
+├── cadt-mcp-config\
+├── web-research\
+├── docx\
+├── pdf\
+├── skill-creator\
+├── plugin-creator\
+└── answer-me-with-html\
 ```
 
 - 在「设置 → AI 助手 → 技能」中显示为「内置」，优先级最低（rank 600），可被工作区、应用级或用户级同名技能覆盖。
@@ -58,6 +85,20 @@
 | `reverse-engineer-anything` | [morluto/rea](https://github.com/morluto/rea)（`.agents/skills/reverse-engineer-anything`） | SKILL v62 |
 | `chinese-formal-document-format` | [ianlinkstudy/chinese-formal-document-format](https://github.com/ianlinkstudy/chinese-formal-document-format) | v1.3.0 |
 | `landing-page-design` | [elayadesign/ai-design-skills](https://github.com/elayadesign/ai-design-skills) | 2026-11-01 main |
+| `cadt-datalens` | 本项目自研 | 随应用版本 |
+| `code-review` | 本项目自研 | 随应用版本 |
+| `json-toolkit` | 本项目自研 | 随应用版本 |
+| `release-notes` | 本项目自研 | 随应用版本 |
+| `patch-workflow` | 本项目自研 | 随应用版本 |
+| `cadt-gen-models` | 本项目自研 | 随应用版本 |
+| `cadt-mcp-samples` | 本项目自研 | 随应用版本 |
+| `cadt-mcp-config` | 本项目自研 | 随应用版本 |
+| `web-research` | 本项目自研 | 随应用版本 |
+| `docx` | 本项目自研 | 随应用版本 |
+| `pdf` | 本项目自研 | 随应用版本 |
+| `skill-creator` | 本项目自研 | 随应用版本 |
+| `plugin-creator` | 本项目自研 | 随应用版本 |
+| `answer-me-with-html` | 参考 [qingyuna](https://github.com/qingyuna) 的同名技能（MIT）改写 | 随应用版本 |
 
 后三个技能均为 MIT 许可，许可证文本随技能目录一并存放（`LICENSE`），第三方组件清单见仓库根目录 `THIRD_PARTY_LICENSES.md`。`cadt-file-layout` 随本仓库 Apache-2.0 分发。
 
@@ -68,4 +109,5 @@
 - `cadt-datalens`：直接编辑 `SKILL.md` 或 `reference/cli.md`，然后重新注册（取消再勾选）即可生效；`SKILL.md` 的 YAML frontmatter 必须保留 `name: cadt-datalens`，它是应用识别"这是自己写入的技能"以决定能否安全删除的标记。
 - `cadt-file-layout`：改 `SKILL.md` 时同步 `reference/paths.md`、路径清单（第 4、7、8 节）与脚本规范（第 6 节）；规则要与 `ai-panel.js` 的实际落盘逻辑一致，避免文档与实现打架。
 - 内置技能：以适配应用为主（例如补一句"用 `run_command` 执行脚本""产物写到工作区"），其余内容尽量与上游保持一致，方便后续同步。
-- 新增内置技能：在 `docs/skills/` 下建目录（至少含 `SKILL.md` 与一个附属文件），把目录名加进 `skills.go` 的 `appBuiltinSkillDirs`；版本标记包含清单，清单变化会自动触发重新释放。`TestBuiltinSkillAssetsPresent` 校验 frontmatter 的 `name:` 与目录名一致、且目录内至少两个文件。
+- 新增内置技能：在 `docs/skills/` 下建目录（至少含一个 `SKILL.md`），把目录名加进 `skills.go` 的 `appBuiltinSkillDirs`；版本标记包含清单，清单变化会自动触发重新释放。`TestBuiltinSkillAssetsPresent` 校验 frontmatter 的 `name:` 与目录名一致、且目录内至少一个文件。
+- 技能文案与源码：历史上一批技能正文硬编码在 `ai-constants.js` 的 `AI_BUILTIN_SKILLS`，现已全部文件化；只剩 `cadt-ui`（动作表被四方对账守卫静态解析）、`inline-visual`（正文取自 `core/visual-spec.js` 单一来源）、`orchestrate`（被单测按名断言）三项留在源码。同一技能**不能既硬编码又文件化**——rank 相同时硬编码恒胜出，md 改了不生效；`ai-constants.test.mjs` 有护栏拦这种情况。

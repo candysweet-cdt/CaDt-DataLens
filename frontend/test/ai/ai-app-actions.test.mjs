@@ -26,8 +26,12 @@ const mainSrc = read('main.js');
 function skillActions(text) {
     const start = text.indexOf("name: 'cadt-ui'");
     assert.ok(start >= 0, '找不到 cadt-ui 技能');
-    const nextSkill = text.indexOf("name: 'cadt-gen-models'", start);
-    const segment = text.slice(start, nextSkill > 0 ? nextSkill : text.length);
+    // 右界用通用锚点（下一个技能条目的 `    {` + `        name: '`），不依赖具体技能名：
+    // 内置技能陆续文件化搬走后，写死名字的 indexOf 会返回 -1，区间退化成「cadt-ui 到文件末尾」。
+    const rest = text.slice(start);
+    const next = rest.search(/\n {4}\{\n {8}name: '/);
+    assert.ok(next > 0, 'cadt-ui 之后找不到下一个技能条目');
+    const segment = rest.slice(0, next);
     return [...segment.matchAll(/^\s*'- ([a-z][a-z0-9_]+)(?=[ {：])/gm)].map((m) => m[1]);
 }
 
@@ -95,6 +99,15 @@ test('动作清单无重复', () => {
         const dup = [...new Set(list.filter((item, index) => list.indexOf(item) !== index))];
         assert.deepEqual(dup, [], label + ' 里有重复动作');
     }
+});
+
+// 内置技能在 listSkillsRaw 里的接线（ai-panel.js）：正文直取内置 content、cadt-ui 按 appControlOn() 隐藏。
+// 这两处只有运行时路径，删掉 / 改回替换函数都不会让其他守卫变红——用静态断言钉住。
+test('listSkillsRaw 接线：content 直取内置正文，cadt-ui 按开关隐藏', () => {
+    assert.ok(/content: builtin\.content,/.test(panelSrc), '内置技能正文必须直取 builtin.content');
+    assert.ok(/builtin\.name === 'cadt-ui' && !appControlOn\(\)/.test(panelSrc),
+        'cadt-ui 必须在应用操作关闭时隐藏（技能表跟着消失）');
+    assert.ok(!/builtinSkillText/.test(panelSrc), 'builtinSkillText 已随技能文件化删除，不应再出现');
 });
 
 // 改名后的别名方向守卫：旧名只能做静默别名，不能回潮进技能表；新名必须两处齐全。
