@@ -26,6 +26,10 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - 文件树「插件：<动作>」右键菜单项的图标键 `plugin` 从未在 `core/icons.js` 登记，`iconSvg` 一直静默渲染为空；改用已注册的 `puzzle`（拼图＝插件惯例图形）。
 - `storage-key-guard` 的 `NON_STORAGE` 白名单删除三个死条目（`cadt-datalens` / `cadt-mcp-samples` / `cadt-mcp-config`）：技能文件化后这些名字已不在源码出现，白名单只许减不许增。
 
+### 修复（调试台误报 ResizeObserver 良性通知）
+
+- 全局 error 兜底不再把 Chromium 的「ResizeObserver loop completed with undelivered notifications」记成 E 级未捕获异常：该通知无 error 对象、无栈，是 ResizeObserver 回调改布局触发新一轮观察时本帧已派发完毕的良性提示（下一帧自动重排，无功能影响）。只认「无 error 对象 + 消息命中（新旧两种 Chromium 措辞）」的形态静默丢弃，带真实 error 对象的异常照常上报。
+
 ### 变更（模型提示词英文化：工具定义 / 工作区守则 / 工具目录）
 
 - 模型侧提示词统一改为英文：工具 description（工具级 + 参数级，349 个字段）、`<workspace_rules>`、`<tool_catalog>`（88 条 blurb、14 个分组标题与 9 条注记、调度原则、典型任务链）、`<plan_mode>`、`<cognition_rules>` 两态。用户可见文案、人设、技能正文与每轮环境块保持中文。

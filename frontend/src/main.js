@@ -461,15 +461,15 @@ for (const level of ['log', 'info', 'debug', 'warn', 'error']) {
     };
 }
 
+// ResizeObserver 循环通知是 Chromium 帧内良性提示（无 error 对象、无栈，下一帧自动重排），只认无 error + 消息命中的形态，静默丢弃防 E 级刷屏。
 window.addEventListener('error', (event) => {
-    const err = event.error;
-    const detail = (err && (err.stack || err.message)) || event.message || '未知错误';
+    if (!event.error && /ResizeObserver loop (completed with undelivered notifications|limit exceeded)/.test(event.message)) return;
+    const detail = (event.error && (event.error.stack || event.error.message)) || event.message || '未知错误';
     debugConsole.push('error', ['未捕获异常：' + detail]);
     logFrontend('error', '未捕获异常：' + detail, {fromConsole: true});
 });
 window.addEventListener('unhandledrejection', (event) => {
-    const reason = event.reason;
-    const detail = (reason && (reason.stack || reason.message)) || String(reason);
+    const detail = (event.reason && (event.reason.stack || event.reason.message)) || String(event.reason);
     debugConsole.push('error', ['未处理的 Promise 拒绝：' + detail]);
     logFrontend('error', '未处理的 Promise 拒绝：' + detail, {fromConsole: true});
 });
