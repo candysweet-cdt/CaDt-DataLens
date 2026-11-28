@@ -4,9 +4,9 @@
 // classifyVerdictRows/askNavAction 纯函数留守（ai-takeover.test.mjs）；
 // approvalTakeoverKey/Collapsed、dismissedPlanApproval、stickBottom 经访问器读写（核心域他处亦写）。
 import {iconSvg} from '../../core/icons.js';
-import {createSwitch} from '../../core/form-controls.js';
+import {createSwitch, createCheckbox} from '../../core/form-controls.js';
 import {humanSizeBytes} from '../tools/ai-file-tools.js';
-import {AI_WRITE_SCOPES, AI_DELETE_BULK_WARN} from '../core/ai-constants.js';
+import {AI_WRITE_SCOPES, AI_DELETE_BULK_WARN, AI_DELETE_SIZE_ASK} from '../core/ai-constants.js';
 import {createSessionBusyProbe} from '../session/ai-session-scope.js';
 import {isWebApproval} from '../security/ai-permissions.js';
 import {collectCommandFamilies, commandFamilySignature, mergePlanGrantItems, deletionHintFor} from '../security/ai-command-rules.js';
@@ -381,7 +381,9 @@ export function createAITakeover(ctx) {
             }
             const summary = document.createElement('div');
             summary.className = 'ai-approval-more';
-            summary.textContent = '将全部移入系统回收站，可在回收站还原；批准仅对本次生效（删除不提供记住）。';
+            summary.textContent = approval.permanent
+                ? '将彻底删除，不进回收站、不可恢复；批准仅对本次生效（删除不提供记住）。'
+                : '将全部移入系统回收站，可在回收站还原；批准仅对本次生效（删除不提供记住）。';
             body.appendChild(summary);
             const summaryImpact = approval.impact || {};
             if ((summaryImpact.totalEntries || 0) > AI_DELETE_BULK_WARN || !!summaryImpact.anyTruncated) {
@@ -390,6 +392,13 @@ export function createAITakeover(ctx) {
                 bulk.textContent = '批量删除：本次展开超过 ' + AI_DELETE_BULK_WARN + ' 个条目' +
                     (summaryImpact.anyTruncated ? '（枚举已截断，实际可能更多）' : '') + '，请确认影响范围。';
                 body.appendChild(bulk);
+            }
+            if (approval.permanent) {
+                // 模型请求彻底删除（permanent=true，非 full 档已被强制转人工到这张卡）
+                const perm = document.createElement('div');
+                perm.className = 'ai-approval-danger';
+                perm.textContent = '永久删除：模型请求跳过回收站，此操作不可恢复；请确认这些条目确实不需要保留。';
+                body.appendChild(perm);
             }
             if (approval.outOfWorkspace) {
                 const note = document.createElement('div');
@@ -430,6 +439,7 @@ export function createAITakeover(ctx) {
         let familyBox = null;
         let projectFamilyBox = null;
         let projectFileBox = null;
+        let permanentBox = null;
         if (!isCommand && !isDelete) {
             // 写审批记「此文件」（精确路径），读审批记「此目录」（父目录树）——复用同一组勾选框。
             // 删除不提供记住（授权写 ≠ 授权删）：勾选框整段跳过，decideApproval 的 delete 分支兜底。
@@ -450,6 +460,20 @@ export function createAITakeover(ctx) {
                 projectFileBox.dataset.aiWriteRemember = 'project';
                 projectLabel.append(projectFileBox, document.createTextNode(' 本项目允许' + noun));
                 options.appendChild(projectLabel);
+            }
+            foot.appendChild(options);
+        } else if (isDelete) {
+            // 彻底删除（不进回收站）由人在卡上勾选、默认不勾——不可逆决策不交给模型参数
+            // 独自决定；大文件给提示（auto 档超 AI_DELETE_SIZE_ASK 的清单本来就会弹卡到这里）。
+            const permanent = createCheckbox({label: ' 彻底删除（不进回收站，不可恢复）'});
+            permanent.control.dataset.aiDeletePermanent = '1';
+            permanentBox = permanent.control;
+            options.appendChild(permanent.element);
+            if ((approval.impact && (approval.impact.totalSize || 0)) >= AI_DELETE_SIZE_ASK) {
+                const hint = document.createElement('span');
+                hint.className = 'ai-approval-more';
+                hint.textContent = '大文件建议勾选彻底删除，以免占用回收站空间。';
+                options.appendChild(hint);
             }
             foot.appendChild(options);
         } else if (!approval.danger && !approval.singleUse) {
@@ -494,16 +518,18 @@ export function createAITakeover(ctx) {
                 projectFamily: !!(projectFamilyBox && projectFamilyBox.checked),
             };
         };
+        // 删除卡的「彻底删除」勾选（extra.permanent → decideApproval → applyDelete 选绑定）
+        const readPermanent = () => !!(permanentBox && permanentBox.checked);
         const deny = document.createElement('button');
         deny.type = 'button';
         deny.className = 'dlg-btn';
         deny.textContent = isRead ? '拒绝' : '放弃';
-        deny.addEventListener('click', () => decideApproval(toolMessage, false, readRemember()));
+        deny.addEventListener('click', () => decideApproval(toolMessage, false, readRemember(), {permanent: readPermanent()}));
         const apply = document.createElement('button');
         apply.type = 'button';
         apply.className = 'dlg-btn primary';
-        apply.textContent = isCommand ? '执行' : (isRead ? '允许' : '应用');
-        apply.addEventListener('click', () => decideApproval(toolMessage, true, readRemember()));
+        apply.textContent = isCommand ? '执行' : (isRead ? '允许' : (isDelete ? '删除' : '应用'));
+        apply.addEventListener('click', () => decideApproval(toolMessage, true, readRemember(), {permanent: readPermanent()}));
         actions.append(deny, apply);
         foot.appendChild(actions);
         card.append(head, body, foot);

@@ -50,6 +50,9 @@ export const AI_PATCH_LIMIT = 256 * 1024; // 单次补丁上限：模型输出�
 // · AI_DELETE_PATHS_LIMIT = 单次调用显式路径条数上限（超过让模型分批发起）。
 export const AI_DELETE_BULK_WARN = 40;
 export const AI_DELETE_PATHS_LIMIT = 20;
+// auto 档直删的文件总大小门槛：清单中文件字节总和超过此值不直删、转人工弹卡——
+// 给人勾选「彻底删除（不进回收站）」的机会，避免超大文件无卡悄悄占用回收站空间。
+export const AI_DELETE_SIZE_ASK = 256 * 1024 * 1024;
 // run_command 的超时边界：与 Go 侧 aiShellDefaultTimeout / aiShellMaxTimeout
 // （internal/cmdbridge/ai_command_windows.go）同值——那里是强杀的真源，这里是下发前的钳制。
 // 比插件同步命令（120 s）宽松：AI 跑测试 / 构建属正常需求，但长任务该交给 background_command。

@@ -499,10 +499,11 @@ export function createAIToolCards(ctx) {
             // 删除审批按回收站措辞（2026-11-28 delete_path）
             const readKind = approval.kind === 'read';
             const deleteKind = approval.kind === 'delete';
+            const approvedText = toolIsLive(message)
+                ? (readKind ? '正在读取…' : (deleteKind ? '正在删除…' : '正在应用更改…'))
+                : (readKind ? '已授权读取' : (deleteKind ? (approval.permanent ? '已彻底删除（不进回收站）' : '已移入回收站') : '已应用更改')) + approvalTraceNote(approval);
             result.textContent = approval.state === 'approved'
-                ? (toolIsLive(message)
-                    ? (readKind ? '正在读取…' : (deleteKind ? '正在删除…' : '正在应用更改…'))
-                    : (readKind ? '已授权读取' : (deleteKind ? '已移入回收站' : '已应用更改')) + approvalTraceNote(approval))
+                ? approvedText
                 : approval.state === 'denied'
                     ? (readKind ? '已拒绝，未读取' : (deleteKind ? '已取消，未删除' : '已放弃，文件未修改'))
                     : (approval.state === 'failed'

@@ -16,6 +16,17 @@ func (f *FS) DeleteEntry(path string) error {
 	return deleteEntry(path)
 }
 
+// DeleteEntryPermanent 彻底删除（shift+delete 语义）：不进回收站、不可恢复。
+// AI delete_path 的 permanent 通道（模型传 permanent 且人工批准 / 用户在审批卡勾选
+// 「彻底删除」）专用——调用前必须已过人工确认；校验与回收站删除同一套（拒根目录/
+// 非普通文件/空字节）。大文件（超 wipeguard backupMaxBytes）没有快照兜底，这里就是
+// 最后一道闸。平台无关：硬删语义全平台一致，不需要成对文件。
+func (f *FS) DeleteEntryPermanent(path string) error {
+	return deleteEntryWith(path, func(p string) error {
+		return os.RemoveAll(p)
+	})
+}
+
 // RemoveToRecycleBin 供非绑定调用方（存储清理）复用同一套校验与回收站动作。
 func RemoveToRecycleBin(path string) error {
 	return deleteEntry(path)

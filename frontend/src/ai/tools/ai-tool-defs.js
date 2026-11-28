@@ -482,12 +482,13 @@ export const AI_TOOL_DEFS = {
     },
     delete_path: {
         name: 'delete_path',
-        description: 'Delete one or more files or directories by moving them to the system recycle bin (recoverable on Windows). Prefer this tool over shell deletion commands (rm / Remove-Item / del / find -delete): the approval card shows exactly what is deleted and the deletion stays recoverable, while shell deletions show only the command text. To delete several entries in one call pass up to 20 explicit paths in paths — the card lists every entry; patterns are refused, so find concrete paths with glob first. In the auto-approve tier, workspace deletions of up to 40 expanded entries with no risky paths (.git / .cadt / AGENTS.md-like) and no unsaved editor changes apply directly; anything bigger, outside the workspace, or risky asks first. No remember option. The app data directory is always refused. Needs a write tier.',
+        description: 'Delete one or more files or directories. Prefer this tool over shell deletion commands (rm / Remove-Item / del / find -delete): the approval card shows exactly what is deleted, and the operation is audited here while shell deletions leave no structured trace. By default entries move to the system recycle bin (recoverable on Windows); to skip the recycle bin set permanent=true — the card then shows an unrecoverable warning and every non-full tier asks, regardless of size or tier. Use permanent only for confirmed garbage such as oversized build artifacts that would bloat the recycle bin. To delete several entries in one call pass up to 20 explicit paths in paths — the card lists every entry; patterns are refused, so find concrete paths with glob first. In the auto-approve tier, workspace deletions of up to 40 expanded entries and 256 MB total, with no risky paths (.git / .cadt / AGENTS.md-like) and no unsaved editor changes, apply directly; anything bigger, outside the workspace, risky, or permanent asks first. No remember option. The app data directory is always refused. Needs a write tier.',
         parameters: {
             type: 'object',
             properties: {
                 path: {type: 'string', description: 'Single file or directory path relative to the scope root, or an absolute path outside the workspace; no glob patterns. Ignored when paths is given'},
                 paths: {type: 'array', items: {type: 'string'}, description: 'Up to 20 explicit paths to delete in one call (relative to the scope root, or absolute outside the workspace); one approval card covers the whole list. No glob patterns — find concrete paths with glob first'},
+                permanent: {type: 'boolean', description: 'Skip the recycle bin and delete irreversibly (shift-delete). Always asks for approval in every non-full tier, never auto-applied; the user can also opt in on the approval card. Only for confirmed garbage like oversized files'},
             },
             required: [],
         },

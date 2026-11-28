@@ -2058,6 +2058,10 @@ const mockBackend = {
     async DeleteEntryRecycle(path) {
         return this.DeleteEntry(path);
     },
+    // 彻底删除通道（真实后端不进回收站；mock 内存 FS 无回收站概念，行为一致）
+    async DeleteEntryPermanent(path) {
+        return this.DeleteEntry(path);
+    },
     async RestoreEntry(path) {
         // mock 后端是内存文件系统，没有系统回收站可还原
         throw new Error('调试模式不支持从回收站还原：' + String(path || ''));

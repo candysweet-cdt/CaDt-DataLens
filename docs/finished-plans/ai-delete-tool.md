@@ -11,6 +11,8 @@
 4. **影响面审批**：卡上逐条展示完整真实路径 + 文件大小（`GetPathInfo`）或目录条目数（`ReadDirTree(path, 8)`，照 list_dir 口径：400 项预算、跳 .git/node_modules、截断标记）。**单次阈值双重角色**：展开总条目超过 `AI_DELETE_BULK_WARN`（40，与 wipeguard 的 `WIPEGUARD_DELETE_THRESHOLD` 对齐）或枚举截断时——auto 档不再直删（转人工）且卡上加 `ai-approval-danger` 警告块（对齐危险命令卡红块）。只看单次调用，不做会话累计。
 5. **多路径显式清单，禁 glob**：`paths` 数组一次最多 `AI_DELETE_PATHS_LIMIT`（20）条显式路径，**整单一张卡一次批准**（逐条全列）；校验阶段任一条失败（通配符 / appdata / 不存在 / 超上限）**整单拒绝**并列出问题条目——用户批准的是完整清单，部分有效会造成「批的卡和删的东西不一致」；执行阶段单条失败不中断其余、结果汇总。删一类文件的正当路径 = 先 glob 查具体路径再显式传 paths（写进描述）。
 6. **删除前 L1 快照（仅文件）**：`wipeguard backupWrite({content:'', existed:true})`——Go 侧 Backup 先读 absPath 磁盘、读失败才退回 Content，所以文件能拿到真实内容快照（删错文件有回收站 + wipeguard 双层）；目录跳过（ReadFile 必失败会落空 blob）。
+7. **彻底删除双通道（A+B，shift+delete 语义）**：回收站默认不变，彻底删除是显式例外——① 模型参数 `permanent=true`：非 full 档并入 risky 强制转人工（任何档都不自动应用），卡上红块「永久删除不可恢复」；② 用户在卡上勾选「彻底删除」（`createCheckbox`，默认不勾，大文件给提示）。理由（作者拍板）：full 档下 `rm` 本来就能绕且不留痕，工具提供受控通道反而有审批卡 + 审计 + 快照；不可逆决策最终都过人手。执行走新绑定 `fsops.FS.DeleteEntryPermanent`（平台无关单文件，`deleteEntryWith` 校验 seam + `os.RemoveAll`）。
+8. **auto 直删大小门槛**：清单文件字节总和 ≥ `AI_DELETE_SIZE_ASK`（256MB）不直删、转人工弹卡——给勾选「彻底删除」的机会，避免超大文件无卡悄悄占用回收站空间。
 7. **子代理与群聊不给删除**：能力快照不注入（`agent-capabilities` 只 push write_file/edit_file）+ 执行层 `applyDelete` 对 `parentSessionId` 确定性拒绝双闸。计划模式进 `PLAN_MODE_DENIED_TOOLS`。
 8. **命令通道判定不放宽不改动**：`deletionHintFor` 是纯文案层引导（识别面刻意比危险特征表宽，含 Remove-Item 漏标形态），不改 dangerous/risky 分类、不动 ai-shell-choice 三通道。漏标修复另立项（P1）。
 
@@ -18,18 +20,19 @@
 
 | 部分 | 位置 |
 |---|---|
-| 回收站专用绑定 | `internal/fsops/delete_platform_windows.go`（`DeleteEntryRecycle` → `deleteEntry`）+ `delete_platform_other.go`（报错）；绑定基线 +1（449 条），`backend.d.ts` 重生成 |
-| 工具定义 | `ai-tool-defs.js`：`AI_TOOL_DEFS.delete_path`（path 单条 + paths 数组 ≤20，required 空、二选一）+ CATALOG（group write）+ `toolsForScope` 写组 + 编排裁剪白名单 work 分支（删除仍要过 owns 闸） |
+| 回收站专用绑定 | `internal/fsops/delete_platform_windows.go`（`DeleteEntryRecycle` → `deleteEntry`）+ `delete_platform_other.go`（报错）；`delete.go` 另有平台无关的 `DeleteEntryPermanent`（`deleteEntryWith` + `os.RemoveAll`）；绑定基线 +2（450 条），`backend.d.ts` 重生成 |
+| 工具定义 | `ai-tool-defs.js`：`AI_TOOL_DEFS.delete_path`（path 单条 + paths 数组 ≤20 + permanent 布尔，required 空）+ CATALOG（group write）+ `toolsForScope` 写组 + 编排裁剪白名单 work 分支（删除仍要过 owns 闸） |
 | 判定链 | `ai-permissions.js`：PERMISSION_KINDS / KIND_PREFIX / PREFIX_KIND / emptyPermissionRules / parseRuleLines 文案 / matchPermissionRule / decidePermission delete 分支（auto：risky→ask，否则 allow/auto）；`ai-permission-settings.js`：kind 标签、规则表格桶、auditRulePattern |
 | 目标收集 | `ai-file-tools.js` `collectDeleteTargets(input, limit)` 纯函数：paths 优先 / 单条回退 / 拒通配符与空串 / 钳上限，错误点名条目 |
 | 执行链 | `ai-panel.js`：case 'delete_path'（collectDeleteTargets → 逐条 resolveDeleteEntry（resolveWritePath 越界捕获 + appdata 硬拒 → GetPathInfo/ReadDirTree 影响面 → wipeguard 快照），任一条 throw 整单拒并列条目）→ `applyDelete`（toolHalted → mainRootWriteVerdict 逐条 → 子代理拒 → risky 合成 → decidePermission 逐条任一 deny 整单拒 → 一卡或直删 → 编排 owns 闸逐条 → DeleteEntryRecycle 逐条、失败汇总）；`requestDeleteApproval`（kind delete + entries 清单）；`decideApproval` delete 分支 + audit kind 'delete'；PLAN_MODE_DENIED_TOOLS |
 | 审批卡 | `ai-takeover.js`：折叠条「删除待审批」、正文（多条逐条清单 / 单条路径 + 影响面 + 回收站说明 + 批量警告 + 工作区外计数提示）、记住勾选段跳过；`ai-tool-cards.js`：toolMeta（删除/trash）+ renderApprovalBody delete 状态文案（已移入回收站/已取消，未删除/删除失败）+ 工作区外提示分文案 |
-| 阈值常量 | `ai-constants.js` `AI_DELETE_BULK_WARN = 40`（对齐 wipeguard `WIPEGUARD_DELETE_THRESHOLD`，auto 直删上界 + 卡红块阈值）+ `AI_DELETE_PATHS_LIMIT = 20`（单次显式路径上限） |
+| 阈值常量 | `ai-constants.js` `AI_DELETE_BULK_WARN = 40`（对齐 wipeguard `WIPEGUARD_DELETE_THRESHOLD`，auto 直删上界 + 卡红块阈值）+ `AI_DELETE_PATHS_LIMIT = 20`（单次显式路径上限）+ `AI_DELETE_SIZE_ASK = 256MB`（auto 直删文件总大小门槛） |
 | 引导三通道 | 工具 description（Prefer over shell deletion commands）+ `ai-system-context.js` Tool rules 新行 + `ai-command-rules.js` `deletionHintFor`（导出纯函数）+ 命令审批卡 note 追加提示 |
 | mock | `dev/mock-backend.js` `DeleteEntryRecycle`（转发 DeleteEntry） |
 
 ## 3. 已知边界（明确不做）
 
+- 彻底删除真不可恢复：超大文件超 wipeguard `backupMaxBytes` 不会落快照，确认后就是最后一道闸；full 档 `permanent=true` 直执行不弹卡（full 契约）。
 - 不提供「记住」：风险合成之外的删除每次必问（full 除外）；噪音问题再议专用 approvedDeletePaths。
 - glob / 通配符仍禁：删一类文件 = 先 glob 后显式 paths；单次上限 20 条，超过分批发起。
 - 整单原子性不做「跳过坏条目继续删」：校验阶段任一失败整单拒；执行阶段单条失败仅汇总不中断（回收站语义下安全）。
@@ -50,4 +53,6 @@
 9. **通配符**：`path`/`paths` 含 `*`/`?` → 拒并指引「先 glob 查具体路径再显式传 paths」。
 10. **子代理 / 计划模式**：均确定性拒绝。
 11. **命令卡引导**：auto/edit 档发 `rm x.txt` / `Remove-Item -Recurse dist` → 命令审批卡出现「检测到删除命令…建议改用 delete_path」。
-12. **dev 模式**：mock 下单条与多路径删除正常（内存 FS 移除）。
+12. **模型请求彻底删除**：让 AI「用 delete_path 的 permanent 参数删掉 xx」→ 非 full 档必弹卡且带「永久删除不可恢复」红块；批准后文件不在回收站、结果「已彻底删除」。
+13. **卡上勾选彻底删除**：默认不勾 → 批准进回收站；勾选 → 批准后不进回收站；>256MB 清单的卡上勾选框旁有「大文件建议勾选」提示。
+14. **dev 模式**：mock 下单条与多路径删除正常（内存 FS 移除）。

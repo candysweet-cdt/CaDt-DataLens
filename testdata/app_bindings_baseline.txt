@@ -164,6 +164,7 @@ DBTestConnection
 DebugConsoleAppend
 DebugConsoleRead
 DeleteEntry
+DeleteEntryPermanent
 DeleteEntryRecycle
 DeletePlugin
 DetectRunProject

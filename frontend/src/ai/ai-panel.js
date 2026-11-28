@@ -235,6 +235,7 @@ import {
     AI_PATCH_LIMIT,
     AI_DELETE_BULK_WARN,
     AI_DELETE_PATHS_LIMIT,
+    AI_DELETE_SIZE_ASK,
     AI_SHELL_TIMEOUT_DEFAULT_MS,
     AI_SHELL_TIMEOUT_MAX_MS,
     AI_FAILURE_NOTICE_COOLDOWN_MS,
@@ -8714,7 +8715,8 @@ async function requestApproval(session, toolMessage, info) {
     }
 
     // 删除审批（delete_path）：无 diff、无「记住」——卡上是逐条清单 + 影响面汇总 +
-    // 回收站说明。relPath 多条时取「共 N 个条目」（卡头 / 收起条 / 审计 subject 消费）。
+    // 回收站说明；模型传 permanent 或清单含超大文件时由卡片提示 / 红块（人工拍板不可逆）。
+    // relPath 多条时取「共 N 个条目」（卡头 / 收起条 / 审计 subject 消费）。
     async function requestDeleteApproval(session, toolMessage, info) {
         const entries = info.entries || [];
         const single = entries.length === 1 ? entries[0] : null;
@@ -8725,7 +8727,13 @@ async function requestApproval(session, toolMessage, info) {
             path: single ? single.path : '',
             relPath: single ? single.relPath : '共 ' + entries.length + ' 个条目',
             outOfWorkspace: entries.some((e) => e.outOfWorkspace),
-            impact: {totalEntries: info.totalEntries || 0, anyTruncated: !!info.anyTruncated, entriesCount: entries.length},
+            permanent: !!info.permanent,
+            impact: {
+                totalEntries: info.totalEntries || 0,
+                anyTruncated: !!info.anyTruncated,
+                entriesCount: entries.length,
+                totalSize: info.totalSize || 0,
+            },
             entries: entries.map((e) => ({relPath: e.relPath, impact: e.impact})),
             remember: '',
         };
@@ -9394,7 +9402,7 @@ async function requestApproval(session, toolMessage, info) {
         });
     }
 
-    function decideApproval(toolMessage, approved, remember) {
+    function decideApproval(toolMessage, approved, remember, extra) {
         if (!toolMessage) return;
         const key = toolMessage.toolCallId;
         const entry = pendingApprovals.get(key);
@@ -9465,8 +9473,11 @@ async function requestApproval(session, toolMessage, info) {
                 approval.remember = 'session';
             }
         } else if (approval.kind === 'delete') {
-            // 删除不提供「记住」：授权写 ≠ 授权删，破坏性最高的操作每次必问（full 档不弹卡）。
+            // 删除不提供「记住」：授权写 ≠ 授权删，风险合成之外的删除每次必问。
+            // 彻底删除（不进回收站）由人在卡上勾选（extra.permanent）或模型请求
+            // （approval.permanent，非 full 档已被 risky 合成强制转人工到这张卡）。
             approval.remember = '';
+            approval.permanent = !!approval.permanent || !!(extra && extra.permanent);
         } else if (approved && remember === 'always') {
             aiAddUnique(config.approvedPaths, approval.path);
             saveAIConfig();
@@ -9560,7 +9571,12 @@ async function requestApproval(session, toolMessage, info) {
         if (orchestration && typeof orchestration.onTurnWaiting === 'function' && !toolHalted(toolMessage)) {
             try { orchestration.onTurnWaiting(entry.session, false); } catch (e) {}
         }
-        entry.resolve({approved: !!approved, remember: remember || ''});
+        entry.resolve({
+            approved: !!approved,
+            remember: remember || '',
+            // 删除卡勾选的「彻底删除」经这里带回执行链（applyDelete 选绑定）
+            permanent: !!(extra && extra.permanent),
+        });
         updateComposerTakeover(true);
         // 用户已经在处理这个会话了，「未查看」圆点顺手清掉。
         if (entry.session) clearSessionUnread(entry.session);
@@ -10236,7 +10252,10 @@ async function requestApproval(session, toolMessage, info) {
         const entries = info.entries || [];
         const rules = await ensureProjectRules(false);
         const totalEntries = entries.reduce((sum, e) => sum + (e.impact && e.impact.isDir ? e.impact.entries : 1), 0);
+        const totalSize = entries.reduce((sum, e) => sum + (e.impact && !e.impact.isDir ? (e.impact.size || 0) : 0), 0);
         const anyTruncated = entries.some((e) => e.impact && e.impact.truncated);
+        // 彻底删除双通道：模型传 permanent（非 full 档强制转人工）或用户在卡上勾选。
+        const permanent = !!info.permanent;
         const root = sessionScopeRoot(session);
         const summaryRel = entries.length === 1 ? entries[0].relPath : '共 ' + entries.length + ' 个条目';
         if (toolHalted(toolMessage)) {
@@ -10272,9 +10291,10 @@ async function requestApproval(session, toolMessage, info) {
             return '删除被拒绝：子代理没有审批通道，不能删除文件。请在最终结论中说明需要删除的路径，由主代理发起删除。';
         }
         // auto 档直删的风险合成（与 write 的 risky 同源口径）：工作区外 / 风险路径 / 脏文件 /
-        // 展开超量级，任一命中整单转人工。
+        // 展开超量级 / 文件总大小超 AI_DELETE_SIZE_ASK / 模型请求彻底删除，任一命中整单转人工。
         const risky = entries.some((e) => e.riskyPath || e.dirty || e.outOfWorkspace) ||
-            totalEntries > AI_DELETE_BULK_WARN || anyTruncated;
+            totalEntries > AI_DELETE_BULK_WARN || anyTruncated ||
+            totalSize >= AI_DELETE_SIZE_ASK || permanent;
         // 逐条判定：任一 deny 整单拒；ask 与 allow 混合时整单弹卡（批准覆盖整单）
         const decisions = entries.map((entry) => {
             const decision = decidePermission({
@@ -10306,9 +10326,10 @@ async function requestApproval(session, toolMessage, info) {
             return '项目权限规则禁止删除：' + deniedEntry.relPath + '（规则 ' + decisions[deniedIndex].rule +
                 '），整单未执行。请从清单中移除该条目后重新发起。';
         }
+        let answer = null;
         if (decisions.some((d) => d.decision === 'ask')) {
-            const answer = await requestDeleteApproval(session, toolMessage, {
-                tool: info.tool, entries, totalEntries, anyTruncated,
+            answer = await requestDeleteApproval(session, toolMessage, {
+                tool: info.tool, entries, totalEntries, anyTruncated, totalSize, permanent,
             });
             if (!answer.approved) {
                 return answer.cancelled
@@ -10322,8 +10343,9 @@ async function requestApproval(session, toolMessage, info) {
                 kind: 'delete',
                 tool: info.tool,
                 relPath: summaryRel,
-                impact: {totalEntries, anyTruncated, entriesCount: entries.length},
+                impact: {totalEntries, anyTruncated, entriesCount: entries.length, totalSize},
                 entries: entries.map((e) => ({relPath: e.relPath, impact: e.impact})),
+                permanent,
                 remember: 'auto',
                 actor: 'auto',
             };
@@ -10343,14 +10365,21 @@ async function requestApproval(session, toolMessage, info) {
                 }
             }
         }
-        if (typeof backend.DeleteEntryRecycle !== 'function') {
+        // 执行：彻底删除（模型 permanent 且人工批准 / 用户卡上勾选）走 DeleteEntryPermanent，
+        // 其余一律进回收站。逐条独立，单条失败不中断其余，结果里汇总。
+        const usePermanent = permanent || !!(answer && answer.permanent);
+        const binding = usePermanent ? backend.DeleteEntryPermanent : backend.DeleteEntryRecycle;
+        if (typeof binding !== 'function') {
             throw new Error('当前版本不支持回收站删除（请重新构建或更新应用）');
         }
-        // 执行：逐条独立，单条失败不中断其余（回收站语义下安全），结果里汇总
+        if (usePermanent && toolMessage.approval) {
+            toolMessage.approval.permanent = true;
+            persistApprovalMutation(session, toolMessage);
+        }
         const failures = [];
         for (const entry of entries) {
             try {
-                await backend.DeleteEntryRecycle(entry.path);
+                await binding.call(backend, entry.path);
                 notifyFileChanged(entry.path);
             } catch (e) {
                 failures.push(entry.relPath + '：' + String((e && e.message) || e));
@@ -10365,6 +10394,12 @@ async function requestApproval(session, toolMessage, info) {
             throw new Error('删除全部失败：' + failures.join('；'));
         }
         const okCount = entries.length - failures.length;
+        if (usePermanent) {
+            const prefix = entries.length === 1
+                ? '已彻底删除：' + entries[0].relPath + '（不进回收站，不可恢复）。'
+                : '已彻底删除 ' + okCount + ' 个条目（不进回收站，不可恢复；清单共 ' + entries.length + ' 条）。';
+            return failures.length ? prefix + '失败 ' + failures.length + ' 条：' + failures.join('；') : prefix;
+        }
         if (entries.length === 1) {
             const impact = entries[0].impact || {};
             const scaleText = impact.isDir
@@ -12993,7 +13028,11 @@ const PLAN_MODE_DENIED_TOOLS = new Set([
                     }
                     entries.push(entry);
                 }
-                return applyDelete(ctx.session, ctx.toolMessage, {tool: 'delete_path', entries});
+                return applyDelete(ctx.session, ctx.toolMessage, {
+                    tool: 'delete_path',
+                    entries,
+                    permanent: input.permanent === true,
+                });
             }
             case 'todo_write': {
                 if (!ctx || !ctx.session) throw new Error('todo_write 缺少会话上下文');
