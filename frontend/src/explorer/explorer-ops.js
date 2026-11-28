@@ -908,7 +908,7 @@ function showExplorerMenu(info, x, y) {
             for (const a of pluginActions) {
                 items.push({
                     label: '插件：' + a.label,
-                    icon: 'plugin',
+                    icon: 'puzzle',
                     action: () => Promise.resolve(a.run(a.ctx || {path: info.path, name: info.name, isDir}))
                         .catch((e) => deps.flash && deps.flash('插件动作失败：' + ((e && e.message) || e), true)),
                 });

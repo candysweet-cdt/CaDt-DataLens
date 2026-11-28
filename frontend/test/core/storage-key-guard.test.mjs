@@ -34,10 +34,7 @@ const COMMENT_LINE_RE = /^\s*(\/\/|\/\*|\*)/;
 // 认不出来的就别往这里塞，先确认它到底是不是一个键。
 const NON_STORAGE = new Map([
     ['cadt-ui', '内置技能名（ai-constants.js 的 BUILTIN_SKILLS / 工具文案）'],
-    ['cadt-datalens', '内置技能名（用图形界面打开文件的技能）'],
     ['cadt-gen-models', '内置技能名，同时也是 ai-gen-model.js 的 GEN_CONFIG_KIND（配置块类型，不进 localStorage）'],
-    ['cadt-mcp-samples', '内置技能名'],
-    ['cadt-mcp-config', '内置技能名'],
     ['cadt-plugins-loaded', 'window 自定义事件名（插件表加载完成的广播），不是键'],
     ['cadt-datalens-plugins', '官方插件组织名（Gitee/GitHub 的 org），不是键'],
     ['cadt-selftest-ok', '自检程序的 stdout 标记（terminal/run.js 的 SELF_TEST_MARK），不是键'],
