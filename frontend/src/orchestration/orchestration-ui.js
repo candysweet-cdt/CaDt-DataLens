@@ -794,13 +794,28 @@ ${affected}`,
         throw new Error('未知编排工具：' + name);
     }
 
+    // 写闸：owns 边界对「编排会话派生的子代理」同样生效（fail-closed）。
+    // 子代理会话不带 session.orchestration 标记，但派出时继承父批次的私有执行票据作为写凭证
+    // （_orchestrationWriteToken，进程内存私有、不序列化）；这里认这个凭证并走同一把 Go 侧 owns 闸。
+    // 没有凭证（票据失效 / 跨进程续跑 / arbiter 派生）时，编排派生的一律拒绝，普通会话才放行。
+    // 这样 owns 边界不再单靠「阶段零强制只读」一层（ai-subagents.js resolveSpawnPreset）。
     async function authorizeWrite(session, path) {
         const info = session && session.orchestration;
-        if (!info || (info.role !== 'work' && info.role !== 'review')) return {allowed: true};
-        const token = await tokenForSession(session);
-        if (!token) return {allowed: false, message: '编排执行票据已失效（可能已被重派）；请回报 blocked 或等待新会话'};
-        const result = await call('OrchestrationAuthorizeWrite', token, String(path || ''));
-        return result || {allowed: false, message: '写闸无响应'};
+        const derived = !!(session && session._orchestrationDerived);
+        if (info && (info.role === 'work' || info.role === 'review')) {
+            const token = await tokenForSession(session);
+            if (!token) return {allowed: false, message: '编排执行票据已失效（可能已被重派）；请回报 blocked 或等待新会话'};
+            const result = await call('OrchestrationAuthorizeWrite', token, String(path || ''));
+            return result || {allowed: false, message: '写闸无响应'};
+        }
+        if (derived) {
+            const token = String((session && session._orchestrationWriteToken) || '');
+            // 票据只存进程内存，跨进程续跑后必失效——派生子代理一律 fail-closed，不因缺标记放行。
+            if (!token) return {allowed: false, message: '编排子代理的执行票据已失效（跨进程续跑或编排已重派）；写入被拒绝，请回报父代理重新派单'};
+            const result = await call('OrchestrationAuthorizeWrite', token, String(path || ''));
+            return result || {allowed: false, message: '写闸无响应'};
+        }
+        return {allowed: true};
     }
 
     async function sendTurnEvent(session, kind, reason) {
@@ -1662,7 +1677,9 @@ export function createOrchestrationHost(deps) {
         // 恰好创建过 domain”的隐式时序。
         infoOf: (session) => (session && session.orchestration ? ensure().infoOf(session) : null),
         runTool: (name, input, ctx) => ensure().runTool(name, input, ctx),
-        authorizeWrite: (session, path) => (session && session.orchestration
+        // 编排会话本身 + 其派生的子代理（_orchestrationDerived）都走真写闸；两者皆非才放行。
+        // 子代理不带 session.orchestration，旧判定会 fail-open 直接放行（owns 边界失效）。
+        authorizeWrite: (session, path) => (session && (session.orchestration || session._orchestrationDerived)
             ? ensure().authorizeWrite(session, path)
             : Promise.resolve({allowed: true})),
         onTurnStarted: (session) => { if (domain) domain.onTurnStarted(session); },

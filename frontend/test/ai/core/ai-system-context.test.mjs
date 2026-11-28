@@ -504,7 +504,33 @@ test('workspace_rules 按档位给守则，计划模式附加只读约束', asyn
     assert.ok(full.text.includes('完全权限：可读取与修改工作区内外文件'));
     const mod3 = createAISystemContext(makeCtx({ctx: {currentScopeOf: () => 'edit'}}));
     const plan = await mod3.assembleSystemContext({todos: [], planMode: true}, []);
-    assert.ok(plan.text.includes('（当前为计划模式：不提供 write_file / edit_file，只做只读探索并输出计划）'));
+    assert.ok(plan.text.includes('（当前为计划模式：只读探索，见 <plan_mode>）'));
+    // P1-1：计划模式规则单一来源——workspace_rules 只留指路句，流程细节只在 <plan_mode>
+    assert.ok(plan.text.includes('- 计划模式：只读探索并输出计划；规划流程与提交要求见 <plan_mode>。'));
+    assert.ok(!plan.text.includes('计划完成后用 submit_plan 提交完整计划并停下等待用户批准'));
+    // P0-1：范围外路径与工具描述同口径（可授权，不是一律禁止）
+    assert.ok(plan.text.includes('范围外路径需授权：read/edit 档逐次批准'), 'workspace_rules 应说明范围外路径可授权');
+});
+
+test('P2-4：稳定区 digest 覆盖 toolCatalogText，MCP/插件名单变化不让 warm cache 命中旧目录', async () => {
+    let catalog = '<tool_catalog>mcp__a</tool_catalog>';
+    const logs = [];
+    const mod = createAISystemContext(makeCtx({ctx: {
+        toolCatalogText: () => catalog,
+        logFrontend: (line) => logs.push(String(line)),
+    }}));
+    const session = {id: 's-cache', todos: []};
+    const first = await mod.assembleSystemContext(session, []);
+    assert.match(first.text, /mcp__a/);
+    catalog = '<tool_catalog>mcp__b</tool_catalog>';
+    const second = await mod.assembleSystemContext(session, []);
+    assert.match(second.text, /mcp__b/);
+    // 旧缺陷：digest 不覆盖目录 → 命中旧缓存、文本却不同，走「digest 命中但文本不一致」兜底。
+    // 修复后 digest 随目录变化，不应再出现该兜底日志。
+    assert.equal(logs.some((line) => line.includes('digest 命中但稳定区文本不一致')), false,
+        '目录变化应让 digest 失效，而不是命中后走文本不一致兜底');
+    const third = await mod.assembleSystemContext(session, []);
+    assert.equal(third.meta.stable.cached, true, '目录未变时应复用缓存');
 });
 
 test('planModeBlock 输出计划约定块', () => {

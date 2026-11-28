@@ -23,8 +23,7 @@ export function todosCheckText(todos) {
     const done = list.length - doing - pending;
     return '<task_todos_check>任务清单现状：共 ' + list.length + ' 项，' +
         done + ' 项已完成、' + doing + ' 项进行中、' + pending + ' 项待处理。' +
-        '若有已经做完却没标 completed 的步骤，用一次 todo_write 补齐；没有就无需处理本块。' +
-        '本块仅供自查，不要在思考或回复里复述，也不必核对计数。</task_todos_check>';
+        '若有已经做完却没标 completed 的步骤，用一次 todo_write 补齐；没有就无需处理本块。</task_todos_check>';
 }
 
 // 从上一条 task_todos_check 注入消息还原节流比较口径（裸 <task_todos_check> 块），

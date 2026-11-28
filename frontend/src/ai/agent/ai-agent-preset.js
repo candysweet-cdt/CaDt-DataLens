@@ -6,6 +6,12 @@
 //   · createAgentScope：每个 live agent 的扁平注册层 agent.ctx——工具 / 提示 / 变量只对该
 //     agent 可见，按 owner 一次性撤销（与 container/hook-bus 同口径）。
 //
+// 现状（2026-11-28 能力快照方案落地后）：normalizeAgentPreset / presetPromptSections 是
+// 子代理 preset 的真源（归一化 + 提示片段拼装）；**createAgentScope 当前无生产消费者**——
+// 子代理路径曾照 §4.4 字面接线（建 / 灌 / dispose），审查确认零读者后拆除：可变注册层与
+// 「启动时固定、不能从会话内放宽」的快照原则互斥，工具面走快照、提示面按快照直读注册表。
+// 原语保留（纯函数 + 单测），等真实消费者（如 per-agent 变量 / 提示覆盖）出现再接线。
+//
 // 边界：这里只管「声明与作用域」，不读文件、不碰 DOM、不解析 YAML——YAML→对象的解析由宿主
 // 负责（本仓库不打包 YAML 解析器，插件可直接传 JS 对象）。纯函数便于单测，无副作用。
 

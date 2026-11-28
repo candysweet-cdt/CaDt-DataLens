@@ -16,18 +16,18 @@ import {isDesktopToolDef} from './ai-desktop-control.js';
 export const AI_TOOL_DEFS = {
     list_dir: {
         name: 'list_dir',
-        description: '列出目录条目（文件带大小，按名排序，最多 200 条）。depth 缺省只列一层；depth 传 2–8 时递归列子目录并以树状文本输出（跳过 .git/node_modules 等目录，全树最多约 400 项，超出截断）——摸清多层结构时用一次递归列代替逐层 list_dir，不要反复对同一棵子树逐层调用。path 为相对范围根的路径，默认当前范围根；工作区外目录的授权规则与 read_file 相同（用户点名直接列，否则 read/edit 档请求批准、auto/full 档直接列）。',
+        description: '列出目录条目（文件带大小，按名排序，最多 200 条）。摸清多层结构时用一次递归列代替逐层调用；工作区外目录的授权规则与 read_file 相同（用户点名直接列，否则 read/edit 档请求批准、auto/full 档直接列）。',
         parameters: {
             type: 'object',
             properties: {
                 path: {type: 'string', description: '目录路径，默认 "."'},
-                depth: {type: 'integer', description: '递归深度：缺省/1 只列一层；2–8 递归列子目录并输出树状结构'},
+                depth: {type: 'integer', description: '递归深度：缺省/1 只列一层；2–8 递归列子目录并输出树状结构（跳过 .git/node_modules 等目录，全树最多约 400 项，超出截断）'},
             },
         },
     },
     read_file: {
         name: 'read_file',
-        description: '读取文本文件，单次最多返回 64KB。offset/limit 按字符分页；startLine/endLine 按行读取（1-based 含头含尾，输出带行号前缀——行号仅供参考，edit_file 的 oldString 不要带行号）。两组参数不可混用。工作区外路径：用户点名可直接读，否则 read/edit 档请求批准（批准过的目录免询问）、auto/full 直接读；应用数据目录始终拒绝。',
+        description: '读取文本文件，单次最多返回 64KB。offset/limit 按字符分页、startLine/endLine 按行读取（1-based 含头含尾，输出带行号前缀——行号仅供参考，edit_file 的 oldString 不要带行号），两组参数互斥。工作区外路径：用户点名可直接读，否则 read/edit 档请求批准（批准过的目录免询问）、auto/full 直接读；应用数据目录始终拒绝。',
         parameters: {
             type: 'object',
             properties: {
@@ -42,13 +42,13 @@ export const AI_TOOL_DEFS = {
     },
     code_outline: {
         name: 'code_outline',
-        description: '取或维护源码文件的结构大纲，跨语言（按扩展名自动识别 JS/TS/Go/Python/Java/C/C++/C#/Rust/Ruby/PHP/Swift/Kotlin/SQL/Shell/Markdown/HTML/XML/YAML 等，未知按纯文本）。两种模式：action=read（默认，只读）返回分节导航（带序号、起止行）+ 顶层函数/类/箭头/case 索引（带行号），先摸清「哪段是干啥的」再精准 read_file，不返回正文、行号实时不漂移；action=maintain 把分节注释写进文件——你需先 read 拿到符号清单，再归纳出 5~10 个语义分区（每项给一个语义标题与其首个符号名，或符号名列表），工具按语言自动选注释符（JS/Go/Java 用 //，Python/Shell/YAML 用 #，SQL 用 --，HTML/XML 用 <!-- -->）插入到各区首个符号前，写入走 diff 预览 + 写守卫（需写权限档，会弹审批）。分节注释是可选约定：没写也能列函数/类，只是没有分节导航。path 为相对范围根路径或已授权的工作区外绝对路径，授权规则同 read_file。read 模式符号索引支持分页：默认每页 200 条（上限 500），回报「本次返回 N 条 / 共 M 条 / offset」，未取完用 offset+返回条数续取；section 传分节标题子串可只看某段；sectionsOnly:true 只返回分节导航（最省 token）。language 可显式指定语言 id 覆盖自动识别。二进制文件不支持；超过 100 MB 后端拒绝打开。read 只返回摘要，10–100 MB 大文件也可取大纲（read_file 读正文仍受 10 MB 限制）。要正文用 read_file；找文本用 search_text，找文件用 glob。',
+        description: '取或维护源码文件的结构大纲，跨语言（按扩展名自动识别 JS/TS/Go/Python/Java/C/C++/C#/Rust/Ruby/PHP/Swift/Kotlin/SQL/Shell/Markdown/HTML/XML/YAML 等，未知按纯文本）。read 模式返回分节导航与顶层符号索引（带行号），用于先定位再精准 read_file；maintain 模式把分节注释写进文件（需写权限档，走 diff 预览与审批），先 read 拿到符号清单再按参数组织分区。分节注释可选：没写也能列函数/类，只是没有分节导航。path 授权规则同 read_file。分页与过滤见 section / sectionsOnly / offset / limit 参数。二进制文件不支持；超过 100 MB 后端拒绝打开，10–100 MB 只能取大纲（正文仍用 read_file，限 10 MB）。要正文用 read_file；找文本用 search_text，找文件用 glob。',
         parameters: {
             type: 'object',
             properties: {
                 path: {type: 'string', description: '相对范围根的源码文件路径，或已授权的工作区外绝对路径'},
                 action: {type: 'string', enum: ['read', 'maintain'], description: 'read=只读大纲（默认）；maintain=把分节注释写进文件（需写权限档，走 diff 预览与审批）'},
-                sections: {type: 'array', description: 'maintain 用：5~10 个语义分区方案数组，每项含 title（语义标题）与 startName（该区首个符号名）或 symbolNames（该区符号名列表）；工具据此把注释插到各区首个符号前'},
+                sections: {type: 'array', description: 'maintain 用：5~10 个语义分区方案数组，每项含 title（语义标题）与 startName（该区首个符号名）或 symbolNames（该区符号名列表）；工具按语言自动选注释符（JS/Go/Java 用 //，Python/Shell/YAML 用 #，SQL 用 --，HTML/XML 用 <!-- -->）插入到各区首个符号前'},
                 language: {type: 'string', description: '显式指定语言 id（如 go/python/java/javascript），省略则按文件扩展名自动识别'},
                 sectionsOnly: {type: 'boolean', description: 'read 用：只返回分节导航、不列符号索引（大文件省 token），默认 false'},
                 offset: {type: 'integer', description: 'read 用：符号索引分页起点，跳过前 N 条（默认 0）；结果会回报本次条数/总条数/offset，未取完用 offset+本次条数续取'},
@@ -82,7 +82,7 @@ export const AI_TOOL_DEFS = {
     },
     search_text: {
         name: 'search_text',
-        description: '搜索文本，返回命中文件、行号与预览（分页返回：默认 offset=0、limit=50 条，结果主动回报「本次返回 N 条 / 共 M 条 / offset」，未取完时用 offset+返回条数 续取；另有字符预算，超限会在最近一条完整命中处截断并提示续取，避免一次撑爆上下文；已跳过 .git/node_modules/.venv 等噪音目录——这些是默认软规则，二进制文件始终跳过；结果按源码优先、构建产物 dist/build 等垫底排序）。文件名含查询词但内容零命中的文件也会以文件名命中返回（无行号，打开即整份文件）——按文件名找文件可以直接搜。path 默认当前范围根，可传目录（扫描整棵树）或单个文件（只扫该文件，不遍历同目录其他文件）；工作区外路径的授权规则与 read_file 相同（用户点名直接搜，否则 read/edit 档请求批准、auto/full 档直接搜）。caseSensitive 区分大小写；filePattern 按 *.go 这类通配只搜匹配文件，excludePattern 按通配排除（如 *.test.go、tests/**）。正则：query 用了正则语法（\\d \\w \\b \\s 、foo|bar 的 | 、(? 构造、^ 锚点）时必须传 regex:true，否则按字面量搜索；零命中时结果会提示你可能忘传了 regex:true。注意字面量里的 file.ts（.）、C++（+）、$HOME（$）、foo(x)（括号）都不需要开 regex。wholeWord:true 全词匹配（搜 foo 不命中 foobar）。context:1–3 附前后文（会放大体积，配合小 limit 用）；outputMode=files 先拿文件清单、=count 拿每文件命中数，大结果先缩范围再 read_file 省 token。忽略规则可调整：想永久放行某目录，可让用户在 .cadt/config/search-ignore 写 ! 前缀（如 !node_modules，按 mtime 自动重载，同时作用于 glob/list_dir/目录树）；只想本次放行全部忽略目录则传 includeIgnored:true（不改配置，二进制仍跳过）。',
+        description: '搜索文本，返回命中文件、行号与预览（分页与字符预算的回报格式见 offset/limit 参数）。文件名含查询词但内容零命中的文件也会以文件名命中返回（无行号，打开即整份文件）——按文件名找文件可以直接搜。path 默认当前范围根，可传目录（扫描整棵树）或单个文件（只扫该文件，不遍历同目录其他文件）；工作区外路径的授权规则与 read_file 相同（用户点名直接搜，否则 read/edit 档请求批准、auto/full 档直接搜）。caseSensitive 区分大小写；filePattern / excludePattern 按通配过滤文件。正则语法、字面量与全词匹配的判定见 regex / wholeWord 参数。context 附前后文；outputMode=files / count 先拿清单或计数，大结果先缩范围再 read_file。默认跳过 .git/node_modules/.venv 等噪音目录，二进制始终跳过；结果按源码优先、构建产物垫底。忽略规则与 includeIgnored 见该参数。',
         parameters: {
             type: 'object',
             properties: {
@@ -97,7 +97,7 @@ export const AI_TOOL_DEFS = {
                 outputMode: {type: 'string', enum: ['content', 'files', 'count'], description: '输出形态：content 行命中（默认）、files 只要文件清单、count 每文件命中数'},
                 offset: {type: 'integer', description: '分页起点，跳过前 N 条命中（默认 0）；结果会回报本次返回条数/总条数/offset，未取完时用 offset+本次返回条数 继续取下一页'},
                 limit: {type: 'integer', description: '本页最多返回条数（1–1000，默认 50）；files/count 模式按文件数计。结果另有字符预算，超限时在最近一条完整命中处截断并提示用 offset 续取'},
-                includeIgnored: {type: 'boolean', description: '为 true 时本次搜索临时放行所有被忽略目录（默认软规则 + search-ignore），仅本次生效、不改配置；二进制文件仍跳过；默认 false'},
+                includeIgnored: {type: 'boolean', description: '为 true 时本次搜索临时放行所有被忽略目录（默认软规则 + search-ignore），仅本次生效、不改配置；二进制文件仍跳过；默认 false。永久放行某目录：用户在 .cadt/config/search-ignore 写 ! 前缀（如 !node_modules，按 mtime 自动重载，同时作用于 glob/list_dir/目录树）'},
             },
             required: ['query'],
         },
@@ -176,7 +176,7 @@ export const AI_TOOL_DEFS = {
     },
     skill_use: {
         name: 'skill_use',
-        description: '加载一个技能的完整 SKILL.md 指令并遵循它。所有范围档均可用。',
+        description: '加载一个技能的完整 SKILL.md 指令并遵循它。',
         parameters: {
             type: 'object',
             properties: {name: {type: 'string', description: '技能名称'}},
@@ -185,7 +185,7 @@ export const AI_TOOL_DEFS = {
     },
     session_history: {
         name: 'session_history',
-        description: '查询本会话的原始历史消息（含被上下文压缩归档、当前上下文里看不到的早期消息）。上下文压缩后发现早期内容丢失、或需要确认「之前说过什么 / 之前的工具结果」时使用：可按关键词搜索，也可按序号分页浏览。返回「[#序号 角色 时间] 内容摘要」，序号可作为 from 参数继续翻页。只读工具，所有范围档均可用。',
+        description: '查询本会话的原始历史消息（含被上下文压缩归档、当前上下文里看不到的早期消息）。上下文压缩后发现早期内容丢失、或需要确认「之前说过什么 / 之前的工具结果」时使用：可按关键词搜索，也可按序号分页浏览。返回「[#序号 角色 时间] 内容摘要」，序号可作为 from 参数继续翻页。',
         parameters: {
             type: 'object',
             properties: {
@@ -197,7 +197,7 @@ export const AI_TOOL_DEFS = {
     },
     session_search: {
         name: 'session_search',
-        description: '跨会话检索未归档的历史对话（可能是别的工作区）：按关键词找「哪个会话说过这件事」，返回会话标题、id 与命中片段；有分组的会话会显示分组。要读上下文再用 session_read。只读工具，所有范围档均可用。',
+        description: '跨会话检索未归档的历史对话（可能是别的工作区）：按关键词找「哪个会话说过这件事」，返回会话标题、id 与命中片段；有分组的会话会显示分组。要读上下文再用 session_read。',
         parameters: {
             type: 'object',
             properties: {
@@ -210,7 +210,7 @@ export const AI_TOOL_DEFS = {
     },
     session_read: {
         name: 'session_read',
-        description: '读某个会话的消息摘要（id 先用 session_search 或 session_list 拿）。默认读最近 20 条；给 query 则返回命中消息及其前后各一条。单次输出有字符预算，结果会标注该会话的工作区（可能是别的工作区，引用前先核对）与分组（若有）。只读工具。',
+        description: '读某个会话的消息摘要（id 先用 session_search 或 session_list 拿）。默认读最近 20 条；给 query 则返回命中消息及其前后各一条。单次输出有字符预算，结果会标注该会话的工作区（可能是别的工作区，引用前先核对）与分组（若有）。',
         parameters: {
             type: 'object',
             properties: {
@@ -223,7 +223,7 @@ export const AI_TOOL_DEFS = {
     },
     notify_send: {
         name: 'notify_send',
-        description: '向应用的状态栏【消息】中心发一条消息（长任务的阶段性汇报、需要用户稍后处理的事项）。消息保留在消息中心列表；toast=true 时额外在右下角弹出提示框（适合只有此刻需要注意的事项）。不写工作区文件，无需审批，所有范围档均可用。阶段性汇报优先用它而不是反复发系统提醒；**例行「本轮已完成」别发**——完成通知不进消息中心，会话列表已有未读角标，多写只会刷屏。',
+        description: '向应用的状态栏【消息】中心发一条消息（长任务的阶段性汇报、需要用户稍后处理的事项）。消息保留在消息中心列表；toast=true 时额外在右下角弹出提示框（适合只有此刻需要注意的事项）。不写工作区文件。阶段性汇报优先用它而不是反复发系统提醒；**例行「本轮已完成」别发**——完成通知不进消息中心，会话列表已有未读角标，多写只会刷屏。',
         parameters: {
             type: 'object',
             properties: {
@@ -236,7 +236,7 @@ export const AI_TOOL_DEFS = {
     },
     reminder_add: {
         name: 'reminder_add',
-        description: '给当前会话添加一条「任务提醒」（标题 + 可选说明，未完成的最多 5 条；已完成的保留作历史、不占名额，标 done 即释放名额）。用于记住单条、零散但跨轮不能忘的事：用户交代稍后要做的事、必须遵守的约束、关键 id / 路径 / 承诺等。不要把工作拆成步骤——多步任务的执行进度用 todo_write。提醒清单每轮对话开始都会注入给你；完成一条后记得用 reminder_update 标记 done 或删除。不写工作区文件，无需审批。',
+        description: '给当前会话添加一条「任务提醒」（标题 + 可选说明，未完成的最多 5 条；已完成的保留作历史、不占名额，标 done 即释放名额）。用于记住单条、零散但跨轮不能忘的事：用户交代稍后要做的事、必须遵守的约束、关键 id / 路径 / 承诺等。不要把工作拆成步骤——多步任务的执行进度用 todo_write。提醒清单每轮对话开始都会注入给你；完成一条后记得用 reminder_update 标记 done 或删除。',
         parameters: {
             type: 'object',
             properties: {
@@ -307,7 +307,7 @@ export const AI_TOOL_DEFS = {
     },
     write_worklog: {
         name: 'write_worklog',
-        description: '在工作区 .cadt/logs/ 追加一条工作日志（时间自动记录，格式为「标题 + 摘要」）。完成一个任务、修一个问题、做出一个关键决定后调用一次，帮用户和后续会话快速回顾做过什么。**标题会进月份索引，索引里只显示标题这一句**，所以要短到能一眼扫完（说清做了什么、结果如何即可）；细节、文件清单、验证过程、待办一律写进 summary，摘要只留在当日正文里、不进索引。只记录标题与摘要，不要写正文、代码片段、密钥或敏感信息。日志文件只能通过本工具追加：不允许也不必用 write_file / edit_file / read_file 修改 .cadt/logs/ 下的任何文件，完整历史请用 list_dir / read_file 之外的方式提示用户自行打开查看。所有范围档均可用，无需审批。',
+        description: '在工作区 .cadt/logs/ 追加一条工作日志（时间自动记录，格式为「标题 + 摘要」）。完成一个任务、修一个问题、做出一个关键决定后调用一次，帮用户和后续会话快速回顾做过什么。**标题会进月份索引，索引里只显示标题这一句**，所以要短到能一眼扫完（说清做了什么、结果如何即可）；细节、文件清单、验证过程、待办一律写进 summary，摘要只留在当日正文里、不进索引。只记录标题与摘要，不要写正文、代码片段、密钥或敏感信息。日志文件只能通过本工具追加：不允许也不必用 write_file / edit_file / read_file 修改 .cadt/logs/ 下的任何文件，完整历史请用 list_dir / read_file 之外的方式提示用户自行打开查看。',
         parameters: {
             type: 'object',
             properties: {
@@ -319,7 +319,7 @@ export const AI_TOOL_DEFS = {
     },
     plan_mode: {
         name: 'plan_mode',
-        description: '进入或退出计划模式。默认直接动手，只有两种情况先进入：① 用户明确说「先规划 / 给方案 / 先出方案 / 别动手」；② 动工前必须由用户拍板方案——多种架构路线要取舍、接口 / 数据格式 / 交互形态存在实质分歧、需求歧义大到不探索就无法圈定范围。新增功能、改动跨多个文件、加设置项、单点 UI / 样式 / 文案调整、少量修改、typo、纯查询都不构成进入理由；拿不准时直接动手（用户可随时叫停），不要反复权衡。进入即时生效：本轮即可用 submit_plan 分节提交计划，写工具会被立即拒绝。不要自行退出后直接执行。',
+        description: '进入或退出计划模式。默认直接动手，仅两种情况先进入：① 用户明确说「先规划 / 给方案 / 先出方案 / 别动手」；② 动工前必须由用户拍板方案（多种架构路线要取舍、接口 / 数据格式 / 交互形态存在实质分歧、需求歧义大到不探索就无法圈定范围）。新增功能、改动跨多个文件、加设置项、单点 UI / 样式 / 文案调整、少量修改、typo、纯查询都不构成进入理由；拿不准时直接动手（用户可随时叫停）。进入即时生效：本轮即可用 submit_plan 分节提交计划，写工具会被立即拒绝。退出与执行由用户在审批卡点击「执行计划」完成。',
         parameters: {
             type: 'object',
             properties: {
@@ -621,7 +621,7 @@ export const AI_TOOL_DEFS = {
                 mode: {
                     type: 'string',
                     enum: ['blocking', 'background'],
-                    description: 'blocking（默认）= 等它完成后拿结论；background = 立即返回，完成后自动通知（多路并行调查用这个）',
+                    description: 'blocking（默认）= 等它完成后拿结论，多个 blocking 派单是串行；background = 立即返回、后台并行跑，完成后自动通知。要并行（同时派多个方向）必须每个都传 background',
                 },
                 preset: {
                     type: 'string',
@@ -1034,7 +1034,7 @@ export const AI_TOOL_DEFS = {
             + '无过滤参数 = 返回路径地图（路径 + 标签，无字段正文，省上下文）；'
             + 'paths / labels / query 任一给出行 = 返回命中条目全文（单次响应封顶，超出会截断并提示收窄）。'
             + '动手改代码前先确认相关文件的条目——R/S 是「改这里必须知道的事」，grep 永远搜不出这类知识。'
-            + '只读工具；索引未建立时返回建卷指引。不存代码内容：找具体代码用 search_text / glob。',
+            + '索引未建立时返回建卷指引。不存代码内容：找具体代码用 search_text / glob。',
         parameters: {
             type: 'object',
             properties: {
@@ -1074,7 +1074,7 @@ export const AI_TOOL_DEFS = {
             + '预算余量与当前卷指纹。verbose=true 时附各态路径样例。维护轮开始前先调它：needsReread 或指纹与会话登记不一致时先 read 再 edit，否则 CAS 会拒绝写。'
             + '发现与本任务相关的 Missing / Stale 时顺手修（cognition_edit），不相关的忽略。'
             + 'Missing 不需要清零：作用域排除文件 .cadt/cognition/ignore.txt（gitignore 简化语法）里的模式不进清单、不需要条目；Missing 较多且还没有排除文件时响应的 hint 会给出现场提示——按提示在下一次 cognition_edit 里带 ignore 参数创建（整卷替换，落点由后端定），或建议用户手写该文件均可。'
-            + '唯一副作用：索引存在但 baseline 缺失时顺手生成（首建末批收口 / 恢复），其余调用零写入。只读工具。',
+            + '唯一副作用：索引存在但 baseline 缺失时顺手生成（首建末批收口 / 恢复），其余调用零写入。',
         parameters: {
             type: 'object',
             properties: {
@@ -1652,17 +1652,14 @@ export function createAIToolDefs(ctx) {
         lines.push(
             '调度原则：',
             '- 先查后答：涉及文件、代码或数据时先读再下结论，不要凭记忆编造内容、行号或命令输出。',
-            '- 超大文件（几千行以上，如 main.js / ai-panel.js）或跨语言源码：先 code_outline 拿分节+函数/类大纲定位行段，再 read_file 精准读；不要整段试读或用 search_text 反复猜关键词。要给没有分节的大文件建大纲时，先 code_outline read 拿符号清单，归纳 5~10 个语义分区后 code_outline maintain 写入（走审批）；小文件不必建大纲。',
+            '- 超大文件或跨语言源码：先 code_outline 定位分节与符号，再 read_file 精准读；小文件直接 read_file。',
             '- 并行读、串行写：互不依赖的只读调用可在同一轮一起发（多个文件、多个关键词）；有依赖时按结果顺序来。',
-            '- 有专用工具就不要用 run_command 绕：列目录 / 读文件 / 搜索 / 找文件用 list_dir / read_file / search_text / glob；正则要用 search_text 的 regex:true，别拼 grep；工作区外路径也能直接传（已授权或会弹审批），不要拼 shell 命令去搜——引号与编码转义容易出错。',
-            '- 工作区外的路径：用户明确给过路径的直接读/搜；没给过时 read/edit 档会请求批准（批准过的目录免询问）、auto/full 档可直接访问。search_text / glob 传 path 与 read_file 同权。被拒绝的路径不要反复尝试。',
+            '- 列目录 / 读文件 / 搜索 / 找文件用对应专用工具，正则用 search_text 的 regex:true（不要用 run_command 拼 grep 绕开）。',
             '- 要网页交互用内嵌浏览器；操作或查看应用本身用 app_control。',
-            '- todo_write 是你会话内的执行进度（每轮自动注入、随会话存档）；用户的「快捷便签」是另一个面板（分组/状态/贴图，跨轮留存）——往便签里记事、改状态、删除用 app_control 的 get_memo / add_memo / update_memo / remove_memo，别把执行计划塞进便签。',
             '- 改动尽量最小、可回滚；写完说明改了什么、怎么验证。',
-            '- 工具报错先修正参数或换路径，不要原样重试；连续失败就停下来说明情况。',
-            '- 值得并行的多项调查用 spawn_agent(mode=\'background\') 一次派出、期间继续自己的工作，完成会逐个通知，要停下等回报就用 wait_agent（等自己收件箱的新输入，不指定对象）；单一简单委派仍用默认阻塞模式，简单问题直接自己做。',
+            '- 失败后先修正参数或换路径；连续失败时停下说明情况。',
             '- 子代理跑得很长（轮次多、迟迟不出结论）时可以 agent_compact 压缩它的上下文再让它继续；要收回就 agent_stop（带 id 会连它的下级一起停；用户说「全停」时省略 id，连孙代理一起收）；不知道嵌套代理的 id 就先 agent_tree 看一眼团队树。',
-            '- 需要让另一个会话知道某件事：session_list 查 id → session_send 单播（能单播不要组播，收到「信箱已满」即停）；对方的回复不是必须，不要互相刷消息。',
+            '- 需要让另一个会话知道某件事：session_list 查 id → session_send 单播优先；收到「信箱已满」即停；不需要对方回复。',
         );
         const hasAll = (names) => names.every((name) => available.has(name));
         const chains = [

@@ -146,7 +146,7 @@ function identitySegment(persona, outputLanguage) {
     const label = String(persona.userLabel || '').trim();
     lines.push(label ? '用户称呼：' + escapeXmlText(label) : '用户称呼：（未设置，不要臆造称呼）');
     lines.push(PERSONA_GUARD_DATA);
-    lines.push('称呼只在自然合适处使用，不要每句都叫，也不要反复报名。');
+    lines.push('称呼只在自然合适处使用。');
     lines.push('</identity>');
     return lines.join('\n');
 }

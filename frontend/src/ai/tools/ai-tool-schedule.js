@@ -7,6 +7,8 @@
 //
 // 并发的边界很硬：**只有「只读、不弹审批、无副作用」的工具能并发**。写文件、执行命令、
 // 派子代理、提交类 MCP 都带顺序语义或审批，必须串行；未知工具一律串行。
+// 例外：mode=background 的 spawn_agent 派单（host 内置 preset）——它「注册即返回」、无顺序
+// 依赖、不弹卡，多个后台派单本质是并发的，见 isParallelSpawnCall。blocking 派单仍串行。
 // 批次内的相对顺序不变（按调用出现顺序执行），所以 UI 与消息顺序不受影响。
 
 // 可并发的内置只读工具。这里刻意只列「参数里带路径 / 纯查询」的那几个：
@@ -20,6 +22,24 @@ export const PARALLEL_MAX_BATCH = 4;
 
 export function isParallelToolCall(name) {
     return PARALLEL_READ_TOOLS.indexOf(String(name == null ? '' : name)) >= 0;
+}
+
+// 后台派单能否并发：mode=background 且 preset 是 host 内置（host.* 或未指定）。
+// - blocking 派单有「等它跑完拿结论」的顺序语义，必须串行；
+// - 插件 preset 首次派单会弹能力确认卡（agent-preset-grant），并发弹卡会互相遮挡，退回串行。
+// 只认 host. 前缀而不 import 预设注册表：本模块是纯函数，注册表 import 了 AI_TOOL_DEFS，
+// 反向依赖会成环；宿主内置 preset id 一律以 host. 开头（host.default / host.read-only / host.full-write）。
+export function isParallelSpawnCall(call) {
+    if (!call || call.name !== 'spawn_agent') return false;
+    let args;
+    try {
+        args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : (call.arguments || {});
+    } catch (e) {
+        return false;
+    }
+    if (String(args.mode || '').toLowerCase() !== 'background') return false;
+    const preset = String(args.preset || '').trim();
+    return preset === '' || preset.startsWith('host.');
 }
 
 // groupToolCalls：把一轮的调用序列切成执行批次（保持原顺序）。

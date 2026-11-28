@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
     groupToolCalls,
     isParallelToolCall,
+    isParallelSpawnCall,
     PARALLEL_MAX_BATCH,
     PARALLEL_READ_TOOLS,
 } from '../../../src/ai/tools/ai-tool-schedule.js';
@@ -44,6 +45,35 @@ test('groupToolCalls：eligible 谓词决定资格（工作区外读退回串行
     const groups = groupToolCalls(calls, eligible);
     assert.equal(groups.length, 3, '中间那个不合格，两侧不能跨过它合并');
     assert.deepEqual(groups.map((g) => g.length), [1, 1, 1]);
+});
+
+const spawnCall = (name, mode, preset) => ({
+    id: 'spawn-' + name,
+    name: 'spawn_agent',
+    arguments: JSON.stringify({name, task: 'x', mode, ...(preset ? {preset} : {})}),
+});
+
+test('isParallelSpawnCall：仅 background + host preset 可并发，blocking / 插件 preset 串行', () => {
+    assert.equal(isParallelSpawnCall(spawnCall('a', 'background')), true, '默认 preset 的后台派单可并发');
+    assert.equal(isParallelSpawnCall(spawnCall('a', 'background', 'host.read-only')), true);
+    assert.equal(isParallelSpawnCall(spawnCall('a', 'background', 'host.full-write')), true);
+    assert.equal(isParallelSpawnCall(spawnCall('a', 'background', '  host.default  ')), true, 'preset 去空白');
+    assert.equal(isParallelSpawnCall(spawnCall('a', 'blocking')), false, 'blocking 必须串行');
+    assert.equal(isParallelSpawnCall(spawnCall('a')), false, '未指定 mode 默认 blocking，串行');
+    assert.equal(isParallelSpawnCall(spawnCall('a', 'background', 'webnovel.drafting')), false, '插件 preset 弹确认卡，串行');
+    assert.equal(isParallelSpawnCall(call('read_file', 'a')), false, '非 spawn_agent 不适用');
+    assert.equal(isParallelSpawnCall(null), false);
+    assert.equal(isParallelSpawnCall({name: 'spawn_agent', arguments: '{bad json'}), false, '坏参数退回串行');
+});
+
+test('groupToolCalls：后台派单合成一批并发，blocking 派单打断批次', () => {
+    const bg1 = spawnCall('a', 'background');
+    const bg2 = spawnCall('b', 'background');
+    const blocking = spawnCall('c', 'blocking');
+    const groups = groupToolCalls([bg1, bg2, blocking], isParallelSpawnCall);
+    assert.equal(groups.length, 2);
+    assert.deepEqual(groups[0].map((c) => c.id), ['spawn-a', 'spawn-b'], '两个后台派单同批并发');
+    assert.deepEqual(groups[1].map((c) => c.id), ['spawn-c'], 'blocking 派单自成一批串行');
 });
 
 test('groupToolCalls：边界输入不炸', () => {

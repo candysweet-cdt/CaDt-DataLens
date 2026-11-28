@@ -71,9 +71,9 @@ function commitFlow(root, branch) {
         '',
         '流程：',
         '1. 运行 git status / git diff 查看改动，只挑选应当提交的文件（跳过构建产物、临时文件与明显无关的内容；必要时先看 .gitignore）。',
-        '2. 按配置写提交信息：主题行说明「为什么」而不只是「改了什么」，不要编造没有做过的改动；conventional 风格用 feat/fix/refactor/docs/chore/test/build/perf 等类型，可按改动范围加 scope。',
+        '2. 按配置写提交信息：主题行说明「为什么」而不只是「改了什么」；conventional 风格用 feat/fix/refactor/docs/chore/test/build/perf 等类型，可按改动范围加 scope。',
         '3. 按配置的 granularity 决定提交粒度：batch = 按功能/主题分组，一组一组逐文件 git add（不要 git add -A / git add .）分别 commit，每批一个主题（allowCrossFiles=true 时耦合/交叉文件可同批，不要为拆分而拆分）；single = 全部改动一次提交。',
-        '4. 汇报每个提交的哈希与完整提交信息。没有可提交的改动就直说，不要制造空提交。',
+        '4. 汇报每个提交的哈希与完整提交信息。没有可提交的改动时直接说明。',
         '',
         '约束：命令需要当前会话处于写权限档；工具不可用或被拒绝时向用户说明原因并停止，不要绕过审批。',
     ].join('\n');

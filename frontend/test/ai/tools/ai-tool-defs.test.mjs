@@ -159,12 +159,13 @@ test('timer_list：所有权限档与计划模式都下发只读时钟，且不�
 test('list_dir：depth 参数递归列子目录，缺省仍是单层', () => {
     const def = toolsForScope('read', false).find((t) => t.name === 'list_dir');
     assert.deepEqual(Object.keys(def.parameters.properties), ['path', 'depth']);
-    assert.match(AI_TOOL_DEFS.list_dir.description, /depth 缺省只列一层/,
-        '描述要写清缺省行为不变');
-    assert.match(AI_TOOL_DEFS.list_dir.description, /逐层 list_dir/,
+    // P2-1：depth 的缺省/depth 上限细节只在参数说明里写一次
+    assert.match(AI_TOOL_DEFS.list_dir.parameters.properties.depth.description, /缺省\/1 只列一层/,
+        '参数说明要写清缺省行为不变');
+    assert.match(AI_TOOL_DEFS.list_dir.parameters.properties.depth.description, /400 项/,
+        '参数说明要交代条目预算，别让模型以为无限递归');
+    assert.match(AI_TOOL_DEFS.list_dir.description, /一次递归列代替逐层调用/,
         '描述要明确「一次递归代替逐层调用」的行为指引');
-    assert.match(AI_TOOL_DEFS.list_dir.description, /400 项/,
-        '描述要交代条目预算，别让模型以为无限递归');
 });
 
 test('计划模式仍保留只读探索与子代理', () => {

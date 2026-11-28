@@ -50,7 +50,7 @@ import {
     slimBreakdownParts,
 } from './chat/ai-context-slim.js';
 import {createAIContextEstimate} from './chat/ai-context-estimate.js';
-import {groupToolCalls, isParallelToolCall} from './tools/ai-tool-schedule.js';
+import {groupToolCalls, isParallelToolCall, isParallelSpawnCall} from './tools/ai-tool-schedule.js';
 import {shouldAnimateLayout, heightKeyframes, LAYOUT_MOTION_OPTIONS} from './chat/ai-layout-motion.js';
 import {isBlockingEvent} from '../core/lifecycle-hooks.js';
 import {
@@ -8778,6 +8778,28 @@ async function requestApproval(session, toolMessage, info) {
         return token;
     }
 
+    // 沙箱失败的错误文案（5.2 B）：排障信息在错误发生时返回，不预占子代理系统提示词。
+    // 子代理与主会话共用这条命令路径，两处 catch 都走它。
+    function annotateSandboxError(error, sandbox) {
+        if (!sandbox) return error;
+        const raw = String((error && error.message) || error || '');
+        let extra = '';
+        if (raw.includes('沙箱不可用')) {
+            extra += '\n本次命令未执行：改用只读工具完成调查，并在结论中说明哪些结论未用命令验证。';
+        }
+        if (/Access is denied/i.test(raw)) {
+            extra += '\n这是宿主机权限问题（工作区目录属于另一个账户，当前账户没有它的「更改权限」）：本次会话的命令通道不可用。';
+        }
+        if (extra) {
+            try {
+                error.message = raw + extra;
+            } catch (err) {
+                // 错误对象只读（极少见）：保留原文，错误类型本身已足以让模型停下。
+            }
+        }
+        return error;
+    }
+
     // run_command / background_command 共用审批：项目规则 → 危险命令单次确认 → 会话/项目放行
     // → 完全权限 → 自动审批（只读命令 / 已知命令族 / Git 快捷操作豁免 / 可选分类器）→ 逐次询问.
     async function approveCommandForRun(session, toolMessage, command, cwd, toolName, shell) {
@@ -12857,6 +12879,7 @@ async function requestApproval(session, toolMessage, info) {
                         ctx.toolMessage.sandbox = sandbox.mode;
                         ctx.toolMessage.activityStatus = 'sandbox-unavailable';
                     }
+                    annotateSandboxError(e, sandbox);
                     const approval = ctx.toolMessage.approval;
                     if (approval && approval.kind === 'command') {
                         approval.state = 'failed';
@@ -12890,6 +12913,9 @@ async function requestApproval(session, toolMessage, info) {
                     // 如实上报（ZCode 契约纪律）：模型与用户都能看出这条命令在沙箱里、
                     // 写根是哪个、完整度只是 partial。
                     lines.push('沙箱：' + result.sandboxMode + '（' + (result.enforcement || 'partial') + '）· 写根：' + ((sandbox && sandbox.workspaceRoot) || '无'));
+                }
+                if (result && result.sandboxDenied) {
+                    lines.push('（沙箱拒绝了写效应：写入超出允许范围；请调整命令或改用授权工具。）');
                 }
                 if (result && result.timedOut) lines.push('（命令超时，已终止；以下为已捕获输出）');
                 const stdout = clip(result && result.stdout);
@@ -12948,6 +12974,7 @@ async function requestApproval(session, toolMessage, info) {
                         ctx.toolMessage.sandbox = sandbox.mode;
                         ctx.toolMessage.activityStatus = 'sandbox-unavailable';
                     }
+                    annotateSandboxError(e, sandbox);
                     const approval = ctx.toolMessage.approval;
                     if (approval && approval.kind === 'command') {
                         approval.state = 'failed';
@@ -13132,8 +13159,8 @@ async function requestApproval(session, toolMessage, info) {
                     const fsMode = caps.fs && caps.fs.mode ? caps.fs.mode : 'read-only';
                     const modeText = fsMode === 'workspace-write' ? '可写'
                         : (fsMode === 'danger-full-access' ? '完全权限' : '只读');
-                    return '已派出后台子代理「' + sub.name + '」（id=' + sub.id + '，' + agentLevelText(sub.depth) + '，轮次上限 ' +
-                        sub.maxRounds + '，能力 ' + (caps.preset || 'host.default') + ' · ' + modeText + '）。\n完成后会自动通知你（进你的收件箱）；期间可继续其他工作，需要补充线索就 agent_send' +
+                    return '已在后台并行派出子代理「' + sub.name + '」（id=' + sub.id + '，' + agentLevelText(sub.depth) + '，轮次上限 ' +
+                        sub.maxRounds + '，能力 ' + (caps.preset || 'host.default') + ' · ' + modeText + '）——它正在独立运行、不占用你的回合，同一轮的其他后台派单也与之并行。\n完成后会自动通知你（进你的收件箱）；期间可继续其他工作，需要补充线索就 agent_send' +
                         '（urgent=true 插队）。要停下等回报用 wait_agent；不需要了用 agent_stop 停止并收集记录。';
                 }
                 const outcome = await runSubAgent(ctx, input);
@@ -14791,6 +14818,9 @@ async function requestApproval(session, toolMessage, info) {
         // 并发资格除了工具名，还要看路径——工作区外的读会弹审批卡，两张卡同时弹会互相
         // 挡住，所以只有「参数能解析且路径在工作区内」的调用才进并发组（判定失败按串行）。
         const parallelEligible = (call) => {
+            // 后台派单（host preset + mode=background）：注册即返回、不弹卡、无顺序依赖，
+            // 可以并发派出，让「同时派多个方向」名副其实；blocking / 插件 preset 仍串行。
+            if (isParallelSpawnCall(call)) return true;
             if (!isParallelToolCall(call.name)) return false;
             try {
                 const args = call.arguments ? JSON.parse(call.arguments) : {};

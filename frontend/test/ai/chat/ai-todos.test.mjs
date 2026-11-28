@@ -66,7 +66,9 @@ test('轮末提醒文案报全三分计数，不断言清单没对齐', () => {
     const nums = [...text.matchAll(/(\d+) 项(?:已完成|进行中|待处理)/g)].map((m) => Number(m[1]));
     assert.equal(nums.reduce((a, b) => a + b, 0), 5);
     assert.equal(text.includes('尚未与实际进度对齐'), false);
-    assert.ok(text.includes('不要在思考或回复里复述'));
+    assert.ok(text.includes('没有就无需处理本块'));
+    // R2：复述叮嘱只留在轮初 <task_todos> 一处，轮末催促不再重复
+    assert.equal(text.includes('不要在思考或回复里复述'), false);
 });
 
 test('轮末提醒节流：文本未变、或模型刚更新过清单时不催', () => {

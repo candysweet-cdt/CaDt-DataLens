@@ -13,7 +13,7 @@ import {parseJson} from '../../core/json-safe.js';
 import {aiStreamRetryBudget, shouldAutoRetryStream} from '../chat/ai-stream-retry.js';
 import {encodeAgentEvent} from '../session/ai-session-store.js';
 import {encodeAgentRun, normalizeAgentRuns, resumePlanOf} from './ai-agent-resume.js';
-import {createAgentScope, presetPromptSections} from './ai-agent-preset.js';
+import {presetPromptSections} from './ai-agent-preset.js';
 import {
     composeAgentCapabilities, subWriteVerdict, subToolDenyText, READ_ONLY_CAPABILITIES,
 } from './agent-capabilities.js';
@@ -466,24 +466,22 @@ export function createAISubagents(ctx) {
     // commandOn：只读头的「不要执行命令」与命令通道段落自相矛盾，按 execution.command 联动。
     const AI_SUB_PROMPT_HEADER_READONLY = (commandOn) => [
         '你是主代理派出的只读子代理：独立完成任务后输出最终结论，不与用户直接交互。',
-        '约束：只做只读探索（列目录 / 读文件 / 看图片（本地文件或公网图片 URL）/ 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件'
-            + (commandOn ? '；命令通道仅用于只读验证（写效应会被沙箱拒绝）' : '；不要尝试执行命令')
-            + '；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
+        '约束：只做只读探索（列目录 / 读文件 / 看图片（本地文件或公网图片 URL）/ 搜索 / 联网检索 / 记忆读取 / 技能加载）'
+            + (commandOn ? '；命令通道用于只读验证，写效应受沙箱边界限制' : '；无命令通道') + '。',
     ].join('\n');
     const AI_SUB_PROMPT_HEADER_WRITE = (rootsText) => [
         '你是主代理派出的子代理：独立完成任务后输出最终结论，不与用户直接交互。',
-        '约束：文件写入只落在授权的可写范围内（' + rootsText + '），范围外写入会被直接拒绝；其余操作与只读子代理同一边界；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
+        '约束：文件写入只落在授权的可写范围内（' + rootsText + '），范围外写入会被直接拒绝；其余操作与只读子代理同一边界。',
     ].join('\n');
     const AI_SUB_PROMPT_HEADER_FULL = [
         '你是主代理派出的完全权限子代理：独立完成任务后输出最终结论，不与用户直接交互。',
-        '约束：文件写入没有路径边界（完全授权，可写工作区外任意路径）、命令不进沙箱——只在任务确有必要时动用；操作留痕不记命令正文与目标路径，事后难以追溯；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
+        '约束：文件写入没有路径边界（完全授权，可写工作区外任意路径）、命令不进沙箱——只在任务确有必要时动用；操作留痕不记命令正文与目标路径，事后难以追溯。',
     ].join('\n');
     const AI_SUB_PROMPT_TAIL = [
-        '你的工具范围在派出时已固定，无法从会话内放宽：范围外工具会被直接拒绝——不要换参数或写法重试，在最终结论中说明该限制即可，由主代理决定如何处理。',
+        '你的工具范围在派出时已固定，无法从会话内放宽；范围外工具会被直接拒绝。',
         'timer_list 是主会话计时器的只读共享时钟：可用来对齐时间基准（正计时已计时长 / 倒计时剩余），但不能启动、停止或打标记；读数只是调用瞬间的快照，不会阻塞等待，不要靠反复调用来「等 N 秒」。',
         // 投递契约（§4.8）：投递层不截断（阶段 B 移除了 8000 字符上限），结论的紧凑性靠这里自律。
-        '结果投递契约：主代理只会收到你的最终结论文本，看不到你的完整转录、工具输出或推理过程——最终结论必须自带结果与关键证据（path:line），不要指望父代理从过程记录里找信息。',
-        '完成后输出一段结构化最终结论（要点 + 证据 path:line），它是你返回给主代理的唯一结果。',
+        '结果投递契约：主代理只会收到你的最终结论文本，看不到完整转录、工具输出或推理过程——最终结论需自带结果与关键证据（path:line）。',
     ].join('\n');
 
     const subAgents = new Map();      // subId -> 子代理运行态
@@ -635,7 +633,7 @@ export function createAISubagents(ctx) {
                 + '要向上汇报请写在最终结论里，主代理会收到。';
         }
         if (hasWorktree) {
-            text += '\n你有一个隔离 git worktree 作为草稿工作区：所有文件改动写到 .cadt/worktree/<slug>/…（相对范围根，路径见派单信息），隔离前缀之外的写会被拒绝；写操作自动应用（隔离区即审批边界），隔离前缀之外一律不要写。'
+            text += '\n你有一个隔离 git worktree 作为草稿工作区：所有文件改动写到 .cadt/worktree/<slug>/…（相对范围根，路径见派单信息），写操作自动应用（隔离区即审批边界）。'
                 + '\n不要 commit 到隔离分支；完成后在结论里列出你改动的文件清单，由主代理决定是否导出补丁回灌主根。';
         }
         if (commandOn) {
@@ -648,12 +646,9 @@ export function createAISubagents(ctx) {
                 + '，其余写入由系统拒绝。'
                 + '\n**沙箱里的 shell 是 PowerShell，不是 bash**：用 PowerShell 语法（Get-ChildItem / Select-String / Test-Path），不要用 ls / grep / sed / awk；git、go、npm 等外部命令本身不受影响。'
                 + '\n耗时任务（构建、长测试、watch）用 background_command 起、check_command 轮询、stop_command 收尾，别用 run_command 干等。'
-                + '\n被沙箱拒绝或提示「沙箱不可用」时不要重试、不要绕道用别的工具改文件，在结论里如实写「因沙箱限制未验证」。'
-                + '\n其中报「授权写根 … Access is denied」是宿主机权限问题（工作区目录属于另一个账户，当前账户没有它的「更改权限」），'
-                + '本次会话的命令通道不可用：改用只读工具完成调查，并在结论里说明哪些结论未用命令验证。';
+                + '\n被沙箱拒绝或提示「沙箱不可用」时，在结论里如实写「因沙箱限制未验证」。';
         } else {
-            text += '\n你没有命令通道（run_command / background_command 未授权）：不要尝试执行命令；'
-                + '需要验证的结论在最终结论中如实写「未用命令验证」。';
+            text += '\n你没有命令通道（run_command / background_command 未授权）；需要验证的结论在最终结论中写明「未用命令验证」。';
         }
         // preset 的提示片段（§4.1 promptSections）：persona / 角色文案追加在基础提示之后；
         // preset 已卸载时按快照能力降级运行（§8.2），片段自然消失即可，不报错。
@@ -996,8 +991,8 @@ export function createAISubagents(ctx) {
         if (!profile) throw new Error('无可用 AI 配置');
         const toolMessage = ctx.toolMessage;
         const grantPresetWrite = await confirmPresetWriteGrant(parentSession, parentLiveSub, toolMessage, presetEntry);
-        // id 先落到局部变量：对象字面量里的 agentCtx 要用它当 owner，若在 sub 初始化期间
-        // 直接写 sub.id 会触发暂时性死区（Cannot access 'sub' before initialization，
+        // id 先落到局部变量：对象字面量里的 id: subId 要用它，若在 sub 初始化期间直接写
+        // sub.id 会触发暂时性死区（Cannot access 'sub' before initialization，
         // 压缩后变量名形如 ur）——对象字面量求值完成前 const sub 尚未初始化。
         const subId = aiNowId('sub-');
         const sub = {
@@ -1022,10 +1017,11 @@ export function createAISubagents(ctx) {
             session: null,
             flow: null,
             inbox: newSubInbox(),
-            // 每 live agent 的扁平注册层 agent.ctx（S6）：工具 / 提示 / 变量只对该 agent 可见，
-            // 终态时由 finalizeSubAgent dispose，不残留、不串到别的 agent。realm 取 preset 的
-            // 隔离域（点分命名空间），preset 的工具 / 提示 / 变量在快照合成后铺进作用域。
-            agentCtx: createAgentScope({owner: subId, realm: presetEntry.preset.realm || ''}),
+            // 注意：这里**没有** per-agent 注册层（createAgentScope / agentCtx）——2026-11-28
+            // 审查确认它是零读者的空转层后拆除。子代理的工具面 / 提示面只认两个真源：
+            // 能力快照（tools.allow → subToolsForCapabilities）与 preset 注册表
+            // （subSystemPromptFor 按 caps.preset 直读 promptSections）；别再往 sub 上挂
+            // 第三份工具集。
         };
         toolMessage.agent = {
             key: sub.key,
@@ -1044,12 +1040,21 @@ export function createAISubagents(ctx) {
             summary: '',
             note: '',
         };
+        // 编排派生标记 + 私有写凭证（写闸 fail-closed）：父会话是编排批次会话（work/review/
+        // arbiter）或其派生的子代理时，子代理继承标记与执行票据，让 owns 写闸对它也生效——
+        // owns 边界不再单靠「阶段零强制只读」一层。票据是进程内存私有字段（下划线前缀，
+        // 不序列化），逐层传递；跨进程续跑后必失效，写闸据此 fail-closed 拒绝。
+        const orcDerived = !!(parentSession.orchestration || parentSession._orchestrationDerived);
+        const orcWriteToken = String(parentSession._orchestrationToken
+            || parentSession._orchestrationWriteToken || '');
         sub.session = {
             id: sub.id,
             title: '',
             parentSessionId: parentSession.id,
             rootSessionId,
             originSessionId,
+            _orchestrationDerived: orcDerived,
+            _orchestrationWriteToken: orcWriteToken,
             workspace: parentSession.workspace || '',
             // 模型 pin 到本次派单实际要用的账号/条目（模型档或父会话）：上下文窗口最窄处
             // （contextWindowOf）与视频能力都从这里解析，不能在请求侧换模型而不改这里。
@@ -1078,12 +1083,6 @@ export function createAISubagents(ctx) {
         };
         sub.profile = profile;
         sub.entry = entry;
-        // 每 agent 注册层铺上 preset 的工具 / 提示 / 变量（S6，§4.4）：能力快照是它的输入之一，
-        // 不是替代——createAgentScope 仍是该 agent 的注册层，normalizeAgentPreset 仍是唯一归一化入口。
-        // 尽力而为：铺装失败只影响 preset 声明的提示片段 / 变量（能力面走快照），不阻断派单。
-        try {
-            sub.agentCtx.applyPreset(presetEntry.preset);
-        } catch (e) {}
         const assistant = newAssistantMessage(profile, entry);
         sub.session.messages.push(assistant);
         // 能力快照预跑校验（worktreePath 置空）：把 preset 非法工具名 / 父档不足 / 可写根逃逸
@@ -1780,8 +1779,6 @@ export function createAISubagents(ctx) {
             clearInterval(sub.heartbeat);
             sub.heartbeat = 0;
         }
-        // 释放该 agent 的作用域注册层（S6）：终态后工具/提示/变量不再对该 agent 可见。
-        if (sub.agentCtx && !sub.agentCtx.disposed) sub.agentCtx.dispose();
         const s = sub.flow;
         s.stopped = state !== 'done';
         if (s.assistant && s.assistant.status === 'streaming') {
@@ -2695,6 +2692,10 @@ export function createAISubagents(ctx) {
                     parentSessionId: run.parentSessionId,
                     rootSessionId: run.rootSessionId,
                     originSessionId: detail.originSessionId,
+                    // 编排派生标记随重建恢复；票据是进程内存私有的，跨进程续跑必然没有——
+                    // 写闸见 derived + 无票据会 fail-closed 拒绝（owns 边界不因续跑失效）。
+                    _orchestrationDerived: !!(session.orchestration || session._orchestrationDerived),
+                    _orchestrationWriteToken: '',
                     workspace: detail.workspace,
                     profileId: detail.profileId,
                     modelId: detail.modelId,

@@ -81,7 +81,7 @@ test('personaSegments：默认态只产出 <identity>，且含称呼分寸句', 
     assert.match(segments[0], /\n<\/identity>$/);
     assert.match(segments[0], /助手名：甜澄（自称：小澄）；英文名：Tangerine。/);
     assert.match(segments[0], /用户称呼：（未设置，不要臆造称呼）/);
-    assert.match(segments[0], /称呼只在自然合适处使用，不要每句都叫，也不要反复报名。/);
+    assert.match(segments[0], /称呼只在自然合适处使用。/);
     assert.equal(meta.enabled, true);
     assert.equal(meta.style, 'default');
     assert.equal(meta.personaChars, 0);

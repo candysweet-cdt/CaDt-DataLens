@@ -176,7 +176,7 @@ export function cognitionRulesText(enabled) {
     return [
         '<cognition_rules>',
         '本工作区未启用认知索引（跨会话记住「文件职责 / 改动联动 / 暗约束」的可选语义层，开关在 设置 → AI → 上下文与记忆）。',
-        '如果用户在这个代码工作区反复进行 AI 编码会话、或希望跨会话沉淀文件间的联动与暗约束，可以主动建议启用：调用 app_control 的 cognition_toggle {enabled:true}，会弹出审批面板由用户拍板。数据目录不建议建。',
+        '适合启用的情形：用户在这个代码工作区反复进行 AI 编码会话、或希望跨会话沉淀文件间的联动与暗约束——此时可建议启用（app_control 的 cognition_toggle {enabled:true}，会弹出审批面板由用户拍板）。数据目录不建议建。',
         '</cognition_rules>',
     ].join('\n');
 }

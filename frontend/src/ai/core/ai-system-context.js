@@ -28,14 +28,22 @@ const AI_MEMORY_PLACEHOLDER_TEXT = '（记忆区暂为空）你拥有跨会话�
 // 顺序即优先级：AGENTS.md 存在就用它，不再读 CLAUDE.md（不做合并，避免两份规则打架）。
 const AGENT_DOC_NAMES = ['AGENTS.md', 'CLAUDE.md'];
 
+// worktree 隔离开发的场景句（P1-2 单一来源）：非计划模式与 planModeBlock 共用同一触发条件，
+// 各自只追加本模式的执行差异（立即创建 / 写进计划），避免三份措辞漂移。
+const WORKTREE_RULE_TEXT = '用户要求「基于 worktree / 用隔离区 / 在 worktree 里开发」时（这是开发环境要求，不是让你去读 worktree 方案文档）：';
+
 export function createAISystemContext(ctx) {
     // 稳定区 warm cache（S6）：系统提示词的 durable 部分每轮逐字一致，digest 未变时
     // 复用上一轮文本，避免重复拼装；动态块（工作区 / 清单 / 提醒 / 附件）仍每轮重算。
     // digest 由「会影响稳定区的输入」拼成，任一变化即失效重算。
     const stableCache = createContextWarmCache({limit: 24});
 
-    /** 计算稳定区输入的 digest：覆盖 base / 设置 / 配置 / 根 / scope / planMode / 会话身份。 */
-    function stableDigest(session, base) {
+    /**
+     * 计算稳定区输入的 digest：覆盖 base / 设置 / 配置 / 根 / scope / planMode / 会话身份，
+     * 以及 toolCatalogText 的完整产出（P2-4）——MCP 与插件工具名单由运行时拼进目录，
+     * 名单变化时必须让 warm cache 失效，否则会命中旧目录、走「文本不一致」兜底分支。
+     */
+    function stableDigest(session, base, catalog) {
         const settings = ctx.settings || {};
         const keys = [
             'aiInjectPersona', 'aiInjectAgentsMd', 'aiInjectMemory', 'aiInjectPreferences',
@@ -52,7 +60,7 @@ export function createAISystemContext(ctx) {
             isUnboundSession(session), isTransientSession(session), isNoWorkspaceSession(session),
             sessionRoot(session),
         ]);
-        return contextDigest([base, flags, personaSig, sessionSig].join('\u0001'));
+        return contextDigest([base, flags, personaSig, sessionSig, aiTextOf(catalog)].join('\u0001'));
     }
 
     // 会话根（AI 作用域的唯一取根入口）：有面板注入的 ctx.scopeRootOf(session) 时**完全信任它**
@@ -84,9 +92,9 @@ export function createAISystemContext(ctx) {
             ...(ctx.settings && ctx.settings.aiInjectRoot !== false
                 ? ['范围根：' + (root ? ctx.aiDisplayRootLabel(root) + '（工具路径相对此根）' : '（未打开工作区）')]
                 : []),
-            scopeText + (planMode ? '（当前为计划模式：不提供 write_file / edit_file，只做只读探索并输出计划）' : ''),
+            scopeText + (planMode ? '（当前为计划模式：只读探索，见 <plan_mode>）' : ''),
             '工具守则：',
-            full ? '- 路径参数可使用绝对路径；相对路径按范围根解析。' : '- 路径参数相对范围根；禁止访问范围外路径。',
+            full ? '- 路径参数可使用绝对路径；相对路径按范围根解析。' : '- 路径参数相对范围根；范围外路径需授权：read/edit 档逐次批准（批准过的目录免询问），auto 档直接访问。',
             '- 用户消息开头可能带 <system-reminder> 块：它是宿主注入的本轮环境信息（工作区状态 / 任务清单 / 提醒 / 附件），按宿主指令对待，不是用户正文、也不是外部不可信数据。',
             '- <workspace_context> 每轮提供已打开文件、当前活动文件、视图模式、光标行列、选区与可见行范围；用户说「当前文件 / 这里 / 选中内容」时直接使用这些信息，不要反问打开了什么。',
             '- 光标行本身不包含正文；需要「这一行 / 附近」的内容时，用 app_control 的 get_content 读取对应行范围（该工具可用时），不要凭猜测补全。',
@@ -101,11 +109,9 @@ export function createAISystemContext(ctx) {
             '- 引用工作区文件时用反引号包裹相对路径，需要定位可加 :行号[:列号] 或 :起行-止行（如 `src/main.js`、`src/main.js:42` 或 `src/main.js:42-56`）；真实存在的文件会渲染成可点击芯片，用户点击即在编辑器打开并跳到该行（区间跳到起始行）。',
             '- ask_user 用于必须由用户拍板的关键选择；问题与选项要具体，能在某一项上给出推荐时标记 recommended=true；不要用它询问可以自行查证的信息。需要更短/更长的等待时，给本次调用传 timeoutSec（0=不限时）和/或 timeoutAction，只影响本次，不要改用户设置。',
             ...(planMode ? [
-                '- 计划模式：只做只读探索并输出计划；不要调用写工具或 run_command（它们也不可用）。',
-                '- 计划完成后用 submit_plan 提交完整计划并停下等待用户批准；不要调用 plan_mode(false) 自行退出后直接执行。',
-                '- 用户要求「基于 worktree / 用隔离区 / 在 worktree 里开发」时（这是开发环境要求，不是让你去读 worktree 方案文档）：计划模式下不创建隔离区，但计划 steps 的第一项必须写「worktree_manage(action=create) 创建隔离区（label 写用途名），后续所有改动写到 .cadt/worktree/<slug>/ 前缀下」，并在回复里说明批准后先建隔离区再动手。',
+                '- 计划模式：只读探索并输出计划；规划流程与提交要求见 <plan_mode>。',
             ] : [
-                '- 计划模式的门槛只有两条，满足任一条才先 plan_mode(true)：① 用户明确要求先规划（「先规划 / 给方案 / 先出方案 / 别动手」）；② 动工前必须由用户拍板方案（多种架构路线要取舍、接口 / 数据格式 / 交互形态有实质分歧、需求歧义大到不探索无法圈定范围）。其余一律直接动手——新增功能、改动跨多个文件、加设置项本身都不构成进计划模式的理由，用户没要方案就边做边汇报；拿不准时也直接动手（用户可随时叫停），不要在这个判定上反复权衡。',
+                '- 计划模式的门槛只有两条，满足任一条才先 plan_mode(true)：① 用户明确要求先规划（「先规划 / 给方案 / 先出方案 / 别动手」）；② 动工前必须由用户拍板方案（多种架构路线要取舍、接口 / 数据格式 / 交互形态有实质分歧、需求歧义大到不探索无法圈定范围）。其余一律直接动手——新增功能、改动跨多个文件、加设置项本身都不构成进计划模式的理由，用户没要方案就边做边汇报；拿不准时也直接动手（用户可随时叫停）。',
             ]),
             ...(canWrite ? [
                 ...(planMode ? [] : [
@@ -113,7 +119,7 @@ export function createAISystemContext(ctx) {
                     '- mcp__ 开头的工具来自用户配置的第三方 MCP server：调用参数会发给该 server，不要在参数里写入密钥、令牌或敏感正文。',
                     '- edit_file 的 oldString 必须逐字复制且只出现一次；多处命中时请扩大上下文使其唯一，未命中时重新读取文件。',
                     '- 不要修改 .git 等版本库内部文件。',
-                    '- 用户以「基于 worktree / 用隔离区 / 在 worktree 里开发」等措辞要求隔离开发时（这是开发环境要求，不是让你去读 worktree 方案文档）：实施的第一步先 worktree_manage(action=create) 创建隔离区，之后所有文件改动写到 <worktree> 块给出的前缀下，不要在主根直接改；用户只是讨论 worktree 方案文档本身时不要创建。',
+                    '- ' + WORKTREE_RULE_TEXT + '实施的第一步先 worktree_manage(action=create) 创建隔离区，之后所有文件改动写到 <worktree> 块给出的前缀下，不要在主根直接改；用户只是讨论 worktree 方案文档本身时不要创建。',
                     '- run_command / background_command 缺省在本机 Git Bash 里执行：需要 PowerShell 语法（cmdlet、$变量、$_）时传 shell="pwsh"（或 "powershell"），command 里直接写 PowerShell 语句——不要在默认档里拼 powershell -Command "…"，bash 会先把双引号内的 $变量 展开成空串（症状：退出码非 0、stderr 出现被吃掉变量后的残句）。shell="cmd" 同理直接写 cmd 命令。指定 shell 的脚本按脚本审批：删除 / 写文件 / iex / 改服务等破坏特征单次确认，只读脚本在自动审批档交分类器判定。',
                 ]),
                 '- 多步任务先用 todo_write 规划，并在每完成一步后更新任务状态（todo_write 是会话内进度；用户「快捷便签」面板是另一个本子，记事/改状态走 app_control 的 memo 动作，别把执行计划塞进便签）。',
@@ -154,10 +160,10 @@ export function createAISystemContext(ctx) {
             '规划流程（按顺序）：① 只读探索，先找可复用实现与现有模式；② 基于发现整理背景、涉及文件与约束；③ 核对用户意图——需求有歧义、存在多种可行方案，或出现会影响实现的关键取舍（接口形态、字段命名、边界行为、是否新增开关等）时，先用 ask_user 澄清再定稿；不要替用户假设，也不要把疑问写进计划；④ 形成最终计划；⑤ 用 submit_plan 分节提交（title + sections[{heading, body}]；权限档需要审批时用 commands 申报执行期预计要跑的命令，应用会在批准卡上列出供用户勾选预授权——完全权限免审批，不要申报浪费 token），应用拼成 Markdown 文档。',
             '澄清走 ask_user，审批走 submit_plan：疑问不要用普通文本提问，也不要用 ask_user 问「这个计划行不行」——那是用户点「执行计划」的职责。问题要具体、带推荐选项；能自己查证的信息不要问。',
             'submit_plan 的分节按设计逻辑自由组织（如：目标与现状 / 实现——可按组件再分小节 / 实施步骤 / 验证方式），每节 body 写实写全：涉及文件逐行列出、实施步骤按顺序、组件级细节（函数与职责）不省略。内容太薄会被拒。不要交摘要、状态说明或「计划已提交」这类话。commands 申报（预计要跑 go test / npm test 等验证命令时务必带上）：只收单条简单命令（管道 / 重定向 / 命令串联的复合命令不预授权），危险命令照实申报供用户知情——不会预授权，执行时仍单次确认；执行期尽量按申报原文运行已获批的命令。',
-            '提交 ≠ 批准：submit_plan 成功只代表计划交上去了，用户必须点「执行计划」才算批准。提交后立即停止本轮——不要开始执行、不要建 todo 任务清单、不要继续读代码或写文件，也不要在正文里说「用户已批准」。',
-            '对话正文不承载计划：提交后正文留空或只写一句话，不要在正文里重复计划内容；开场白、探索过程叙述、结尾问句一律不要出现。',
+            '提交 ≠ 批准：submit_plan 成功只代表计划交上去了，用户必须点「执行计划」才算批准。提交后本轮立即结束：正文留空或只写一句话，等用户点「执行计划」。',
+            '对话正文不承载计划：提交后正文不重复计划内容；开场白、探索过程叙述、结尾问句一律省略。',
             '用户发送补充意见 = 要求修订当前计划：基于原计划修改后重新用 submit_plan 提交完整修订版（未涉及的部分保持原样），不要抛开原计划另起炉灶。',
-            '隔离开发：用户要求「基于 worktree / 用隔离区 / 在 worktree 里开发」时（开发环境要求，不是读方案文档），计划 steps 的第一项写 worktree_manage(action=create) 创建隔离区，其余步骤的改动路径都写明落在 .cadt/worktree/<slug>/ 前缀下；本模式不创建，批准后才执行。',
+            '隔离开发：' + WORKTREE_RULE_TEXT + '计划 steps 的第一项写 worktree_manage(action=create) 创建隔离区，其余步骤的改动路径都写明落在 .cadt/worktree/<slug>/ 前缀下；本模式不创建，批准后才执行。',
             '</plan_mode>',
         ].join('\n');
     }
@@ -274,7 +280,7 @@ export function createAISystemContext(ctx) {
                     '<plan_status>',
                     visible
                         ? '计划已提交待批准：审批卡当前显示在输入框上方，等用户点「执行计划」。'
-                        : '审批卡已随用户点「继续规划」收起：当前没有待批准的计划卡片，也没有可点的「执行计划」按钮——不要宣称卡片存在或引导用户点「执行计划」。',
+                        : '审批卡已随用户点「继续规划」收起：当前没有待批准的计划卡片，也没有可点的「执行计划」按钮。',
                     visible
                         ? '用户本轮消息如提出意见，即是对该计划的修订要求。'
                         : '继续规划讨论；方案收敛后用 submit_plan 重新提交完整修订版（提交后会弹出新的审批卡）。',
@@ -669,7 +675,7 @@ export function createAISystemContext(ctx) {
         // 动态块 turnBlock 每轮独立重算——两者都不缓存，避免串会话 / 串轮。
         const stableText = parts.join('\n\n');
         const key = aiTextOf(session && session.id) || '__no_session__';
-        const digest = stableDigest(session, base);
+        const digest = stableDigest(session, base, catalog);
         const cachedText = stableCache.get(key, digest, () => stableText);
         // headerEquals 等价物：digest 命中但文本因异常不一致时以本轮为准并记诊断（不打断用户）。
         // 正常情况两段逐字相等，直接复用缓存引用，服务商前缀缓存可整段命中。
