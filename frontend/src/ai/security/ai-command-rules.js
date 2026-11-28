@@ -1152,3 +1152,20 @@ export function mergePlanGrantItems(declared, scrapedSignatures) {
     }
     return items;
 }
+
+// 删除类命令的引导提示（2026-11-28 delete_path 上线）：不改判定语义——dangerous / risky
+// 分类与 ai-shell-choice 三通道完全不动，只在命令审批卡上追加一句「建议改用 delete_path」。
+// 识别面刻意比危险特征表宽（含已知的 Remove-Item 漏标形态），漏报只损失一次引导，无安全面。
+const DELETION_HINT_PATTERNS = [
+    /(?:^|[;&|(\s])(?:sudo\s+)?(?:rm|rmdir|rd|del|erase|ri|rimraf|shred|git\s+clean)\b/i,
+    /(?:^|[;&|(\s])remove-item\b/i,
+    /\bfind\s+[^;&|\n]*-delete\b/i,
+];
+
+export function deletionHintFor(command) {
+    const text = String(command == null ? '' : command);
+    const hit = DELETION_HINT_PATTERNS.some((re) => re.test(text));
+    return hit
+        ? '检测到删除命令：如需删除文件或目录，建议改用 delete_path 工具（进回收站可恢复，审批卡显示影响面）。'
+        : '';
+}

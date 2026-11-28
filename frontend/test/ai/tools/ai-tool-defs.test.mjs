@@ -11,23 +11,23 @@ const names = (scope, planMode) => toolsForScope(scope, planMode).map((t) => t.n
 
 test('buildSpawnAgentDef：默认轮次取自设置，模型看到的是真实值而不是写死的 200', () => {
     const with120 = buildSpawnAgentDef([], 120);
-    assert.ok(with120.parameters.properties.maxRounds.description.includes('默认 120'),
+    assert.ok(with120.parameters.properties.maxRounds.description.includes('default 120'),
         '设置改了默认轮次，工具描述必须跟着变');
-    assert.ok(!with120.parameters.properties.maxRounds.description.includes('默认 200'),
+    assert.ok(!with120.parameters.properties.maxRounds.description.includes('default 200'),
         '不能同时留着旧默认值');
     // 无设置值（0 / 未传）时保留静态基线
     for (const value of [undefined, 0, null]) {
         const base = buildSpawnAgentDef([], value);
-        assert.ok(base.parameters.properties.maxRounds.description.includes('默认 200'), '缺省仍是 200');
+        assert.ok(base.parameters.properties.maxRounds.description.includes('default 200'), '缺省仍是 200');
     }
     // 不污染常量对象：def 是新建的，AI_TOOL_DEFS.spawn_agent 保持原样
-    assert.ok(AI_TOOL_DEFS.spawn_agent.parameters.properties.maxRounds.description.includes('默认 200'));
+    assert.ok(AI_TOOL_DEFS.spawn_agent.parameters.properties.maxRounds.description.includes('default 200'));
     // 没候选时不出现 model 参数；有候选才拼进去
     assert.equal(with120.parameters.properties.model, undefined);
     const withModel = buildSpawnAgentDef([{ref: 'a|b', label: '便宜模型', model: 'm1'}], 60);
     assert.ok(withModel.parameters.properties.model, '有候选要加 model 参数');
     assert.ok(withModel.description.includes('「m1」（便宜模型）'), '候选清单要写进描述');
-    assert.ok(withModel.parameters.properties.maxRounds.description.includes('默认 60'));
+    assert.ok(withModel.parameters.properties.maxRounds.description.includes('default 60'));
 });
 
 test('buildSpawnAgentDef：def 仍是纯 name/description/parameters 载荷', () => {
@@ -91,32 +91,32 @@ test('generate_*：配置了启用条目才下发，计划模式不注入，chec
 test('toolCatalogText：按档位过滤、合并同文案相邻工具、含会话新组', () => {
     const catalogText = createAIToolDefs({appControlOn: () => false}).toolCatalogText;
     const read = catalogText('read', false);
-    assert.ok(read.includes('- list_dir：列目录与文件大小；depth 传 2–8 可递归出树，一次摸清多层结构'));
-    assert.ok(read.includes('- memory_list / memory_read / memory_write：跨会话事实与结论；写后更新 MEMORY.md 索引'));
-    assert.ok(read.includes('【会话、提醒与通知】'));
-    assert.ok(read.includes('- reminder_add / reminder_list / reminder_update / reminder_remove：'));
-    assert.ok(!read.includes('【文件写入'), '只读档非计划模式不应出现写组');
+    assert.ok(read.includes('- list_dir: List directory entries and file sizes; depth 2-8 recurses into a tree'));
+    assert.ok(read.includes('- memory_list / memory_read / memory_write: Cross-session facts and conclusions'));
+    assert.ok(read.includes('## Sessions, reminders, and notifications'));
+    assert.ok(read.includes('- reminder_add / reminder_list / reminder_update / reminder_remove:'));
+    assert.ok(!read.includes('## File writes'), '只读档非计划模式不应出现写组');
     assert.ok(!read.includes('- write_file'));
 
     const plan = catalogText('read', true);
-    assert.ok(plan.includes('【文件写入（先读后改，走审批）】'), '计划模式有 propose_patch 预检，写组应出现');
-    assert.ok(plan.includes('- propose_patch：'));
+    assert.ok(plan.includes('## File writes (read first, then edit; goes through approval)'), '计划模式有 propose_patch 预检，写组应出现');
+    assert.ok(plan.includes('- propose_patch:'));
     assert.ok(!plan.includes('- reminder_add'), '计划模式不下发 reminder_add');
-    assert.ok(plan.includes('- reminder_list：'), '计划模式保留 reminder_list（只读）单列一行');
+    assert.ok(plan.includes('- reminder_list:'), '计划模式保留 reminder_list（只读）单列一行');
 });
 
 test('toolCatalogText：app_control 与 MCP 工具按可用性出现，结构段完整', () => {
     const withoutApp = createAIToolDefs({appControlOn: () => false}).toolCatalogText('full', false);
-    assert.ok(!withoutApp.includes('【应用界面（当前窗口）】'));
-    assert.ok(!withoutApp.includes('【外部 MCP 服务器（第三方工具）】'));
+    assert.ok(!withoutApp.includes('## App UI (current window)'));
+    assert.ok(!withoutApp.includes('## External MCP servers (third-party tools)'));
     const withAll = createAIToolDefs({
         appControlOn: () => true,
         mcpToolDefs: () => [{name: 'mcp__demo_lookup', description: '演示', input_schema: {type: 'object'}}],
     }).toolCatalogText('full', false);
-    assert.ok(withAll.includes('【应用界面（当前窗口）】'));
-    assert.ok(withAll.includes('【外部 MCP 服务器（第三方工具）】'));
-    assert.ok(withAll.includes('调度原则：'));
-    assert.ok(withAll.includes('典型任务 → 工具链：'));
+    assert.ok(withAll.includes('## App UI (current window)'));
+    assert.ok(withAll.includes('## External MCP servers (third-party tools)'));
+    assert.ok(withAll.includes('Dispatch rules:'));
+    assert.ok(withAll.includes('Typical task → tool chain:'));
     assert.ok(withAll.endsWith('</tool_catalog>'));
 });
 
@@ -151,8 +151,8 @@ test('timer_list：所有权限档与计划模式都下发只读时钟，且不�
     }
     const def = toolsForScope('read', false).find((t) => t.name === 'timer_list');
     assert.deepEqual(Object.keys(def.parameters.properties), [], 'timer_list 是纯快照，不接受参数');
-    assert.match(AI_TOOL_DEFS.timer_list.description, /只读/);
-    assert.match(AI_TOOL_DEFS.timer_list.description, /不要靠反复调用/);
+    assert.match(AI_TOOL_DEFS.timer_list.description, /Read-only/);
+    assert.match(AI_TOOL_DEFS.timer_list.description, /do not call it repeatedly/);
     assert.ok(AI_TOOL_CATALOG.timer_list, '工具目录必须登记 timer_list');
 });
 
@@ -160,11 +160,11 @@ test('list_dir：depth 参数递归列子目录，缺省仍是单层', () => {
     const def = toolsForScope('read', false).find((t) => t.name === 'list_dir');
     assert.deepEqual(Object.keys(def.parameters.properties), ['path', 'depth']);
     // P2-1：depth 的缺省/depth 上限细节只在参数说明里写一次
-    assert.match(AI_TOOL_DEFS.list_dir.parameters.properties.depth.description, /缺省\/1 只列一层/,
+    assert.match(AI_TOOL_DEFS.list_dir.parameters.properties.depth.description, /omitted\/1 lists one level/,
         '参数说明要写清缺省行为不变');
-    assert.match(AI_TOOL_DEFS.list_dir.parameters.properties.depth.description, /400 项/,
+    assert.match(AI_TOOL_DEFS.list_dir.parameters.properties.depth.description, /400 entries/,
         '参数说明要交代条目预算，别让模型以为无限递归');
-    assert.match(AI_TOOL_DEFS.list_dir.description, /一次递归列代替逐层调用/,
+    assert.match(AI_TOOL_DEFS.list_dir.description, /one recursive call/,
         '描述要明确「一次递归代替逐层调用」的行为指引');
 });
 
@@ -188,7 +188,7 @@ test('read_image：只读档与计划模式都下发，且必须登记目录', (
     assert.match(AI_TOOL_DEFS.read_image.description, /800–1600 token/, '描述里要写上下文成本');
     assert.equal(AI_TOOL_CATALOG.read_image.group, 'read', 'read_image 属于只读组');
     // 目录文案必须真的描述「看画面」，别退回成读文本
-    assert.match(AI_TOOL_CATALOG.read_image.blurb, /图片/);
+    assert.match(AI_TOOL_CATALOG.read_image.blurb, /picture/);
 });
 
 test('read_video：只读档与计划模式都下发，且必须登记目录', () => {
@@ -204,7 +204,7 @@ test('read_video：只读档与计划模式都下发，且必须登记目录', (
     assert.match(AI_TOOL_DEFS.read_video.description, /read_image/, '描述里要点明与 read_image 的分工');
     assert.match(AI_TOOL_DEFS.read_video.description, /4000 token/, '描述里要写上下文成本');
     assert.match(AI_TOOL_DEFS.read_video.description, /mp4/, '描述里要写格式限制');
-    assert.match(AI_TOOL_DEFS.read_video.description, /未启用视频输入/, '描述里要写模型未勾选视频输入时的行为');
+    assert.match(AI_TOOL_DEFS.read_video.description, /no video input enabled/, '描述里要写模型未勾选视频输入时的行为');
     assert.equal(AI_TOOL_CATALOG.read_video.group, 'read', 'read_video 属于只读组');
     assert.match(AI_TOOL_CATALOG.read_video.blurb, /mp4/);
 });
@@ -233,9 +233,9 @@ test('read_video 按会话视频能力裁剪：不支持时工具与目录链一
     const catalogOn = capable(true).toolCatalogText('read', false, session);
     const catalogOff = capable(false).toolCatalogText('read', false, session);
     assert.match(catalogOn, /read_video/, '支持视频时目录含 read_video');
-    assert.match(catalogOn, /看视频/, '支持视频时目录含"看视频"工具链');
+    assert.match(catalogOn, /Watch a video/, '支持视频时目录含"看视频"工具链');
     assert.doesNotMatch(catalogOff, /read_video/, '不支持视频时目录不该出现 read_video');
-    assert.doesNotMatch(catalogOff, /看视频/, '不支持视频时目录不该出现"看视频"工具链');
+    assert.doesNotMatch(catalogOff, /Watch a video/, '不支持视频时目录不该出现"看视频"工具链');
     // 顺序稳定：下发列表里 read_video 仍紧跟 read_image
     const enabledNames = capable(true).toolsForScope('read', false, session).map((t) => t.name);
     assert.equal(enabledNames[enabledNames.indexOf('read_video') - 1], 'read_image', 'read_video 应紧跟 read_image');
@@ -282,12 +282,12 @@ test('外部工具来源：off 不注册、provider 按档、MCP 只在写档非
 test('write_worklog：标题只写索引里那一句，细节留给 summary', () => {
     const def = AI_TOOL_DEFS.write_worklog;
     // 标题会进 .cadt/logs/{YYYY}/{MM}/INDEX.md，索引一行一条，长了就退化成正文复制
-    assert.match(def.description, /索引/, '描述要点明标题进索引、索引只显示标题');
+    assert.match(def.description, /month index/, '描述要点明标题进索引、索引只显示标题');
     assert.match(def.parameters.properties.title.description, /≤40/,
         '标题要限长：索引行只放这一句');
     assert.match(def.parameters.properties.title.description, /summary/,
         '标题描述要把细节推向 summary');
-    assert.match(def.parameters.properties.summary.description, /细节/,
+    assert.match(def.parameters.properties.summary.description, /Detail summary/,
         'summary 是细节摘要，不是第二份标题');
     assert.ok(def.parameters.required.includes('title') && !def.parameters.required.includes('summary'),
         '标题必填、摘要可选');
@@ -300,4 +300,31 @@ test('任务提醒与任务清单：描述里互相写清分工，避免把拆�
         '不能再把「长任务拆步」说成提醒的用途');
     assert.match(AI_TOOL_DEFS.todo_write.description, /reminder_add/,
         'todo_write 描述要把零散备忘指向 reminder_add');
+});
+
+// 英文化护栏（2026-11-30）：工具描述已全部改为英文，允许保留的中文只剩界面专有名词
+// （「快捷便签」「任务提醒」「应用页面 → 外部工具」等用户要照着找的词），总量按字符锁定。
+// 只许减不许增：新增工具写中文描述会让模型侧中英混排回归，这条会直接红。
+// 现网实测 645 字（工具级 + 参数级合计），基线留 55 字余量。
+const DESCRIPTION_CJK_BASELINE = 700;
+
+test('工具描述的中文字符总量不回升（英文化护栏，基线只减不增）', () => {
+    const CJK_RE = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/g;
+    let total = 0;
+    const offenders = [];
+    for (const [name, def] of Object.entries(AI_TOOL_DEFS)) {
+        const texts = [def.description];
+        for (const spec of Object.values((def.parameters && def.parameters.properties) || {})) {
+            if (spec && typeof spec.description === 'string') texts.push(spec.description);
+        }
+        for (const text of texts) {
+            const hits = String(text || '').match(CJK_RE) || [];
+            total += hits.length;
+            if (hits.length > 40) offenders.push(name + '（' + hits.length + ' 字）');
+        }
+    }
+    assert.ok(total <= DESCRIPTION_CJK_BASELINE,
+        '工具描述中文字符从 645 涨到 ' + total + '：新增描述请写英文（界面专有名词除外）');
+    assert.deepEqual(offenders, [],
+        '单个工具的中文描述超过 40 字，多半是整句中文漏翻：' + offenders.join(', '));
 });

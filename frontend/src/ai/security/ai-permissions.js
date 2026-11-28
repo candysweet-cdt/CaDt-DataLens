@@ -1,24 +1,26 @@
 // 权限规则与统一决策链的纯函数层。
 // 规则文件：<工作区>/.cadt/permissions.json，结构
-//   {version:1, command:{allow:[],ask:[],deny:[]}, write:{...}, web:{...}, read:{...}}
-// 设置页用行语法编辑：一行一条 Bash(...) / Write(...) / Web(...) / Read(...)，空行与 # 注释忽略。
+//   {version:1, command:{allow:[],ask:[],deny:[]}, write:{...}, delete:{...}, web:{...}, read:{...}}
+// 设置页用行语法编辑：一行一条 Bash(...) / Write(...) / Delete(...) / Web(...) / Read(...)，空行与 # 注释忽略。
 // read 桶：工作区外读取的项目级授权（Read(D:/xxx/**) 目录树 glob），判定链见 decidePermission。
+// delete 桶：AI delete_path 工具的项目级授权（2026-11-28 新增）——授权写 ≠ 授权删，独立成桶。
 import {AI_SCOPES} from '../core/ai-constants.js';
 
 export const PERMISSION_VERSION = 1;
-export const PERMISSION_KINDS = ['command', 'write', 'web', 'read'];
+export const PERMISSION_KINDS = ['command', 'write', 'delete', 'web', 'read'];
 export const PERMISSION_BEHAVIORS = ['deny', 'ask', 'allow'];
 
 const RULE_LIMIT = 300;
 const RULE_TEXT_LIMIT = 400;
 
-const KIND_PREFIX = {command: 'Bash', write: 'Write', web: 'Web', read: 'Read'};
-const PREFIX_KIND = {bash: 'command', write: 'write', web: 'web', read: 'read'};
+const KIND_PREFIX = {command: 'Bash', write: 'Write', delete: 'Delete', web: 'Web', read: 'Read'};
+const PREFIX_KIND = {bash: 'command', write: 'write', delete: 'delete', web: 'web', read: 'read'};
 
 export function emptyPermissionRules() {
     return {
         command: {allow: [], ask: [], deny: []},
         write: {allow: [], ask: [], deny: []},
+        delete: {allow: [], ask: [], deny: []},
         web: {allow: [], ask: [], deny: []},
         read: {allow: [], ask: [], deny: []},
     };
@@ -132,7 +134,7 @@ export function matchPermissionRule(kind, subject, rule) {
         if (pattern.includes('*')) return wildcardToRegExp(pattern).test(target);
         return target === pattern;
     }
-    if (kind === 'write' || kind === 'read') return matchPathGlobRule(text, value);
+    if (kind === 'write' || kind === 'delete' || kind === 'read') return matchPathGlobRule(text, value);
     if (kind === 'web') {
         const host = text.startsWith('domain:') ? text.slice(7) : text;
         const pattern = value.startsWith('domain:') ? value.slice(7) : value;
@@ -169,12 +171,12 @@ export function parseRuleLines(text, behavior) {
         if (!line || line.startsWith('#') || line.startsWith('//')) return;
         const match = line.match(/^([A-Za-z]+)\s*\(([\s\S]*)\)$/);
         if (!match) {
-            errors.push('第 ' + (index + 1) + ' 行：需要 Bash(...) / Write(...) / Web(...) / Read(...) 格式');
+            errors.push('第 ' + (index + 1) + ' 行：需要 Bash(...) / Write(...) / Delete(...) / Web(...) / Read(...) 格式');
             return;
         }
         const kind = PREFIX_KIND[match[1].toLowerCase()];
         if (!kind) {
-            errors.push('第 ' + (index + 1) + ' 行：未知前缀 ' + match[1] + '（只会 Bash / Write / Web / Read）');
+            errors.push('第 ' + (index + 1) + ' 行：未知前缀 ' + match[1] + '（只会 Bash / Write / Delete / Web / Read）');
             return;
         }
         const content = normalizeRuleText(match[2]);
@@ -246,6 +248,7 @@ export function decidePermission(input) {
         readOnly = false,
         dangerous = false,
         risky = false,
+        outOfWorkspace = false,
         classifierEnabled = false,
         gitFlowSafe = false,
     } = input || {};
@@ -257,6 +260,25 @@ export function decidePermission(input) {
     if (hit.decision === 'allow') return {decision: 'allow', source: 'project', rule: hit.rule};
     if (scope === 'full') return {decision: 'allow', source: 'full'};
     if (kind === 'write') {
+        // 工作区外写入一律转人工（2026-11-28 写工具放行越界路径时定）：auto 档绝不自动
+        // 应用工作区外写入——写比读危险，读侧 auto 直放的「命令通道本就能绕行」理由在
+        // 写侧只支持「弹卡可过」，不支持「免卡直写」。sessionAllow（审批卡记住的精确
+        // 路径）/ 项目 allow 规则已在上方放行，是唯一免卡通道。
+        if (scope === 'auto') {
+            if (risky || outOfWorkspace) {
+                return {decision: 'ask', source: risky ? 'risky' : 'out-of-workspace'};
+            }
+            return {decision: 'allow', source: 'auto'};
+        }
+        return {decision: 'ask', source: 'scope'};
+    }
+    // 删除（AI delete_path 工具）：无「记住」通道（调用方不传 sessionAllow——授权写
+    // ≠ 授权删）。auto 档口径与 write 对齐：风险合成（工作区外 / 展开超量级 / 风险
+    // 路径 / 脏文件，由调用方并入 risky）转人工，其余直接删——删除有回收站 + 删除前
+    // L1 快照双层兜底，小范围工作区内删除的可恢复性不低于 auto 档本来就直放的写
+    // （2026-11-28 定）。full 档在上方通用分支已直放；项目 Delete(...) deny/ask/allow
+    // 规则在上方照常生效。
+    if (kind === 'delete') {
         if (scope === 'auto') {
             if (risky) return {decision: 'ask', source: 'risky'};
             return {decision: 'allow', source: 'auto'};
@@ -267,6 +289,7 @@ export function decidePermission(input) {
     if (kind === 'read') {
         // 工作区外读取：auto 档直接放行（auto 契约即非风险自主执行，命令通道本就能绕行）；
         // read/edit 档转人工（read 档没有命令等其他通道；edit 与其命令审批口径一致）。
+        // 写侧口径不同：工作区外写入任何非 full 档都转人工（见 write 分支）。
         // 用户点名 / 已批准读根（sessionAllow）已在上方统一放行；full 档在路径闸就不越界。
         if (scope === 'auto') return {decision: 'allow', source: 'auto'};
         return {decision: 'ask', source: 'scope'};

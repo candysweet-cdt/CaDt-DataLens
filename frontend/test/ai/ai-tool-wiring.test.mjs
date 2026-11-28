@@ -229,10 +229,13 @@ test('子代理白名单只引用已定义的工具', () => {
     assert.deepEqual(unknown, [], 'ai-subagents.js 引用了不存在的工具定义');
 });
 
-// 描述里「参数样」的 token 只能靠全量参数词表识别（中文描述里参数名就是裸标识符，没有标记）。
-// 下面这些词撞了词表但在描述里不是本工具入参，逐条写清原因；**新出现的参数名不在表里**，
-// 所以「描述写了 depth 却忘了加 properties」会直接红。确实需要同名入参的工具由下面
-// 「执行分支不得读取未声明参数」那条兜住。
+// 描述里「参数样」的 token 识别方式（2026-11-30 调整）：描述语言改为英文后，
+// 「中文描述里出现英文裸标识符 = 提到参数」这一假设失效——name / text / path / context
+// 这类普通英文名词在每个句子里都会出现，裸词检测会误报上百条。
+// 改为只校验**反引号标注**的标识符：写 `depth` 就是在声明「这是本工具入参」，
+// 没在 properties 里声明就红；普通叙述词不标反引号，不参与判定。
+// PROSE_TOKENS 仍然是「反引号标注了但不是本工具入参」的放行名单。
+const BACKTICK_TOKEN = /`([A-Za-z_][A-Za-z0-9_]*)`/g;
 const PROSE_TOKENS = {
     full: '权限档取值（auto / full）',
     id: '返回值里的会话 / 任务标识',
@@ -247,21 +250,17 @@ const PROSE_TOKENS = {
     verify: 'orchestration_plan 的批次级验收字段；report / control 描述里只是说“会复跑验收/不要绕过验收”，不是入参',
 };
 
-test('描述里提到的参数名必须已声明', () => {
-    const vocab = new Set();
-    for (const name of toolNames) {
-        for (const key of Object.keys(AI_TOOL_DEFS[name].parameters.properties)) vocab.add(key);
-    }
+test('描述里反引号标注的参数名必须已声明', () => {
     const problems = [];
     for (const name of toolNames) {
         const def = AI_TOOL_DEFS[name];
         const props = new Set(Object.keys(def.parameters.properties));
         const desc = String(def.description);
-        for (const token of vocab) {
+        for (const m of desc.matchAll(BACKTICK_TOKEN)) {
+            const token = m[1];
             if (props.has(token) || PROSE_TOKENS[token]) continue;
-            if (!new RegExp('(^|[^A-Za-z0-9_])' + token + '([^A-Za-z0-9_]|$)').test(desc)) continue;
-            problems.push(name + '：描述里提到「' + token + '」，但 parameters.properties 没有它' +
-                '（要么补参数，要么把说法改成不误导；确有正当理由就登记 PROSE_TOKENS）');
+            problems.push(name + '：描述里反引号标注了「' + token + '」，但 parameters.properties 没有它' +
+                '（要么补参数，要么去掉反引号；确有正当理由就登记 PROSE_TOKENS）');
         }
     }
     assert.deepEqual(problems, []);

@@ -42,6 +42,14 @@ export const AI_ARCHIVE_LIMIT = 5000; // 与 /compact 共用：归档保留上�
 export const AI_LEGACY_SESSION_LIMIT = 50; // 仅 legacy 回退路径使用：旧 localStorage 整包容量有限
 export const AI_WRITE_LIMIT = 256 * 1024;
 export const AI_PATCH_LIMIT = 256 * 1024; // 单次补丁上限：模型输出就这么多，超了让它拆
+// delete_path 单次删除的两条量级线（都按目录展开后的总条目数算，单次调用口径不做累计）：
+// · AI_DELETE_BULK_WARN = auto 档直删上界 + 审批卡红块阈值。auto 档下「全在工作区、
+//   总条目 ≤ 此值、非风险路径、无脏文件」直接删不弹卡；超过（或枚举截断 ≥400）弹卡
+//   且卡上带红块警告。与 wipeguard 的 WIPEGUARD_DELETE_THRESHOLD（40，窗口内净消失
+//   阈值，ai-wipeguard.js:20）对齐——改这个值先看那边是否也要跟。
+// · AI_DELETE_PATHS_LIMIT = 单次调用显式路径条数上限（超过让模型分批发起）。
+export const AI_DELETE_BULK_WARN = 40;
+export const AI_DELETE_PATHS_LIMIT = 20;
 // run_command 的超时边界：与 Go 侧 aiShellDefaultTimeout / aiShellMaxTimeout
 // （internal/cmdbridge/ai_command_windows.go）同值——那里是强杀的真源，这里是下发前的钳制。
 // 比插件同步命令（120 s）宽松：AI 跑测试 / 构建属正常需求，但长任务该交给 background_command。

@@ -58,5 +58,8 @@ test('code_outline maintain 分支有独立写闸（计划模式/只读档/子�
     assert.match(block, /session\.planMode === true/, '计划模式闸');
     assert.match(block, /AI_WRITE_SCOPES\.includes\(currentScopeOf\(ctx\.session\)\)/, '只读档闸');
     assert.match(block, /parentSessionId.*normalizeWorktreeState/, '无隔离区子代理闸');
-    assert.match(block, /aiResolveScopePath\(input\.path, ctx\.session\)/, '写路径须走作用域解析');
+    // 2026-11-28 写工作区外放行：maintain 与 edit_file / write_file 同源走 resolveWritePath
+    // （捕获越界标记继续走审批管线，auto 档绝不自动应用），不再直接 aiResolveScopePath 硬拒。
+    assert.match(block, /resolveWritePath\(input\.path, ctx\.session\)/, '写路径须走 resolveWritePath（越界弹审批卡）');
+    assert.match(block, /outOfWorkspace = resolved\.outOfWorkspace/, '越界标记必须随 info 传入审批判定');
 });

@@ -443,7 +443,7 @@ test('范围根跟会话：ctx.scopeRootOf 存在时优先于 getScopeRoot（守
         },
     }));
     const {text, turnBlock} = await mod.assembleSystemContext({workspace: 'D:/sess', todos: []}, []);
-    assert.ok(sectionOf(text, 'workspace_rules').includes('范围根：D:/sess（工具路径相对此根）'), '守则首行应取会话根');
+    assert.ok(sectionOf(text, 'workspace_rules').includes('Scope root: D:/sess (tool paths are relative to this root)'), '守则首行应取会话根');
     assert.ok(turnBlock.includes('当前活动文件：src/a.md'));
     assert.ok(turnBlock.includes('已打开文件（本工作区 1 个）：'), '窗口根下的文件归到「其它工作区」');
     assert.ok(turnBlock.includes('其它工作区的已打开文件（1 个目录 / 1 个文件）'));
@@ -451,7 +451,7 @@ test('范围根跟会话：ctx.scopeRootOf 存在时优先于 getScopeRoot（守
     // 若回落到活动文件父目录，注入的范围根会指向别的仓库、与工具实际解析不一致
     // （独立审查 🟡）。空即是空，明确告诉模型「未打开工作区」。
     const fallback = await mod.assembleSystemContext({todos: []}, []);
-    assert.ok(sectionOf(fallback.text, 'workspace_rules').includes('范围根：（未打开工作区）'),
+    assert.ok(sectionOf(fallback.text, 'workspace_rules').includes('Scope root: (no workspace open)'),
         'scopeRootOf 存在时它是唯一权威，返回空不许回落窗口根 / 活动文件目录');
     assert.ok(!sectionOf(fallback.text, 'workspace_rules').includes('D:/window'),
         '未绑定会话不得把窗口根注入进来');
@@ -498,18 +498,22 @@ test('附件块：随环境块注入（skill_manual / file_reference / selection
 test('workspace_rules 按档位给守则，计划模式附加只读约束', async () => {
     const mod = createAISystemContext(makeCtx());
     const read = await mod.assembleSystemContext({todos: []}, []);
-    assert.ok(read.text.includes('只读访问：可列目录、读文件、搜索文本'), 'read 档守则缺失');
+    assert.ok(read.text.includes('Read-only access: you may list directories, read files, search text'), 'read 档守则缺失');
     const mod2 = createAISystemContext(makeCtx({ctx: {currentScopeOf: () => 'full'}}));
     const full = await mod2.assembleSystemContext({todos: []}, []);
-    assert.ok(full.text.includes('完全权限：可读取与修改工作区内外文件'));
+    assert.ok(full.text.includes('Full access: you may read and modify files inside and outside the workspace'));
     const mod3 = createAISystemContext(makeCtx({ctx: {currentScopeOf: () => 'edit'}}));
     const plan = await mod3.assembleSystemContext({todos: [], planMode: true}, []);
-    assert.ok(plan.text.includes('（当前为计划模式：只读探索，见 <plan_mode>）'));
+    assert.ok(plan.text.includes('(currently in plan mode: read-only exploration, see <plan_mode>)'));
     // P1-1：计划模式规则单一来源——workspace_rules 只留指路句，流程细节只在 <plan_mode>
-    assert.ok(plan.text.includes('- 计划模式：只读探索并输出计划；规划流程与提交要求见 <plan_mode>。'));
-    assert.ok(!plan.text.includes('计划完成后用 submit_plan 提交完整计划并停下等待用户批准'));
+    assert.ok(plan.text.includes('- Plan mode: read-only exploration plus a written plan; see <plan_mode> for the process and submission rules.'));
+    assert.ok(!sectionOf(plan.text, 'workspace_rules').includes('submit_plan'), 'workspace_rules 只留指路句，不重复计划流程');
     // P0-1：范围外路径与工具描述同口径（可授权，不是一律禁止）
-    assert.ok(plan.text.includes('范围外路径需授权：read/edit 档逐次批准'), 'workspace_rules 应说明范围外路径可授权');
+    assert.ok(plan.text.includes('Paths outside it need authorization: reads are direct for named paths'), 'workspace_rules 应说明范围外路径可授权');
+    // 2026-11-28 写工作区外放行：写侧口径与读侧分开（一律弹卡，记住的文件免再问）
+    assert.ok(plan.text.includes('Writes outside the workspace always show an approval card first in every non-full tier'), 'workspace_rules 应说明写侧一律弹卡');
+    // 2026-11-28 delete_path 上线：引导模型用删除工具替代 shell 删除（全档生效）
+    assert.ok(plan.text.includes('- Prefer delete_path for deleting files or directories'), 'workspace_rules 应引导删除走 delete_path');
 });
 
 test('P2-4：稳定区 digest 覆盖 toolCatalogText，MCP/插件名单变化不让 warm cache 命中旧目录', async () => {
@@ -537,17 +541,17 @@ test('planModeBlock 输出计划约定块', () => {
     const mod = createAISystemContext(makeCtx());
     const block = mod.planModeBlock();
     assert.ok(block.startsWith('<plan_mode>') && block.endsWith('</plan_mode>'));
-    assert.ok(block.includes('用户必须点「执行计划」才算批准'));
+    assert.ok(block.includes('the user must click 「执行计划」 to approve'));
     // 修订语义：补充意见 = 基于原计划修订，不另起炉灶（继续规划场景的模型行为护栏）
-    assert.ok(block.includes('修订当前计划'));
+    assert.ok(block.includes('revise the current plan'));
     // 纯净文档语义：计划走 submit_plan 参数（正文不承载计划），对话性内容禁入
     assert.ok(block.includes('submit_plan'));
-    assert.ok(block.includes('结尾问句'));
+    assert.ok(block.includes('closing questions'));
     // 澄清语义：意图/方案有歧义时先用 ask_user，疑问不写进计划、也不用普通文本提问
-    assert.ok(block.includes('先用 ask_user 澄清'));
-    assert.ok(block.includes('核对用户意图'));
+    assert.ok(block.includes('clarify with ask_user'));
+    assert.ok(block.includes('check the user\'s intent'));
     // 提交 ≠ 批准：submit_plan 成功不等于用户批准（实测模型会自称「用户已批准」并开始执行）
-    assert.ok(block.includes('提交 ≠ 批准'));
+    assert.ok(block.includes('Submitting is not approval'));
 });
 
 test('worktree 块：会话持活跃 worktree 时注入，ctx 未提供或无 worktree 时不注入', async () => {
@@ -659,8 +663,8 @@ test('范围根只在 workspace_rules 注入一次；aiInjectRoot 关闭时不�
     }));
     const t1 = await on.assembleSystemContext({todos: []}, []);
     const rules = sectionOf(t1.text, 'workspace_rules');
-    assert.ok(rules.includes('范围根：/w（工具路径相对此根）'), 'rules 应含范围根（唯一出处）');
-    assert.ok(!t1.turnBlock.includes('范围根：'), '环境块不应重复范围根');
+    assert.ok(rules.includes('Scope root: /w (tool paths are relative to this root)'), 'rules 应含范围根（唯一出处）');
+    assert.ok(!t1.turnBlock.includes('Scope root:'), '环境块不应重复范围根');
     const off = createAISystemContext(makeCtx({
         settings: {aiInjectRoot: false},
         ctx: {getScopeRoot: () => '/w'},
@@ -750,20 +754,20 @@ test('plan_status：ctx 未提供判定（旧 mock / 缺绑定）→ 整块跳�
 test('auto 档审批语义收敛进 scopeText：防拆单句保留，重复段已删', async () => {
     const mod = createAISystemContext(makeCtx({ctx: {currentScopeOf: () => 'auto'}}));
     const {text} = await mod.assembleSystemContext({todos: []}, []);
-    assert.ok(text.includes('不要把危险操作拆成多条普通命令来规避审批'));
-    assert.equal((text.match(/自动审批档：/g) || []).length, 0, 'workspace_rules 里不应再有第二份完整审批表述');
+    assert.ok(text.includes('Do not split a dangerous operation into innocuous commands to dodge approval'));
+    assert.equal((text.match(/Auto-approve: /g) || []).length, 1, 'workspace_rules 里不应再有第二份完整审批表述');
 });
 
 test('workspace_rules：memory 守则与涉密引导在，env/spawn 重复行已删', async () => {
     const mod = createAISystemContext(makeCtx({ctx: {currentScopeOf: () => 'edit'}}));
     const {text} = await mod.assembleSystemContext({todos: []}, []);
     const rules = sectionOf(text, 'workspace_rules');
-    assert.ok(rules.includes('memory_* 读写跨会话持久记忆'));
-    assert.ok(rules.includes('涉密值（API key、令牌、密码等）'));
+    assert.ok(rules.includes('memory_* read and write cross-session persistent memory'));
+    assert.ok(rules.includes('For secrets (API keys, tokens, passwords)'));
     assert.ok(!rules.includes('env_list 只返回环境变量的名称与描述'));
     assert.ok(!rules.includes('spawn_agent 派出只读子代理'));
     assert.ok(!rules.includes('write_file 用于新建文件或整体覆盖'), '覆盖前必读语义已收敛到工具描述');
-    assert.ok(rules.includes('不要修改 .git 等版本库内部文件'), '.git 红线保留（写档守则）');
+    assert.ok(rules.includes('Never modify version-control internals such as .git'), '.git 红线保留（写档守则）');
 });
 
 // 命令 shell 守则（2026-11-18）：模型习惯在默认 Git Bash 档里拼 powershell -Command，
@@ -774,7 +778,7 @@ test('workspace_rules：指定 shell 的守则（写档有、只读档无）', a
     const rules = sectionOf((await writable.assembleSystemContext({todos: []}, [])).text, 'workspace_rules');
     assert.ok(rules.includes('shell="pwsh"'), '缺少指定 shell 的守则（模型会继续拼 powershell -Command）');
     assert.ok(rules.includes('powershell -Command'), '守则要写出错误用法，否则模型不知道要避免什么');
-    assert.ok(rules.includes('展开成空串'), '守则要给出症状，便于模型自查');
+    assert.ok(rules.includes('become empty strings'), '守则要给出症状，便于模型自查');
 
     const readOnly = createAISystemContext(makeCtx());
     const readRules = sectionOf((await readOnly.assembleSystemContext({todos: []}, [])).text, 'workspace_rules');

@@ -2054,6 +2054,10 @@ const mockBackend = {
         if (!mockFindEntry(key)) throw new Error('文件不存在');
         mockDropPath(key);
     },
+    // AI delete_path 专用（真实后端进系统回收站；mock 内存 FS 直接移除，语义一致）
+    async DeleteEntryRecycle(path) {
+        return this.DeleteEntry(path);
+    },
     async RestoreEntry(path) {
         // mock 后端是内存文件系统，没有系统回收站可还原
         throw new Error('调试模式不支持从回收站还原：' + String(path || ''));

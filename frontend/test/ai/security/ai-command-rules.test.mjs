@@ -13,6 +13,7 @@ import {
     normalizePlanDeclaredCommands,
     splitCommandSegments,
     shellScriptPolicy,
+    deletionHintFor,
     SHELL_VALUES,
 } from '../../../src/ai/security/ai-command-rules.js';
 
@@ -728,4 +729,27 @@ test('红队 V-01 / F-9：分段失败（重定向 / 命令替换）时兜底覆
 test('换行族分段不影响只读判定：多行只读命令仍整体只读，含危险行则否', () => {
     assert.equal(analyzeReadOnlyCommand('ls -la\rgit status').readOnly, true);
     assert.equal(analyzeReadOnlyCommand('ls -la\rrm -rf /tmp/x').readOnly, false);
+});
+
+// 删除类命令的引导提示（delete_path 上线）：纯文案层，不改判定语义。
+// 识别面刻意比危险特征表宽——Remove-Item 漏标形态（红队 V-01/F-9）也要给到引导。
+test('deletionHintFor：删除类命令给引导，其他命令不打扰', () => {
+    const hit = '检测到删除命令';
+    assert.ok(deletionHintFor('rm a.txt').includes(hit));
+    assert.ok(deletionHintFor('rm -rf build/').includes(hit));
+    assert.ok(deletionHintFor('Remove-Item -Recurse dist').includes(hit));
+    assert.ok(deletionHintFor('ri dist').includes(hit));
+    assert.ok(deletionHintFor('del /s *.log').includes(hit));
+    assert.ok(deletionHintFor('rmdir /s build').includes(hit));
+    assert.ok(deletionHintFor('find . -name "*.tmp" -delete').includes(hit));
+    assert.ok(deletionHintFor('git clean -fd').includes(hit));
+    assert.ok(deletionHintFor('rimraf dist && vite build').includes(hit));
+    // 复合命令里的删除段也要认出
+    assert.ok(deletionHintFor('npm run build && rm -rf tmp').includes(hit));
+    // 非删除命令不打扰；词内片段不误中
+    assert.equal(deletionHintFor('git status --short'), '');
+    assert.equal(deletionHintFor('npm run formality'), '');
+    assert.equal(deletionHintFor('node scripts/rimraf-check.js'), '');
+    assert.equal(deletionHintFor(''), '');
+    assert.equal(deletionHintFor(null), '');
 });

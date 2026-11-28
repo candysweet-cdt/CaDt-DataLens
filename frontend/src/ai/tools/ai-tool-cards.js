@@ -441,6 +441,17 @@ export function createAIToolCards(ctx) {
             container.appendChild(warn);
         }
 
+        if (approval.outOfWorkspace) {
+            // 工作区外提示（2026-11-28）：写卡可记住、删除卡不提供记住，文案分开
+            const note = document.createElement('div');
+            note.className = 'ai-approval-more';
+            note.textContent = approval.kind === 'delete'
+                ? '该条目在工作区外；应用数据目录不受此影响，始终拒绝删除。'
+                : '该文件在工作区外。批准仅对这一个文件生效' +
+                    '（可勾选记住，免下次再问）；应用数据目录始终拒绝写入。';
+            container.appendChild(note);
+        }
+
         if (approval.diff && approval.diff.length) {
             renderDiffInto(container, approval);
             if (approval.truncated) {
@@ -484,16 +495,18 @@ export function createAIToolCards(ctx) {
         } else {
             const result = document.createElement('div');
             result.className = 'ai-approval-result ' + approval.state;
-            // 读类审批（read_file / 列目录 / 搜索起点）没有「更改」可应用，文案按读取措辞
+            // 读类审批（read_file / 列目录 / 搜索起点）没有「更改」可应用，文案按读取措辞；
+            // 删除审批按回收站措辞（2026-11-28 delete_path）
             const readKind = approval.kind === 'read';
+            const deleteKind = approval.kind === 'delete';
             result.textContent = approval.state === 'approved'
                 ? (toolIsLive(message)
-                    ? (readKind ? '正在读取…' : '正在应用更改…')
-                    : (readKind ? '已授权读取' : '已应用更改') + approvalTraceNote(approval))
+                    ? (readKind ? '正在读取…' : (deleteKind ? '正在删除…' : '正在应用更改…'))
+                    : (readKind ? '已授权读取' : (deleteKind ? '已移入回收站' : '已应用更改')) + approvalTraceNote(approval))
                 : approval.state === 'denied'
-                    ? (readKind ? '已拒绝，未读取' : '已放弃，文件未修改')
+                    ? (readKind ? '已拒绝，未读取' : (deleteKind ? '已取消，未删除' : '已放弃，文件未修改'))
                     : (approval.state === 'failed'
-                        ? ('应用失败：' + (approval.error || '写入文件失败'))
+                        ? ((deleteKind ? '删除失败：' : '应用失败：') + (approval.error || (deleteKind ? '删除条目失败' : '写入文件失败')))
                         : '审批已取消');
             container.appendChild(result);
             if (message.content) {
@@ -654,6 +667,7 @@ export function createAIToolCards(ctx) {
             case 'transcribe_audio': return {verb: '语音识别', icon: 'microphone'};
             case 'write_file': return {verb: (approval && approval.newFile) ? '新建' : '写入', icon: 'save'};
             case 'edit_file': return {verb: '编辑', icon: 'rename'};
+            case 'delete_path': return {verb: '删除', icon: 'trash'};
             case 'propose_patch': return {verb: '补丁', icon: 'save'};
             case 'worktree_manage': return {verb: '隔离工作区', icon: 'folder'};
             case 'run_command': return {verb: '终端', icon: 'terminal'};
@@ -1132,12 +1146,20 @@ export function createAIToolCards(ctx) {
         const body = document.createElement('div');
         body.className = 'ai-tool-body';
         if (message.name === 'spawn_agent' && message.agent) {
-            // 子代理卡片：任务 + 轮次用时 + 实时转录（内存态）/ 最终摘要
+            // 子代理卡片：能力面 + 任务 + 轮次用时 + 实时转录（内存态）/ 最终摘要
             const agent = message.agent;
             const task = document.createElement('div');
             task.className = 'ai-agent-task';
             task.textContent = agent.task || '';
             body.appendChild(task);
+            // 能力面一行（能力快照方案 §12.1 回执的 UI 化）：preset + 沙箱档派出时定死，
+            // 直接印在卡片上——派单回执原文只回给模型，人看卡片这一行就够了
+            const capability = document.createElement('div');
+            capability.className = 'ai-agent-meta';
+            const modeText = agent.sandboxMode === 'workspace-write' ? '可写'
+                : (agent.sandboxMode === 'danger-full-access' ? '完全权限' : '只读');
+            capability.textContent = '能力 ' + (agent.preset || 'host.default') + ' · ' + modeText;
+            body.appendChild(capability);
             // 后台派单：结束时机独立于主回合，卡片上明确「不阻塞、完成才通知」
             if (agent.state === 'running' && agent.mode === 'background') {
                 const tip = document.createElement('div');

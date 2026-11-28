@@ -5,10 +5,11 @@
 // approvalTakeoverKey/Collapsed、dismissedPlanApproval、stickBottom 经访问器读写（核心域他处亦写）。
 import {iconSvg} from '../../core/icons.js';
 import {createSwitch} from '../../core/form-controls.js';
-import {AI_WRITE_SCOPES} from '../core/ai-constants.js';
+import {humanSizeBytes} from '../tools/ai-file-tools.js';
+import {AI_WRITE_SCOPES, AI_DELETE_BULK_WARN} from '../core/ai-constants.js';
 import {createSessionBusyProbe} from '../session/ai-session-scope.js';
 import {isWebApproval} from '../security/ai-permissions.js';
-import {collectCommandFamilies, commandFamilySignature, mergePlanGrantItems} from '../security/ai-command-rules.js';
+import {collectCommandFamilies, commandFamilySignature, mergePlanGrantItems, deletionHintFor} from '../security/ai-command-rules.js';
 import {planDigest, planPreviewSlice, PLAN_PREVIEW_CHARS} from '../core/ai-plan-file.js';
 import {worktreeRelPath, worktreeStatNode} from '../tools/ai-worktree.js';
 import {createAIAskCards} from './ai-ask-cards.js';
@@ -193,6 +194,7 @@ export function createAITakeover(ctx) {
         const approval = entry.approval;
         const isCommand = approval.kind === 'command';
         const isRead = approval.kind === 'read';
+        const isDelete = approval.kind === 'delete';
         const commandFamily = isCommand ? commandFamilySignature(approval.command) : null;
         const takeoverKey = 'approval:' + (toolMessage.toolCallId || '');
         el.takeover.dataset.takeoverKey = takeoverKey;
@@ -213,10 +215,10 @@ export function createAITakeover(ctx) {
             barText.className = 'ai-takeover-bar-text';
             barText.textContent = isCommand
                 ? '命令待审批'
-                : (isRead ? '读取待审批 · ' : '更改待审批 · ') + (approval.relPath || approval.path || '');
+                : (isRead ? '读取待审批 · ' : (isDelete ? '删除待审批 · ' : '更改待审批 · ')) + (approval.relPath || approval.path || '');
             const barStat = document.createElement('span');
             barStat.className = 'ai-approval-stat';
-            if (!isCommand && !isRead) {
+            if (!isCommand && !isRead && !isDelete) {
                 const add = document.createElement('span');
                 add.className = 'add';
                 add.textContent = '+' + (approval.added || 0);
@@ -260,7 +262,7 @@ export function createAITakeover(ctx) {
             path.className = 'ai-takeover-path';
             path.textContent = approval.relPath || approval.path || '';
             head.appendChild(path);
-            if (!isRead) {
+            if (!isRead && !isDelete) {
                 const stat = document.createElement('span');
                 stat.className = 'ai-approval-stat';
                 const add = document.createElement('span');
@@ -317,7 +319,7 @@ export function createAITakeover(ctx) {
             } else {
                 const note = document.createElement('div');
                 note.className = 'ai-approval-more';
-                note.textContent = isWebApproval(approval)
+                const noteText = isWebApproval(approval)
                     ? '将向该地址发起网络请求；域名规则可在 .cadt/permissions.json 的 Web(...) 中预先配置。'
                     : (approval.danger || approval.singleUse
                         ? '命令将在工作目录中执行；危险命令不提供「本会话 / 本项目允许」。'
@@ -328,6 +330,8 @@ export function createAITakeover(ctx) {
                             : (commandFamily
                                 ? '命令将在工作目录中执行；同类命令授权可保存到本会话或本项目，且不含管道、重定向或命令串联。'
                                 : '命令将在工作目录中执行；授权仅本次对话。')));
+                // 删除类命令追加工具引导（不改判定，deletionHintFor 只是文案）
+                note.textContent = noteText + deletionHintFor(approval.command);
                 body.appendChild(note);
             }
         } else if (isRead) {
@@ -344,7 +348,65 @@ export function createAITakeover(ctx) {
                 : '该文件在工作区外。批准目录后，该目录下的文件可免询问读取' +
                     '（也可不勾选，仅本次放行）；应用数据目录不受此影响，始终拒绝读取。';
             body.appendChild(note);
+        } else if (isDelete) {
+            // 删除审批：无 diff。逐条清单（多条全列，上限 AI_DELETE_PATHS_LIMIT 可控）+
+            // 影响面 + 回收站说明；展开总量超 AI_DELETE_BULK_WARN 或枚举截断时加红块警告
+            // （对齐危险命令卡的 ai-approval-danger）。兼容旧会话恢复的单条 approval 形态。
+            const deleteScale = (impact) => {
+                if (!impact) return '条目';
+                if (impact.isDir) {
+                    return impact.truncated
+                        ? '目录 · 超过 ' + (impact.entries || 400) + ' 项（枚举已截断，忽略目录不计入）'
+                        : '目录 · ' + (impact.entries || 0) + ' 项（忽略目录不计入）';
+                }
+                return impact.size ? '文件 · ' + humanSizeBytes(impact.size) : '文件';
+            };
+            const list = Array.isArray(approval.entries) && approval.entries.length ? approval.entries : null;
+            if (list && list.length > 1) {
+                for (const item of list) {
+                    const row = document.createElement('div');
+                    row.className = 'ai-approval-more';
+                    row.textContent = '· ' + item.relPath + '（' + deleteScale(item.impact) + '）';
+                    body.appendChild(row);
+                }
+            } else {
+                const line = document.createElement('pre');
+                line.className = 'ai-command-line ai-command-line-fill';
+                line.textContent = approval.path || '';
+                body.appendChild(line);
+                const meta = document.createElement('div');
+                meta.className = 'ai-approval-more';
+                meta.textContent = '删除目标：' + deleteScale(list && list[0] ? list[0].impact : approval.impact) + '。';
+                body.appendChild(meta);
+            }
+            const summary = document.createElement('div');
+            summary.className = 'ai-approval-more';
+            summary.textContent = '将全部移入系统回收站，可在回收站还原；批准仅对本次生效（删除不提供记住）。';
+            body.appendChild(summary);
+            const summaryImpact = approval.impact || {};
+            if ((summaryImpact.totalEntries || 0) > AI_DELETE_BULK_WARN || !!summaryImpact.anyTruncated) {
+                const bulk = document.createElement('div');
+                bulk.className = 'ai-approval-danger';
+                bulk.textContent = '批量删除：本次展开超过 ' + AI_DELETE_BULK_WARN + ' 个条目' +
+                    (summaryImpact.anyTruncated ? '（枚举已截断，实际可能更多）' : '') + '，请确认影响范围。';
+                body.appendChild(bulk);
+            }
+            if (approval.outOfWorkspace) {
+                const note = document.createElement('div');
+                note.className = 'ai-approval-more';
+                note.textContent = '清单中有条目在工作区外；应用数据目录不受此影响，始终拒绝删除。';
+                body.appendChild(note);
+            }
         } else if (approval.diff && approval.diff.length) {
+            if (approval.outOfWorkspace) {
+                // 写审批的工作区外提示（2026-11-28 写工具放行越界路径）：diff 上方一句话
+                // 说清批准范围——记住只对这一个文件生效，不像读授权那样记目录树。
+                const note = document.createElement('div');
+                note.className = 'ai-approval-more';
+                note.textContent = '该文件在工作区外。批准仅对这一个文件生效' +
+                    '（可勾选记住，免下次再问）；应用数据目录始终拒绝写入。';
+                body.appendChild(note);
+            }
             renderDiffInto(body, approval);
             if (approval.truncated) {
                 const more = document.createElement('div');
@@ -368,8 +430,9 @@ export function createAITakeover(ctx) {
         let familyBox = null;
         let projectFamilyBox = null;
         let projectFileBox = null;
-        if (!isCommand) {
+        if (!isCommand && !isDelete) {
             // 写审批记「此文件」（精确路径），读审批记「此目录」（父目录树）——复用同一组勾选框。
+            // 删除不提供记住（授权写 ≠ 授权删）：勾选框整段跳过，decideApproval 的 delete 分支兜底。
             const noun = isRead ? '此目录' : '此文件';
             const sessionLabel = document.createElement('label');
             sessionBox = document.createElement('input');

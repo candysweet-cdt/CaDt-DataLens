@@ -69,6 +69,7 @@ import {
 } from './tools/ai-browser-tools.js';
 import {formatTerminalList, formatTerminalRead, formatWaitDuration, friendlyRetryReason, terminalSendLabel} from './tools/ai-terminal-tools.js';
 import {
+    collectDeleteTargets,
     globMatchPath,
     humanSizeBytes,
     locateEditTarget,
@@ -112,6 +113,7 @@ import {arrayBufferToBase64, isDirectAsrPath, transcodeAudioToWav16k} from './to
 import {
     addReadRoot,
     hardReadDenyReason,
+    hardWriteDenyReason,
     isArtifactPath,
     normalizeReadRoot,
     normalizeReadRoots,
@@ -231,6 +233,8 @@ import {
     AI_LEGACY_SESSION_LIMIT,
     AI_WRITE_LIMIT,
     AI_PATCH_LIMIT,
+    AI_DELETE_BULK_WARN,
+    AI_DELETE_PATHS_LIMIT,
     AI_SHELL_TIMEOUT_DEFAULT_MS,
     AI_SHELL_TIMEOUT_MAX_MS,
     AI_FAILURE_NOTICE_COOLDOWN_MS,
@@ -2835,6 +2839,10 @@ export function createAIPanel(options) {
                     // 正文补上后必须叫它们重画（面板自己的重绘是下一行，两边互不重复——
                     // notifySideChatHosts 只遍历支线宿主，面板不登记在表里）。
                     notifySideChatHosts(session.id);
+                    // 子代理运行态快照的恢复不只在启动 hydrate 窗口（2026-11-28 实机验证 P6）：
+                    // 懒加载会话（点开才补正文）此前永远不重建可续记录。restoreAgentRuns 幂等
+                    // （已登记的 id 跳过），重复调用安全。
+                    try { subagentsMod.restoreAgentRuns(session); } catch (e) {}
                     if (isOpen() && currentSession() === session) {
                         renderMessages(true);
                         updateComposerState();
@@ -7566,13 +7574,34 @@ export function createAIPanel(options) {
         const path = absolute ? aiNormalizePath(rel) : aiNormalizePath(aiJoinPath(root, rel));
         if (!aiPathInside(root, path)) {
             // 读工具（read_file/list_dir）捕获该标记走授权链 resolveReadPathWithApproval
-            // （点名直读 / 已批准读根 / 按档审批）；写工具不捕获，行为与文案保持不变。
+            // （点名直读 / 已批准读根 / 按档审批）；写工具经 resolveWritePath 捕获后继续
+            // 走既有 diff 审批管线（2026-11-28 起工作区外写入弹卡，不再硬拒）。
             const err = new Error('路径超出工作区范围：' + rel);
             err.outOfWorkspace = true;
             err.absPath = path;
             throw err;
         }
         return path;
+    }
+
+    // 写工具（write_file / edit_file / code_outline maintain）的路径解析：工作区内直接
+    // 返回；工作区外捕获越界标记继续走管线——applyWorkspaceWrite 里非 full 档一律弹
+    // diff 审批卡（decidePermission 的 outOfWorkspace 输入），auto 档绝不自动应用。
+    // 写侧不做读侧的「点名直写」：用户在对话里提过路径 ≠ 授权写入。
+    // 应用数据目录硬拒先于一切档位判定（full 档同样适用，对齐读侧 hardReadDenyReason）。
+    async function resolveWritePath(inputPath, session) {
+        let abs = '';
+        let outOfWorkspace = false;
+        try {
+            abs = aiResolveScopePath(inputPath, session);
+        } catch (e) {
+            if (!e || !e.outOfWorkspace) throw e;
+            abs = e.absPath;
+            outOfWorkspace = true;
+        }
+        const denyReason = hardWriteDenyReason(abs, await getAIAppDir());
+        if (denyReason) throw new Error(denyReason);
+        return {path: abs, outOfWorkspace};
     }
 
     // 命令 cwd 解析（run_command / background_command 共用）：会话持有隔离区且未显式传
@@ -8395,7 +8424,7 @@ export function createAIPanel(options) {
             if (full.toLowerCase().startsWith(base.toLowerCase() + '/')) return full.slice(base.length + 1);
         }
         const parts = full.split('/').filter(Boolean);
-        return parts.length ? '（范围外）' + parts[parts.length - 1] : '（范围外）';
+        return parts.length ? '(outside scope)' + parts[parts.length - 1] : '(outside scope)';
     }
 
     // 成段文本给模型看的口径：非完全权限档下把工具报错里的真实绝对路径收敛掉
@@ -8407,7 +8436,7 @@ export function createAIPanel(options) {
 
     function aiDisplayRootLabel(root) {
         const parts = aiNormalizePath(root).replace(/\/+$/, '').split('/').filter(Boolean);
-        return parts.length ? parts[parts.length - 1] : '（未打开工作区）';
+        return parts.length ? parts[parts.length - 1] : '(no workspace open)';
     }
 
     const permissionAudit = [];
@@ -8636,10 +8665,72 @@ async function requestApproval(session, toolMessage, info) {
             dirty: isFileDirty(info.path),
             truncated: info.truncated,
             diff: info.diff,
+            outOfWorkspace: !!info.outOfWorkspace,
             remember: '',
         };
         return registerPendingApproval(session, toolMessage, approval,
             (session.title || '会话') + ' · ' + (info.relPath || info.tool || '操作') + ' 需要你确认');
+    }
+
+    // 删除清单的单条解析（case delete_path 用，异常由调用方整单捕获）：路径解析 →
+    // 存在性 + 影响面（文件大小 / 目录条目数，照 list_dir 目录树口径）→ 删除前快照
+    // （仅文件：Go 侧 Backup 自读 absPath，content 传空即可拿到真实内容——删错的文件
+    // 除了回收站还有 wipeguard 一层；目录靠回收站与 L3 兜底）。
+    async function resolveDeleteEntry(raw, session) {
+        const resolved = await resolveWritePath(raw, session);
+        const relPath = aiRelPath(sessionScopeRoot(session), resolved.path);
+        assertNotCognitionPath(relPath);
+        let stat;
+        try {
+            stat = await backend.GetPathInfo(resolved.path);
+        } catch (e) {
+            throw new Error('路径不存在或不可访问，请先用 read_file / glob 确认清单里的每一条路径');
+        }
+        const impact = {isDir: !!stat.isDir, entries: 0, truncated: false, size: stat.isDir ? 0 : (stat.size || 0)};
+        if (impact.isDir) {
+            const tree = await backend.ReadDirTree(resolved.path, 8);
+            impact.entries = (tree && tree.total) || 0;
+            impact.truncated = !!(tree && tree.truncated);
+        }
+        if (wipeguardRef() && !impact.isDir) {
+            await wipeguardRef().backupWrite({
+                sessionId: session.id,
+                tool: 'delete_path',
+                ws: sessionScopeRoot(session),
+                relPath,
+                absPath: resolved.path,
+                content: '',
+                existed: true,
+            });
+        }
+        return {
+            path: resolved.path,
+            relPath,
+            impact,
+            outOfWorkspace: resolved.outOfWorkspace,
+            riskyPath: isAutoWriteRisky(resolved.path, session),
+            dirty: isFileDirty(resolved.path),
+        };
+    }
+
+    // 删除审批（delete_path）：无 diff、无「记住」——卡上是逐条清单 + 影响面汇总 +
+    // 回收站说明。relPath 多条时取「共 N 个条目」（卡头 / 收起条 / 审计 subject 消费）。
+    async function requestDeleteApproval(session, toolMessage, info) {
+        const entries = info.entries || [];
+        const single = entries.length === 1 ? entries[0] : null;
+        const approval = {
+            state: 'pending',
+            kind: 'delete',
+            tool: info.tool || 'delete_path',
+            path: single ? single.path : '',
+            relPath: single ? single.relPath : '共 ' + entries.length + ' 个条目',
+            outOfWorkspace: entries.some((e) => e.outOfWorkspace),
+            impact: {totalEntries: info.totalEntries || 0, anyTruncated: !!info.anyTruncated, entriesCount: entries.length},
+            entries: entries.map((e) => ({relPath: e.relPath, impact: e.impact})),
+            remember: '',
+        };
+        return registerPendingApproval(session, toolMessage, approval,
+            (session.title || '会话') + ' · 删除 ' + approval.relPath + '，需要你确认');
     }
 
     // ---- 后台命令（background_command）----
@@ -9373,6 +9464,9 @@ async function requestApproval(session, toolMessage, info) {
                 persistSessions();
                 approval.remember = 'session';
             }
+        } else if (approval.kind === 'delete') {
+            // 删除不提供「记住」：授权写 ≠ 授权删，破坏性最高的操作每次必问（full 档不弹卡）。
+            approval.remember = '';
         } else if (approved && remember === 'always') {
             aiAddUnique(config.approvedPaths, approval.path);
             saveAIConfig();
@@ -9396,29 +9490,33 @@ async function requestApproval(session, toolMessage, info) {
                     ? (approved ? '用户已授权，正在读取…' : '用户未授权本次读取')
                     : approval.kind === 'action'
                         ? (approved ? '用户已批准，正在执行…' : '用户拒绝了本次操作')
-                        : approval.kind === 'worktree'
-                        ? (approved
-                            ? (approval.action === 'discard' ? '正在丢弃隔离工作区…' : '正在创建隔离工作区…')
-                            : '用户取消了隔离工作区操作')
-                        : approval.kind === 'orchestration'
-                            ? (approval.continue
-                                ? '已继续编排计划，等待你的修改意见'
-                                : (approved
-                                    ? (approval.mode === 'control'
-                                        ? '已批准编排控制，正在执行…'
-                                        : '已批准编排计划，正在创建…')
-                                    : (approval.mode === 'control' ? '用户取消了编排控制' : '用户取消了编排计划')))
-                            : (approved ? '正在应用更改…' : '用户放弃了本次更改');
+                        : approval.kind === 'delete'
+                            ? (approved ? '正在删除…' : '用户取消了本次删除')
+                            : approval.kind === 'worktree'
+                                ? (approved
+                                    ? (approval.action === 'discard' ? '正在丢弃隔离工作区…' : '正在创建隔离工作区…')
+                                    : '用户取消了隔离工作区操作')
+                                : approval.kind === 'orchestration'
+                                    ? (approval.continue
+                                        ? '已继续编排计划，等待你的修改意见'
+                                        : (approved
+                                            ? (approval.mode === 'control'
+                                                ? '已批准编排控制，正在执行…'
+                                                : '已批准编排计划，正在创建…')
+                                            : (approval.mode === 'control' ? '用户取消了编排控制' : '用户取消了编排计划')))
+                                    : (approved ? '正在应用更改…' : '用户放弃了本次更改');
         // 用户裁定也进审批记录：来源标 user，避免只看到「待审批」看不到结果。
         const auditKind = approval.kind === 'command'
             ? (isWebApproval(approval) ? 'web' : 'command')
             : (approval.kind === 'read'
                 ? 'read'
-                : (approval.kind === 'worktree'
-                    ? 'worktree'
-                    : (approval.kind === 'action'
-                        ? 'action'
-                        : (approval.kind === 'orchestration' ? 'orchestration' : 'write'))));
+                : (approval.kind === 'delete'
+                    ? 'delete'
+                    : (approval.kind === 'worktree'
+                        ? 'worktree'
+                        : (approval.kind === 'action'
+                            ? 'action'
+                            : (approval.kind === 'orchestration' ? 'orchestration' : 'write')))));
         const auditSubject = approval.kind === 'command'
             ? (isWebApproval(approval)
                 ? (webRuleSubject(approval.command) || approval.command)
@@ -10010,6 +10108,9 @@ async function requestApproval(session, toolMessage, info) {
                 subject: rel,
                 sessionAllow: isPathApproved(session, info.path),
                 risky,
+                // 工作区外写入（resolveWritePath 捕获越界标记后继续走管线）：auto 档绝不
+                // 自动应用，非 full 档一律转人工——判定在 decidePermission write 分支。
+                outOfWorkspace: info.outOfWorkspace === true,
             });
         }
         logPermission('write', rel, decision.decision, decision.source, decision.rule);
@@ -10122,6 +10223,158 @@ async function requestApproval(session, toolMessage, info) {
         recordChange(session, info);
         notifyFileChanged(info.path);
         return '已应用更改：' + info.relPath + '（+' + info.added + ' −' + info.removed + '）';
+    }
+
+    // 删除的统一闸门与执行（delete_path 专用，2026-11-28）。与 applyWorkspaceWrite 平行但更严：
+    // 无「记住」通道（decidePermission 不传 sessionAllow——授权写 ≠ 授权删）、子代理确定性拒绝。
+    // 整单一张卡：任一条命中项目 deny 整单拒绝；非 full 档整单弹卡（auto 档风险合成全干净时
+    // 直接删，口径与 write 的 risky 对齐——全在工作区 + 展开总条目 ≤ AI_DELETE_BULK_WARN +
+    // 非风险路径 + 无脏文件）。批准后逐条 DeleteEntryRecycle（一律进系统回收站，绝不退化成
+    // 不可恢复直删），单条失败不中断其余、结果里汇总。
+    async function applyDelete(session, toolMessage, info) {
+        const scope = currentScopeOf(session);
+        const entries = info.entries || [];
+        const rules = await ensureProjectRules(false);
+        const totalEntries = entries.reduce((sum, e) => sum + (e.impact && e.impact.isDir ? e.impact.entries : 1), 0);
+        const anyTruncated = entries.some((e) => e.impact && e.impact.truncated);
+        const root = sessionScopeRoot(session);
+        const summaryRel = entries.length === 1 ? entries[0].relPath : '共 ' + entries.length + ' 个条目';
+        if (toolHalted(toolMessage)) {
+            toolMessage.status = 'error';
+            toolMessage.content = '用户已停止生成，删除已取消。';
+            refreshToolWrap(session, toolMessage);
+            return '用户已停止生成，删除已取消。';
+        }
+        // 隔离区开启期间主根只读：逐条判，任一 deny 整单拒（范围外盘符路径的豁免与写侧一致）
+        const ownWorktree = (!session.parentSessionId && !info.appInitiated)
+            ? normalizeWorktreeState(session.worktree)
+            : null;
+        if (ownWorktree) {
+            for (const entry of entries) {
+                const verdict = mainRootWriteVerdict(ownWorktree, aiRelPath(root, entry.path));
+                if (verdict.verdict === 'deny') {
+                    logPermission('delete', entry.relPath, 'deny', 'worktree-isolation', '');
+                    toolMessage.status = 'done';
+                    toolMessage.activityStatus = 'denied';
+                    toolMessage.content = '隔离工作区开启期间主根只读';
+                    refreshToolWrap(session, toolMessage);
+                    return verdict.message;
+                }
+            }
+        }
+        // 子代理没有审批通道：删除一律确定性拒绝（工具面不下发，幻觉调用在这里兜住）
+        if (session.parentSessionId) {
+            logPermission('delete', summaryRel, 'deny', 'agent-caps', '');
+            toolMessage.status = 'done';
+            toolMessage.activityStatus = 'denied';
+            toolMessage.content = '子代理没有删除权限';
+            refreshToolWrap(session, toolMessage);
+            return '删除被拒绝：子代理没有审批通道，不能删除文件。请在最终结论中说明需要删除的路径，由主代理发起删除。';
+        }
+        // auto 档直删的风险合成（与 write 的 risky 同源口径）：工作区外 / 风险路径 / 脏文件 /
+        // 展开超量级，任一命中整单转人工。
+        const risky = entries.some((e) => e.riskyPath || e.dirty || e.outOfWorkspace) ||
+            totalEntries > AI_DELETE_BULK_WARN || anyTruncated;
+        // 逐条判定：任一 deny 整单拒；ask 与 allow 混合时整单弹卡（批准覆盖整单）
+        const decisions = entries.map((entry) => {
+            const decision = decidePermission({
+                scope,
+                kind: 'delete',
+                rules,
+                subject: writeRuleSubject(aiRelPath(root, entry.path)),
+                risky,
+            });
+            logPermission('delete', entry.relPath, decision.decision, decision.source, decision.rule);
+            return decision;
+        });
+        const deniedIndex = decisions.findIndex((d) => d.decision === 'deny');
+        if (deniedIndex >= 0) {
+            const deniedEntry = entries[deniedIndex];
+            toolMessage.approval = {
+                state: 'denied',
+                kind: 'delete',
+                tool: info.tool,
+                relPath: summaryRel,
+                impact: {totalEntries, anyTruncated, entriesCount: entries.length},
+                entries: entries.map((e) => ({relPath: e.relPath, impact: e.impact})),
+                denyRule: decisions[deniedIndex].rule,
+            };
+            toolMessage.status = 'done';
+            toolMessage.content = '项目权限规则禁止删除该条目';
+            persistApprovalMutation(session, toolMessage);
+            refreshToolWrap(session, toolMessage);
+            return '项目权限规则禁止删除：' + deniedEntry.relPath + '（规则 ' + decisions[deniedIndex].rule +
+                '），整单未执行。请从清单中移除该条目后重新发起。';
+        }
+        if (decisions.some((d) => d.decision === 'ask')) {
+            const answer = await requestDeleteApproval(session, toolMessage, {
+                tool: info.tool, entries, totalEntries, anyTruncated,
+            });
+            if (!answer.approved) {
+                return answer.cancelled
+                    ? '用户已停止生成，删除已取消。'
+                    : '用户取消了本次删除，条目未动。';
+            }
+        } else if (!toolMessage.approval) {
+            // 直删路径（auto 干净清单 / full / 项目 allow 规则）：补审批留痕（卡片显示回收站态）
+            toolMessage.approval = {
+                state: 'approved',
+                kind: 'delete',
+                tool: info.tool,
+                relPath: summaryRel,
+                impact: {totalEntries, anyTruncated, entriesCount: entries.length},
+                entries: entries.map((e) => ({relPath: e.relPath, impact: e.impact})),
+                remember: 'auto',
+                actor: 'auto',
+            };
+            persistApprovalMutation(session, toolMessage);
+            refreshToolWrap(session, toolMessage);
+        }
+        // 编排 owns 闸与写同源（fail-closed）：逐条判，任一拒绝整单停（已完成条目保留）
+        if (orchestration && typeof orchestration.authorizeWrite === 'function') {
+            for (const entry of entries) {
+                const verdict = await orchestration.authorizeWrite(session, entry.path);
+                if (verdict && verdict.allowed === false) {
+                    toolMessage.status = 'done';
+                    toolMessage.activityStatus = 'denied';
+                    toolMessage.content = '编排写闸拒绝';
+                    refreshToolWrap(session, toolMessage);
+                    return (verdict.message || '路径不在本批 owns 内，删除被拒绝') + '（条目 ' + entry.relPath + '，整单未执行）';
+                }
+            }
+        }
+        if (typeof backend.DeleteEntryRecycle !== 'function') {
+            throw new Error('当前版本不支持回收站删除（请重新构建或更新应用）');
+        }
+        // 执行：逐条独立，单条失败不中断其余（回收站语义下安全），结果里汇总
+        const failures = [];
+        for (const entry of entries) {
+            try {
+                await backend.DeleteEntryRecycle(entry.path);
+                notifyFileChanged(entry.path);
+            } catch (e) {
+                failures.push(entry.relPath + '：' + String((e && e.message) || e));
+            }
+        }
+        if (failures.length === entries.length) {
+            if (toolMessage.approval) {
+                toolMessage.approval.state = 'failed';
+                toolMessage.approval.error = failures.join('；');
+                persistApprovalMutation(session, toolMessage);
+            }
+            throw new Error('删除全部失败：' + failures.join('；'));
+        }
+        const okCount = entries.length - failures.length;
+        if (entries.length === 1) {
+            const impact = entries[0].impact || {};
+            const scaleText = impact.isDir
+                ? '（目录，' + (impact.truncated ? '超过 ' + impact.entries + ' 项' : impact.entries + ' 项') + '）'
+                : (impact.size ? '（' + humanSizeBytes(impact.size) + '）' : '');
+            return '已移入系统回收站：' + entries[0].relPath + scaleText + '。可在系统回收站还原。';
+        }
+        let message = '已移入系统回收站 ' + okCount + ' 个条目（清单共 ' + entries.length + ' 条）。可在系统回收站还原。';
+        if (failures.length) message += '失败 ' + failures.length + ' 条：' + failures.join('；');
+        return message;
     }
 
     function webToolLimit(value, min, max, fallback) {
@@ -10927,8 +11180,8 @@ async function requestApproval(session, toolMessage, info) {
     // 「先 plan_mode(true) 再写」或幻觉调用都会走到 executeTool。工作区写 / 命令执行 / 有副作用
     // 的界面或浏览器动作在这里直接拒绝（propose_patch 例外：计划模式已自动降级为 dry_run 预检；
     // memory_* / preference_* 等会话态工具不受限）。
-    const PLAN_MODE_DENIED_TOOLS = new Set([
-        'write_file', 'edit_file', 'run_command', 'background_command',
+const PLAN_MODE_DENIED_TOOLS = new Set([
+    'write_file', 'edit_file', 'delete_path', 'run_command', 'background_command',
         'generate_image', 'generate_video', 'worktree_manage', 'terminal',
         'browser_click', 'browser_type', 'browser_press_key', 'browser_evaluate',
         // 任务清单属于执行阶段：计划未批准就建 todo 会让模型误以为已进入执行（实测
@@ -11121,9 +11374,11 @@ async function requestApproval(session, toolMessage, info) {
                 // maintain 是写操作，必须与 edit_file 同源走 aiResolveScopePath（非 full 档拒绝越界），
                 // 否则 auto 档会用读授权放行工作区外路径、零审批写入（见 S4）。
                 let path;
+                let outOfWorkspace = false;
                 if (action === 'maintain') {
                     if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('维护大纲缺少会话上下文');
-                    // 写闸四件套：计划模式零副作用 / 只读档无写权 / 无隔离区子代理只读 / 路径不越界。
+                    // 写闸四件套：计划模式零副作用 / 只读档无写权 / 无隔离区子代理只读 /
+                    // 路径不越界（越界不再硬拒：resolveWritePath 捕获后走 diff 审批卡）。
                     if (ctx.session.planMode === true) throw new Error('计划模式下不能写入文件，请先退出计划模式');
                     if (!AI_WRITE_SCOPES.includes(currentScopeOf(ctx.session))) {
                         throw new Error('维护大纲需要写权限：请把底部权限切到「每次询问」或更高');
@@ -11131,7 +11386,9 @@ async function requestApproval(session, toolMessage, info) {
                     if (ctx.session.parentSessionId && !normalizeWorktreeState(ctx.session.worktree)) {
                         throw new Error('子代理没有隔离区，不能写入主工作区文件');
                     }
-                    path = aiResolveScopePath(input.path, ctx.session);
+                    const resolved = await resolveWritePath(input.path, ctx.session);
+                    path = resolved.path;
+                    outOfWorkspace = resolved.outOfWorkspace;
                 } else {
                     const resolved = await resolveReadPathWithApproval(ctx, 'code_outline', input.path);
                     if (!resolved.ok) return resolved.message;
@@ -11177,13 +11434,14 @@ async function requestApproval(session, toolMessage, info) {
                     await wipeguardRef().backupWrite({
                         sessionId: ctx.session.id, tool: 'code_outline',
                         ws: sessionScopeRoot(ctx.session), relPath, absPath: path, content: read.text,
+                        existed: true,
                     });
                 }
                 const ops = computeLineDiff(read.text, next);
                 const stats = diffStats(ops);
                 const preview = buildDiffPreview(ops);
                 const msg = await applyWorkspaceWrite(ctx.session, ctx.toolMessage, {
-                    tool: 'code_outline', path, relPath, content: next,
+                    tool: 'code_outline', path, relPath, outOfWorkspace, content: next,
                     eol: read.data.eol, hasBom: !!read.data.hasBom, enc: read.data.enc,
                     expectMtime: (read.data && read.data.mtime) || '', newFile: false,
                     added: stats.added, removed: stats.removed,
@@ -12612,7 +12870,9 @@ async function requestApproval(session, toolMessage, info) {
             }
             case 'write_file': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');
-                const path = aiResolveScopePath(input.path, ctx.session);
+                const resolved = await resolveWritePath(input.path, ctx.session);
+                const path = resolved.path;
+                const outOfWorkspace = resolved.outOfWorkspace;
                 const relPath = aiRelPath(sessionScopeRoot(ctx.session), path);
                 assertNotCognitionPath(relPath);
                 const content = aiTextOf(input.content);
@@ -12640,6 +12900,7 @@ async function requestApproval(session, toolMessage, info) {
                         relPath,
                         absPath: path,
                         content: oldText,
+                        existed: true,
                     });
                 }
                 const ops = computeLineDiff(oldText, content);
@@ -12649,6 +12910,7 @@ async function requestApproval(session, toolMessage, info) {
                     tool: 'write_file',
                     path,
                     relPath,
+                    outOfWorkspace,
                     content,
                     eol: existing.exists ? existing.data.eol : '',
                     hasBom: existing.exists ? !!existing.data.hasBom : false,
@@ -12663,7 +12925,9 @@ async function requestApproval(session, toolMessage, info) {
             }
             case 'edit_file': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');
-                const path = aiResolveScopePath(input.path, ctx.session);
+                const resolved = await resolveWritePath(input.path, ctx.session);
+                const path = resolved.path;
+                const outOfWorkspace = resolved.outOfWorkspace;
                 const relPath = aiRelPath(sessionScopeRoot(ctx.session), path);
                 assertNotCognitionPath(relPath);
                 const oldString = aiTextOf(input.oldString);
@@ -12683,6 +12947,7 @@ async function requestApproval(session, toolMessage, info) {
                         relPath,
                         absPath: path,
                         content: text,
+                        existed: true,
                     });
                 }
                 const located = locateEditTarget(text, oldString, newString, !!input.replaceAll);
@@ -12696,6 +12961,7 @@ async function requestApproval(session, toolMessage, info) {
                     tool: 'edit_file',
                     path,
                     relPath,
+                    outOfWorkspace,
                     content: next,
                     eol: existing.data.eol,
                     hasBom: !!existing.data.hasBom,
@@ -12710,6 +12976,24 @@ async function requestApproval(session, toolMessage, info) {
                 });
                 // 只在真正落盘后补「替换 N 处」——被权限/隔离闸拦下时 msg 是拒绝说明
                 return (located.count > 1 && msg.startsWith('已应用更改')) ? msg + '（已替换 ' + located.count + ' 处）' : msg;
+            }
+            case 'delete_path': {
+                if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('删除操作缺少会话上下文');
+                const collected = collectDeleteTargets(input, AI_DELETE_PATHS_LIMIT);
+                if (!collected.ok) return collected.error;
+                // 逐条解析与校验：任一条失败整单拒绝、不发卡——用户批准的是完整清单，
+                // 部分有效会造成「批的卡和删的东西不一致」；错误点名问题条目供模型修正。
+                const entries = [];
+                for (const raw of collected.rawList) {
+                    let entry;
+                    try {
+                        entry = await resolveDeleteEntry(raw, ctx.session);
+                    } catch (e) {
+                        return '删除清单未发起（整单拒绝）：' + raw + ' —— ' + ((e && e.message) || e);
+                    }
+                    entries.push(entry);
+                }
+                return applyDelete(ctx.session, ctx.toolMessage, {tool: 'delete_path', entries});
             }
             case 'todo_write': {
                 if (!ctx || !ctx.session) throw new Error('todo_write 缺少会话上下文');

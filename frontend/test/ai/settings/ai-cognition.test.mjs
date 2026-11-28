@@ -161,8 +161,8 @@ test('cognitionRulesText 两态：启用态讲职责与分工，关闭态给审�
     assert.match(on, /session_search/);
     const off = cognitionRulesText(false);
     assert.match(off, /cognition_toggle \{enabled:true\}/);
-    assert.match(off, /审批/);
-    assert.doesNotMatch(off, /职责不是可选项/);
+    assert.match(off, /approval card/);
+    assert.doesNotMatch(off, /cognition_edit/);
 });
 
 test('overview 注入正文预算默认值与方案口径一致（4–6K 字符带余量）', () => {

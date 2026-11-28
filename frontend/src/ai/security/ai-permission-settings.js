@@ -207,7 +207,7 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         }
     }
 
-    const PERMISSION_KIND_LABELS = {command: 'Bash', write: 'Write', web: 'Web', read: 'Read', worktree: '隔离工作区'};
+    const PERMISSION_KIND_LABELS = {command: 'Bash', write: 'Write', delete: 'Delete', web: 'Web', read: 'Read', worktree: '隔离工作区'};
     const AUDIT_SOURCE_LABELS = {
         readonly: '只读命令',
         family: '已知命令族',
@@ -240,7 +240,7 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
             const family = commandFamilySignature(entry.subject);
             return family ? family.signature + ':*' : commandText(entry.subject);
         }
-        if (entry.kind === 'write' || entry.kind === 'read') return writeRuleSubject(entry.subject);
+        if (entry.kind === 'write' || entry.kind === 'delete' || entry.kind === 'read') return writeRuleSubject(entry.subject);
         if (entry.kind === 'web') {
             return entry.subject.startsWith('domain:')
                 ? entry.subject
@@ -306,7 +306,7 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         opt.permissionTable.innerHTML = '';
         let total = 0;
         for (const behavior of ['deny', 'ask', 'allow']) {
-            for (const kind of ['command', 'write', 'web', 'read']) {
+            for (const kind of ['command', 'write', 'delete', 'web', 'read']) {
                 for (const rule of rules[kind][behavior]) {
                     total += 1;
                     opt.permissionTable.appendChild(projectRuleRow(kind, behavior, rule));

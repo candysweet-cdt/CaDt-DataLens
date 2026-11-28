@@ -351,3 +351,41 @@ export function resolveWithinRoot(root, rel) {
     }
     return {ok: true, path: resolved};
 }
+
+// —— delete_path 的目标收集（纯函数，ai-panel 执行链用） ——
+
+// 从工具入参收集删除目标清单：paths 数组优先（多路径批量），否则回退单条 path；
+// 空数组视为未传。逐条 trim、拒空串与通配符（批量删除的影响面必须在卡上逐条可见，
+// glob 让模型先查出具体路径再显式传入）、钳上限（超过让模型分批发起）。
+// 返回 {ok:true, rawList} 或 {ok:false, error}（错误点名问题条目，模型可自行修正）。
+export function collectDeleteTargets(input, limit) {
+    const max = Number(limit) || 20;
+    const rawPaths = input && Array.isArray(input.paths) && input.paths.length ? input.paths : null;
+    const list = rawPaths || (input && input.path != null && input.path !== '' ? [input.path] : []);
+    if (!list.length) {
+        return {ok: false, error: 'delete_path 需要提供 path（单条）或 paths（数组，一次最多 ' + max + ' 条）'};
+    }
+    if (list.length > max) {
+        return {ok: false, error: '一次最多删除 ' + max + ' 个条目（收到 ' + list.length + ' 条）：请分批发起，每批一张审批卡。'};
+    }
+    const bad = [];
+    const rawList = [];
+    for (const item of list) {
+        const raw = String(item == null ? '' : item).trim();
+        if (!raw) {
+            bad.push('（空路径）');
+            continue;
+        }
+        if (/[*?]/.test(raw)) {
+            bad.push(raw);
+            continue;
+        }
+        rawList.push(raw);
+    }
+    if (bad.length) {
+        return {ok: false, error: 'delete_path 不支持通配符或空路径（一次只能删明确列出的条目' +
+            (rawPaths ? '，paths 共 ' + list.length + ' 条' : '') + '）：' + bad.join('、') +
+            '。要删一类文件请先用 glob 查出具体路径，再显式传入 paths。'};
+    }
+    return {ok: true, rawList};
+}

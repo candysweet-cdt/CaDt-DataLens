@@ -10,6 +10,7 @@ import {
     sensitiveReadDenyReason,
     scanRootDenyReason,
     hardReadDenyReason,
+    hardWriteDenyReason,
     ARTIFACT_DIR_NAME,
     BACKING_DIR_NAME,
 } from '../../../src/ai/security/ai-read-roots.js';
@@ -143,6 +144,25 @@ test('ai-workspaces 会话沙盒可读，密钥与会话目录仍拒', () => {
     assert.ok(sensitiveReadDenyReason(appDir + '/ai-usage.db', appDir));
     // 扫描沙盒根本身不触发「包含应用数据目录」的拒绝
     assert.equal(scanRootDenyReason(sandbox, appDir), null);
+});
+
+// ---------- hardWriteDenyReason ----------
+
+// 写侧对称闸（2026-11-28 写工作区外放行时补）：判定与例外同读侧，文案换成写入。
+// full 档同样适用由调用方（resolveWritePath 先于档位判定）保证，纯函数层只管路径。
+test('hardWriteDenyReason：应用数据目录拒写入，产物 / 沙盒子树例外', () => {
+    const appDir = 'C:/Users/admin/AppData/Roaming/CaDt-DataLens';
+    const reason = hardWriteDenyReason(appDir + '/ai-config.json', appDir);
+    assert.ok(reason && reason.includes('拒绝写入'));
+    // 工作区外普通路径与空 appDir 放过（走正常审批卡）
+    assert.equal(hardWriteDenyReason('D:/notes/todo.md', appDir), null);
+    assert.equal(hardWriteDenyReason('D:/Novel/a.md', ''), null);
+    // 例外子树：产物（AI 自己落盘的工具结果）与会话沙盒（未绑定工作区会话的作用域根）
+    assert.equal(hardWriteDenyReason(appDir + '/' + ARTIFACT_DIR_NAME + '/call-1.txt', appDir), null);
+    assert.equal(hardWriteDenyReason(appDir + '/' + BACKING_DIR_NAME + '/session-abc/x.md', appDir), null);
+    // 兄弟前缀不能误放行；密钥 / 会话正文照旧拒绝
+    assert.ok(hardWriteDenyReason(appDir + '/' + ARTIFACT_DIR_NAME + 'X/a.txt', appDir));
+    assert.ok(hardWriteDenyReason(appDir + '/ai-sessions/x/session.v1.jsonl', appDir));
 });
 
 // ---------- scanRootDenyReason ----------

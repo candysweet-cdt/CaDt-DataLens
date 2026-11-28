@@ -164,19 +164,19 @@ export function cognitionRulesText(enabled) {
     if (enabled) {
         return [
             '<cognition_rules>',
-            '工作区认知索引（<cognition_index> 块每会话注入一次）回答「这个文件是什么 / 改它要动谁」：',
-            '- 动手改代码前，先确认相关文件的条目（地图命中或 cognition_read 按 paths / labels / query 过滤）；条目里的 R（强关联）与 S（暗约束）是「改这里必须同时知道的事」。',
-            '- 完成一次实质改动后，用 cognition_edit 维护受影响条目——这是职责不是可选项；改过文件却没维护时，下一轮会有 <cognition_nudge> 提醒，相关就顺手改，不相关忽略。',
-            '- cognition_status 报的 drift（Missing / Stale 等）与当前任务相关时顺手修；Missing 不用清零——作用域排除文件 .cadt/cognition/ignore.txt（gitignore 简化语法）里的模式不进清单、不需要条目；Missing 噪音大且还没有排除文件时（status 响应的 hint 会提示），在下一次 cognition_edit 里带 ignore 参数创建（整卷替换，写错语法最坏是排除不到、下轮可改），或建议用户手写该文件。',
-            '- 条目语义与代码现状冲突时，以代码为准并修正条目，同时在回复里点出冲突。',
-            '- 分工：找代码内容用 search_text / glob（索引不存代码内容）；聊天历史用 session_search；用户偏好与教训在记忆；全局约定看 AGENTS.md / <workspace_rules>——索引条目不重复守则内容。',
+            'The workspace cognition index (the <cognition_index> block, injected once per session) answers "what is this file / what else must change with it":',
+            '- Before changing code, confirm the entries for the affected files (map hits, or cognition_read filtered by paths / labels / query); an entry\'s R (strong relations) and S (latent constraints) are what you must know before touching it.',
+            '- After a substantive change, maintain the affected entries with cognition_edit — a responsibility, not an option; if you changed files without maintaining them, the next turn shows a <cognition_nudge>: update the related entries and ignore the rest.',
+            '- When cognition_status reports drift (Missing / Stale) relevant to the task, fix it. Missing does not have to reach zero — patterns in the scope-exclusion file .cadt/cognition/ignore.txt (gitignore-style syntax) never enter the list and need no entries; when Missing is noisy and no exclusion file exists yet (the status hint says so), create one with the ignore argument on the next cognition_edit (full replacement; a syntax error at worst excludes nothing and can be fixed next turn), or suggest that the user write the file.',
+            '- When an entry contradicts the code, trust the code, fix the entry, and point out the conflict in your reply.',
+            '- Division of labor: find code content with search_text / glob (the index stores no code); chat history with session_search; user preferences and lessons in memory; global conventions in AGENTS.md / <workspace_rules>. Entries never restate these rules.',
             '</cognition_rules>',
         ].join('\n');
     }
     return [
         '<cognition_rules>',
-        '本工作区未启用认知索引（跨会话记住「文件职责 / 改动联动 / 暗约束」的可选语义层，开关在 设置 → AI → 上下文与记忆）。',
-        '适合启用的情形：用户在这个代码工作区反复进行 AI 编码会话、或希望跨会话沉淀文件间的联动与暗约束——此时可建议启用（app_control 的 cognition_toggle {enabled:true}，会弹出审批面板由用户拍板）。数据目录不建议建。',
+        'The workspace cognition index is not enabled in this session. It is an optional semantic layer that remembers file responsibilities / change coupling / latent constraints across sessions; the switch is in 设置 → AI → 上下文与记忆.',
+        'When to enable it: the user runs many AI coding sessions in this workspace, or wants coupling and latent constraints settled across sessions — you may suggest enabling it (app_control cognition_toggle {enabled:true}, which opens an approval card for the user to decide). Do not build an index for a data directory.',
         '</cognition_rules>',
     ].join('\n');
 }

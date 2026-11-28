@@ -148,3 +148,17 @@ export function hardReadDenyReason(path, appDir, opts) {
     if (deny) return deny;
     return opts && opts.scanRoot ? scanRootDenyReason(path, appDir) : null;
 }
+
+// 写类工具的应用数据目录硬拒（2026-11-28 写工作区外放行时补的对称闸）。判定与例外
+// 同 sensitiveReadDenyReason：产物子树是「AI 自己落盘的工具结果」，会话沙盒是未绑定
+// 工作区会话的作用域根，两者照常可写；其余子树含 ai-config.json（API 密钥）与会话
+// 正文，任何档位（含 full）都不允许 AI 覆盖——读侧 full 档 2026-11-16 已同口径收紧。
+// 必须先于写审批卡执行：硬拒不该消耗一次人工审批。
+export function hardWriteDenyReason(path, appDir) {
+    const dir = normalizeReadRoot(appDir);
+    if (!dir || !readRootCovers(dir, path)) return null;
+    if (isArtifactPath(path, appDir)) return null;
+    if (isBackingPath(path, appDir)) return null;
+    return '拒绝写入：该路径位于应用数据目录（含 API 密钥与会话数据），AI 不写入其中的文件；' +
+        '如需保存请写到工作区内的路径。';
+}

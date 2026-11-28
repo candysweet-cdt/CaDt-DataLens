@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     AI_READ_MAX_CHARS,
     attachmentPathHint,
+    collectDeleteTargets,
     globMatchPath,
     humanSizeBytes,
     locateEditTarget,
@@ -269,4 +270,32 @@ test('attachmentPathHint: reason 区分「二进制」与「超过文本读取�
 test('attachmentPathHint: 扩展名大小写不敏感（正斜杠/反斜杠都能取到文件名）', () => {
     assert.match(attachmentPathHint('/a/B.PDF', 'binary'), /ocr/);
     assert.match(attachmentPathHint('D:\\a\\B.Zip', 'binary'), /解压/);
+});
+
+// —— collectDeleteTargets（delete_path 多路径收集） ——
+
+test('collectDeleteTargets: 单 path / paths 数组 / paths 优先 / 空数组回退', () => {
+    assert.deepEqual(collectDeleteTargets({path: ' a.txt '}, 20), {ok: true, rawList: ['a.txt']});
+    assert.deepEqual(
+        collectDeleteTargets({paths: ['a.txt', ' b/c.md ']}, 20),
+        {ok: true, rawList: ['a.txt', 'b/c.md']},
+    );
+    // paths 优先于 path；空数组视为未传
+    assert.deepEqual(
+        collectDeleteTargets({path: 'x.txt', paths: ['y.txt']}, 20),
+        {ok: true, rawList: ['y.txt']},
+    );
+    assert.deepEqual(collectDeleteTargets({path: 'x.txt', paths: []}, 20), {ok: true, rawList: ['x.txt']});
+});
+
+test('collectDeleteTargets: 缺参 / 通配符 / 空串 / 超上限，错误点名条目', () => {
+    assert.ok(collectDeleteTargets({}, 20).error.includes('path'));
+    assert.ok(collectDeleteTargets({path: ''}, 20).error.includes('path'));
+    const globErr = collectDeleteTargets({paths: ['a.txt', '*.log', 'b?.md']}, 20);
+    assert.ok(globErr.error.includes('*.log') && globErr.error.includes('b?.md'), '错误要点名问题条目');
+    assert.ok(globErr.error.includes('glob'), '指引先 glob 后 paths');
+    assert.ok(collectDeleteTargets({path: '  '}, 20).error.includes('空'));
+    const many = Array.from({length: 21}, (_, i) => 'f' + i + '.txt');
+    assert.ok(collectDeleteTargets({paths: many}, 20).error.includes('分批'));
+    assert.deepEqual(collectDeleteTargets({paths: many.slice(0, 20)}, 20).rawList.length, 20);
 });

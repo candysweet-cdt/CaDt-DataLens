@@ -162,6 +162,43 @@ test('统一决策链：写入与网络', () => {
     assert.equal(decidePermission({scope: 'edit', kind: 'web', rules: normalizePermissionRules({web: {ask: ['domain:example.com']}}), subject: 'domain:example.com'}).decision, 'ask');
 });
 
+// 工作区外写入（2026-11-28 写工具放行越界路径）：auto 档绝不自动应用，一律转人工；
+// 审批卡「记住」的精确路径（sessionAllow）是唯一免卡通道；full 档在更早分支直放。
+test('统一决策链：工作区外写入一律转人工（auto 也不例外）', () => {
+    const ask = decidePermission({scope: 'auto', kind: 'write', subject: 'D:/notes/todo.md', outOfWorkspace: true});
+    assert.equal(ask.decision, 'ask');
+    assert.equal(ask.source, 'out-of-workspace');
+    // risky 与 outOfWorkspace 同时存在时按 risky 计（来源用于审计归因，行为同为转人工）
+    assert.equal(decidePermission({scope: 'auto', kind: 'write', subject: 'D:/x/.git/config', outOfWorkspace: true, risky: true}).source, 'risky');
+    // 审批卡「记住」的文件免再问
+    assert.equal(decidePermission({scope: 'auto', kind: 'write', subject: 'D:/notes/todo.md', outOfWorkspace: true, sessionAllow: true}).decision, 'allow');
+    // 项目 allow 规则同样免卡（规则存储是裸路径模式，Write(...) 只是设置页行语法）
+    const allowAbs = normalizePermissionRules({write: {allow: ['D:/notes/**']}});
+    assert.equal(decidePermission({scope: 'auto', kind: 'write', rules: allowAbs, subject: 'D:/notes/todo.md', outOfWorkspace: true}).decision, 'allow');
+    // 非 auto 档本来就走 ask，越界不改变行为；full 档直放不变
+    assert.equal(decidePermission({scope: 'edit', kind: 'write', subject: 'D:/notes/todo.md', outOfWorkspace: true}).decision, 'ask');
+    assert.equal(decidePermission({scope: 'full', kind: 'write', subject: 'D:/notes/todo.md', outOfWorkspace: true}).decision, 'allow');
+});
+
+// 删除（delete_path 工具，2026-11-28）：独立 kind——授权写 ≠ 授权删，写侧「记住」
+// 不外溢（调用方不传 sessionAllow）。auto 档口径与 write 分支对齐：风险合成（工作区外
+// / 展开超量级 / 风险路径 / 脏文件，调用方并入 risky）转人工，其余直删——删除有回收站
+// + 删除前 L1 快照双层兜底，可恢复性不低于 auto 档本来就直放的写；full 直删；
+// 项目 Delete(...) deny/ask/allow 规则照常生效（deny 压过 full，allow 压过 risky）。
+test('统一决策链：删除 auto 档干净清单直删、风险转人工，full 直删', () => {
+    const allow = decidePermission({scope: 'auto', kind: 'delete', subject: 'tmp/x.txt', risky: false});
+    assert.equal(allow.decision, 'allow');
+    assert.equal(allow.source, 'auto');
+    const ask = decidePermission({scope: 'auto', kind: 'delete', subject: 'tmp/x.txt', risky: true});
+    assert.equal(ask.decision, 'ask');
+    assert.equal(ask.source, 'risky');
+    assert.equal(decidePermission({scope: 'edit', kind: 'delete', subject: 'tmp/x.txt', risky: false}).decision, 'ask');
+    assert.equal(decidePermission({scope: 'full', kind: 'delete', subject: 'tmp/x.txt'}).decision, 'allow');
+    const delRules = normalizePermissionRules({delete: {deny: ['.git/**'], allow: ['D:/tmp/**']}});
+    assert.equal(decidePermission({scope: 'full', kind: 'delete', rules: delRules, subject: '.git/config'}).decision, 'deny');
+    assert.equal(decidePermission({scope: 'auto', kind: 'delete', rules: delRules, subject: 'D:/tmp/a.txt', risky: true}).decision, 'allow');
+});
+
 test('接线护栏：.cadt/tmp 是 auto 档写入免审批的唯一 .cadt 豁免', () => {
     // isAutoWriteRisky 在 ai-panel.js 闭包里，这里钉源码形态：
     // 豁免必须精确到 .cadt/tmp 前缀且排在 .cadt 整树 risky 判定之前，防止将来被放宽成通配。

@@ -140,7 +140,7 @@ test('接线护栏：引用只进 user content，气泡截断 + title 全文，�
     assert.ok(composer.includes('quoteCardExcerpt(item.content, 48)'));
     assert.ok(composer.includes('onQuoteClick'));
     assert.ok(composer.includes('!trimmed && !attachments.length'));
-    assert.ok(context.includes('<quote> 块是用户引用的此前对话内容'));
+    assert.ok(context.includes('A <quote> block in a user message is earlier conversation'));
 });
 
 test('接线护栏：气泡与输入区引用都能点击开只读全文虚拟标签', () => {
