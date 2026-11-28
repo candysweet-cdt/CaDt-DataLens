@@ -302,7 +302,7 @@ runTurn(session, userMsg):
 >
 > **定时任务**：调度器在 Go 侧（`ai_schedule.go`，单 ticker 每秒扫描），任务定义与运行状态存派生 SQLite `ai-schedule.db`（modernc pure Go，可随时删除重建，JSON/SQLite 边界与 `ai-index.db` 同一策略）。触发发 `sched-fire` 事件 → 前端注入 `[定时任务 · 名称]` 指令走 `submitText`（复用审批/流式/通知管线），执行结果经 `AIScheduleSetResult` 回写任务卡片。多窗口（独立进程）各自扫描并广播，执行去重在前端：指定会话的任务由持有该会话的窗口执行、无人认领 700ms 后报告失败；新建会话类任务优先聚焦窗口（localStorage 标记先到先得）。任务仅在应用运行期间有效：once 错过标记「已错过」停用不补跑，interval 顺延到下一个整周期，cron 取下一个匹配时刻。设置 → AI 新增「定时任务」页（列表 + 新建/编辑对话框 + 启停/删除），`/schedule` 斜杠命令直达。cron 自写 5 字段解析（约 200 行，支持 `* , - /`，周日 0/7 双写），未引入 robfig/cron。edit 档任务触发时若无人在场处理写审批会一直挂起（守则与设置页均提示）。
 
-**范围安全**（工作区工具执行前）：路径相对 scopeRoot 解析，归一后校验仍在 scopeRoot 内；越界直接返回工具结果「路径超出工作区范围」由模型自行调整。memory/skills 目录独立于范围检查（专用目录 + 文件名白名单兜底）。symlink 逃逸风险见 §21。
+**范围安全**（工作区工具执行前）：路径相对 scopeRoot 解析，归一后校验仍在 scopeRoot 内；读工具越界走读授权链（点名直读 / 已批准读根 / 按档审批，见 `read-outside-workspace.md`），写工具越界经 `resolveWritePath` 捕获后走 diff 审批卡（auto 档绝不自动应用，见 `write-outside-workspace.md`）；删除工具（delete_path）同走该解析并一律弹卡、只进系统回收站（见 `ai-delete-tool.md`）。memory/skills 目录独立于范围检查（专用目录 + 文件名白名单兜底）。symlink 逃逸风险见 §21。
 
 **工具 schema**：在 ai-panel.js 定义 JSON Schema（含 description 中文说明），按 scope 动态组装传给 AISendChat。
 
@@ -342,9 +342,9 @@ runTurn(session, userMsg):
 | 档位 | 工具 | 说明 |
 |---|---|---|
 | **只读访问**（默认） | list_dir / read_file / search_text / web_search / web_fetch / memory_* / preference_*（写删计划模式不可用）+ `skill_use` + `schedule_list`（schedule_create / delete / toggle 计划模式不可用） | 范围根 = `workspaceFolder`，无工作区时 = 当前文件所在目录；免审批但每次调用显示卡片 |
-| **每次询问** | 只读工具 + write_file / edit_file / todo_write / run_command / background_command（+ check_command / stop_command）+ 页面点击/输入 | 工作区写操作全部审批、终端命令逐条审批；首次切换 flash 规则说明 |
-| **自动审批** | 与「每次询问」相同 | 工作区写操作自动应用（目标文件有未保存修改，或路径属于 `AGENTS.md` / `.cadt/` / `.agents/` / `.git/` 时仍审批）；只读命令与已知命令族自动执行，危险命令单次确认，其余按规则 / 分类器 / 逐条审批；不允许工作区外路径 |
-| **完全权限** | 每次询问全部工具 + 工作区外路径 + 命令免审批 + browser_evaluate | 启用前有二次确认（风险说明弹窗）；破坏性操作需自行向用户说明 |
+| **每次询问** | 只读工具 + write_file / edit_file / delete_path / todo_write / run_command / background_command（+ check_command / stop_command）+ 页面点击/输入 | 工作区写操作全部审批、删除一律审批（只进回收站）、终端命令逐条审批；首次切换 flash 规则说明 |
+| **自动审批** | 与「每次询问」相同 | 工作区写操作自动应用（目标文件有未保存修改，或路径属于 `AGENTS.md` / `.cadt/` / `.agents/` / `.git/` 时仍审批；工作区外写入一律弹审批卡；删除（delete_path）无论路径一律弹卡、绝不自动应用）；只读命令与已知命令族自动执行，危险命令单次确认，其余按规则 / 分类器 / 逐条审批 |
+| **完全权限** | 每次询问全部工具 + 工作区外路径 + 命令免审批 + browser_evaluate | 启用前有二次确认（风险说明弹窗）；破坏性操作需自行向用户说明；应用数据目录任何档都拒绝写入 |
 
 - scopeRoot 显示在 composer 上方（缩略 + tooltip 全路径）。
 - 切换即时生效（下一轮请求的 tools 列表变化）；随会话持久化。自动审批的写入仍记录在会话变更与工具卡片中，diff 可展开复查；命令的同类签名与白名单见 §9。

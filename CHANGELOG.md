@@ -4,6 +4,38 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 新功能（AI 删除工具 delete_path：回收站专用，引导替代 shell 删除）
+
+- 新增 `delete_path` 工具：删除文件或目录，**一律移入系统回收站**（Windows SHFileOperation + FOF_ALLOWUNDO，可在回收站还原；新增专用绑定 `DeleteEntryRecycle`，非 Windows 无回收站直接报错，绝不退化成不可恢复硬删）。删除前对文件做 wipeguard L1 内容快照，删错有回收站 + 快照双层兜底。支持一次传入最多 20 条显式路径（`paths` 数组）——**整单一张审批卡逐条列全清单、一次批准**；校验阶段任一条失败整单拒绝并列出问题条目；执行阶段单条失败不中断其余、结果汇总。禁止通配符——删一类文件先 glob 查具体路径再显式传入。
+- 权限档位（`PERMISSION_KINDS` 新增 delete 桶，`Delete(...)` 规则行语法，授权写 ≠ 授权删）：自动审批档与写操作同口径——全在工作区、展开总条目 ≤40（`AI_DELETE_BULK_WARN`，与 wipeguard 删除警告阈值对齐）、非风险路径、无未保存修改的删除**直接应用不弹卡**（操作记录留痕）；超量级 / 越界 / 风险路径 / 脏文件转人工弹卡；每次询问档一律弹卡；完全权限直删；只读档不下发；子代理 / 计划模式确定性拒绝；应用数据目录任何档硬拒。删除不提供「记住」。
+- 审批卡展示**影响面**而非命令字符串：逐条完整真实路径 + 文件大小 / 目录条目数（400 项预算口径）；展开总量超阈值或枚举截断时加醒目批量删除警告块。
+- 三处引导模型用工具替代 shell 删除：工具描述与 `<workspace_rules>` 守则明说「删除优先用 delete_path」；`rm` / `Remove-Item` / `del` / `find -delete` 等删除类命令的审批卡追加「建议改用 delete_path」提示（纯文案层 `deletionHintFor`，不改命令判定语义——`Remove-Item -Recurse` 漏标修复另立项）。
+- 方案与手工回归清单见 `docs/finished-plans/ai-delete-tool.md`。
+
+### 新功能（AI 写文件支持工作区外路径：审批卡放行）
+
+- `write_file` / `edit_file`（含 `code_outline` 维护大纲）对工作区外路径不再直接报「路径超出工作区范围」，改为复用既有写审批卡：diff 预览 + 「本会话 / 总是 / 本项目允许此文件」三档记住（精确文件路径粒度）。非完全权限档一律弹卡，自动审批档绝不自动应用工作区外写入——模型不再需要绕道命令通道去改工作区外的文件；命令通道行为不变。
+- 应用数据目录（含 API 密钥与会话数据）任何档位（含完全权限）都拒绝写入；`ai-artifacts` 产物子树与会话沙盒 `ai-workspaces` 照常可写（与读侧同款例外）。
+- 审批卡在目标路径位于工作区外时显示提示行「批准仅对这一个文件生效；应用数据目录始终拒绝写入」。
+- 修复：写工具的 wipeguard 写前快照自接入以来从未真正触发（三个调用点漏传 `existed`，入口守卫直接短路返回），本次一并修复。
+- 方案与手工回归清单见 `docs/finished-plans/write-outside-workspace.md`。
+
+### 修复（图标守卫与存储键白名单的既存红项）
+
+- 文件树「插件：<动作>」右键菜单项的图标键 `plugin` 从未在 `core/icons.js` 登记，`iconSvg` 一直静默渲染为空；改用已注册的 `puzzle`（拼图＝插件惯例图形）。
+- `storage-key-guard` 的 `NON_STORAGE` 白名单删除三个死条目（`cadt-datalens` / `cadt-mcp-samples` / `cadt-mcp-config`）：技能文件化后这些名字已不在源码出现，白名单只许减不许增。
+
+### 变更（模型提示词英文化：工具定义 / 工作区守则 / 工具目录）
+
+- 模型侧提示词统一改为英文：工具 description（工具级 + 参数级，349 个字段）、`<workspace_rules>`、`<tool_catalog>`（88 条 blurb、14 个分组标题与 9 条注记、调度原则、典型任务链）、`<plan_mode>`、`<cognition_rules>` 两态。用户可见文案、人设、技能正文与每轮环境块保持中文。
+- 英文句内保留中文界面名（「应用页面 → 外部工具」「快捷便签」「任务提醒」「设置 → AI → 上下文与记忆」等），用户仍可按中文界面找到入口；示例值（如子代理名「依赖调查」）原样保留。
+- `buildSpawnAgentDef` 的轮次默认值替换锚点改为 `default 200`：该替换原先匹配中文「默认 200」，改语言会让设置值静默失效、模型永远看到写死的 200。
+- `aiDisplayPath` / `aiDisplayRootLabel` 的兜底文案改英文（`(outside scope)` / `(no workspace open)`），避免英文守则里夹中文片段；两者只服务提示词与命令分类器 payload，无 UI 消费。
+- 守卫调整：`ai-tool-wiring.test.mjs` 的「描述里提到的参数名必须已声明」改为**只校验反引号标注的标识符**。英文描述里 `name` / `text` / `path` / `context` 等普通名词与参数名无法用裸词区分（旧规则一次误报 42 个词）；现在写 `` `depth` `` 就是在声明「这是本工具入参」，未声明即红。
+- 体积变化（`aiEstimateTokens` 口径）：工具定义（349 个 description 字段）20,197 → **15,983**（−21%）；`<tool_catalog>`（CATALOG + GROUPS）3,467 → **3,218**（−7%）；`<workspace_rules>` 2,316 → **2,311**（−0.2%）。英文化初版曾涨到工具定义 22,131 / catalog 3,467 持平 / rules 2,545——涨的不是语言本身，而是翻译时把中文电报体省略的限定条件又展开写回去了；随后按「只删冗余不删条件」压了两轮：八条最长工具描述（action / preset 的逐项细节收回同名参数）、15 条与工具定义重复的 blurb、9 条分组 note、4 条与参数说明重复的守则，以及从守则里删掉「渲染成可点击芯片」这类对模型没有行为指导的 UI 描述。
+- 独立子代理复审后的收敛（12 处文案级修正）：`WORKTREE_RULE_TEXT` 由从句片段改为可独立拼装的分句；`app_control` / `worktree_manage` 的动词搭配与 `call create first` 语序修正；`task list` / `progress list` 统一为 `todo list`，`notebook` 改为 `memo panel`，`executor sessions` 统一为 `Worker sessions`，未定义的 `write gate` 改为 `the orchestrator's write log (writeLog)`，`writable scope` 统一为 `write boundary`，`cognition index volume` 首现处补上「一卷一目录」定义；权限档名统一为 read-only / ask-every-time / auto-approve / full access（不再混用 read/edit tier 与 auto tier）；`【】` 分组标记改 `##`，圈码 `①②` 改 `(1)(2)`；三处整句中文示例值改为英文示例。
+- 验证：`npm test` 仅剩 2 个与本改动无关的既存失败（`icon-guard` 缺 `explorer-ops.js` 图标键、`storage-key-guard` 白名单死条目）；`npm run build` 通过。
+
 ### 变更（提示词清理：去重、正向化与防御性文案收敛）
 
 - 按 `docs/finished-plans/prompt-cleanup.md` 的圈定范围清理模型提示词：计划模式规则收敛为单一来源（`<plan_mode>`）；范围外路径守则与工具描述统一为「可授权」；worktree 守则抽常量，不再三份漂移。
@@ -32,6 +64,11 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - 写边界双层防线：前端 `writableRoots` 字符串快筛 + Go 侧新绑定 `WriteBoundaryCheck`（逐节重解析点检查——Windows 按 ReparseTag 精确识别 symlink/junction，junction 用免特权的 NTFS 目录联接回归用例实测拦截 + EvalSymlinks 归一化前缀比对）在落盘前权威判定；子代理写路径还补上了项目 deny 规则闸（§5.2 guard 链，ask 规则对子代理同样确定性拒绝）；主会话审批链与读边界授权链零改动。
 - 测试：新增 `frontend/test/ai/agent/agent-capabilities.test.mjs`（24 例）并登记 `npm test`；`ai-subagent-sandbox.test.mjs` 按快照语义重写（20 例）；Go 侧 `internal/fsops/writeboundary_test.go` 7 例；绑定基线更新至 451 条（+WriteBoundaryCheck）。
 - 收口（2026-11-28 审查）：设置 → 插件的插件行新增**「撤销写入确认」**入口（该插件有已确认的子代理写入授权时显示，一键撤销后下次派单重新弹能力确认卡）；子代理复活（进程重启后续跑）重建沙箱档与隔离区登记（HUD 档位徽标与审计留痕不再丢失）；Go 侧写边界的大小写语义按目标平台条件化（Windows 不区分、其余 fail-closed）。
+- **实机验证修复（2026-11-28，CaDt-VerifyWs 全套 24 例）**：
+  - **续跑链路补全（P0）**：`resumeAgentRun` 此前全仓零 UI 消费者——「重启后可续跑」只有落盘半截；现在子代理详情视图对「可续」记录显示**「续跑」按钮**（一键接手，能力按快照恢复不扩大），`interrupted` 态有可读文案与续跑提示；`restoreAgentRuns` 补进懒加载 hydrate 路径（此前只有启动 hydrate 窗口跑，懒加载会话永不重建可续记录）；
+  - **孤儿隔离区修复（P0）**：终态记录与恢复记录补登记 `worktree`——此前子代理结算后 `worktreeNamesForSession` 读不到隔离区，`worktree_manage` 的 export/discard 对它报 WORKTREE_NONE，只能手动删；
+  - **worktree 派单修复**：`GitWorktreeAdd` 漏传第 4 参 `carry`（存量参数不匹配，spawn worktree 恒报错），补 `false`（子代理隔离区不带入主根未提交改动）；
+  - spawn_agent 卡片新增**能力行**（「能力 host.default · 可写」）——派单回执原文只回给模型，人看卡片这一行。
 
 ### 修复（压缩上下文按钮按当前会话判断，不再被其它会话的生成阻塞）
 
@@ -195,6 +232,8 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **编排看板与权限/审查语义收尾**：看板改为原位刷新（列表与详情各按结构签名去重，不再每 5 秒/点刷新清空重绘）；详情顶部加入常驻 SVG 波次图，列表/详情换用卡片式样式；执行会话的权限档改为继承母会话（full 母会话不再被降成 edit，审批噪音随之减少）；取消逐批自动审查，审查只在全部 work 收尾后按「终审」统一执行，审批卡与工具定义同步移除逐批审查门。
 - **编排子会话状态**：`orchestration_status` 的详情输出补上每个 work / 审查 / 终审批次的执行会话 id、运行态（空闲 / 运行中 / 压缩中）与未读、消息数；work 批次下缩进列审查子项，终审单独分组。`agent_tree` 明确只覆盖 `spawn_agent` 子代理，不会把编排批次混进团队树；`session_list` 仍是平铺的投递目标列表。
 - **编排派发与投影健壮性**：六类编排事件在多工作区 harness 下统一按 `payload.root` 路由，聚焦别的仓库时仲裁唤醒/交接/停止不再被丢弃；派发链路 `ClaimBatch` 之后任何一步失败都会回滚 claim，连续 3 次起轮失败转为 `blocked`（`dispatch_unavailable`）交仲裁，不再每 90 秒无限重试；看板重叠刷新只让最后一次回包落盘，旧 attempt 快照也不会再归档当前执行会话或把状态倒回。
+- **编排看板窄宽度布局**：左栏在窄容器里改成一条横向可滚动的选择器（单条只占一个小卡片高度，多条横排），不再把整列目录竖着堆在详情上方；完成/失败批次不再残留「剩余：0s」。
+- **执行图与高级设置排版**：执行图按布局原始宽度渲染（`max-width:100%` 只在窄容器缩放），高度按实际行数收紧，单行计划不再被等比拉成一大块空画布；审批卡「高级设置」去掉 sticky 铺满整行的面板色底，只保留普通分隔行，不再出现突兀矩形。
 - **验证**：新增 `internal/orchestration` 表驱动测试（热路径、返工、静默屏障、超时、未知态、写闸、归属、超时回答、审计不改状态、终审门、多工作区提交）与前端纯函数/接线守卫；`npm test`、`go test ./...`、`go build ./...`、前端构建与 linux/darwin 交叉编译通过。
 
 ### 修复（多工作区后台通知不再卡在信箱）

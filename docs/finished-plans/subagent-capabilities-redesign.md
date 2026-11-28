@@ -375,7 +375,7 @@ cadt.registerAgentPreset({
 
 ### 10.5 分阶段实施（无兼容层，一批落地）
 
-0. **阶段零（硬前置，不做完不开阶段三）**：编排会话（Worker / 审查者 / 仲裁者）派生的一切子代理，能力快照强制收窄为只读 preset（宿主侧注入，不信任派单参数）；同时把「`authorizeWrite` 认子代理会话 + fail-closed」记为独立后续项——修好前，强制收窄是唯一防线。验收：仲裁者尝试派写角色子代理 → 派单直接失败或被强制只读。
+0. **阶段零（硬前置，不做完不开阶段三）**：编排会话（Worker / 审查者 / 仲裁者）派生的一切子代理，能力快照强制收窄为只读 preset（宿主侧注入，不信任派单参数）；同时把「`authorizeWrite` 认子代理会话 + fail-closed」记为独立后续项——修好前，强制收窄是唯一防线。验收：仲裁者尝试派写角色子代理 → 派单直接失败或被强制只读。**实机核验修正（2026-11-28）**：编排三类会话在当前工具面下均拿不到 `spawn_agent`（Worker / 审查者被 §12 工具表硬裁剪排除；仲裁者会话建为 read 档——`orchestration-ui.js:1006`——read 档不下发派单工具），本防线当前为**纵深防御**、无实机触发入口，验收以源码钉与单测（P4c）覆盖；将来给编排放开派单入口时本防线即生效。§0.1 第 1 条「仲裁者持有 spawn_agent」的前提与现状不符，以本注记为准。
 1. **阶段一：纯模型**：新增 `agent-capabilities.js`（快照合成/收窄/校验/序列化，含 §10.3 取交规则）+ `normalizeAgentPreset` 扩展 `fs/delegation` 字段；纯函数单测覆盖 §4.2 全部非法情形；测试登记进 `npm test` 清单。
 2. **阶段二：preset 注册**：新增 `registerAgentPreset` 插件 API 与注册表；宿主内置 preset（§10.4）同批落地；能力确认卡（§6.3）。
 3. **阶段三：工具面投影**：`subToolsForScope` 改为消费能力快照；执行前增加 guard；**同批删除** `spawn_agent.sandbox` 参数与 `subScopeDowngrade` / `SUB_SANDBOX_MODE_BY_SCOPE`（§10.1）；按 §12.1 全链路接线；`frontend/test/ai/ai-subagent-sandbox.test.mjs` 断言重写；成文不变量注释更新（§10.2）。
