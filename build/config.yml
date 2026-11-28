@@ -11,7 +11,7 @@ info:
   description: "轻量级多格式数据查看与编辑器"
   copyright: "Copyright © 2026 CandySweet"
   comments: "多格式数据查看与编辑器，内置 AI 助手、代码运行与数据库等开发工具"
-  version: "1.3.0"
+  version: "1.3.2"
 
 
 # iOS build configuration (uncomment to customise iOS project generation)

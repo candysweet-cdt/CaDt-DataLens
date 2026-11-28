@@ -70,7 +70,7 @@ import (
 	"datalens/internal/workspacemark"
 )
 
-const appVersion = "v1.3.0"
+const appVersion = "v1.3.2"
 
 // 绑定承载类型的别名：App 匿名嵌入后，包内 Service 的导出方法自动进 *App
 // 方法集（v3 的绑定面即方法集），前端 FQN 仍是 main.App.<Method>。
