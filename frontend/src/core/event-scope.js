@@ -44,8 +44,9 @@ export const EVENT_SCOPES = Object.freeze({
 
     // 工作区 / 资源
     'workspace-changed': 'workspace',
-    // 编排：派发 / 状态变化 / 统一停止 / 仲裁事件 / 交接 / 审计，全部按 payload.root
-    // 路由到归属工作区窗口（同工作区多窗口靠 ClaimBatch 互斥，只会有一个起轮）。
+    // 编排：派发 / 状态变化 / 统一停止 / 仲裁事件 / 交接 / 审计，按 payload.root 归属。
+    // 消费端统一 onApp 收后自行路由：普通窗口只收当前根；多工作区 harness 跨根全收
+    // （派发靠 ClaimBatch 互斥，仲裁/停止按 payload 里的工作区更新对应看板）。
     'orchestration-dispatch': 'workspace',
     'orchestration-changed': 'workspace',
     'orchestration-stop': 'workspace',

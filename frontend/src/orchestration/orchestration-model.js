@@ -46,6 +46,7 @@ export const FAILURE_LABELS = Object.freeze({
     blocked: '执行者报告卡住',
     timeout_abort: '等待用户超时（abort）',
     attempts_exhausted: '尝试次数已用尽',
+    dispatch_unavailable: '宿主连续起轮失败',
 });
 
 export function statusLabel(status) {
@@ -128,8 +129,8 @@ export function buildPlanRequest(input, context) {
     const raw = input && typeof input === 'object' ? input : {};
     const rawPolicy = raw.policy && typeof raw.policy === 'object' ? raw.policy : {};
     const baseScope = textOf(ctx.scope) || 'read';
-    const scope = stricterScope(baseScope, rawPolicy.scope || (baseScope === 'full' ? 'edit' : baseScope));
-    const reviewExplicit = Object.prototype.hasOwnProperty.call(rawPolicy, 'review');
+    // 执行会话继承母会话权限档（只能更严）；full 母会话派出的 Worker 仍是 full，不降成 edit。
+    const scope = stricterScope(baseScope, rawPolicy.scope || baseScope);
     const policy = {
         scope,
         maxParallel: intOf(rawPolicy.maxParallel, 1, 8, 2),
@@ -142,9 +143,9 @@ export function buildPlanRequest(input, context) {
         arbiterTimeoutMs: 10 * 60 * 1000,
         arbiterMissLimit: 2,
         arbiterRotateAt: 0.7,
-        review: reviewExplicit ? rawPolicy.review !== false : true,
-        reviewExplicit,
-        reviewModel: textOf(rawPolicy.reviewModel).trim(),
+        // 逐批自动审查已取消（质量门只由终审统一做）：不再下传 review / reviewExplicit。
+        // 后端 ValidatePlan 也会强制关掉，防止旧客户端重新打开已删除的执行路径。
+        reviewModel: '',
         finalReview: rawPolicy.finalReview === true,
         finalReviewCount: rawPolicy.finalReview === true
             ? intOf(rawPolicy.finalReviewCount, 1, 3, 1) : 0,

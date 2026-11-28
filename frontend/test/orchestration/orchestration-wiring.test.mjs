@@ -41,6 +41,7 @@ test('main.js：常驻订阅、应用页面挂载器、桥视图工厂与 AI 适
     const main = read('main.js');
     assert.match(main, /ensureOrchestrationHost\(\)\.subscribe\(appEvents/, '主组合根没有登记编排常驻订阅');
     assert.match(main, /'orchestration':\s*\(root,\s*workspace\)/, '应用页面挂载器缺 orchestration 或其工作区参数');
+    assert.match(main, /openOrchestrationTab:\s*\(\.\.\.args\)/, 'AI 面板缺打开编排标签页的宿主出口');
     assert.match(main, /ensureOrchestrationHost\(\)/, '缺编排域懒创建入口');
     assert.match(main, /createOrchestrationView/, 'editor-groups 依赖没有接编排视图工厂');
     assert.match(main, /orchestration:\s*ensureOrchestrationHost\(\)\.adapter/, 'AI 面板没有注入 orchestration 适配器');
@@ -104,10 +105,15 @@ test('编排审批复用 composer 接管卡，首屏批次只留标题+描述，
     assert.match(domain, /buildExecutionGraph\(/, '审批卡必须按 waves 画执行顺序图');
     assert.match(domain, /renderExecutionGraph\(/, '审批卡必须渲染 SVG 执行图');
     assert.match(domain, /orch-graph-card/, '执行顺序图必须是常驻卡片');
+    assert.match(domain, /orch-board-dir-toggle/, '看板目录必须可折叠');
+    assert.match(read('ai/session/ai-session-list.js'), /ai-session-orch-open/, '母会话行必须有打开编排入口');
     assert.match(domain, /batchSessionSuffix/, 'orchestration_status 必须输出子会话 id/运行态');
     assert.match(domain, /bridgeListSessions/, 'orchestration_status 必须从会话列表取运行态');
-    assert.match(domain, /review = reviewBox\.control/, 'checkbox 必须保存原生 control 再绑事件');
     assert.match(domain, /finalReview = finalReviewBox\.control/, '终审 checkbox 必须保存原生 control');
+    assert.match(domain, /allowModels = allowModelsBox\.control/, '模型授权 checkbox 必须保存原生 control');
+    const css = read('orchestration/orchestration.css');
+    assert.match(css, /orch-batch-card\.expanded \.orch-batch-spec/, '展开描述必须命中批次卡 class');
+    assert.doesNotMatch(css, /var\(--fg[,)]/, '深色主题没有 --fg，必须用 --text');
     assert.doesNotMatch(domain, /添加批次/, '计划结构不能由审批卡增删');
     assert.match(domain, /finalCountRow\.style\.display/, '终审数量必须在未勾选终审时隐藏');
     assert.match(domain, /roles?\s*=\s*'allowed'/, '模型选择必须收进高级设置');
@@ -117,4 +123,31 @@ test('编排审批复用 composer 接管卡，首屏批次只留标题+描述，
     assert.match(domain, /isMultiWorkspace\(\)/, '多工作区派发必须跨当前聚焦根接收');
     assert.match(domain, /cancelFromHost/, '停止生成必须让在飞的创建请求收口');
     assert.match(read('ai/ai-panel.js'), /cancelFromHost/, 'AI 面板停止审批时要通知编排编辑器');
+});
+
+test('harness 跨根事件、看板旧回包与旧 attempt 归档都有防护', () => {
+    const domain = read('orchestration/orchestration-ui.js');
+    const subscribe = domain.slice(domain.indexOf('function subscribe('));
+    assert.match(subscribe, /appEvents\.onApp\(eventName/, '六类编排事件都要跨当前聚焦根接收');
+    assert.match(subscribe, /isMultiWorkspace\(\) && !acceptsWorkspace/, '非 harness 仍需按工作区过滤');
+    assert.match(domain, /seq !== refreshSeq/, '看板重叠刷新必须只让最后一次回写');
+    assert.match(domain, /b\.title \|\| '', b\.deadline/, '详情签名必须覆盖标题与剩余时间');
+    assert.match(domain, /close\.setAttribute\('aria-label', '关闭'\)/, '弹窗关闭按钮必须有可用名称');
+    const panel = read('ai/ai-panel.js');
+    assert.match(panel, /snapshotAttempt < sessionAttempt/, '旧 attempt 快照不能覆盖新投影');
+    assert.match(panel, /sessionAttempt >= batchAttempt/, '旧快照不能归档当前 attempt');
+});
+
+test('仲裁者上下文使用量取最后一次 API 用量，不能累加整会话 token', () => {
+    // 2026-11-28 实测：累加每条消息的 totalTokens 把历史每轮的输入输出重复计了多遍，
+    // 227 条消息的会话算出 1207%，触发假的仲裁者交接、把编排甩给新会话。
+    const panel = read('ai/ai-panel.js');
+    const start = panel.indexOf('bridgeSessionUsage:');
+    assert.ok(start > 0, '缺 bridgeSessionUsage');
+    const next = panel.indexOf('bridgeNewSession:', start);
+    const body = panel.slice(start, next > 0 ? next : start + 2000);
+    assert.doesNotMatch(body, /used \+=/, '不能累加 token：会把历史每轮重复计入，算出 >100% 的假占用');
+    assert.match(body, /messages\.length - 1/, '必须从最后一条往前找最近一次 usage');
+    assert.match(body, /promptTokens/, '取 prompt+completion 才是当前上下文窗口占用的近似');
+    assert.match(body, /contextWindow/, '窗口必须取模型条目/账号的 contextWindow');
 });

@@ -1,6 +1,12 @@
 // engine.go：Router / supervisor / auditor 的实现。所有状态变更都在同一把锁内完成；
 // 事件、通知、快照与验收执行只在锁外调用。supervisor 判定只用自己的时间戳，
 // 不向前端询问“还在跑吗”；前端只主动推送回合生命周期事实。
+//
+// 锁内 IO 是有意取舍（2026-11-27 审查确认）：设计文档 §5.3.4 要求“锁内只做内存读写”，
+// 但 tickAllInner / auditOnce 在持锁期间会调 store.Save 与 AppendLog。原因是状态与落盘
+// 必须同源（两阶段改成“锁内取快照、锁外写”会让读者在写完成前看到新状态，恢复路径会
+// 重放同一批事件）。atomfile 是原子换名写、单写者，正常情况下亚毫秒；慢盘或杀毒扫描
+// 会拉长全引擎互斥，属已知代价，不是可以随手挪走的小事。
 package orchestration
 
 import (
@@ -296,6 +302,12 @@ func (e *Engine) restartSupervisor(reason string) {
 	// 多个看门狗来源（watchdog / auditor）并发请求时只允许一个重启者。
 	e.restartMu.Lock()
 	defer e.restartMu.Unlock()
+	// 复查触发条件：等这把锁期间别的来源可能已经重启过（lastTickAt 被刷新）。
+	// 不复查就会把刚起来的循环再 cancel 一次、重起一个——功能无损但纯属空转，
+	// 而且审计者按文件 mtime 判的“无进展”可能根本不是调度器卡死。
+	if nowMs()-e.lastTickAt.Load() <= 90_000 {
+		return
+	}
 	// Go 不能强杀 goroutine：先 cancel 并等旧循环确认退出，超时则只报警，绝不再起第二个。
 	if !e.started.Load() || e.supervisorCancel == nil {
 		return
@@ -538,7 +550,8 @@ func (e *Engine) tickAllInner() {
 		// 失败/阻塞批次必须有对应的 L2 事件（覆盖冷启动恢复、旧版本状态迁移）。
 		for i := range o.Batches {
 			b := &o.Batches[i]
-			// 逐批审查的失败由被审 work 的事件覆盖；终审没有 work 可挂，必须自己进 L2。
+			// 终审没有 work 可挂，失败/阻塞必须自己进 L2。
+			// （旧存档里可能残留逐批审查批次：它们的失败由被审 work 的事件覆盖，跳过。）
 			if (b.Kind == KindReview && !b.FinalReview) || (b.Status != BatchFailed && b.Status != BatchBlocked) {
 				continue
 			}
@@ -573,6 +586,18 @@ func (e *Engine) tickAllInner() {
 				continue
 			}
 			e.releaseClaimLocked(o, b)
+			if b.DispatchRetries >= MaxDispatchRetries {
+				b.Status = BatchBlocked
+				b.FailureReason = ReasonDispatchUnavailable
+				b.SessionID = ""
+				b.DispatchAt = now
+				detail := fmt.Sprintf("连续 %d 次广播后都没能拉起执行会话（认领超时/宿主建会话失败）", b.DispatchRetries+1)
+				e.enqueueArbitrationLocked(o, b.ID, ReasonDispatchUnavailable, detail, now)
+				e.store.AppendLog(o.ID, LogEntry{Kind: "dispatch-failed", Batch: b.ID, Why: detail})
+				mutated = true
+				continue
+			}
+			b.DispatchRetries++
 			b.DispatchAt = now
 			// 重发广播不是一次新的“派发尝试”：把它计入 10 分钟窗口会在正常认领超时时
 			// 误触单位时间护栏。真正的派发只在 pending→dispatched 时计数。
@@ -884,79 +909,24 @@ func (e *Engine) makeVerifyJob(orchID, batchID string) func() {
 	}
 }
 
-// advanceAfterVerifyLocked：验收绿后开审查或直接完成。
+// advanceAfterVerifyLocked：验收绿后直接完成。逐批审查已取消（质量门由全部收尾后的终审统一做），
+// 这里不再有中间态，过 = done、不过 = 返工/失败。
 func (e *Engine) advanceAfterVerifyLocked(o *Orchestration, b *Batch, pass bool, summary string) {
 	if !pass {
 		e.endAttemptLocked(o, b, ReasonVerifyFailed, summary, nowMs())
 		return
 	}
-	if !o.Policy.Review || b.Kind == KindReview {
-		e.finishWorkLocked(o, b, nowMs())
-		return
-	}
-	b.Status = BatchReviewing
-	e.ensureReviewBatchLocked(o, b)
+	e.finishWorkLocked(o, b, nowMs())
 }
 
-func (e *Engine) ensureReviewBatchLocked(o *Orchestration, work *Batch) *Batch {
-	id := "review-" + work.ID
-	if existing := findBatch(o, id); existing != nil {
-		existing.Activated = true
-		switch existing.Status {
-		case BatchDone, BatchFailed, BatchCancelled, BatchSkipped:
-			// 返工后的新一轮审查：复用同一个 review 批次，重置其尝试与结论，
-			// 否则会留下一个 done 的 review 批次让 work 永远停在 reviewing（死锁）。
-			existing.Status = BatchPending
-			existing.Attempts = 0
-			existing.Report = nil
-			existing.Review = nil
-			existing.FailureReason = ""
-			existing.SessionID = ""
-			existing.Question, existing.AwaitingUntil = nil, 0
-			existing.Deadline, existing.Frozen, existing.RemainingMs = 0, false, 0
-			existing.Spec = reviewSpecFor(id, work)
-			existing.Model = ModelSpec{First: o.Policy.ReviewModel}
-		}
-		return existing
-	}
-	spec := reviewSpecFor(id, work)
-	// 留空 = 继承母会话（前端创建审查会话时按 parentSessionId 解析当前模型）；
-	// 不再回落到审批时固定的 ArbiterModelRef，避免母会话换模型后审查仍走旧档。
-	model := o.Policy.ReviewModel
-	o.Batches = append(o.Batches, Batch{
-		ID: id, Title: "审查：" + work.Title, Kind: KindReview, ReviewOf: work.ID,
-		Workspace: work.Workspace, Spec: spec, Owns: []string{}, DependsOn: []string{},
-		Model: ModelSpec{First: model}, Status: BatchPending, Activated: true,
-	})
-	e.store.AppendLog(o.ID, LogEntry{Kind: "review-created", Batch: id, Why: "验收通过，进入独立审查门"})
-	return findBatch(o, id)
-}
-
-func reviewSpecFor(id string, work *Batch) string {
-	return fmt.Sprintf(`你是只读审查者。审查批次 %s「%s」。
-
-被审查批次的 spec（节选）：
-%s
-
-被审查批次的 writeLog（写闸实际放行）：
-%s
-
-审查要求：
-- 只读，不得修改任何文件。
-- 以 writeLog 与这些路径的当前内容为准，不要把工作区既有未提交改动归到本批。
-- 对「已修的接线类断言」做反向验证：说明如果把实现删掉，这条测试会不会红。
-- 收尾调用 orchestration_report（batchId=%s），用 review 字段给出 blocking / shouldFix / suggestions。`,
-		work.ID, work.Title, truncateRunes(work.Spec, 1500), summarizeWriteDirs(work.WriteLog, 1000), id)
-}
-
-// ensureFinalReviewsLocked 在全部工作与逐批审查收尾后创建终审批次。
+// ensureFinalReviewsLocked 在全部工作收尾后创建终审批次。
 // 终审是独立的只读批次（不是 spawn_agent 子代理）：沿用同一条 claim/start 路径，
 // 模型留空时由前端创建会话时继承母会话，不在 Router 里猜模型。
 func (e *Engine) ensureFinalReviewsLocked(o *Orchestration) bool {
 	if !o.Policy.FinalReview || len(finalReviewBatches(o)) > 0 {
 		return false
 	}
-	if !allWorkDoneOrSkipped(o) || !normalReviewsTerminal(o) {
+	if !allWorkDoneOrSkipped(o) {
 		return false
 	}
 	count := o.Policy.FinalReviewCount
@@ -1157,6 +1127,7 @@ func (e *Engine) enqueueArbitrationLocked(o *Orchestration, batchID, reason, det
 		Detail: truncateRunes(detail, 1200), CreatedAt: now,
 	}
 	o.ArbitrationQueue = append(o.ArbitrationQueue, ev)
+	pruneResolvedArbitrationLocked(o)
 	o.UpdatedAt = now
 	payload := e.arbiterPayload(o, ev)
 	// 当前在状态锁内：事件与通知只能异步送出，不能让 Wails/Toast 反压调度器。
@@ -1165,6 +1136,33 @@ func (e *Engine) enqueueArbitrationLocked(o *Orchestration, batchID, reason, det
 	if e.deps.SessionExists != nil && o.Arbiter.SessionID != "" && !e.deps.SessionExists(o.Arbiter.SessionID) {
 		go e.notify("编排需要人工处理", "仲裁会话不可用，编排已停在等待仲裁："+truncateRunes(detail, 200), "")
 	}
+}
+
+// pruneResolvedArbitrationLocked 只裁已裁决事件，保留最近 MaxResolvedArbitration 条；
+// 未裁决事件永不丢。
+func pruneResolvedArbitrationLocked(o *Orchestration) {
+	if o == nil {
+		return
+	}
+	resolved := 0
+	for _, ev := range o.ArbitrationQueue {
+		if ev.Resolved {
+			resolved++
+		}
+	}
+	excess := resolved - MaxResolvedArbitration
+	if excess <= 0 {
+		return
+	}
+	kept := make([]ArbitrationEvent, 0, len(o.ArbitrationQueue)-excess)
+	for _, ev := range o.ArbitrationQueue {
+		if ev.Resolved && excess > 0 {
+			excess--
+			continue
+		}
+		kept = append(kept, ev)
+	}
+	o.ArbitrationQueue = kept
 }
 
 func (e *Engine) arbiterPayload(o *Orchestration, ev ArbitrationEvent) map[string]any {
@@ -1497,6 +1495,7 @@ func (e *Engine) StartBatch(req StartRequest, window, workspace string) (StartRe
 	// 重派回顾与用户回答就永远进不了新会话。先拼 prompt，再改字段。
 	prompt := buildDispatchPrompt(o, b)
 	b.Attempts++
+	b.DispatchRetries = 0
 	b.SessionID = sessionID
 	b.ClaimedBy = window
 	b.ClaimedAt = now
@@ -1599,7 +1598,6 @@ func (e *Engine) AbortStart(req AbortRequest, window, workspace string) error {
 		}
 		delete(e.claims, req.Token)
 		e.releaseClaimLocked(o, b)
-		b.Status = BatchPending
 	} else {
 		abortedAttempt := b.Attempts
 		if tk.OrchestrationID != o.ID || tk.BatchID != b.ID || tk.Attempt != b.Attempts ||
@@ -1632,11 +1630,21 @@ func (e *Engine) AbortStart(req AbortRequest, window, workspace string) error {
 			Attempt: abortedAttempt, SessionID: b.SessionID, Status: "abort_start", At: now,
 			Reason: truncateRunes(req.Reason, 500),
 		})
-		b.Status = BatchPending
 	}
+	b.DispatchRetries++
 	b.SessionID = ""
 	b.Deadline, b.DispatchedAt, b.Frozen, b.RemainingMs = 0, 0, false, 0
 	b.Report = nil
+	if b.DispatchRetries >= MaxDispatchRetries {
+		b.Status = BatchBlocked
+		b.FailureReason = ReasonDispatchUnavailable
+		detail := fmt.Sprintf("连续 %d 次起轮失败（宿主不可用/建会话失败），最后一次：%s",
+			b.DispatchRetries, truncateRunes(req.Reason, 300))
+		e.enqueueArbitrationLocked(o, b.ID, ReasonDispatchUnavailable, detail, now)
+		e.store.AppendLog(o.ID, LogEntry{Kind: "dispatch-failed", Batch: b.ID, Why: detail})
+	} else {
+		b.Status = BatchPending
+	}
 	o.UpdatedAt = now
 	applyDeferredStatusLocked(o)
 	if err := e.store.Save(o); err != nil {
@@ -1926,8 +1934,8 @@ func (e *Engine) applyReportLocked(o *Orchestration, b *Batch, report *Report, t
 		}
 		b.Report = report
 		b.Receipts = append(b.Receipts, ReportReceipt{Attempt: b.Attempts, ReportID: report.ReportID, Digest: digest, Result: result, At: now})
-		if b.Kind == KindReview {
-			e.applyReviewReportLocked(o, b, report, now)
+		if b.FinalReview {
+			e.applyFinalReviewReportLocked(o, b, report, now)
 		} else {
 			// 无论有没有 verify 命令，都先进入 verifying：静默屏障要求「无写入者」才继续，
 			// 没有 verify 的批次由 tick 在屏障解除后直接开审查/完成。
@@ -1984,54 +1992,6 @@ func (e *Engine) applyReportLocked(o *Orchestration, b *Batch, report *Report, t
 		return "", fmt.Errorf("status 必须是 done / blocked / awaiting_user")
 	}
 	return result, nil
-}
-
-func (e *Engine) applyReviewReportLocked(o *Orchestration, review *Batch, report *Report, now int64) {
-	if review.FinalReview {
-		e.applyFinalReviewReportLocked(o, review, report, now)
-		return
-	}
-	work := findBatch(o, review.ReviewOf)
-	review.Review = report.Review
-	if work == nil {
-		review.Status = BatchDone
-		return
-	}
-	rv := report.Review
-	blocking := rv != nil && len(rv.Blocking) > 0
-	shouldFix := rv != nil && len(rv.ShouldFix) > 0
-	if !blocking && !shouldFix {
-		review.Status = BatchDone
-		work.Review = rv
-		e.finishWorkLocked(o, work, now)
-		e.store.AppendLog(o.ID, LogEntry{Kind: "review-pass", Batch: review.ID, Why: "审查通过，工作批次完成"})
-		return
-	}
-	problems := []ReviewIssue{}
-	if rv != nil {
-		problems = append(problems, rv.Blocking...)
-		problems = append(problems, rv.ShouldFix...)
-	}
-	review.Status = BatchDone
-	o.Stats.Rework++
-	lastSession := work.SessionID
-	work.Status = BatchPending
-	work.FailureReason = ReasonReviewFailed
-	work.Review = rv
-	work.SessionID = ""
-	work.Report = nil
-	work.Deadline, work.Frozen = 0, false
-	work.History = append(work.History, HistoryEntry{
-		Attempt: work.Attempts, SessionID: lastSession, Status: ReasonReviewFailed, At: now,
-		Problems: problems, ReportID: review.Report.ReportID,
-		Reason: truncateRunes(report.Notes, 800),
-	})
-	if work.Attempts >= effectiveMaxAttempts(o) {
-		work.Status = BatchFailed
-		o.Stats.Failed++
-		e.enqueueArbitrationLocked(o, work.ID, ReasonReviewFailed, "审查提出返工且 attempts 已用尽", now)
-	}
-	e.store.AppendLog(o.ID, LogEntry{Kind: "review-rework", Batch: work.ID, Why: fmt.Sprintf("审查阻断 %d 项 / 应修 %d 项", len(rv.Blocking), len(rv.ShouldFix))})
 }
 
 // applyFinalReviewReportLocked 处理终审结论：通过则 done；有阻断/应修则停下交人，
@@ -2110,6 +2070,7 @@ func (e *Engine) control(req ControlRequest, sessionID string, arbiter bool, wor
 			for i := range o.Batches {
 				if o.Batches[i].Status == BatchCancelled {
 					o.Batches[i].Status = BatchPending
+					o.Batches[i].DispatchRetries = 0
 				}
 			}
 		}
@@ -2169,7 +2130,24 @@ func (e *Engine) control(req ControlRequest, sessionID string, arbiter bool, wor
 				return ControlResult{}, err
 			}
 		}
+		// 逐批审查只能在被审 work 处于 reviewing 时派发。存量编排里如果在其它状态
+		// 重派旧 review，会永远 pending（并连带终审永不起来），直接按失效跳过。
+		if b.Kind == KindReview && !b.FinalReview {
+			work := findBatch(o, b.ReviewOf)
+			if work == nil || work.Status != BatchReviewing {
+				b.Status = BatchSkipped
+				b.SessionID = ""
+				b.FailureReason = ""
+				b.History = append(b.History, HistoryEntry{
+					Attempt: b.Attempts, Status: BatchSkipped, At: now,
+					Reason: "重派时被审批次已不在审查态，审查批次自动跳过",
+				})
+				e.store.AppendLog(o.ID, LogEntry{Kind: "retry", Batch: b.ID, Why: "被审批次不在 reviewing，审查批次置 skipped"})
+				break
+			}
+		}
 		b.Status = BatchPending
+		b.DispatchRetries = 0
 		b.Attempts = 0
 		b.FailureReason = ""
 		b.Report = nil
@@ -2302,6 +2280,7 @@ func (e *Engine) control(req ControlRequest, sessionID string, arbiter bool, wor
 		}
 	}
 	applyDeferredStatusLocked(o)
+	pruneResolvedArbitrationLocked(o)
 	o.UpdatedAt = now
 	if err := e.store.Save(o); err != nil {
 		e.mu.Unlock()
@@ -2436,20 +2415,6 @@ func (e *Engine) ReportArbiterUsage(id, sessionID string, generation int, used, 
 	if reason != "" {
 		e.emit(handoffEventName, payload)
 	}
-}
-
-// RequestHandoff 仲裁者失效时请求前端开新会话接管。
-func (e *Engine) requestHandoffLocked(o *Orchestration, reason string) {
-	o.Arbiter.Misses++
-	if o.Arbiter.Misses < o.Policy.ArbiterMissLimit {
-		return
-	}
-	o.Arbiter.Misses = 0
-	e.emit(handoffEventName, map[string]any{
-		"root": workspaceRoot(o), "orchestrationId": o.ID, "sessionId": o.Arbiter.SessionID,
-		"generation": o.Arbiter.Generation, "reason": reason,
-	})
-	e.store.AppendLog(o.ID, LogEntry{Kind: "arbiter-handoff-request", Why: reason})
 }
 
 func statusLabelForNotice(status string) string {

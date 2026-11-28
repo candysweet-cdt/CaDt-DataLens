@@ -430,3 +430,16 @@ test('编排批次会话紧跟发起会话，parentSessionId 优先于活跃度�
     const orphan = [{id: 'child', orchestration: {role: 'work', parentSessionId: 'gone'}}];
     assert.deepEqual(orderSessionsWithOrchestration(orphan).map((s) => s.id), ['child']);
 });
+
+test('编排批次子项按计划顺序排列，review 紧跟其 work', () => {
+    const list = [
+        {id: 'parent', title: '发起'},
+        {id: 'review-b', orchestration: {role: 'review', parentSessionId: 'parent', batchId: 'review-B', order: 1.5}},
+        {id: 'work-b', orchestration: {role: 'work', parentSessionId: 'parent', batchId: 'B', order: 1}},
+        {id: 'review-a', orchestration: {role: 'review', parentSessionId: 'parent', batchId: 'review-A', order: 0.5}},
+        {id: 'work-a', orchestration: {role: 'work', parentSessionId: 'parent', batchId: 'A', order: 0}},
+        {id: 'final', orchestration: {role: 'review', parentSessionId: 'parent', batchId: 'final-1', order: 1000}},
+    ];
+    assert.deepEqual(orderSessionsWithOrchestration(list).map((s) => s.id),
+        ['parent', 'work-a', 'review-a', 'work-b', 'review-b', 'final']);
+});

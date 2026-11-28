@@ -38,6 +38,9 @@ func ValidatePlan(req PlanRequest) (*PlanRequest, []string) {
 		add("批次过多：%d（上限 %d）", len(req.Batches), MaxWorkBatches)
 	}
 	policy := defaultPolicy(req.Policy)
+	// 逐批审查已取消：质量门只由全部收尾后的终审统一做。字段保留仅为旧存档 / 旧前端兼容，
+	// 一律在入口强制关掉，避免有人绕过前端把已删除的执行路径重新打开。
+	policy.Review = false
 	if policy.Scope != "read" && policy.Scope != "edit" && policy.Scope != "auto" && policy.Scope != "full" {
 		add("执行会话权限档无效：%q", policy.Scope)
 	}
@@ -381,23 +384,8 @@ func readyBatchIDs(o *Orchestration, includeReviews bool) []string {
 			if !includeReviews || !b.Activated {
 				continue
 			}
-			// 终审是“全部 work 收尾后”的独立阶段：逐批审查也必须已经收尾，
-			// 否则会审到仍在返工的移动目标。
-			if !allWorkDoneOrSkipped(o) || !normalReviewsTerminal(o) {
-				continue
-			}
-		} else if b.Kind == KindReview {
-			if !includeReviews || !b.Activated {
-				continue
-			}
-			// 只有被审 work 正在 reviewing 时才派审查；否则旧的 activated review 会在
-			// 恢复编排 / 返工空窗里抢跑，审到未完成甚至不存在的改动。
-			work := findBatch(o, b.ReviewOf)
-			if work == nil || work.Status != BatchReviewing {
-				continue
-			}
-			// 正在等工作批次审查的 review 批次允许在屏障内启动；其它 verify 屏障仍拦住。
-			if barrier && !reviewingWork[b.ReviewOf] {
+			// 终审是「全部 work 收尾后」的独立阶段，没有逐批审查需要等。
+			if !allWorkDoneOrSkipped(o) {
 				continue
 			}
 		} else if barrier || reviewBarrier {

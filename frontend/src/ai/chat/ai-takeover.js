@@ -612,7 +612,7 @@ export function createAITakeover(ctx) {
             barIcon.innerHTML = iconSvg('branch', 13);
             const barText = document.createElement('span');
             barText.className = 'ai-takeover-bar-text';
-            barText.textContent = '编排计划待批准' + (record.subtitle ? ' · ' + record.subtitle : '');
+            barText.textContent = (record.pendingText || '编排计划待批准') + (record.subtitle ? ' · ' + record.subtitle : '');
             const chev = document.createElement('span');
             chev.className = 'ai-takeover-collapse';
             chev.innerHTML = AI_CHEVRON_SVG;

@@ -12,7 +12,7 @@ import {
     formatElapsed, isTerminalStatus, ownsFromInput, ownsToInput,
     statusLabel, summarizeView,
 } from './orchestration-model.js';
-import {buildExecutionGraph, renderExecutionGraph} from './orchestration-graph.js';
+import {buildExecutionGraph, dependencyWaves, renderExecutionGraph} from './orchestration-graph.js';
 
 function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -57,6 +57,9 @@ export function createOrchestrationDomain(deps) {
     const boards = new Set();
     const inflightClaims = new Set();
     const handoffInFlight = new Set();
+    // 会话列表投影的请求序号：多次 OrchestrationGet 并发时只让最新一次落表，避免旧快照
+    // 后到把批次状态倒回上一轮（实测会出现看板已 done、会话列表还停在 running）。
+    const projectionSeq = new Map();
 
     function api() {
         if (!backend) throw new Error('后端不可用');
@@ -117,6 +120,41 @@ export function createOrchestrationDomain(deps) {
 
     // ---------- 审批卡 ----------
 
+    // 编排控制确认：走 composer 接管卡（不弹居中 dialog）；正文只读，底部确认/取消。
+    function controlApprovalRecord(spec) {
+        return {
+            title: '编排控制',
+            subtitle: spec.label || '',
+            pendingText: '编排控制待确认',
+            mode: 'control',
+            mount(body, foot, api) {
+                body.textContent = '';
+                foot.textContent = '';
+                const box = el('div', 'orch-control-approval');
+                box.append(
+                    el('div', 'orch-control-action', 'orchestration_control · ' + (spec.label || '')),
+                    el('div', 'orch-control-text', spec.message || ''),
+                    el('div', 'orch-muted', '确认后会立即执行；取消则本次动作不生效。'),
+                );
+                body.appendChild(box);
+                const cancel = iconButton('取消', '', 'dlg-btn', () => api.finish(false));
+                const ok = iconButton('确认执行', 'check', 'dlg-btn ' + (spec.danger ? 'danger' : 'primary'),
+                    () => api.finish(true));
+                foot.append(el('span', 'orch-spacer'), cancel, ok);
+            },
+        };
+    }
+
+    async function requestControlApproval(session, toolMessage, spec) {
+        const ai = aiPanel();
+        const bridge = ai && ai.bridgeRequestOrchestrationControlApproval;
+        if (typeof bridge !== 'function' || !toolMessage) {
+            return confirm(spec.message, '确认执行', '编排控制', spec.danger ? 'danger' : '');
+        }
+        const res = await bridge(session, toolMessage, controlApprovalRecord(spec));
+        return !!(res && res.approved);
+    }
+
     // 编排工具用的确认框：必须能拿到取消结果（原生 confirmAction 是回调式，没有 cancel 回调）。
     function confirm(message, okLabel, title, variant) {
         return new Promise((resolve) => {
@@ -147,6 +185,8 @@ export function createOrchestrationDomain(deps) {
         const head = el('div', 'orch-dialog-head');
         head.appendChild(el('div', 'orch-dialog-title', titleText));
         const close = iconButton('', 'close', 'orch-icon-btn', () => closeDialog());
+        close.setAttribute('aria-label', '关闭');
+        close.dataset.tip = '关闭';
         head.appendChild(close);
         const body = el('div', 'orch-dialog-body');
         const foot = el('div', 'orch-dialog-foot');
@@ -248,7 +288,6 @@ export function createOrchestrationDomain(deps) {
         let lastPreview = null;
         let continueBtn = null;
         let submitBtn = null;
-        let review = null;
         let finalReview = null;
         let finalCount = null;
         let finalCountRow = null;
@@ -256,7 +295,6 @@ export function createOrchestrationDomain(deps) {
         let snapshot = null;
         let allowModels = null;
         let modelList = null;
-        let reviewModel = null;
         let finalReviewModel = null;
         let modelRows = [];
 
@@ -377,11 +415,10 @@ export function createOrchestrationDomain(deps) {
             const finalReviewOn = !!(finalReview && finalReview.checked);
             const policy = {
                 ...basePlan.policy,
-                review: !!(review && review.checked),
-                reviewExplicit: true,
+                // 逐批审查已取消：不再下传 review / reviewExplicit（后端 ValidatePlan 也强制关）。
                 allowWorkerModels: !!(allowModels && allowModels.checked),
                 allowedWorkerModels: (allowModels && allowModels.checked) ? allowed.slice(0, 5) : [],
-                reviewModel: allowModels && allowModels.checked && reviewModel ? reviewModel.value.trim() : '',
+                reviewModel: '',
                 finalReview: finalReviewOn,
                 finalReviewCount: finalReviewOn
                     ? Math.max(1, Math.min(3, Number(finalCount && finalCount.value) || 1)) : 0,
@@ -399,15 +436,12 @@ export function createOrchestrationDomain(deps) {
 
         const syncModelInputs = () => {
             const allowed = !!(allowModels && allowModels.checked);
-            const reviewOn = !!(review && review.checked);
             const finalOn = !!(finalReview && finalReview.checked);
             if (modelList) modelList.disabled = !allowed;
-            if (reviewModel) reviewModel.disabled = !allowed;
             if (finalReviewModel) finalReviewModel.disabled = !allowed || !finalOn;
             for (const row of modelRows) {
                 if (!row) continue;
                 if (row.dataset.role === 'allowed') row.style.display = allowed ? '' : 'none';
-                else if (row.dataset.role === 'review') row.style.display = allowed && reviewOn ? '' : 'none';
                 else if (row.dataset.role === 'final') row.style.display = allowed && finalOn ? '' : 'none';
             }
         };
@@ -479,12 +513,10 @@ export function createOrchestrationDomain(deps) {
             policyCard.appendChild(chips);
 
             const toggles = el('div', 'orch-policy-toggles');
-            const reviewBox = createCheckbox({checked: basePlan.policy.review !== false, label: '逐批审查门'});
             const finalReviewBox = createCheckbox({
                 checked: basePlan.policy.finalReview === true,
                 label: '全部完成后开子代理终审',
             });
-            review = reviewBox.control;
             finalReview = finalReviewBox.control;
             finalCount = createInput({
                 type: 'number', min: 1, max: 3,
@@ -492,7 +524,7 @@ export function createOrchestrationDomain(deps) {
             }).control;
             finalCountRow = labelRow('终审数量', finalCount);
             finalCountRow.classList.add('orch-final-count-row');
-            toggles.append(reviewBox.element, finalReviewBox.element, finalCountRow);
+            toggles.append(finalReviewBox.element, finalCountRow);
             policyCard.appendChild(toggles);
 
             const advanced = el('details', 'orch-advanced orch-plan-advanced');
@@ -501,23 +533,19 @@ export function createOrchestrationDomain(deps) {
             const allowModelsBox = createCheckbox({checked: false, label: '允许为批次/审查/终审指定模型'});
             allowModels = allowModelsBox.control;
             modelList = createInput({placeholder: '模型 ref（账号id|模型id），逗号分隔，最多 5 条'}).control;
-            reviewModel = createInput({placeholder: '留空 = 继承母会话'}).control;
             finalReviewModel = createInput({placeholder: '留空 = 继承母会话'}).control;
             const autoRunBox = createCheckbox({checked: false, label: '全程由 agent 自主执行（禁止 awaiting_user）'});
             autoRun = autoRunBox.control;
             const snapshotBox = createCheckbox({checked: false, label: '编排开始前创建快照（大项目可能几百 MB）'});
             snapshot = snapshotBox.control;
             const allowedRow = labelRow('允许的模型', modelList);
-            const reviewModelRow = labelRow('审查模型', reviewModel);
             const finalModelRow = labelRow('终审模型', finalReviewModel);
             allowedRow.dataset.role = 'allowed';
-            reviewModelRow.dataset.role = 'review';
             finalModelRow.dataset.role = 'final';
-            modelRows = [allowedRow, reviewModelRow, finalModelRow];
+            modelRows = [allowedRow, finalModelRow];
             advGrid.append(
                 allowModelsBox.element,
                 allowedRow,
-                reviewModelRow,
                 finalModelRow,
                 autoRunBox.element,
                 snapshotBox.element,
@@ -535,7 +563,6 @@ export function createOrchestrationDomain(deps) {
                 renderGraph();
             });
             finalCount.addEventListener('input', renderGraph);
-            review.addEventListener('change', syncModelInputs);
             allowModels.addEventListener('change', syncModelInputs);
             updateFinalCountVisibility();
 
@@ -571,7 +598,7 @@ export function createOrchestrationDomain(deps) {
                 if (api && typeof api.continue === 'function') api.continue();
                 else if (api) api.finish(false);
             });
-            submitBtn = iconButton('执行编排', 'check', 'dlg-btn primary', () => { submit().catch(() => {}); });
+            submitBtn = iconButton('执行编排', '', 'dlg-btn primary', () => { submit().catch(() => {}); });
             footNodes.push(footHint, el('span', 'orch-spacer'), continueBtn, submitBtn);
             preview().catch(() => {});
         };
@@ -648,9 +675,6 @@ export function createOrchestrationDomain(deps) {
         }
         if (rawPolicy.budgetTokens == null && Number(defaults.orchBudgetTokens) > 0) {
             basePlan.policy.budgetTokens = Number(defaults.orchBudgetTokens);
-        }
-        if (rawPolicy.review == null) {
-            basePlan.policy.review = defaults.orchReview !== false;
         }
         if (rawPolicy.finalReview == null) {
             basePlan.policy.finalReview = defaults.orchFinalReview === true;
@@ -738,7 +762,7 @@ export function createOrchestrationDomain(deps) {
                 return base + '\n已登记等待用户回答，请结束本轮，不要再继续执行本批；用户回答后会由编排器重新派发。';
             }
             if (payload.status === 'done') {
-                return base + '\n编排器将自行复跑验收并派独立审查；本轮可以收尾。';
+                return base + '\n编排器将自行复跑验收；用户开启终审时会在全部批次收尾后派独立只读终审。本轮可以收尾。';
             }
             return base + '\n已交给编排器/仲裁者，本轮可以收尾。';
         }
@@ -753,9 +777,17 @@ export function createOrchestrationDomain(deps) {
             });
             const label = String(req.action || '');
             const affected = label === 'stop' ? '这会停止全部执行会话与待派批次（已完成改动保留）。' : '这会改变用户已批准的编排边界。';
-            const ok = await confirm(`执行 orchestration_control ${label}？
-${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
-            if (!ok) return '用户取消了编排控制动作。';
+            // 完全权限下不再为普通控制动作弹卡；stop 会终止其他会话，仍保留一次确认。
+            const fullScope = String(session.scope || '') === 'full';
+            if (!fullScope || label === 'stop') {
+                const ok = await requestControlApproval(session, ctx && ctx.toolMessage, {
+                    label,
+                    message: `执行 orchestration_control ${label}？
+${affected}`,
+                    danger: label === 'stop',
+                });
+                if (!ok) return '用户取消了编排控制动作。';
+            }
             const res = await call('OrchestrationControl', JSON.stringify(req));
             return '编排控制已受理：' + (res && res.message ? res.message : statusLabel(res && res.status));
         }
@@ -829,8 +861,12 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
         const key = payload.orchestrationId + '#' + payload.batchId;
         if (inflightClaims.has(key)) return;
         inflightClaims.add(key);
+        let claim = null;
+        let ai = null;
+        let session = null;
+        let start = null;
         try {
-            const claim = await call('OrchestrationClaimBatch', JSON.stringify({
+            claim = await call('OrchestrationClaimBatch', JSON.stringify({
                 orchestrationId: payload.orchestrationId,
                 batchId: payload.batchId,
                 expectedAttempt: payload.expectedAttempt,
@@ -839,22 +875,24 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
             const view = await call('OrchestrationGet', payload.orchestrationId);
             const o = view && view.orchestration;
             const batch = view && (view.batches || []).find((b) => b.id === payload.batchId);
-            const ai = ensureAI();
+            ai = ensureAI();
             if (!o || !batch || !ai || !ai.bridgeCreateOrchestrationSession) {
-                await call('OrchestrationAbortStart', JSON.stringify({
-                    orchestrationId: payload.orchestrationId, batchId: payload.batchId,
-                    token: claim.claimToken, reason: '宿主不可用',
-                })).catch?.(() => {});
-                return;
+                throw new Error('编排详情或派发宿主不可用');
             }
             const role = batch.kind === 'review' ? 'review' : 'work';
+            const allBatches = (view.batches || []);
+            const batchOrder = batch.kind === 'review'
+                ? (batch.finalReview
+                    ? 1000 + allBatches.findIndex((b) => b.id === batch.id)
+                    : Math.max(0, allBatches.findIndex((b) => b.kind === 'work' && b.id === batch.reviewOf)) + 0.5)
+                : Math.max(0, allBatches.findIndex((b) => b.id === batch.id));
             // owns 为空的 work 是只读设计批次：会话档位也建成 read，与后端 StartResponse 对齐。
             const scope = (role === 'review' || !(batch.owns || []).length)
                 ? 'read' : ((o.policy && o.policy.scope) || 'edit');
             const title = role === 'review'
                 ? ((batch.finalReview ? '终审 · ' : '审查 · ') + o.title)
                 : (batch.title || '编排批次');
-            const session = await ai.bridgeCreateOrchestrationSession({
+            session = await ai.bridgeCreateOrchestrationSession({
                 title,
                 callerSessionId: o.parentSessionId,
                 workspace: (o.workspaces && o.workspaces[0]) || '',
@@ -862,23 +900,25 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
                 group: o.groupSnapshot || '',
                 modelRef: effectiveModel(view, batch),
             });
-            let start = null;
-            try {
-                start = await call('OrchestrationStartBatch', JSON.stringify({
-                    orchestrationId: payload.orchestrationId,
-                    batchId: payload.batchId,
-                    claimToken: claim.claimToken,
-                    sessionId: session.id,
-                }));
-                await ai.bridgeAttachOrchestrationSession(session.id, {
-                    id: o.id, batchId: batch.id, attempt: start.attempt, role,
-                    parentSessionId: o.parentSessionId, owns: batch.owns || [], generation: 0,
-                }, start.executionToken);
-                const turn = await ai.bridgeOrchestrationStartTurn(session.id, start.prompt);
-                if (turn && turn.ok === false) {
-                    throw new Error('起轮被拒：' + (turn.reason || '未知原因'));
-                }
-            } catch (e) {
+            start = await call('OrchestrationStartBatch', JSON.stringify({
+                orchestrationId: payload.orchestrationId,
+                batchId: payload.batchId,
+                claimToken: claim.claimToken,
+                sessionId: session.id,
+            }));
+            await ai.bridgeAttachOrchestrationSession(session.id, {
+                id: o.id, batchId: batch.id, attempt: start.attempt, role,
+                parentSessionId: o.parentSessionId, owns: batch.owns || [], generation: 0,
+                order: batchOrder,
+            }, start.executionToken);
+            const turn = await ai.bridgeOrchestrationStartTurn(session.id, start.prompt);
+            if (turn && turn.ok === false) {
+                throw new Error('起轮被拒：' + (turn.reason || '未知原因'));
+            }
+        } catch (e) {
+            // claim 之后任何一步失败都必须回滚，否则批次停在 dispatched，90 秒后又重发一次；
+            // 连续基础设施失败由后端 AbortStart 计数并最终 blocked，交仲裁者处置。
+            if (claim && claim.ok && claim.claimToken) {
                 const token = (start && start.executionToken) || claim.claimToken;
                 try {
                     await call('OrchestrationAbortStart', JSON.stringify({
@@ -896,16 +936,19 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
                         } catch (turnErr) {}
                     }
                 }
-                if (ai.bridgeDiscardOrchestrationSession) ai.bridgeDiscardOrchestrationSession(session.id);
-                notify('编排派发失败：' + ((e && e.message) || e), true);
             }
+            if (session && session.id && ai && ai.bridgeDiscardOrchestrationSession) {
+                ai.bridgeDiscardOrchestrationSession(session.id);
+            }
+            notify('编排派发失败：' + ((e && e.message) || e), true);
         } finally {
             inflightClaims.delete(key);
         }
     }
 
     async function handleArbiterEvent(payload) {
-        if (!payload || !acceptsWorkspace(payload.root, getWorkspace())) return;
+        // harness 聚焦别的根时也要处理：事件按 payload.root 归属，不按当前视图过滤。
+        if (!payload || (!isMultiWorkspace() && !acceptsWorkspace(payload.root, getWorkspace()))) return;
         const ai = ensureAI();
         if (payload.sessionId) {
             let delivered = null;
@@ -929,7 +972,7 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
     }
 
     async function performHandoff(payload) {
-        if (!payload || !acceptsWorkspace(payload.root, getWorkspace())) return;
+        if (!payload || (!isMultiWorkspace() && !acceptsWorkspace(payload.root, getWorkspace()))) return;
         if (handoffInFlight.has(payload.orchestrationId)) return;
         handoffInFlight.add(payload.orchestrationId);
         const ai = ensureAI();
@@ -981,7 +1024,7 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
     }
 
     function handleStop(payload) {
-        if (!payload || !acceptsWorkspace(payload.root, getWorkspace())) return;
+        if (!payload || (!isMultiWorkspace() && !acceptsWorkspace(payload.root, getWorkspace()))) return;
         const ai = aiPanel();
         if (ai && ai.bridgeStopOrchestrationSessions) {
             ai.bridgeStopOrchestrationSessions(payload.sessionIds || []);
@@ -1007,6 +1050,13 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
     // 会话列表投影：父会话显示进度、批次子项显示状态。事件里的 summary 已够父行用；
     // 子项状态再拉一次详情（失败静默，下一次事件会补）。
     // 启动 / 面板初始化后补一次投影：重启后没有历史事件，父会话进度与失败自动展开仍需恢复。
+    function applyViewProjection(view) {
+        const ai = aiPanel();
+        const o = view && view.orchestration;
+        if (!ai || !ai.bridgeApplyOrchestrationSnapshot || !o || !o.id) return;
+        ai.bridgeApplyOrchestrationSnapshot(o.id, o.parentSessionId || '', null, view.batches || []);
+    }
+
     async function bootstrapSessionProjections() {
         const ai = aiPanel();
         if (!ai || !ai.bridgeApplyOrchestrationSnapshot) return;
@@ -1014,7 +1064,10 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
             const list = (await call('OrchestrationList')) || [];
             for (const item of list) {
                 try {
+                    const seq = (projectionSeq.get(item.id) || 0) + 1;
+                    projectionSeq.set(item.id, seq);
                     const view = await call('OrchestrationGet', item.id);
+                    if (projectionSeq.get(item.id) !== seq) continue;
                     if (view && view.orchestration) {
                         ai.bridgeApplyOrchestrationSnapshot(item.id, view.orchestration.parentSessionId || '',
                             item, view.batches || []);
@@ -1028,9 +1081,11 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
         if (!payload || !payload.orchestrationId) return;
         const ai = aiPanel();
         if (!ai || !ai.bridgeApplyOrchestrationSnapshot) return;
+        const seq = (projectionSeq.get(payload.orchestrationId) || 0) + 1;
+        projectionSeq.set(payload.orchestrationId, seq);
         let view = null;
         try { view = await call('OrchestrationGet', payload.orchestrationId); } catch (e) {}
-        if (!view) return;
+        if (!view || projectionSeq.get(payload.orchestrationId) !== seq) return;
         const o = view.orchestration || {};
         ai.bridgeApplyOrchestrationSnapshot(payload.orchestrationId, o.parentSessionId || '', payload.summary || null, view.batches || []);
     }
@@ -1194,6 +1249,113 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
         }
     }
 
+    function boardListSignature(list) {
+        return (Array.isArray(list) ? list : []).map((item) => [
+            item.id, item.title, item.status, item.doneWork, item.totalWork,
+            item.failedWork, item.hasAttention ? 1 : 0,
+        ].join(':')).join('|');
+    }
+
+    function boardDetailSignature(view) {
+        const o = (view && view.orchestration) || {};
+        const batches = (view && view.batches) || [];
+        const events = (view && view.recentEvents) || [];
+        const lastEvent = events.length ? events[events.length - 1] : null;
+        return [
+            o.id, o.status, o.title || '', o.goal || '',
+            o.snapshot ? o.snapshot.name || '1' : '',
+            o.stats ? [o.stats.done, o.stats.failed, o.stats.rework, o.stats.tokensUsed, o.stats.wallMs].join('/') : '',
+            o.arbiter && Array.isArray(o.arbiter.handoffs) ? o.arbiter.handoffs.length : 0,
+            ...batches.map((b) => [
+                b.id, b.status, b.attempts, b.failureReason || '', b.sessionId || '',
+                b.title || '', b.deadline ? Math.max(0, Math.ceil((b.deadline - Date.now()) / 60000)) : 0,
+                b.remainingMs || 0, b.frozen ? 1 : 0,
+                b.question ? (b.question.text || '1') : '',
+            ].join(':')),
+            lastEvent ? [lastEvent.at, lastEvent.kind, lastEvent.batch || ''].join(':') : '',
+        ].join('|');
+    }
+
+    function markBoardSelected(board) {
+        if (!board.listCol) return;
+        for (const row of board.listCol.children) {
+            if (!row.dataset || !row.dataset.orchId) continue;
+            row.classList.toggle('active', row.dataset.orchId === board.selected);
+        }
+    }
+
+    function renderBoardList(board, list) {
+        const host = board.listCol;
+        if (!host) return;
+        host.textContent = '';
+        board.listRendered = true;
+        if (!list.length) {
+            host.appendChild(el('div', 'orch-empty',
+                '当前工作区还没有编排。在 AI 会话里用 orchestration_plan 发起，或查看帮助了解与群聊/子代理的边界。'));
+            return;
+        }
+        for (const item of list) {
+            const row = el('button', 'orch-list-row' + (item.id === board.selected ? ' active' : ''));
+            row.type = 'button';
+            row.dataset.orchId = item.id;
+            const ratio = item.totalWork ? item.doneWork + '/' + item.totalWork : '0/0';
+            row.append(
+                el('span', 'orch-row-title', item.title || item.id),
+                el('span', 'orch-row-meta',
+                    statusLabel(item.status) + ' · ' + ratio + (item.hasAttention ? ' · 需处理' : '')),
+            );
+            row.classList.toggle('attention', !!item.hasAttention);
+            row.addEventListener('click', () => {
+                board.selected = item.id;
+                board.detailSig = '';
+                board.detailSelected = '';
+                markBoardSelected(board);
+                board.refresh().catch(() => {});
+            });
+            host.appendChild(row);
+        }
+    }
+
+    function appendBoardGraph(host, view) {
+        const o = (view && view.orchestration) || {};
+        const works = (view && view.batches || []).filter((b) => b.kind !== 'review');
+        if (!works.length) return;
+        const policy = o.policy || {};
+        const waves = dependencyWaves(works);
+        const layout = buildExecutionGraph({batches: works}, {waves}, {
+            finalReview: policy.finalReview === true,
+            finalReviewCount: Number(policy.finalReviewCount) || 1,
+            maxParallel: Number(policy.maxParallel) || 2,
+        });
+        const card = el('div', 'orch-graph-card orch-board-graph');
+        const head = el('div', 'orch-graph-head');
+        head.appendChild(el('div', 'orch-graph-title', '执行顺序'));
+        const legend = el('div', 'orch-graph-legend');
+        const item = (cls, text) => {
+            const node = el('span', 'orch-legend-item');
+            node.append(el('i', cls), document.createTextNode(text));
+            return node;
+        };
+        legend.append(
+            item('orch-legend-line', '依赖'),
+            item('orch-legend-dash', '终审'),
+            item('orch-legend-parallel', '∥ 同列并行'),
+        );
+        head.appendChild(legend);
+        const scroll = el('div', 'orch-graph-scroll');
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', 'orch-graph-svg');
+        renderExecutionGraph(svg, layout);
+        // 看板常与 AI 面板并排，详情列经常只有 500–700px：允许图缩到 560px，
+        // 否则用户只能看到第一波；更窄时再横向滚动。
+        svg.style.minWidth = Math.min(layout.width, 560) + 'px';
+        scroll.appendChild(svg);
+        const note = el('div', 'orch-graph-note',
+            '同列可并行，实际派发受并发上限（' + layout.maxParallel + '）与 owns 交集约束；跨列按依赖推进。');
+        card.append(head, scroll, note);
+        host.appendChild(card);
+    }
+
     function renderBoard(board) {
         const {root} = board;
         root.textContent = '';
@@ -1201,79 +1363,113 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
         const wrap = el('div', 'orch-board-wrap');
         root.appendChild(wrap);
         const head = el('div', 'orch-board-head');
+        const dirToggle = document.createElement('button');
+        dirToggle.type = 'button';
+        dirToggle.className = 'orch-board-dir-toggle';
         const title = el('div', 'orch-board-title', '编排');
         const refreshBtn = iconButton('刷新', 'refresh', 'orch-btn orch-btn-ghost', () => board.refresh());
-        head.append(title, el('span', 'orch-spacer'), refreshBtn);
+        head.append(dirToggle, title, el('span', 'orch-spacer'), refreshBtn);
         wrap.appendChild(head);
         const main = el('div', 'orch-board-main');
         const listCol = el('div', 'orch-board-list');
         const detailCol = el('div', 'orch-board-detail');
         main.append(listCol, detailCol);
         wrap.appendChild(main);
+        const applyDirCollapsed = () => {
+            const collapsed = !!board.dirCollapsed;
+            listCol.hidden = collapsed;
+            dirToggle.innerHTML = iconSvg(collapsed ? 'panel-expand' : 'panel-collapse', 16);
+            dirToggle.dataset.tip = collapsed ? '展开编排目录' : '收起编排目录';
+            dirToggle.setAttribute('aria-label', dirToggle.dataset.tip);
+            dirToggle.setAttribute('aria-expanded', String(!collapsed));
+        };
+        dirToggle.addEventListener('click', () => {
+            board.dirCollapsed = !board.dirCollapsed;
+            applyDirCollapsed();
+        });
+        applyDirCollapsed();
+        board.listCol = listCol;
+        board.detailCol = detailCol;
+        board.listSig = '';
+        board.listRendered = false;
+        board.detailSig = '';
+        board.detailSelected = '';
         listCol.textContent = '正在读取…';
         detailCol.textContent = '选择一条编排查看详情。';
+
+        let refreshSeq = 0;
         board.refresh = async () => {
             if (!root.isConnected) return;
+            // 事件刷新与 5 秒轮询可能重叠；只让最后一次读取回写，避免旧快照把
+            // 新建 attempt 的会话当旧会话归档、或把详情回退到上一状态。
+            const seq = ++refreshSeq;
+            let list;
             try {
                 const all = (await call('OrchestrationList')) || [];
-                // 多工作区 harness 的主窗口没有单一 workspace，后端会返回全部；
-                // 看板仍按自己的 workspace 过滤，避免 A 仓库面板列出 B 仓库的编排。
-                const list = board.workspace
+                if (seq !== refreshSeq) return;
+                list = board.workspace
                     ? all.filter((item) => acceptsWorkspace(item.workspace, board.workspace))
                     : all;
-                listCol.textContent = '';
-                if (!list.length) {
-                    listCol.appendChild(el('div', 'orch-empty', '当前工作区还没有编排。在 AI 会话里用 orchestration_plan 发起，或查看帮助了解与群聊/子代理的边界。'));
-                    return;
-                }
-                for (const item of list) {
-                    const row = el('button', 'orch-list-row' + (item.id === board.selected ? ' active' : ''));
-                    row.type = 'button';
-                    const ratio = item.totalWork ? item.doneWork + '/' + item.totalWork : '0/0';
-                    row.append(
-                        el('span', 'orch-row-title', item.title || item.id),
-                        el('span', 'orch-row-meta', statusLabel(item.status) + ' · ' + ratio + (item.hasAttention ? ' · 需处理' : '')),
-                    );
-                    row.classList.toggle('attention', !!item.hasAttention);
-                    row.addEventListener('click', () => {
-                        board.selected = item.id;
-                        renderBoard(board);
-                    });
-                    listCol.appendChild(row);
-                }
-                if (!board.selected && list[0]) board.selected = list[0].id;
-                if (board.selected) await renderDetail(detailCol, board);
             } catch (e) {
-                listCol.textContent = '读取失败：' + ((e && e.message) || e);
+                if (seq === refreshSeq && !board.listRendered) listCol.textContent = '读取失败：' + ((e && e.message) || e);
+                return;
             }
+            const listSig = boardListSignature(list);
+            if (listSig !== board.listSig || !board.listRendered) {
+                board.listSig = listSig;
+                renderBoardList(board, list);
+            }
+            if (!list.length) {
+                board.selected = '';
+                board.detailSig = '';
+                board.detailSelected = '';
+                detailCol.textContent = '当前工作区还没有编排。';
+                return;
+            }
+            if (!board.selected || !list.some((item) => item.id === board.selected)) {
+                board.selected = list[0].id;
+                board.detailSig = '';
+                board.detailSelected = '';
+                markBoardSelected(board);
+            }
+            let view;
+            try {
+                view = await call('OrchestrationGet', board.selected);
+            } catch (e) {
+                if (seq === refreshSeq && !board.detailSig) detailCol.textContent = '读取失败：' + ((e && e.message) || e);
+                return;
+            }
+            if (seq !== refreshSeq) return;
+            if (!root.isConnected || board.selected !== (view.orchestration && view.orchestration.id)) return;
+            // 看板轮询本身就是一次最新状态读取：顺手校正会话列表投影，避免漏事件后
+            // 列表徽标永远停在旧批次状态。bridgeApply... 内部按字段去重，不会重复重绘。
+            applyViewProjection(view);
+            const detailSig = boardDetailSignature(view);
+            if (detailSig === board.detailSig && board.detailSelected === board.selected) return;
+            board.detailSig = detailSig;
+            board.detailSelected = board.selected;
+            renderDetail(detailCol, board, view);
         };
         board.refresh().catch(() => {});
     }
 
-    async function renderDetail(host, board) {
-        host.textContent = '正在读取…';
-        let view;
-        try {
-            view = await call('OrchestrationGet', board.selected);
-        } catch (e) {
-            host.textContent = '读取失败：' + ((e && e.message) || e);
-            return;
-        }
+    function renderDetail(host, board, view) {
         const o = view.orchestration;
         host.textContent = '';
         const head = el('div', 'orch-detail-head');
         head.appendChild(el('div', 'orch-detail-title', o.title || o.id));
         const st = el('span', 'orch-state orch-state-' + String(o.status || 'unknown'), statusLabel(o.status));
         head.appendChild(st);
-        if (o.status === 'paused_no_window') head.appendChild(el('span', 'orch-muted', '窗口关闭时自动冻结，不会烧钱；重开窗口后恢复。'));
+        if (o.status === 'paused_no_window') {
+            head.appendChild(el('span', 'orch-muted', '窗口关闭时自动冻结，不会烧钱；重开窗口后恢复。'));
+        }
         host.appendChild(head);
         if (o.goal) host.appendChild(el('div', 'orch-detail-goal', o.goal));
         const ratio = batchDoneRatio(view);
-        const stats = el('div', 'orch-stats',
+        host.appendChild(el('div', 'orch-stats',
             ratio.work + ' 批（审查 ' + ratio.review + '） · attempts/rework ' + (o.stats.rework || 0) +
             ' · ' + (o.stats.tokensUsed || 0) + ' tokens' +
-            (o.snapshot ? ' · 开始前快照 ' + (o.snapshot.name || '有') : ''));
-        host.appendChild(stats);
+            (o.snapshot ? ' · 开始前快照 ' + (o.snapshot.name || '有') : '')));
         const bar = el('div', 'orch-actions');
         if (typeof deps.openOrchestrationTab === 'function') {
             bar.appendChild(iconButton('在新标签页打开', 'new-window', 'orch-btn orch-btn-ghost', () => {
@@ -1285,13 +1481,20 @@ ${affected}`, '确认执行', '编排控制', label === 'stop' ? 'danger' : '');
             ['resolve', '裁决待处理事件'], ['export', '复制报告'],
             ['delete', '删除记录'],
         ];
+        const terminal = isTerminalStatus(o.status);
+        const paused = o.status === 'paused' || o.status === 'paused_no_window';
         for (const [action, label] of controls) {
-            if (action === 'delete' && !isTerminalStatus(o.status)) continue;
+            if (action === 'delete' && !terminal) continue;
             if (action === 'resolve' && !(o.arbitrationQueue || []).some((e) => !e.resolved)) continue;
+            // 终态不再显示暂停/恢复/停止；运行中只给暂停+停止，暂停态才给恢复。
+            if (terminal && ['pause', 'resume', 'stop'].includes(action)) continue;
+            if (action === 'pause' && paused) continue;
+            if (action === 'resume' && !paused) continue;
             bar.appendChild(iconButton(label, action === 'stop' ? 'stop' : (action === 'pause' ? 'pause' : (action === 'export' ? 'copy' : 'play')),
                 'orch-btn' + (action === 'stop' ? ' danger' : ''), () => onBoardAction(board, action, null, view)));
         }
         host.appendChild(bar);
+        appendBoardGraph(host, view);
 
         const batches = el('div', 'orch-batches');
         const works = (view.batches || []).filter((b) => b.kind !== 'review');
@@ -1472,14 +1675,13 @@ export function createOrchestrationHost(deps) {
             'orchestration-dispatch', 'orchestration-changed', 'orchestration-stop',
             'orchestration-arbiter-event', 'orchestration-arbiter-handoff', 'orchestration-audit',
         ]) {
-            if (eventName === 'orchestration-dispatch') {
-                // 派发要跨「当前聚焦根」接收（harness 聚焦别处时仍能认领）；认领互斥在后端。
-                appEvents.onApp(eventName, (payload) => {
-                    ensure().handleEvent(eventName, payload);
-                });
-                continue;
-            }
-            appEvents.onWorkspace(eventName, getWorkspace, (payload) => {
+            // 六类事件都按 payload.root 归属消费，而不是按「当前聚焦根」过滤：
+            // harness 可以停在仓库 B，但仓库 A 的编排仍需要派发、唤醒仲裁、交接与停止。
+            // 普通窗口在这里先按工作区档，等价于 onWorkspace；多工作区 harness 全收，
+            // 具体处理器再按 payload.root 更新对应看板。
+            appEvents.onApp(eventName, (payload) => {
+                if (!payload) return;
+                if (!isMultiWorkspace() && !acceptsWorkspace(payload.root, getWorkspace())) return;
                 ensure().handleEvent(eventName, payload);
             });
         }

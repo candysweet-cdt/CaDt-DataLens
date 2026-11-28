@@ -95,6 +95,12 @@ export function orderSessionsWithOrchestration(list) {
             roots.push(session);
         }
     }
+    // 新批次带 plan 内顺序（work 下标 / review x.5 / 终审 1000+）；旧会话没有 order
+    // 时保持原来的活跃度顺序（稳定排序不改变相对次序）。
+    for (const list of children.values()) {
+        list.sort((a, b) => (Number(a.orchestration && a.orchestration.order) || 0)
+            - (Number(b.orchestration && b.orchestration.order) || 0));
+    }
     const out = [];
     const seen = new Set();
     const walk = (session) => {
@@ -324,6 +330,7 @@ export function createAISessionList(ctx) {
     const sessionUseDisk = ctx.sessionUseDisk;
     // 支线对话动作（阶段 F）：面板经惰性转发注入，缺省时菜单项空操作不报错
     const openSideChat = typeof ctx.openSideChat === 'function' ? ctx.openSideChat : () => {};
+    const openOrchestrationTab = typeof ctx.openOrchestrationTab === 'function' ? ctx.openOrchestrationTab : null;
     const promoteSideChat = typeof ctx.promoteSideChat === 'function' ? ctx.promoteSideChat : () => {};
     // 会话信箱（阶段 H）：未消费条数与清空入口
     const clearMailbox = typeof ctx.clearMailbox === 'function' ? ctx.clearMailbox : () => 0;
@@ -711,6 +718,29 @@ export function createAISessionList(ctx) {
                 badge.textContent = total ? `编排 ${done}/${total}` : '编排';
                 badge.dataset.tip = '编排批次会话（点击右侧箭头展开/收起）';
                 titleRow.appendChild(badge);
+                // 母会话直达编排看板：不占批次折叠箭头的语义，单独一个窗口图标。
+                const childOrch = (orchChildren.get(session.id) || [])
+                    .find((child) => child.orchestration && child.orchestration.id);
+                const orchId = (session.orchestration && session.orchestration.id)
+                    || (session._orchestrationSummary && session._orchestrationSummary.id)
+                    || (childOrch && childOrch.orchestration && childOrch.orchestration.id) || '';
+                if (openOrchestrationTab && orchId) {
+                    const open = document.createElement('button');
+                    open.type = 'button';
+                    open.className = 'ai-session-orch-open';
+                    open.dataset.tip = '打开编排看板';
+                    open.setAttribute('aria-label', '打开编排看板');
+                    open.innerHTML = iconSvg('new-window', 12);
+                    open.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        openOrchestrationTab({
+                            id: orchId,
+                            title: session.title || '编排',
+                            workspace: sessionWorkspacePath(session),
+                        });
+                    });
+                    titleRow.appendChild(open);
+                }
                 const toggle = document.createElement('button');
                 toggle.type = 'button';
                 toggle.className = 'ai-session-orch-toggle';
@@ -967,17 +997,37 @@ export function createAISessionList(ctx) {
                 const showSubHeaders = subgroups.length > 1;
                 const renderBucket = (sub, pageKey) => {
                     const bucketList = sub.sessions;
-                    const total = bucketList.length;
-                    // 过滤时分页失效：命中集本来就小，再藏一批反而像丢结果
-                    let visible = sessionFilterText ? total : Math.min(workspaceGroupVisibleCounts.get(pageKey) || AI_SESSION_GROUP_PAGE, total);
-                    // 当前会话即使排在分页之外也保持可见，避免切换后高亮条目凭空消失。
+                    // 分页只数「顶层会话」：编排批次是父会话的子项，展开/收起不能挤掉
+                    // 工作区里其他顶层会话，否则同一组的可见列表会随折叠状态变化。
+                    const topLevel = bucketList.filter((session) => !orchChildOf.has(session.id));
+                    const topIndex = new Map(topLevel.map((session, i) => [session.id, i]));
+                    // 过滤时分页失效：命中集本来就小，再藏一批反而像丢结果。
+                    let visibleTop = sessionFilterText
+                        ? topLevel.length
+                        : Math.min(workspaceGroupVisibleCounts.get(pageKey) || AI_SESSION_GROUP_PAGE, topLevel.length);
+                    // 当前会话即使排在分页之外也保持可见：若当前是批次子项，保留其父行。
                     if (current) {
-                        const activeIndex = bucketList.findIndex((session) => session.id === current.id);
-                        if (activeIndex >= visible) visible = Math.min(total, activeIndex + 1);
+                        const topId = orchChildOf.get(current.id) || current.id;
+                        const activeIndex = topIndex.get(topId);
+                        if (activeIndex != null && activeIndex >= visibleTop) visibleTop = Math.min(topLevel.length, activeIndex + 1);
                     }
-                    for (const session of bucketList.slice(0, visible)) renderItem(session, archived);
-                    if (visible < total) {
-                        const remaining = total - visible;
+                    let shownTop = 0;
+                    for (const session of bucketList) {
+                        if (orchChildOf.has(session.id)) {
+                            const parentId = orchChildOf.get(session.id);
+                            const parentIndex = topIndex.get(parentId);
+                            // 父行还不在当前页时，子项也不渲染；没有父行（过滤/异常）时保留子项，
+                            // 避免当前会话凭空消失。
+                            if (parentIndex != null && parentIndex >= visibleTop) continue;
+                            renderItem(session, archived);
+                            continue;
+                        }
+                        if (shownTop >= visibleTop) break;
+                        renderItem(session, archived);
+                        shownTop += 1;
+                    }
+                    if (visibleTop < topLevel.length) {
+                        const remaining = topLevel.length - visibleTop;
                         const more = document.createElement('button');
                         more.type = 'button';
                         more.className = 'ai-session-group-more';
@@ -985,7 +1035,7 @@ export function createAISessionList(ctx) {
                         const moreTip = '还有 ' + remaining + ' 条会话，点击再显示 ' + Math.min(AI_SESSION_GROUP_PAGE, remaining) + ' 条';
                         more.setAttribute('aria-label', moreTip);
                         more.addEventListener('click', () => {
-                            workspaceGroupVisibleCounts.set(pageKey, Math.min(total, visible + AI_SESSION_GROUP_PAGE));
+                            workspaceGroupVisibleCounts.set(pageKey, Math.min(topLevel.length, visibleTop + AI_SESSION_GROUP_PAGE));
                             renderSessionList();
                         });
                         sessionListEl.appendChild(more);

@@ -40,6 +40,9 @@ const rawIcons = {
     'maximize': '<rect x="2.9" y="2.9" width="10.2" height="10.2" rx="0.8"/>',
     'restore': '<rect x="2.8" y="5.4" width="7.8" height="7.8" rx="0.8"/><path d="M5.4 5.4V3.6c0-.4.3-.8.8-.8h6.4c.4 0 .8.3.8.8V10c0 .4-.3.8-.8.8h-2"/>',
     'layout-dock': '<rect x="2.4" y="3" width="11.2" height="10" rx="1"/><path d="M9.8 3v10"/>',
+    // 编排看板左目录折叠：分栏 + 指向左/右的箭头（展开/收起各一枚，不用通用 chevron）
+    'panel-collapse': '<rect x="2.4" y="3" width="11.2" height="10" rx="1"/><path d="M6.2 3v10"/><path d="M11.2 5.8L9.4 8l1.8 2.2"/>',
+    'panel-expand': '<rect x="2.4" y="3" width="11.2" height="10" rx="1"/><path d="M6.2 3v10"/><path d="M9.4 5.8L11.2 8l-1.8 2.2"/>',
     'layout-fullscreen': '<rect x="2.4" y="3" width="11.2" height="10" rx="1"/><path d="M6 6.2h1.4V4.8M10 6.2H8.6V4.8M6 9.8h1.4v1.4M10 9.8H8.6v1.4"/>',
     'layout-float': '<rect x="2.4" y="3" width="8.4" height="7.4" rx="1"/><rect x="6.4" y="6.4" width="7.2" height="6.4" rx="1"/>',
     'swap-side': '<rect x="2.4" y="3" width="11.2" height="10" rx="1"/><path d="M6.2 3v10"/><path d="M9.6 6.6L11.4 8.4 9.6 10.2"/>',

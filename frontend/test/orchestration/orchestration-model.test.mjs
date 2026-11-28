@@ -6,7 +6,7 @@ import {
     normalizeBatch, ownsFromInput, parseVerifyEditor, statusLabel, stricterScope, summarizeView,
 } from '../../src/orchestration/orchestration-model.js';
 
-test('buildPlanRequest：默认审查门开、审计阈值随最长批次放大、会话身份由宿主填', () => {
+test('buildPlanRequest：执行会话继承母会话权限、默认不逐批审查、审计阈值随最长批次放大', () => {
     const req = buildPlanRequest({
         title: '把 X 做完',
         goal: '目标',
@@ -20,10 +20,9 @@ test('buildPlanRequest：默认审查门开、审计阈值随最长批次放大�
     assert.equal(req.parentSessionId, 'parent-1');
     assert.equal(req.arbiterSessionId, 'parent-1');
     assert.equal(req.arbiterModelRef, 'acc|model');
-    assert.equal(req.policy.scope, 'edit', 'full 档发起时执行会话默认收到 edit，不默认给最宽');
+    assert.equal(req.policy.scope, 'full', '执行会话继承母会话 full 权限，不再降成 edit');
     assert.equal(req.policy.maxParallel, 8, '并发夹到 1–8');
-    assert.equal(req.policy.review, true, '未显式关审查时应默认开');
-    assert.equal(req.policy.reviewExplicit, false);
+    assert.equal(req.policy.review, undefined, '逐批审查已取消：不再下传 review 字段');
     assert.equal(req.policy.finalReview, false, '终审默认关，由审批卡/设置显式开启');
     assert.equal(req.policy.finalReviewCount, 0);
     assert.ok(req.policy.auditIdleMs >= 2 * 2 * 60 * 60 * 1000, '审计阈值必须 ≥ 2 × 最长批次超时');
@@ -33,11 +32,10 @@ test('buildPlanRequest：默认审查门开、审计阈值随最长批次放大�
 test('buildPlanRequest：显式关审查 + 白名单 + 自主模式都如实保留', () => {
     const req = buildPlanRequest({
         title: 't', goal: 'g',
-        policy: {review: false, allowWorkerModels: true, allowedWorkerModels: ['a|b', 'c|d'], autoRun: true},
+        policy: {allowWorkerModels: true, allowedWorkerModels: ['a|b', 'c|d'], autoRun: true},
         batches: [{id: 'B1', title: 't', spec: 's', owns: [], model: {first: 'a|b'}}],
     }, {workspace: 'D:/repo', sessionId: 'p', scope: 'read'});
-    assert.equal(req.policy.review, false);
-    assert.equal(req.policy.reviewExplicit, true);
+    assert.equal(req.policy.review, undefined, '逐批审查已取消，即使旧调用方传了也不下传');
     assert.equal(req.policy.allowWorkerModels, true);
     assert.deepEqual(req.policy.allowedWorkerModels, ['a|b', 'c|d']);
     assert.equal(req.policy.autoRun, true);

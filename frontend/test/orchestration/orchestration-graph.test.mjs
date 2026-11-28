@@ -1,7 +1,7 @@
 // orchestration-graph.test.mjs：执行顺序依赖图的纯布局（不碰 DOM）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildExecutionGraph} from '../../src/orchestration/orchestration-graph.js';
+import {buildExecutionGraph, dependencyWaves} from '../../src/orchestration/orchestration-graph.js';
 
 const plan = {
     batches: [
@@ -33,6 +33,17 @@ test('同波次节点共享列，依赖边与终审列按数据生成', () => {
     for (const pair of ['A>D', 'B>D', 'C>E', 'D>all-done', 'E>all-done', 'all-done>final-review-1', 'all-done>final-review-2']) {
         assert.ok(pairs.includes(pair), '缺少边 ' + pair + '；实际 ' + pairs.join(', '));
     }
+});
+
+test('dependencyWaves：按 dependsOn 分层，同层保持计划顺序且不混入审查批次', () => {
+    const waves = dependencyWaves([
+        {id: 'A', kind: 'work', dependsOn: []},
+        {id: 'B', kind: 'work', dependsOn: []},
+        {id: 'C', kind: 'work', dependsOn: ['A', 'B']},
+        {id: 'R', kind: 'review', dependsOn: []},
+        {id: 'D', kind: 'work', dependsOn: ['C']},
+    ]);
+    assert.deepEqual(waves, [['A', 'B'], ['C'], ['D']]);
 });
 
 test('无终审时没有汇合屏障与终审列；未出现在 waves 的批次兜底到最后一列', () => {

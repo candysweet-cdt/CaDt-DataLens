@@ -71,14 +71,6 @@ export function mountOrchestrationSettings(host, deps) {
     budget.id = 'orch-opt-budget';
     card.appendChild(row('token 预算（默认）', '0 = 不限；超预算是事后熔断，只停止派发新批次，不保证绝不超。', budget));
 
-    const review = createCheckbox({
-        checked: settings().orchReview !== false,
-        label: '审查门默认开',
-        onChange: (e) => patch('orchReview', e.target.checked),
-    });
-    review.control.id = 'orch-opt-review-default';
-    card.appendChild(row('审查门', '验收通过后派独立只读审查会话；可在审批卡上逐次关闭。默认开。', review.element));
-
     const finalReview = createCheckbox({
         checked: settings().orchFinalReview === true,
         label: '全部完成后默认开终审',

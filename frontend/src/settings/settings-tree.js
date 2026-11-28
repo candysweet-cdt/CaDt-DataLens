@@ -19,7 +19,7 @@ const HIGH_RISK_IDS = new Set([
     'ai-opt-subagent-max', 'ai-opt-subagent-depth', 'ai-opt-subagent-model',
     'ai-opt-mcp-enabled', 'ai-opt-export-keys',
     'plugin-path-mode',
-    'orch-opt-review-default', 'orch-opt-final-review-default',
+    'orch-opt-final-review-default',
     'opt-file-assoc', 'opt-context-menu', 'opt-agent-skill', 'opt-path-cmd', 'opt-developer-mode',
 ]);
 
@@ -74,7 +74,6 @@ const RISK_REASONS = {
     'plugin-market-source-mode': '插件市场数据源（Gitee / GitHub）',
     'envvar-encrypted': '环境变量存储与加密方式',
     'lifecycle-enabled': '总开关控制「生命周期钩子自动执行」：覆盖打开/关闭工作区、会话起轮、工具前后、权限请求、停止生成等 9 个事件',
-    'orch-opt-review-default': '编排默认关闭独立审查门会少一道质量关卡',
     'orch-opt-final-review-default': '编排默认关闭终审会少最后一道整体质量关卡',
     'orch-opt-max-parallel': '编排默认并发越高，同时改文件与消耗 token 的速度越快',
     'orch-opt-max-attempts': '编排自动重试次数影响返工成本',

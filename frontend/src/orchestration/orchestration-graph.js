@@ -33,6 +33,37 @@ function svgEl(tag, attrs) {
     return node;
 }
 
+
+/** 从批次 dependsOn 推导依赖波次（看板没有 PlanDryRun 结果时用；不模拟并发上限）。 */
+export function dependencyWaves(batches) {
+    const works = (Array.isArray(batches) ? batches : []).filter((b) => b && b.kind !== 'review');
+    const byId = new Map(works.map((b) => [textOf(b.id), b]).filter(([id]) => id));
+    const depth = new Map();
+    const visiting = new Set();
+    const depthOf = (batch) => {
+        const id = textOf(batch && batch.id);
+        if (!batch || !id) return 0;
+        if (depth.has(id)) return depth.get(id);
+        if (visiting.has(id)) return 0;
+        visiting.add(id);
+        let value = 1;
+        for (const dep of Array.isArray(batch.dependsOn) ? batch.dependsOn : []) {
+            const source = byId.get(textOf(dep));
+            if (source) value = Math.max(value, depthOf(source) + 1);
+        }
+        visiting.delete(id);
+        depth.set(id, value);
+        return value;
+    };
+    const waves = [];
+    for (const batch of works) {
+        const at = depthOf(batch) - 1;
+        if (!waves[at]) waves[at] = [];
+        waves[at].push(textOf(batch.id));
+    }
+    return waves.filter((wave) => wave && wave.length);
+}
+
 /**
  * 纯布局：输入计划与后端 dry-run 结果，输出可直接交给 renderExecutionGraph 的坐标。
  * options = {finalReview, finalReviewCount, maxParallel}

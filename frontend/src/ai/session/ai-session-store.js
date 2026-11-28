@@ -592,6 +592,8 @@ export function normalizeSessionOrchestration(value) {
         parentSessionId: textOf(raw.parentSessionId).trim(),
         generation: Math.max(0, Number(raw.generation) || 0),
         owns: Array.isArray(raw.owns) ? raw.owns.filter((p) => typeof p === 'string' && p).slice(0, 64) : [],
+        // 计划内顺序（work 用批次下标，review 用 x.5，终审用 1000+）；旧会话缺省 0。
+        order: Math.max(0, Number(raw.order) || 0),
     };
 }
 

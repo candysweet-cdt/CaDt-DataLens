@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,8 +116,8 @@ func TestValidatePlanAndDryRun(t *testing.T) {
 	if strings.Contains(first, "B2") {
 		t.Fatalf("B2 不应在依赖完成前派发：%v", preview.Waves)
 	}
-	if !preview.ReviewEnabled {
-		t.Fatal("审查门应默认开")
+	if preview.ReviewEnabled {
+		t.Fatal("逐批审查已取消，dry-run 不应再报审查门开启")
 	}
 
 	req.Batches[0].DependsOn = []string{"B2"}
@@ -208,54 +209,6 @@ func TestCreateDispatchReportVerifyDone(t *testing.T) {
 	}
 	if len(o.Batches[0].WriteLog) == 0 {
 		t.Fatal("放行写入应记 writeLog")
-	}
-}
-
-// ===== 审查批次与死锁测试 =====
-func TestReviewBatchIsIndependentAndNoDeadlock(t *testing.T) {
-	ws := testWorkspace(t)
-	engine := testEngine(t, Deps{})
-	plan := basePlan(ws, "B1")
-	plan.Batches[0].Verify = nil
-	plan.Policy.Review = true
-	plan.Policy.ReviewExplicit = true
-	res, err := engine.Create(plan, "win-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDispatched })
-	work := claimAndStart(t, engine, ws, res.ID, "B1", 1)
-	if _, err := engine.Report(work.ExecutionToken, `{"batchId":"B1","reportId":"r1","status":"done","notes":"ok"}`); err != nil {
-		t.Fatal(err)
-	}
-	o := waitFor(t, engine, res.ID, func(o *Orchestration) bool {
-		for _, b := range o.Batches {
-			if b.Kind == KindReview && b.Status == BatchDispatched {
-				return true
-			}
-		}
-		return false
-	})
-	var review *Batch
-	for i := range o.Batches {
-		if o.Batches[i].Kind == KindReview {
-			review = &o.Batches[i]
-		}
-	}
-	if review == nil || review.ReviewOf != "B1" {
-		t.Fatalf("审查批次结构错误：%+v", review)
-	}
-	if len(review.DependsOn) != 0 {
-		t.Fatal("review 批次 dependsOn 必须为空，避免死锁")
-	}
-	reviewStart := claimAndStart(t, engine, ws, res.ID, review.ID, 1)
-	if _, err := engine.Report(reviewStart.ExecutionToken,
-		`{"batchId":"`+review.ID+`","reportId":"r2","status":"done","notes":"通过","review":{"blocking":[],"shouldFix":[],"suggestions":[]}}`); err != nil {
-		t.Fatal(err)
-	}
-	o = waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Status == StatusDone })
-	if o.Batches[0].Status != BatchDone {
-		t.Fatalf("审查通过后 work 应 done：%s", o.Batches[0].Status)
 	}
 }
 
@@ -700,105 +653,6 @@ func TestUnknownBatchStateFailsClosed(t *testing.T) {
 	}
 }
 
-// ===== 审查重做与跳过测试 =====
-func TestReviewWaitsForOtherWorkers(t *testing.T) {
-	ws := testWorkspace(t)
-	engine := testEngine(t, Deps{})
-	plan := basePlan(ws, "B1")
-	plan.Batches[0].Verify = nil
-	plan.Policy.MaxParallel = 2
-	plan.Policy.ReviewExplicit = true
-	plan.Policy.Review = true
-	plan.Batches = append(plan.Batches, BatchPlan{
-		ID: "B2", Title: "并行", Spec: "改另一处", Owns: []string{"docs/**"},
-	})
-	res, err := engine.Create(plan, "win-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, engine, res.ID, func(o *Orchestration) bool {
-		return o.Batches[0].Status == BatchDispatched && o.Batches[1].Status == BatchDispatched
-	})
-	b1 := claimAndStart(t, engine, ws, res.ID, "B1", 1)
-	b2 := claimAndStart(t, engine, ws, res.ID, "B2", 1)
-	if _, err := engine.Report(b1.ExecutionToken, `{"batchId":"B1","reportId":"r1","status":"done","notes":"ok"}`); err != nil {
-		t.Fatal(err)
-	}
-	o := waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchVerifying })
-	for _, b := range o.Batches {
-		if b.Kind == KindReview {
-			t.Fatal("B2 还在写时不能启动 B1 的审查")
-		}
-	}
-	if _, err := engine.Report(b2.ExecutionToken, `{"batchId":"B2","reportId":"r2","status":"done","notes":"ok"}`); err != nil {
-		t.Fatal(err)
-	}
-	engine.tickAll()
-	waitFor(t, engine, res.ID, func(o *Orchestration) bool {
-		for _, b := range o.Batches {
-			if b.Kind == KindReview && b.Status == BatchDispatched {
-				return true
-			}
-		}
-		return false
-	})
-}
-
-func TestReviewReworkReusesReviewBatchWithoutDeadlock(t *testing.T) {
-	ws := testWorkspace(t)
-	engine := testEngine(t, Deps{})
-	plan := basePlan(ws, "B1")
-	plan.Batches[0].Verify = nil
-	plan.Policy.ReviewExplicit = true
-	plan.Policy.Review = true
-	plan.Policy.MaxAttemptsPerBatch = 2
-	res, err := engine.Create(plan, "win-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDispatched })
-	w1 := claimAndStart(t, engine, ws, res.ID, "B1", 1)
-	if _, err := engine.Report(w1.ExecutionToken, `{"batchId":"B1","reportId":"r1","status":"done","notes":"首轮"}`); err != nil {
-		t.Fatal(err)
-	}
-	o := waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchReviewing })
-	var reviewID string
-	for _, b := range o.Batches {
-		if b.Kind == KindReview {
-			reviewID = b.ID
-		}
-	}
-	r1 := claimAndStart(t, engine, ws, res.ID, reviewID, 1)
-	if _, err := engine.Report(r1.ExecutionToken, `{"batchId":"`+reviewID+`","reportId":"rv1","status":"done","notes":"要改","review":{"blocking":[{"path":"src/a.js","problem":"x"}],"shouldFix":[],"suggestions":[]}}`); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, engine, res.ID, func(o *Orchestration) bool {
-		return o.Batches[0].Status == BatchDispatched && o.Batches[0].Attempts == 1 && o.Batches[0].FailureReason == ReasonReviewFailed
-	})
-	w2 := claimAndStart(t, engine, ws, res.ID, "B1", 2)
-	if _, err := engine.Report(w2.ExecutionToken, `{"batchId":"B1","reportId":"r2","status":"done","notes":"二轮"}`); err != nil {
-		t.Fatal(err)
-	}
-	engine.tickAll()
-	o = waitFor(t, engine, res.ID, func(o *Orchestration) bool {
-		for _, b := range o.Batches {
-			if b.Kind == KindReview {
-				return b.Status == BatchDispatched && b.Attempts == 0
-			}
-		}
-		return false
-	})
-	if o.Batches[0].Status != BatchReviewing {
-		t.Fatalf("返工后 work 应重新进入 reviewing：%s", o.Batches[0].Status)
-	}
-	r2 := claimAndStart(t, engine, ws, res.ID, reviewID, 1)
-	if _, err := engine.Report(r2.ExecutionToken, `{"batchId":"`+reviewID+`","reportId":"rv2","status":"done","notes":"通过","review":{"blocking":[],"shouldFix":[],"suggestions":[]}}`); err != nil {
-		t.Fatalf("第二轮审查回报失败：%v", err)
-	}
-	engine.tickAll()
-	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDone })
-}
-
 func TestSkipBlocksDownstreamAndClosesEvent(t *testing.T) {
 	ws := testWorkspace(t)
 	engine := testEngine(t, Deps{})
@@ -906,6 +760,122 @@ func TestAbortStartClaimAndExecution(t *testing.T) {
 	}
 }
 
+func TestAbortStartCapsDispatchRetriesAndBlocks(t *testing.T) {
+	ws := testWorkspace(t)
+	engine := testEngine(t, Deps{})
+	plan := basePlan(ws, "B1")
+	plan.Batches[0].Verify = nil
+	res, err := engine.Create(plan, "win-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < MaxDispatchRetries; i++ {
+		waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDispatched })
+		claim := engine.ClaimBatch(res.ID, "B1", 1, "win-1", ws)
+		if !claim.OK {
+			t.Fatal(claim.Reason)
+		}
+		if err := engine.AbortStart(AbortRequest{
+			OrchestrationID: res.ID, BatchID: "B1", Token: claim.ClaimToken, Reason: "宿主不可用",
+		}, "win-1", ws); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o := waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchBlocked })
+	if o.Batches[0].FailureReason != ReasonDispatchUnavailable {
+		t.Fatalf("连续起轮失败应 blocked(%s)，实际 %s", ReasonDispatchUnavailable, o.Batches[0].FailureReason)
+	}
+	found := false
+	for _, ev := range o.ArbitrationQueue {
+		if ev.BatchID == "B1" && ev.Reason == ReasonDispatchUnavailable && !ev.Resolved {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("连续起轮失败必须进 L2 等仲裁")
+	}
+}
+
+func TestExpiredClaimRetriesAlsoCap(t *testing.T) {
+	ws := testWorkspace(t)
+	engine := testEngine(t, Deps{})
+	plan := basePlan(ws, "B1")
+	plan.Batches[0].Verify = nil
+	res, err := engine.Create(plan, "win-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDispatched })
+	engine.mu.Lock()
+	o := engine.items[res.ID]
+	b := findBatch(o, "B1")
+	b.DispatchAt = nowMs() - ClaimTTL - 1
+	b.DispatchRetries = MaxDispatchRetries
+	engine.mu.Unlock()
+	engine.tickAll()
+	o = waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchBlocked })
+	if o.Batches[0].FailureReason != ReasonDispatchUnavailable {
+		t.Fatalf("认领重试到上限应 blocked，实际 %s", o.Batches[0].FailureReason)
+	}
+}
+
+func TestRetryStalePerBatchReviewSkipsInsteadOfStalling(t *testing.T) {
+	ws := testWorkspace(t)
+	engine := testEngine(t, Deps{})
+	plan := basePlan(ws, "B1")
+	plan.Batches[0].Verify = nil
+	res, err := engine.Create(plan, "win-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDispatched })
+	// 模拟存量编排：被审 work 已被重派离开 reviewing，旧的逐批审查还停在 blocked。
+	engine.mu.Lock()
+	o := engine.items[res.ID]
+	o.Batches = append(o.Batches, Batch{
+		ID: "review-old", Title: "旧审查", Kind: KindReview, ReviewOf: "B1",
+		Workspace: ws, Owns: []string{}, Status: BatchBlocked, Attempts: 2,
+	})
+	_ = engine.store.Save(o)
+	engine.mu.Unlock()
+	if _, err := engine.UserControl(ControlRequest{
+		OrchestrationID: res.ID, Action: "retry", BatchID: "review-old",
+	}, ws); err != nil {
+		t.Fatal(err)
+	}
+	o = waitFor(t, engine, res.ID, func(o *Orchestration) bool {
+		b := findBatch(o, "review-old")
+		return b != nil && b.Status == BatchSkipped
+	})
+	if o.Status == StatusDone || o.Status == StatusFault {
+		t.Fatalf("跳过失效审查后编排不应直接进入 %s", o.Status)
+	}
+}
+
+func TestPruneResolvedArbitrationKeepsUnresolved(t *testing.T) {
+	o := &Orchestration{ArbitrationQueue: []ArbitrationEvent{{
+		EventID: "keep-unresolved", BatchID: "B1", Reason: "blocked",
+	}}}
+	for i := 0; i < MaxResolvedArbitration+20; i++ {
+		o.ArbitrationQueue = append(o.ArbitrationQueue, ArbitrationEvent{
+			EventID: "ev-" + string(rune('A'+i%26)) + "-" + fmt.Sprint(i),
+			BatchID: "B1", Reason: "resolved", Resolved: true,
+		})
+	}
+	pruneResolvedArbitrationLocked(o)
+	resolved, unresolved := 0, 0
+	for _, ev := range o.ArbitrationQueue {
+		if ev.Resolved {
+			resolved++
+		} else if ev.EventID == "keep-unresolved" {
+			unresolved++
+		}
+	}
+	if resolved != MaxResolvedArbitration || unresolved != 1 {
+		t.Fatalf("裁剪结果错误：resolved=%d unresolved=%d", resolved, unresolved)
+	}
+}
+
 func TestStartEmptyDoesNotNotifyOrFault(t *testing.T) {
 	var notified atomic.Int32
 	engine := NewEngine(filepath.Join(t.TempDir(), "orchestrations"), Deps{
@@ -923,5 +893,49 @@ func TestStartEmptyDoesNotNotifyOrFault(t *testing.T) {
 	engine.Stop()
 	if notified.Load() != 0 {
 		t.Fatal("没有编排时调度器巡检 panic 不应发“全部编排已停止”")
+	}
+}
+
+// 逐批审查已取消（质量门只由终审统一做）：即使计划里传了 review:true，
+// ValidatePlan 也必须把它关掉，否则会重新打开已删除的执行路径。
+func TestValidatePlanForcesReviewOff(t *testing.T) {
+	ws := testWorkspace(t)
+	req := basePlan(ws, "B1")
+	req.Policy.Review = true
+	req.Policy.ReviewExplicit = true
+	plan, errs := ValidatePlan(req)
+	if len(errs) > 0 {
+		t.Fatalf("计划应通过：%v", errs)
+	}
+	if plan.Policy.Review {
+		t.Fatal("逐批审查已取消，Policy.Review 必须被强制关掉")
+	}
+}
+
+// 没有 verify 命令的批次报 done 后直接完成，不再生成 review-* 批次。
+func TestWorkFinishesWithoutPerBatchReviewBatch(t *testing.T) {
+	ws := testWorkspace(t)
+	engine := testEngine(t, Deps{})
+	plan := basePlan(ws, "B1")
+	plan.Batches[0].Verify = nil
+	plan.Policy.Review = true // 旧前端残留参数：应被忽略
+	plan.Policy.ReviewExplicit = true
+	res, err := engine.Create(plan, "win-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Batches[0].Status == BatchDispatched })
+	work := claimAndStart(t, engine, ws, res.ID, "B1", 1)
+	if _, err := engine.Report(work.ExecutionToken, `{"batchId":"B1","reportId":"r1","status":"done","notes":"ok"}`); err != nil {
+		t.Fatal(err)
+	}
+	o := waitFor(t, engine, res.ID, func(o *Orchestration) bool { return o.Status == StatusDone })
+	if o.Batches[0].Status != BatchDone {
+		t.Fatalf("work 应直接 done：%s", o.Batches[0].Status)
+	}
+	for _, b := range o.Batches {
+		if b.Kind == KindReview {
+			t.Fatalf("不应再生成审查批次：%+v", b)
+		}
 	}
 }

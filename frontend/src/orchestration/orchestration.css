@@ -15,8 +15,8 @@
     max-height: min(86vh, 900px);
     display: flex;
     flex-direction: column;
-    background: var(--bg-panel, var(--panel, #fff));
-    color: var(--fg, #222);
+    background: var(--panel, #fff);
+    color: var(--text, #222);
     border: 1px solid var(--border, #d0d0d0);
     border-radius: 10px;
     box-shadow: 0 22px 60px rgba(0, 0, 0, .35);
@@ -64,13 +64,13 @@
     border: 1px solid var(--border, #d0d0d0);
     border-radius: 6px;
     background: var(--bg-button, transparent);
-    color: var(--fg, #222);
+    color: var(--text, #222);
     font: inherit;
     font-size: 12px;
     cursor: pointer;
     white-space: nowrap;
 }
-.orch-btn:hover { background: var(--bg-button-hover, rgba(127, 127, 127, .12)); }
+.orch-btn:hover { background: var(--hover, rgba(127, 127, 127, .12)); }
 .orch-btn.primary { background: var(--accent, #3b82f6); border-color: var(--accent, #3b82f6); color: #fff; }
 .orch-btn.danger { color: #d9534f; border-color: rgba(217, 83, 79, .5); }
 .orch-btn.orch-btn-ghost { border-color: transparent; background: transparent; }
@@ -94,10 +94,14 @@
 .orch-plan-editor .orch-muted { margin: 0; }
 .orch-plan-editor .orch-error { min-height: 0; }
 
+.orch-control-approval { display: flex; flex-direction: column; gap: 7px; }
+.orch-control-action { color: var(--text); font-size: 14px; font-weight: 650; line-height: 1.4; }
+.orch-control-text { color: var(--muted); font-size: 12px; line-height: 1.65; white-space: pre-wrap; }
+
 .orch-intro { display: flex; flex-direction: column; gap: 4px; }
 .orch-title { font-size: 16px; font-weight: 650; line-height: 1.35; }
-.orch-goal { color: var(--fg-muted, #888); font-size: 12px; line-height: 1.55; }
-.orch-muted { color: var(--fg-muted, #888); font-size: 12px; line-height: 1.5; }
+.orch-goal { color: var(--muted, #888); font-size: 12px; line-height: 1.55; }
+.orch-muted { color: var(--muted, #888); font-size: 12px; line-height: 1.5; }
 .orch-confirm-text { white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
 
 /* 审批选项 + 高级设置是同一张卡：结构参数只读，展开栏粘在滚动区顶部。 */
@@ -117,12 +121,12 @@
     gap: 4px;
     padding: 3px 8px;
     border-radius: 999px;
-    background: var(--bg-code, rgba(127, 127, 127, .08));
-    color: var(--fg, #222);
+    background: color-mix(in srgb, var(--text) 7%, transparent);
+    color: var(--text, #222);
     font-size: 11px;
     line-height: 1.4;
 }
-.orch-chip b { color: var(--fg-muted, #888); font-weight: 500; }
+.orch-chip b { color: var(--muted, #888); font-weight: 500; }
 .orch-policy-toggles {
     display: flex;
     flex-wrap: wrap;
@@ -132,7 +136,7 @@
 }
 .orch-final-count-row { flex: 0 0 110px; width: 110px; }
 .orch-final-count-row .opt-input { width: 100%; }
-.orch-plan-note { color: var(--fg-muted, #888); font-size: 11px; line-height: 1.5; margin-top: -2px; }
+.orch-plan-note { color: var(--muted, #888); font-size: 11px; line-height: 1.5; margin-top: -2px; }
 
 .orch-advanced { border: 0; border-radius: 0; padding: 0; background: transparent; }
 .orch-advanced-summary {
@@ -140,7 +144,7 @@
     align-items: center;
     gap: 8px;
     padding: 8px 0;
-    color: var(--fg, #222);
+    color: var(--text, #222);
     font-size: 12px;
     cursor: pointer;
     user-select: none;
@@ -151,7 +155,7 @@
 .orch-advanced-hint {
     min-width: 0;
     overflow: hidden;
-    color: var(--fg-muted, #888);
+    color: var(--muted, #888);
     font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -160,7 +164,7 @@
     flex: none;
     display: inline-flex;
     margin-left: auto;
-    color: var(--fg-muted, #888);
+    color: var(--muted, #888);
     transition: transform .15s;
 }
 .orch-advanced[open] .orch-advanced-chevron { transform: rotate(90deg); }
@@ -175,7 +179,7 @@
     top: 0;
     z-index: 2;
     padding: 9px 0;
-    background: var(--bg-panel, var(--panel, #fff));
+    background: var(--panel2, var(--panel, #fff));
 }
 .orch-advanced-grid {
     display: flex;
@@ -187,15 +191,15 @@
 .orch-plan-editor .opt-textarea[disabled] { opacity: .55; }
 
 .orch-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
-.orch-field-label { color: var(--fg-muted, #888); }
+.orch-field-label { color: var(--muted, #888); }
 .orch-field .opt-input,
 .orch-field .opt-textarea { width: 100%; }
 .orch-read-value {
     padding: 7px 9px;
     border: 1px solid var(--border, #d0d0d0);
     border-radius: 6px;
-    background: var(--bg-code, rgba(127, 127, 127, .08));
-    color: var(--fg, #222);
+    background: color-mix(in srgb, var(--text) 7%, transparent);
+    color: var(--text, #222);
     font-size: 12px;
     line-height: 1.5;
     white-space: pre-wrap;
@@ -216,16 +220,17 @@
     background: var(--bg-subtle, rgba(127, 127, 127, .04));
 }
 .orch-graph-head { display: flex; align-items: center; gap: 8px; }
-.orch-graph-title { color: var(--fg, #222); font-size: 12px; font-weight: 600; }
+.orch-graph-title { color: var(--text, #222); font-size: 12px; font-weight: 600; }
 .orch-graph-legend {
     display: flex;
     align-items: center;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 4px 10px;
     margin-left: auto;
-    color: var(--fg-muted, #888);
+    color: var(--muted, #888);
     font-size: 10px;
 }
-.orch-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.orch-legend-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .orch-legend-item i { display: inline-block; }
 .orch-legend-line {
     position: relative;
@@ -242,7 +247,7 @@
     border-top: 2px solid transparent;
     border-bottom: 2px solid transparent;
 }
-.orch-legend-dash { width: 16px; border-top: 1px dashed var(--fg-muted, #888); }
+.orch-legend-dash { width: 16px; border-top: 1px dashed var(--muted, #888); }
 .orch-legend-parallel { color: var(--accent, #3b82f6); font-family: var(--editor-font-family, monospace); }
 .orch-link-btn {
     display: inline-flex;
@@ -252,11 +257,11 @@
     padding: 2px 6px;
     border-radius: 5px;
     background: transparent;
-    color: var(--fg-muted, #888);
+    color: var(--muted, #888);
     font-size: 10.5px;
     cursor: pointer;
 }
-.orch-link-btn:hover { color: var(--fg, #222); background: var(--bg-button-hover, rgba(127, 127, 127, .12)); }
+.orch-link-btn:hover { color: var(--text, #222); background: var(--hover, rgba(127, 127, 127, .12)); }
 .orch-link-btn[hidden] { display: none; }
 .orch-graph-scroll {
     margin-top: 7px;
@@ -269,53 +274,53 @@
     user-select: none;
 }
 .orch-graph-lane {
-    fill: var(--bg-panel, var(--panel, #fff));
+    fill: var(--panel2, var(--panel, #fff));
     opacity: .38;
 }
 .orch-graph-node rect {
-    fill: var(--bg-panel, var(--panel, #fff));
+    fill: var(--panel2, var(--panel, #fff));
     stroke: var(--border, #d0d0d0);
     stroke-width: 1;
     transition: stroke .15s, fill .15s;
 }
 .orch-graph-node:hover rect {
     stroke: var(--accent, #3b82f6);
-    fill: var(--accent-weak, rgba(59, 130, 246, .12));
+    fill: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 .orch-graph-node .orch-graph-node-id {
     fill: var(--accent, #3b82f6);
-    font-size: 9.5px;
+    font-size: 10px;
     font-weight: 700;
     font-family: var(--editor-font-family, monospace);
 }
-.orch-graph-node .orch-graph-node-title { fill: var(--fg, #222); font-size: 9.5px; }
-.orch-graph-node.review rect { fill: var(--bg-panel, var(--panel, #fff)); stroke-dasharray: 4 3; }
-.orch-graph-node.review .orch-graph-node-id { fill: var(--fg-muted, #888); }
+.orch-graph-node .orch-graph-node-title { fill: var(--text, #222); font-size: 10px; }
+.orch-graph-node.review rect { fill: var(--panel2, var(--panel, #fff)); stroke-dasharray: 4 3; }
+.orch-graph-node.review .orch-graph-node-id { fill: var(--muted, #888); }
 .orch-graph-node.barrier rect { fill: transparent; stroke-dasharray: 3 3; }
-.orch-graph-node.barrier .orch-graph-node-id { fill: var(--fg-muted, #888); }
-.orch-graph-node.barrier .orch-graph-node-title { fill: var(--fg-muted, #888); }
+.orch-graph-node.barrier .orch-graph-node-id { fill: var(--muted, #888); }
+.orch-graph-node.barrier .orch-graph-node-title { fill: var(--muted, #888); }
 .orch-graph-edge {
     fill: none;
     stroke: var(--border, #d0d0d0);
     stroke-width: 1.1;
 }
-.orch-graph-edge.review { stroke-dasharray: 4 3; stroke: var(--fg-muted, #888); }
+.orch-graph-edge.review { stroke-dasharray: 4 3; stroke: var(--muted, #888); }
 .orch-graph-wave-label {
-    fill: var(--fg-muted, #888);
-    font-size: 9px;
+    fill: var(--muted, #888);
+    font-size: 9.5px;
     font-weight: 600;
     letter-spacing: .03em;
 }
 .orch-graph-wave-count {
     fill: var(--accent, #3b82f6);
-    font-size: 8.5px;
+    font-size: 9px;
     font-family: var(--editor-font-family, monospace);
 }
 .orch-graph-error { color: var(--danger, #d9534f); font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
 .orch-graph-error[hidden] { display: none; }
 .orch-graph-note {
     margin-top: 5px;
-    color: var(--fg-muted, #888);
+    color: var(--muted, #888);
     font-size: 10.5px;
     line-height: 1.5;
     white-space: pre-wrap;
@@ -335,7 +340,7 @@
 .orch-batch-title {
     flex: 1;
     min-width: 0;
-    color: var(--fg, #222);
+    color: var(--text, #222);
     font-size: 13px;
     font-weight: 600;
     line-height: 1.45;
@@ -344,18 +349,18 @@
 .orch-batch-spec {
     padding: 8px 10px;
     border-radius: 7px;
-    background: var(--bg-code, rgba(127, 127, 127, .08));
-    color: var(--fg, #222);
+    background: color-mix(in srgb, var(--text) 7%, transparent);
+    color: var(--text, #222);
     font-size: 12px;
     line-height: 1.6;
     white-space: pre-wrap;
     word-break: break-word;
     display: -webkit-box;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 6;
     overflow: hidden;
 }
-.orch-batch.expanded .orch-batch-spec {
+.orch-batch-card.expanded .orch-batch-spec {
     display: block;
     overflow: visible;
 }
@@ -370,7 +375,7 @@
 }
 .orch-desc-toggle:hover { text-decoration: underline; }
 .orch-batch-meta {
-    color: var(--fg-muted, #888);
+    color: var(--muted, #888);
     font-size: 11px;
     line-height: 1.5;
     word-break: break-word;
@@ -379,7 +384,7 @@
     flex: 1;
     min-width: 0;
     overflow: hidden;
-    color: var(--fg-muted, #888);
+    color: var(--muted, #888);
     font-size: 10.5px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -414,97 +419,147 @@
     max-height: 190px;
     overflow: auto;
     padding: 9px 10px;
-    background: var(--bg-code, rgba(127, 127, 127, .08));
+    background: color-mix(in srgb, var(--text) 7%, transparent);
     border-radius: 6px;
     font-size: 12px;
     white-space: pre-wrap;
 }
 
 /* ---------- 看板 ---------- */
-.orch-board { height: 100%; overflow: hidden; }
-.orch-board-wrap { height: 100%; display: flex; flex-direction: column; }
+.orch-board { height: 100%; overflow: hidden; container-type: inline-size; }
+.orch-board-wrap { height: 100%; display: flex; flex-direction: column; background: var(--bg, #1e1e1e); }
 .orch-board-head {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--border, #d0d0d0);
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
 }
-.orch-board-title { font-weight: 650; font-size: 14px; }
+.orch-board-title { font-weight: 650; font-size: 13px; letter-spacing: .01em; }
+.orch-board-dir-toggle {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+.orch-board-dir-toggle:hover { background: var(--hover); color: var(--text); }
+.orch-board-dir-toggle svg { width: 16px; height: 16px; display: block; }
+.orch-board-list[hidden] { display: none; }
 .orch-board-main { flex: 1; min-height: 0; display: flex; }
 .orch-board-list {
-    width: 300px;
-    min-width: 220px;
-    border-right: 1px solid var(--border, #d0d0d0);
+    width: 318px;
+    min-width: 240px;
+    border-right: 1px solid var(--border);
     overflow: auto;
-    padding: 8px;
+    padding: 10px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
+    background: var(--panel);
 }
-.orch-board-detail { flex: 1; overflow: auto; padding: 14px; }
+.orch-board-detail { flex: 1; overflow: auto; padding: 16px 18px 24px; }
 .orch-list-row {
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    padding: 8px 10px;
-    border: 1px solid transparent;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--fg, #222);
+    align-items: stretch;
+    gap: 5px;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel2);
+    color: var(--text);
     text-align: left;
     cursor: pointer;
+    transition: border-color .15s, background .15s;
 }
-.orch-list-row:hover { background: var(--bg-button-hover, rgba(127, 127, 127, .1)); }
-.orch-list-row.active { border-color: var(--accent, #3b82f6); background: rgba(59, 130, 246, .09); }
-.orch-list-row.attention .orch-row-title { color: #d9534f; }
-.orch-row-title { font-size: 12px; font-weight: 600; }
-.orch-row-meta { font-size: 11px; color: var(--fg-muted, #888); }
-.orch-empty { padding: 16px; color: var(--fg-muted, #888); font-size: 12px; line-height: 1.6; }
+.orch-list-row:hover { border-color: var(--accent); background: var(--panel2); }
+.orch-list-row.active {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 11%, var(--panel2));
+}
+.orch-list-row.attention .orch-row-title { color: var(--red, #d9534f); }
+.orch-row-title { font-size: 12.5px; font-weight: 600; line-height: 1.45; word-break: break-word; }
+.orch-row-meta { font-size: 10.5px; color: var(--muted); line-height: 1.4; }
+.orch-empty { padding: 16px 10px; color: var(--muted); font-size: 11.5px; line-height: 1.6; }
 
 .orch-detail-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.orch-detail-title { font-size: 18px; font-weight: 650; }
-.orch-detail-goal { margin-top: 4px; color: var(--fg-muted, #888); }
-.orch-stats { margin: 8px 0; font-size: 12px; color: var(--fg-muted, #888); }
-.orch-state {
-    padding: 1px 8px;
-    border-radius: 999px;
-    background: rgba(127, 127, 127, .14);
-    font-size: 11px;
+.orch-detail-title { font-size: 18px; font-weight: 650; line-height: 1.35; }
+.orch-detail-goal { margin-top: 6px; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+.orch-stats {
+    display: inline-block;
+    margin: 10px 0 2px;
+    padding: 5px 9px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel2);
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
 }
-.orch-state-running { background: rgba(59, 130, 246, .14); color: #3b82f6; }
-.orch-state-done { background: rgba(34, 197, 94, .14); color: #16a34a; }
+.orch-state {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--muted) 14%, transparent);
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
+}
+.orch-state-running { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.orch-state-done { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
 .orch-state-failed,
 .orch-state-blocked,
-.orch-state-fault { background: rgba(217, 83, 79, .14); color: #d9534f; }
+.orch-state-fault { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); }
 .orch-state-awaiting_user,
 .orch-state-awaiting_arbitration,
 .orch-state-paused,
-.orch-state-paused_no_window { background: rgba(234, 179, 8, .16); color: #a16207; }
+.orch-state-paused_no_window { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
 
-.orch-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
-.orch-batches { display: flex; flex-direction: column; gap: 6px; }
+.orch-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0 4px; }
+.orch-batches { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .orch-batch-row {
-    padding: 8px 10px;
-    border: 1px solid var(--border, #d0d0d0);
+    padding: 10px 12px;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: var(--bg-subtle, rgba(127, 127, 127, .03));
+    background: var(--panel2);
 }
-.orch-batch-row.review { margin-left: 22px; border-style: dashed; }
+.orch-batch-row.review {
+    margin-left: 22px;
+    border-style: dashed;
+    background: color-mix(in srgb, var(--text) 3%, var(--panel2));
+}
 .orch-batch-row.attention-failed,
-.orch-batch-row.attention-blocked { border-color: rgba(217, 83, 79, .5); }
-.orch-batch-row.attention-running { border-color: rgba(59, 130, 246, .45); }
-.orch-batch-row-top { display: flex; align-items: center; gap: 8px; }
-.orch-batch-title { font-size: 12px; font-weight: 600; flex: 1; }
-.orch-batch-state { font-size: 11px; color: var(--fg-muted, #888); }
-.orch-batch-meta { margin-top: 3px; font-size: 11px; color: var(--fg-muted, #888); word-break: break-all; }
-.orch-batch-actions { display: flex; gap: 4px; margin-top: 5px; }
+.orch-batch-row.attention-blocked { border-color: color-mix(in srgb, var(--red) 55%, var(--border)); }
+.orch-batch-row.attention-running { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.orch-batch-row-top { display: flex; align-items: flex-start; gap: 8px; }
+.orch-batch-title { font-size: 12.5px; font-weight: 600; flex: 1; min-width: 0; line-height: 1.45; }
+.orch-batch-state { flex: none; font-size: 10.5px; color: var(--muted); line-height: 1.5; }
+.orch-batch-meta { margin-top: 4px; font-size: 10.5px; color: var(--muted); line-height: 1.5; word-break: break-word; }
+.orch-batch-actions { display: flex; gap: 4px; margin-top: 7px; flex-wrap: wrap; }
+.orch-board-graph { margin: 10px 0 4px; }
 
 .orch-events { margin-top: 14px; font-size: 12px; }
-.orch-events summary { cursor: pointer; color: var(--fg-muted, #888); }
+.orch-events summary { cursor: pointer; color: var(--muted, #888); }
 .orch-event-list { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
-.orch-event { font-family: var(--font-mono, monospace); font-size: 11px; color: var(--fg-muted, #888); }
+.orch-event { font-family: var(--font-mono, monospace); font-size: 11px; color: var(--muted, #888); }
+
+@container (max-width: 1000px) {
+    .orch-board-main { flex-direction: column; }
+    .orch-board-list {
+        width: auto;
+        max-height: 220px;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .orch-board-detail { flex: 1 1 auto; }
+}
 
 @media (max-width: 760px) {
     .orch-board-main { flex-direction: column; }
@@ -520,7 +575,7 @@
     padding: 5px 8px;
     border-radius: 6px;
     font-size: 11px;
-    color: var(--fg-muted, #888);
+    color: var(--muted, #888);
 }
 .orch-session-row:nth-child(odd),
 .orch-agent-row:nth-child(odd) { background: rgba(127, 127, 127, .05); }

@@ -57,9 +57,11 @@ const (
 	ReasonReviewFailed      = "review_failed"
 	ReasonReviewUnavailable = "review_unavailable"
 	ReasonFinalReview       = "final_review_findings"
-	ReasonOverBudget        = "over_budget"
-	ReasonBlockedByDep      = "blocked_by_dep"
-	ReasonUserStopped       = "user_stopped"
+	// ReasonDispatchUnavailable：连续认领/建会话/起轮失败，宿主始终没能拉起批次。
+	ReasonDispatchUnavailable = "dispatch_unavailable"
+	ReasonOverBudget          = "over_budget"
+	ReasonBlockedByDep        = "blocked_by_dep"
+	ReasonUserStopped         = "user_stopped"
 )
 
 // 批次类型与角色。
@@ -81,6 +83,10 @@ const (
 	DefaultArbiterMissLimit = 2
 	DefaultReviewAttempts   = 2
 	MaxFinalReviews         = 3
+	// MaxDispatchRetries：同一批连续「广播了但没拉起」的上限；超过即 blocked 交仲裁。
+	MaxDispatchRetries = 3
+	// MaxResolvedArbitration：已裁决事件只保留最近这么多条，避免长跑编排状态无界膨胀。
+	MaxResolvedArbitration  = 100
 	ClaimTTL                = 90 * 1000
 	TicketTTL               = 12 * 60 * 60 * 1000
 	MaxWorkBatches          = 20
@@ -242,15 +248,18 @@ type Batch struct {
 	Status        string       `json:"status"`
 	FailureReason string       `json:"failureReason,omitempty"`
 
-	SessionID    string `json:"sessionId,omitempty"`
-	Attempts     int    `json:"attempts"`
-	DispatchAt   int64  `json:"dispatchAt,omitempty"`
-	ClaimedBy    string `json:"claimedBy,omitempty"`
-	ClaimedAt    int64  `json:"claimedAt,omitempty"`
-	DispatchedAt int64  `json:"dispatchedAt,omitempty"`
-	Deadline     int64  `json:"deadline,omitempty"`
-	RemainingMs  int64  `json:"remainingMs,omitempty"`
-	Frozen       bool   `json:"frozen,omitempty"`
+	SessionID  string `json:"sessionId,omitempty"`
+	Attempts   int    `json:"attempts"`
+	DispatchAt int64  `json:"dispatchAt,omitempty"`
+	// DispatchRetries 记录同一批连续「已广播但没起来」的次数（认领超时/宿主建会话失败）。
+	// 达到上限必须 blocked 交仲裁，不能每 90 秒无限重发。
+	DispatchRetries int    `json:"dispatchRetries,omitempty"`
+	ClaimedBy       string `json:"claimedBy,omitempty"`
+	ClaimedAt       int64  `json:"claimedAt,omitempty"`
+	DispatchedAt    int64  `json:"dispatchedAt,omitempty"`
+	Deadline        int64  `json:"deadline,omitempty"`
+	RemainingMs     int64  `json:"remainingMs,omitempty"`
+	Frozen          bool   `json:"frozen,omitempty"`
 
 	WriteLog []WriteLogEntry `json:"writeLog,omitempty"`
 	Report   *Report         `json:"report,omitempty"`
@@ -661,20 +670,6 @@ func allWorkDoneOrSkipped(o *Orchestration) bool {
 	}
 	for _, b := range works {
 		if b.Status != BatchDone && b.Status != BatchSkipped {
-			return false
-		}
-	}
-	return true
-}
-
-// normalReviewsTerminal 保证逐批审查已收尾；终审不能和正在跑的逐批审查重叠。
-func normalReviewsTerminal(o *Orchestration) bool {
-	for i := range o.Batches {
-		b := &o.Batches[i]
-		if b.Kind != KindReview || b.FinalReview {
-			continue
-		}
-		if b.Status == BatchPending || batchActive(b.Status) {
 			return false
 		}
 	}
