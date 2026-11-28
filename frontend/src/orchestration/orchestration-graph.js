@@ -89,7 +89,9 @@ export function buildExecutionGraph(plan, preview, options) {
     const totalCols = columns.length + (finalReview ? 2 : 0);
     const width = Math.max(720, LANE_X0 * 2 + totalCols * LANE_W + Math.max(0, totalCols - 1) * (COL_STEP - LANE_W));
     const maxRows = Math.max(1, ...columns.map((col) => col.length), finalCount);
-    const height = Math.max(240, Y0 + maxRows * ROW_GAP + 18);
+    // 高度跟着实际行数走：单行计划不要预留两行半的空白，否则在宽容器里被等比放大成
+    // 一大块空画布。底边留 18px，单行时约 126px。
+    const height = Math.max(126, Y0 + (maxRows - 1) * ROW_GAP + NODE_H + 18);
 
     const lanes = [];
     const waveLabels = [];
@@ -102,7 +104,7 @@ export function buildExecutionGraph(plan, preview, options) {
             x: LANE_X0 + index * COL_STEP,
             y: 40,
             width: LANE_W,
-            height: Math.max(200, height - 40),
+            height: Math.max(70, height - 52),
         });
     };
 
@@ -198,7 +200,11 @@ export function renderExecutionGraph(svg, layout) {
     svg.setAttribute('viewBox', '0 0 ' + layout.width + ' ' + layout.height);
     svg.setAttribute('role', 'img');
     svg.setAttribute('aria-label', '编排执行顺序依赖图');
-    svg.style.minWidth = layout.width + 'px';
+    // 按布局的原始宽度渲染，不再用 width:100% 把 720×126 的小图等比拉成
+    // 1000×175 的“虚高”画布；容器更窄时才由 max-width 等比缩小。
+    svg.style.width = layout.width + 'px';
+    svg.style.maxWidth = '100%';
+    svg.style.height = 'auto';
 
     const defs = svgEl('defs');
     for (const [id, color] of [['orch-graph-arrow', 'var(--border, #555)'],

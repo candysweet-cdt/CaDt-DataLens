@@ -114,6 +114,11 @@ test('编排审批复用 composer 接管卡，首屏批次只留标题+描述，
     const css = read('orchestration/orchestration.css');
     assert.match(css, /orch-batch-card\.expanded \.orch-batch-spec/, '展开描述必须命中批次卡 class');
     assert.doesNotMatch(css, /var\(--fg[,)]/, '深色主题没有 --fg，必须用 --text');
+    assert.match(css, /\.orch-plan-advanced \.orch-advanced-summary\s*\{[^}]*background: transparent/,
+        '高级设置不能铺整条面板色矩形');
+    const graph = read('orchestration/orchestration-graph.js');
+    assert.match(graph, /svg\.style\.width = layout\.width/, '执行图必须按原始宽度渲染，不能 width:100% 等比虚高');
+    assert.match(graph, /Math\.max\(126,/, '单行图不能预留大块空白高度');
     assert.doesNotMatch(domain, /添加批次/, '计划结构不能由审批卡增删');
     assert.match(domain, /finalCountRow\.style\.display/, '终审数量必须在未勾选终审时隐藏');
     assert.match(domain, /roles?\s*=\s*'allowed'/, '模型选择必须收进高级设置');
@@ -133,6 +138,11 @@ test('harness 跨根事件、看板旧回包与旧 attempt 归档都有防护', 
     assert.match(domain, /seq !== refreshSeq/, '看板重叠刷新必须只让最后一次回写');
     assert.match(domain, /b\.title \|\| '', b\.deadline/, '详情签名必须覆盖标题与剩余时间');
     assert.match(domain, /close\.setAttribute\('aria-label', '关闭'\)/, '弹窗关闭按钮必须有可用名称');
+    const css = read('orchestration/orchestration.css');
+    assert.match(css, /@container \(max-width: 1000px\)[\s\S]{0,500}flex-direction: row/,
+        '窄宽度目录必须改成横向选择器，不能竖着堆在详情上方');
+    assert.match(domain, /\]\.includes\(b\.status\)[\s\S]{0,80}formatElapsed/,
+        '已完成批次不应残留“剩余：0s”');
     const panel = read('ai/ai-panel.js');
     assert.match(panel, /snapshotAttempt < sessionAttempt/, '旧 attempt 快照不能覆盖新投影');
     assert.match(panel, /sessionAttempt >= batchAttempt/, '旧快照不能归档当前 attempt');

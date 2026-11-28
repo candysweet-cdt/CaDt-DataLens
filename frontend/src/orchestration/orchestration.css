@@ -175,11 +175,9 @@
     border-radius: 0 0 9px 9px;
 }
 .orch-plan-advanced .orch-advanced-summary {
-    position: sticky;
-    top: 0;
-    z-index: 2;
+    /* 只在卡片内做普通分隔行：之前为了 sticky 铺了一整条面板色，看起来像多出一块矩形。 */
     padding: 9px 0;
-    background: var(--panel2, var(--panel, #fff));
+    background: transparent;
 }
 .orch-advanced-grid {
     display: flex;
@@ -268,7 +266,7 @@
     overflow-x: auto;
     overflow-y: hidden;
 }
-.orch-graph-svg { display: block; width: 100%; height: auto; }
+.orch-graph-svg { display: block; width: 100%; max-width: 100%; height: auto; }
 .orch-graph-svg text {
     font-family: var(--ui-font, "Segoe UI", sans-serif);
     user-select: none;
@@ -552,18 +550,34 @@
 
 @container (max-width: 1000px) {
     .orch-board-main { flex-direction: column; }
+    /* 窄宽度把左栏换成一条可横滚的选择器，而不是把目录竖着堆在详情上方：
+       单条编排只占一个小胶囊的高度，多条也不会吃掉详情区。 */
     .orch-board-list {
+        flex-direction: row;
         width: auto;
-        max-height: 220px;
+        min-width: 0;
+        max-height: none;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 7px 10px;
         border-right: 0;
         border-bottom: 1px solid var(--border);
+        scrollbar-width: thin;
+    }
+    .orch-list-row {
+        flex: 0 0 auto;
+        width: auto;
+        min-width: 168px;
+        max-width: 300px;
+        padding: 7px 10px;
+    }
+    .orch-list-row .orch-row-title,
+    .orch-list-row .orch-row-meta {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     .orch-board-detail { flex: 1 1 auto; }
-}
-
-@media (max-width: 760px) {
-    .orch-board-main { flex-direction: column; }
-    .orch-board-list { width: auto; border-right: 0; border-bottom: 1px solid var(--border, #d0d0d0); max-height: 200px; }
 }
 .orch-section { margin-top: 14px; }
 .orch-section-title { font-size: 12px; font-weight: 650; margin-bottom: 6px; }

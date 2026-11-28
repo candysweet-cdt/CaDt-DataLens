@@ -1611,7 +1611,10 @@ ${affected}`,
         if (b.owns && b.owns.length) meta.push('owns：' + b.owns.join(', '));
         else meta.push('只读');
         if (b.failureReason) meta.push('原因：' + failureLabel(b.failureReason));
-        if (b.deadline) meta.push('剩余：' + formatElapsed(b.deadline - Date.now()));
+        // 旧存档里 done/failed 批次可能残留 deadline；只在仍在跑的批次旁显示剩余时间。
+        if (b.deadline && ['running', 'reviewing', 'verifying', 'awaiting_user'].includes(b.status)) {
+            meta.push('剩余：' + formatElapsed(b.deadline - Date.now()));
+        }
         if (b.sessionId) meta.push('会话：' + b.sessionId);
         row.appendChild(el('div', 'orch-batch-meta', meta.join(' · ')));
         const actions = el('div', 'orch-batch-actions');

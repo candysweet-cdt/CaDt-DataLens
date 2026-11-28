@@ -35,6 +35,15 @@ test('同波次节点共享列，依赖边与终审列按数据生成', () => {
     }
 });
 
+test('单行执行图贴合内容高度，不再预留整块空画布', () => {
+    const layout = buildExecutionGraph({
+        batches: [{id: 'e-probe', title: 'E1/E2 派单探针', dependsOn: []}],
+    }, {waves: [['e-probe']]}, {finalReview: false, maxParallel: 1});
+    assert.ok(layout.height <= 140, '单行高度应贴合节点，实际 ' + layout.height);
+    assert.ok(layout.lanes[0].height < 90, '单行泳道不应撑到几百像素');
+    assert.ok(layout.lanes[0].y + layout.lanes[0].height <= layout.height, '泳道不能超出 viewBox');
+});
+
 test('dependencyWaves：按 dependsOn 分层，同层保持计划顺序且不混入审查批次', () => {
     const waves = dependencyWaves([
         {id: 'A', kind: 'work', dependsOn: []},
