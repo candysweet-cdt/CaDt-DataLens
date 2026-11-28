@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {shouldShowRail, railTicks, nextRailScroll, RAIL_MIN_WIDTH} from '../../../src/ai/session/session-rail.js';
+import {shouldShowRail, railTicks, nextRailScroll, RAIL_MIN_WIDTH, RAIL_TEXT_WIDTH, RAIL_RESERVED_WIDTH}
+    from '../../../src/ai/session/session-rail.js';
 
 // 会话消息导航滑轨：显隐条件、短横线布局、滚轮步进与视觉契约。
 
@@ -11,6 +12,18 @@ test('shouldShowRail：开关开启且面板够宽才显示', () => {
     assert.equal(shouldShowRail(true, RAIL_MIN_WIDTH - 1), false); // 分屏太窄
     assert.equal(shouldShowRail(false, 2000), false); // 开关关闭
     assert.equal(shouldShowRail('true', 2000), false); // 非布尔 true 不算开启
+});
+
+test('阈值构成：正文理想宽 920 + 滑轨/滚动条/padding 占位', () => {
+    assert.equal(RAIL_TEXT_WIDTH, 920, '正文理想宽度');
+    // 22（消息区左右 padding）+ 8（滚动条）+ 20（滑轨 left 2 + 宽 18）
+    assert.equal(RAIL_RESERVED_WIDTH, 50);
+    assert.equal(RAIL_MIN_WIDTH, RAIL_TEXT_WIDTH + RAIL_RESERVED_WIDTH, '阈值 = 正文宽 + 占位');
+    // 常见分屏（380 / 720 / 900）都不该出滑轨：那些宽度下它会盖到正文上
+    for (const w of [380, 720, 900, 969]) {
+        assert.equal(shouldShowRail(true, w), false, w + 'px 时滑轨会挤占正文');
+    }
+    assert.equal(shouldShowRail(true, 970), true);
 });
 
 test('shouldShowRail：支持自定义阈值', () => {
@@ -88,12 +101,27 @@ test('nextRailScroll：大滚轮按可视高度翻页，不可滚动时保持零
     assert.equal(nextRailScroll(12, 100, 40, 40), 0);
 });
 
+test('railTicks：centerY 可把刻度块的居中基准推下面板级中心', () => {
+    const items = [{index: 0, round: 1, text: 'a'}, {index: 1, round: 2, text: 'b'}];
+    // 轨道内默认居中：span = 8 + 8 = 16，offset = (400-16)/2 = 192
+    assert.deepEqual(railTicks({items, activeIndex: -1}, 400).ticks.map((t) => t.top), [196, 204]);
+    // 面板中心相对轨道顶更靠下（300）时，刻度块中心也随之下移
+    assert.deepEqual(railTicks({items, activeIndex: -1}, 400, 0, 300).ticks.map((t) => t.top), [296, 304]);
+    // 目标超出轨道底部时钳在底部，不会把刻度挤出可视区
+    assert.deepEqual(railTicks({items, activeIndex: -1}, 400, 0, 9999).ticks.map((t) => t.top), [388, 396]);
+});
+
 test('视觉契约：短横线、即时 tooltip、隐藏滑轨滚动条且固定在面板左缘', () => {
     const rail = readFileSync(new URL('../../../src/ai/session/session-rail.js', import.meta.url), 'utf8');
     const css = readFileSync(new URL('../../../src/style.css', import.meta.url), 'utf8');
     assert.match(rail, /node\.setAttribute\('data-tip-delay', '0'\)/, '悬停必须立即显示 tooltip');
     assert.match(rail, /node\.setAttribute\('data-tip-placement', 'right'\)/, '左缘滑轨的气泡必须向右展开');
     assert.match(css, /\.ai-session-rail \{[^}]*left:\s*2px;[^}]*width:\s*18px/s, '滑轨必须固定在面板左缘');
-    assert.match(css, /\.ai-rail-tick \{[^}]*width:\s*12px;[^}]*height:\s*2px;[^}]*border-radius:\s*1px/s, '刻度必须是短横线而不是圆点');
+    assert.match(css, /\.ai-rail-tick::before \{[^}]*width:\s*12px;[^}]*height:\s*2px;[^}]*border-radius:\s*1px/s,
+        '刻度必须是短横线而不是圆点（画在 ::before 上）');
+    assert.match(css, /\.ai-rail-tick \{[^}]*height:\s*8px/s, '命中盒必须铺满整格间距，空隙也要能命中');
+    assert.ok(!/\.ai-rail-track::before\s*\{/.test(css), '不再画从上到下的轨道细线');
+    assert.ok(!/rotate\(45deg\)/.test(css.slice(css.indexOf('.ai-rail-tick'), css.indexOf('.ai-resize'))),
+        '插话刻度也用横线，不再用菱形');
     assert.match(css, /\.ai-rail-track \{[^}]*overflow-y:\s*scroll;[^}]*scrollbar-width:\s*none/s, '滑轨内容必须可滚动但不显示第二条滚动条');
 });

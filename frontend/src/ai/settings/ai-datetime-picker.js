@@ -77,13 +77,14 @@ export function createDateTimePicker(options = {}) {
     /** @type {{dispose:Function}|null} */
     let openHandle = null;
 
-    /** 关闭当前浮层 */
+    /** 关闭当前浮层（必须走 onClose：它负责把浮层 DOM 从 body 摘掉，只 dispose 会留下残影） */
     function close() {
-        if (openHandle) {
-            const h = openHandle;
-            openHandle = null;
-            h.dispose();
-        }
+        const h = openHandle;
+        if (!h) return;
+        openHandle = null;
+        const entry = /** @type {{entry?:{onClose?:Function}}} */ (h).entry;
+        if (entry && typeof entry.onClose === 'function') entry.onClose();
+        h.dispose();
     }
 
     /**

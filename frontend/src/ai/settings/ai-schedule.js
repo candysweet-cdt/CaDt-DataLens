@@ -711,16 +711,17 @@ export function createAISchedule(ctx) {
             }
         });
 
-        // 单列纵向：一行一个字段（上下结构，不再左右分栏——分栏在 560px 弹层里会撑出横向滚动条）。
-        // 触发指令独占一行：标签在上、textarea 占满整行剩余宽度。
-        const body = node('div', 'ai-sched-editor');
+        // 两栏：左「做什么」（名称 + 触发指令，textarea 吃掉左栏剩余高度）/ 右「何时·身份·对象」。
+        // 弹层用 wide（800px）：560px 里两栏会把控件挤出可视宽度、撑出横向滚动条。
+        const body = node('div', 'ai-sched-editor ai-sched-editor-2col');
+        const left = node('div', 'ai-sched-col ai-sched-col-prompt');
+        const right = node('div', 'ai-sched-col');
         const promptRow = node('div', 'ai-sched-field ai-sched-field-block');
         const promptLabel = node('label');
         promptLabel.textContent = '触发指令';
         promptRow.append(promptLabel, promptCtl.element);
-        body.append(
-            row('名称', nameCtl.element),
-            promptRow,
+        left.append(row('名称', nameCtl.element), promptRow);
+        right.append(
             row('类型', kindCtl.element),
             row('', onceModeCtl.element),
             countdownRow, datetimeRow, valueRow,
@@ -730,7 +731,9 @@ export function createAISchedule(ctx) {
             row('模型', modelCtl.element),
             row('最多触发次数', maxRunsCtl.element),
         );
-        openAIDialog(isEdit ? '编辑定时任务' : '新建定时任务', [body], [cancelBtn, save], opts && opts.top ? {top: true} : undefined);
+        body.append(left, right);
+        openAIDialog(isEdit ? '编辑定时任务' : '新建定时任务', [body], [cancelBtn, save],
+            {wide: true, top: !!(opts && opts.top)});
         // 弹窗挂 body，手动增强被扫描器漏掉的下拉（幂等，原生 select 仍是值真源）。
         if (enhanceSelect) {
             for (const ctl of [kindCtl, scopeCtl, targetCtl, onceModeCtl, modelCtl]) enhanceSelect(ctl.control);

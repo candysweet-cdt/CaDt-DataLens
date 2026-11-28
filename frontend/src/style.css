@@ -2760,6 +2760,21 @@ aside[data-sidebar-view="app-pages"] #app-pages-panel { display: flex; flex: 1; 
     cursor: pointer;
 }
 .ai-session-orch-toggle:hover { background: color-mix(in srgb, var(--muted) 14%, transparent); color: var(--fg); }
+.ai-session-orch-open {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+.ai-session-orch-open:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.ai-session-orch-open svg { width: 12px; height: 12px; display: block; }
 .ai-session-badge {
     flex: none;
     padding: 0 5px;
@@ -5979,63 +5994,49 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     outline: none;
 }
 .ai-rail-track::-webkit-scrollbar { width: 0; height: 0; display: none; }
-.ai-rail-track::before {
-    /* 轨道底线：细、弱，不抢视觉 */
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 0;
-    height: var(--ai-rail-content-height, 100%);
-    width: 1px;
-    transform: translateX(-50%);
-    border-radius: 1px;
-    background: var(--border);
-    opacity: .55;
-}
+/* 没有轨道底线：只在有消息刻度的地方显示短横线，不留一条从上到下的细线。
+   命中盒 = 整格 8px（与间距相同），刻度之间的空隙也命中，鼠标沿滑轨滑动时不会断触。
+   可见的短横线由 ::before 画，命中盒本身透明。 */
 .ai-rail-tick {
     position: absolute;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 12px;
-    height: 2px;
+    width: 18px;
+    height: 8px;
     padding: 0;
     border: none;
+    background: none;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+}
+.ai-rail-tick::before {
+    content: "";
+    display: block;
+    width: 12px;
+    height: 2px;
     border-radius: 1px;
     background: var(--muted);
     opacity: .55;
-    cursor: pointer;
     transition: width .12s ease, opacity .12s ease, background .12s ease;
 }
-.ai-rail-tick:hover,
-.ai-rail-tick:focus-visible {
-    outline: none;
+.ai-rail-tick:hover::before,
+.ai-rail-tick:focus-visible::before {
     width: 16px;
     background: var(--text);
     opacity: 1;
 }
-.ai-rail-tick-active {
+.ai-rail-tick:focus-visible { outline: none; }
+.ai-rail-tick-active::before {
     width: 16px;
     background: var(--text);
     opacity: 1;
 }
-/* 插话：小菱形，区别于常规轮次的短横线（旧竖轨的菱形语言适配到横刻度） */
-.ai-rail-tick-steer {
-    width: 6px;
-    height: 6px;
-    transform: translate(-50%, -50%) rotate(45deg);
-}
-.ai-rail-tick-steer:hover,
-.ai-rail-tick-steer:focus-visible {
-    width: 8px;
-    height: 8px;
-    transform: translate(-50%, -50%) rotate(45deg);
-}
-.ai-rail-tick-steer.ai-rail-tick-active {
-    width: 8px;
-    height: 8px;
-    background: var(--text);
-    opacity: 1;
-}
+/* 插话刻度同样用短横线（不再用菱形）：hover 时略微加长，与常规轮次的区别交给气泡文案 */
+.ai-rail-tick-steer::before { width: 14px; }
+.ai-rail-tick-steer:hover::before,
+.ai-rail-tick-steer:focus-visible::before,
+.ai-rail-tick-steer.ai-rail-tick-active::before { width: 18px; }
 
 /* 缩放手柄：停靠=左缘；吸附=左缘+顶缘；悬浮=八向 */
 /* z-index 高于 .ai-bottom-stack(25)：手柄贯穿面板全高，底部输入区的同色铺底
@@ -9531,13 +9532,27 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
 .ai-sched-field { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .ai-sched-field > label { flex: none; width: 150px; font-size: 11.5px; color: var(--muted); }
 .ai-sched-field > .ai-settings-input { flex: 1; min-width: 0; }
+/* 弹层里的自绘下拉（enhanceSelect 产物）吃满整行：.opt-select 的 max-width:320px 在这里偏窄 */
+.ai-sched-editor .set-select,
+.ai-timer-editor .set-select { flex: 1 1 auto; max-width: none; }
 .ai-sched-editor textarea.ai-settings-input { resize: vertical; min-height: 64px; }
-/* 新建/编辑定时任务：单列纵向（一行一字段），触发指令行标签在上、textarea 占满整行。
-   不再用两栏——560px 弹层里两栏会把控件挤出可视宽度，导致横向滚动条。 */
-.ai-sched-editor { display: flex; flex-direction: column; min-width: 0; }
+/* 新建/编辑定时任务：两栏（左：名称 + 触发指令；右：类型/时间/权限/会话/模型）。
+   弹层走 wide（800px），这里刻意不设 min-width——旧规则的 min-width:560px 在 560px 卡片里
+   必然撑出横向滚动条。textarea 吃掉左栏剩余高度，两栏等高。 */
+.ai-sched-editor { min-width: 0; }
+.ai-sched-editor-2col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 14px; min-width: 0; }
+.ai-sched-editor-2col .ai-sched-col { min-width: 0; display: flex; flex-direction: column; }
+/* 两栏里 label 收窄到 96px：800px 弹层右栏约 390px，150px 的标签会把控件挤到放不下 */
+.ai-sched-editor-2col .ai-sched-field > label { width: 96px; }
 .ai-sched-field.ai-sched-field-block { display: block; align-items: stretch; }
 .ai-sched-field.ai-sched-field-block > label { display: block; width: auto; padding: 0 0 5px; }
-.ai-sched-editor textarea.ai-settings-input { min-height: 150px; width: 100%; box-sizing: border-box; }
+.ai-sched-editor-2col .ai-sched-col-prompt { min-height: 0; }
+.ai-sched-editor-2col .ai-sched-col-prompt .ai-sched-field-block { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.ai-sched-editor-2col .ai-sched-col-prompt textarea.ai-settings-input { flex: 1 1 auto; min-height: 240px; width: 100%; box-sizing: border-box; resize: none; }
+/* 极窄窗口回落单栏（弹层本身是 wide 800，卡片 max-width:100% 会先收缩；560 以下两栏各 <270 才真挤） */
+@media (max-width: 560px) {
+    .ai-sched-editor-2col { grid-template-columns: 1fr; }
+}
 /* 自绘日期时间选择器：触发器外观跟 .dlg-input 一致，浮层走 overlay-stack 定位/档位。 */
 .dtp-trigger { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .ai-sched-field > .dtp-trigger { flex: 1; }

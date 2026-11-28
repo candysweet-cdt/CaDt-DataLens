@@ -5,7 +5,16 @@
 // 显隐由宿主按「设置开关 && 面板宽度」判定后调 syncVisibility，本模块不读 window/布局。
 import {el} from '../../core/dom.js';
 
-export const RAIL_MIN_WIDTH = 600; // 面板宽度低于此值不显示：分屏太窄时刻度与气泡会挤
+// 正文理想宽度：低于这个宽度时，贴着左缘的滑轨会盖到正文上（滑轨是 absolute 浮层，
+// 不会推挤内容，只能靠「面板够不够宽」决定要不要出现）。
+export const RAIL_TEXT_WIDTH = 920;
+// 正文之外的固定占位，全部从面板宽度里扣掉才轮到正文：
+//   消息区左右 padding 22（.ai-messages 的 0 11px）
+// + 消息区滚动条 8（--scrollbar-size）
+// + 滑轨自身 20（.ai-session-rail 的 left 2 + width 18）
+export const RAIL_RESERVED_WIDTH = 50;
+// 面板宽度低于此值不显示滑轨：正文不足 RAIL_TEXT_WIDTH 时让位给正文。
+export const RAIL_MIN_WIDTH = RAIL_TEXT_WIDTH + RAIL_RESERVED_WIDTH;
 const TICK_GAP_PX = 8; // 短横线之间的固定间距；超出可视高度时由滑轨自身滚动浏览
 
 // 显隐判定（纯函数，配 session-rail.test.mjs）：开关开启且面板够宽才显示。
@@ -15,7 +24,9 @@ export function shouldShowRail(enabled, panelWidth, minWidth = RAIL_MIN_WIDTH) {
 
 // 把 snapshot.items 映射成要渲染的刻度：每轮一条短横线，不抽稀、不压缩。
 // top 为相对滑轨内容顶部的像素位置；active 为是否当前轮。纯函数，可单测。
-export function railTicks(snapshot, trackHeight, maxTicks) {
+// centerY：刻度块中心在滑轨坐标系里的目标位置（默认轨道中点）。滑轨自身不占满面板高度
+//（底部让开 composer），要按「整个面板」居中就由调用方传面板中心相对轨道顶的偏移。
+export function railTicks(snapshot, trackHeight, maxTicks, centerY) {
     const items = (snapshot && snapshot.items) || [];
     const active = Number(snapshot && snapshot.activeIndex);
     const n = items.length;
@@ -24,9 +35,12 @@ export function railTicks(snapshot, trackHeight, maxTicks) {
     const explicitCap = Number(maxTicks) > 0 ? Math.round(Number(maxTicks)) : 0;
     const gap = explicitCap > 0 ? Math.max(TICK_GAP_PX, (height - TICK_GAP_PX) / Math.max(1, explicitCap - 1)) : TICK_GAP_PX;
     const contentHeight = Math.max(height, TICK_GAP_PX * n);
-    // 刻度块整体在轨道内垂直居中：消息很少时不再贴着顶部（内容超过一屏才从顶部铺开滚动）。
+    // 刻度块居中：默认轨道内居中；内容超过一屏时不居中，从顶部铺开滚动。
     const span = TICK_GAP_PX + gap * (n - 1);
-    const offset = contentHeight > height ? 0 : Math.max(0, (height - span) / 2);
+    const wanted = Number(centerY);
+    const center = Number.isFinite(wanted) && wanted > 0 ? wanted : height / 2;
+    const maxOffset = Math.max(0, height - span);
+    const offset = contentHeight > height ? 0 : Math.min(maxOffset, Math.max(0, center - span / 2));
     const ticks = items.map((item, i) => ({
         index: Number(item && item.index),
         round: Number(item && item.round) || i + 1,
@@ -100,12 +114,21 @@ export function createSessionRail(ctx) {
         root.style.setProperty('--ai-rail-bottom', Math.max(0, h) + 'px');
     }
 
+    // 刻度块的垂直居中基准是「整个面板」（含底部 composer 区），而不是滑轨自己的可视区：
+    // 滑轨底边让开了输入区，按轨道居中会整体偏上。
+    function railCenterY() {
+        if (typeof panel.getBoundingClientRect !== 'function') return 0;
+        const panelRect = panel.getBoundingClientRect();
+        const trackRect = track.getBoundingClientRect();
+        return Math.max(0, panel.clientHeight / 2 - (trackRect.top - panelRect.top));
+    }
+
     function render(snapshot) {
         if (disposed) return;
         currentSnapshot = snapshot || null;
         activeIndex = Number(currentSnapshot && currentSnapshot.activeIndex) || -1;
         measureBottom();
-        const layout = railTicks(currentSnapshot, track.clientHeight, 0);
+        const layout = railTicks(currentSnapshot, track.clientHeight, 0, railCenterY());
         ticks = layout.ticks;
         contentHeight = layout.contentHeight;
         track.textContent = '';
@@ -123,7 +146,8 @@ export function createSessionRail(ctx) {
     function reflow() {
         if (disposed || !currentSnapshot || !ticks.length) return;
         if (track.clientHeight <= 0) return;
-        const layout = railTicks(currentSnapshot, track.clientHeight, 0);
+        measureBottom();
+        const layout = railTicks(currentSnapshot, track.clientHeight, 0, railCenterY());
         ticks = layout.ticks;
         contentHeight = layout.contentHeight;
         track.style.setProperty('--ai-rail-content-height', contentHeight + 'px');

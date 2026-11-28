@@ -130,6 +130,8 @@ export function snapshotTimersForTree(timers, sessionIdOf, sessionIds, nowMs) {
 export function createAITimer(ctx) {
     const timers = new Map();   // id → AITimerInfo
     const sessions = new Map(); // id → 启动时的会话 id（Go 侧不感知会话）
+    // 弹窗里的下拉交给设置页同款自绘增强器（原生 select 展开是系统菜单，与周边控件两套观感）
+    const enhanceSelect = typeof ctx.enhanceSelect === 'function' ? ctx.enhanceSelect : null;
     let styleInjected = false;
     let tickTimer = 0;
     let detailId = '';          // 弹层当前展示的详情计时器 id（空 = 列表视图）
@@ -535,6 +537,10 @@ export function createAITimer(ctx) {
         const close = () => closeCreateDialog();
         const submitBtn = ctx.dialogButton('启动', 'dlg-btn primary', () => { submit().catch(() => {}); });
         ctx.openDialog('新建计时器', [editor], [ctx.dialogButton('取消', 'dlg-btn', close), submitBtn], {wide: true});
+        // 弹窗挂到 DOM 之后再增强下拉：原生 select 展开是系统菜单，与旁边的自绘输入框两套观感
+        if (enhanceSelect) {
+            for (const ctl of [waySelect, presetSelect]) enhanceSelect(ctl.control);
+        }
 
         function syncUI() {
             const isCd = mode === 'countdown';
