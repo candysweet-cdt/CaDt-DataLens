@@ -4,6 +4,24 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 变更（提示词清理：去重、正向化与防御性文案收敛）
+
+- 按 `docs/finished-plans/prompt-cleanup.md` 的圈定范围清理模型提示词：计划模式规则收敛为单一来源（`<plan_mode>`）；范围外路径守则与工具描述统一为「可授权」；worktree 守则抽常量，不再三份漂移。
+- 删除重复的工具说明（`list_dir` / `read_file` / `code_outline` / `search_text` 的参数细节只留在 `properties`；只读工具的「所有范围档均可用 / 无需审批」尾句；`<tool_catalog>` 里与工具描述重复的调度条目），并去掉 `spawn_agent` 的【并行铁律】与「常见错误，务必传」等预警文案。
+- 子代理提示词改为正向边界描述；沙箱不可用 / Access denied 的排障指引移到错误返回时追加（`annotateSandboxError`），不再预占每个子代理的系统提示词。人设称呼保留「未设置，不要臆造」，删重复的「不要每句都叫」。
+- 修复稳定区 warm cache 契约：`stableDigest` 纳入 `toolCatalogText` 全文，MCP / 插件工具名单变化不再命中旧目录。认知索引关闭态改为条件式推荐，去掉推销式重复。
+- 验证：受影响的 177 项前端用例全绿，新增「MCP 名单变化不命中旧缓存」回归；`npm run -s test:ai` 与 `npm run build` 通过。
+
+### 新功能（插件能力供给：技能注册 / 文本资产 / 平台扩展接口）
+
+- 新增 `cadt.registerSkill({name, description, content(), when?})`：插件声明式注册斜杠技能，`/技能名` 可直接调用。正文惰性求值（不在 apply 阶段预加载），单插件 ≤64 / 总 ≤200、≤64K 字符、单点超时 1 s；重名时工作区技能优先（插件 rank 300），禁用插件立即失效补全与 skill_use。
+- 新增 `cadt.readTextAsset(path)`：读插件目录内文本资产（UTF-8 fatal 校验、≤1 MiB、Go 侧扩展名白名单），与图片 `readAsset` 并存，零 Go 改动 / 零新绑定。
+- `addCommand` 的 `run(env)` 新增写回契约：可返回 `{replaceSelection}` / `{insertText}` / `{openVirtualDoc}`，宿主走编辑器既有通道替换（脏标记 / undo / 只读判定在宿主），右键 / 面板 / 工具菜单 / 快捷键四个入口全覆盖。
+- 新增平台扩展接口：`registerContextProvider`（按轮求值的系统提示词上下文）、`onWorkspaceEvent`（工作区生命周期）、`registerPage`（应用页面标签页）、`registerFileAction`（文件树右键动作）——均已接宿主消费点。
+- 新增 7 个「注册表就绪、宿主消费点待 P2 立项」的接口（当前注册不报错但暂无可见效果）：`registerFileDecorator` / `registerEditorDecoration` / `registerInlineSuggestProvider` / `registerTaskProvider` / `registerProgressReporter` / `registerBackgroundJob` / `registerWorkspaceInitializer`。详见 `docs/plugins/README.md`「平台扩展接口」。
+- 插件回调 ctx 统一基座（`shell/plugin-ctx.js`）：命令 / 视图 / 导入器 / 导出 / AI 工具 / AI 上下文 / 设置面板 / 分类器八入口共享 `{plugin:{id,name}, workspace, sessionId, origin, flash?}`，只加键不改旧签名；新增技能 / provider 的回调也按各自身份重建基座。
+- 测试：`plugin-ctx` / `plugin-context` / `plugin-command-env` / `plugin-text-asset` / `plugin-skills` / `plugin-platform-extensions` / `ai-plugin-skills` / `ai-plugin-context-merge` 共 8 组新增并登记 `npm test` 清单；`plugin-creator` 内置技能同步全部新 API。
+
 ### 变更（子代理能力与权限体系重设计：preset + 能力快照，**破坏性变更**）
 
 - 子代理的能力改由「preset + 派单时合成的能力快照」决定（工具面 / 写边界 / 命令沙箱 / 能否再派下层，派出时定死、续跑不能扩大），取代旧「scope 单向降档」——方案见 `docs/finished-plans/subagent-capabilities-redesign.md`（原 unfinished-plans，2026-11-28 实施）。
@@ -922,7 +940,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **工程（npm test 拆分）**：测试清单过 240 个文件后，单条 `node --test` 命令行超出 Windows cmd 8191 字符上限（「命令行太长」整批不跑）——`npm test` 拆为 `test:ai` / `test:ui-core` / `test:ui-shell` 三个子脚本串行（失败即停），`test-manifest` 守卫改为扫全部 npm script 字段的并集（双向核对 + 禁重复登记语义不变）。
 - **护栏**：0 新依赖、0 vendor 新增文件、无 Go 改动（无新绑定 → 无 mock-backend 义务）；新增 `core/completion.js` / `editor/editor-completion.js` / `db/db-completion.js` 三模块。测试 `test/core/completion.test.mjs`（13 例）+ `test/editor/editor-completion.test.mjs`（8 例）+ `test/db/db-completion.test.mjs`（15 例，假 backend 覆盖单飞 / 缓存失效 / 失败降级 / 跨库 / quick doc）已登记清单；候选弹层样式走主题变量，编辑器内部浮层不进 overlay-stack（弹层规范豁免）。
 
-- **实机反馈改进（2026-11-22）**：① JSON 解析错误托盘（编辑器底部，jsoneditor 原生 `.jsoneditor-text-errors`）现代化——杀掉原生黄顶线与酱色红底（真凶是 `tr.parse-error` 的 `rgba(238,46,46,.44)`，特异性 (0,3,1) 需单独覆盖 + !important），改为面板底色 + 主题分隔线 + 行 hover + 跳行 accent + 报错文本编辑器字体（红 X sprite 保留、「Ln N」列弱化）；② 补全弹层对齐 JetBrains 观感——行首类型图标（meta → `iconSvg`：关键词 `</>`、键 花括号、段 缩进行、标签/属性/表/视图/SQL 列分色，新登记注册图标 `braces`；装饰挂 MutationObserver——popup 晚于首回调创建需惰性重试，且 popup renderer 不发 afterRender，与 python 补色同款观察器机制）、行距/圆角/选中行底色/meta 弱化；弹层配色改跟**编辑器代码主题**走（底/字 `--editor-bg`/`--editor-text`、选中行 `--ace-selection`、meta `--ace-gutter`，fallback 界面主题变量——默认「跟随软件主题」档下无感，深色界面配浅色代码主题时弹层同步变浅，不再深弹层浮浅编辑器）；③ 「输入时自动弹出」**默认关**：live 路径在 vendored bundle 上实测不可靠（最小 completer + live 也复现渲染冻结、真实键入后 completer 未创建——非本项目代码问题，详见方案 §15.2），设置变更热生效到已开编辑器的接线保留（开关切换即时生效，生效后仍可尝试）；④ 编辑器折叠箭头对齐 JetBrains：展开态（向下）hover 行号区才显示、折叠态（向右）常显。
+- **实机反馈改进（2026-11-22）**：① JSON 解析错误托盘（编辑器底部，jsoneditor 原生 `.jsoneditor-text-errors`）现代化——杀掉原生黄顶线与酱色红底（真凶是 `tr.parse-error` 的 `rgba(238,46,46,.44)`，特异性 (0,3,1) 需单独覆盖 + !important），改为面板底色 + 主题分隔线 + 行 hover + 跳行 accent + 报错文本编辑器字体（红 X sprite 保留、「Ln N」列弱化）；② 补全弹层对齐 JetBrains 观感——行首类型图标（meta → `iconSvg`：关键词 `</>`、键 花括号、段 缩进行、标签/属性/表/视图/SQL 列分色，新登记注册图标 `braces`；装饰挂 MutationObserver——popup 晚于首回调创建需惰性重试，且 popup renderer 不发 afterRender，与 python 补色同款观察器机制）、行距/圆角/选中行底色/meta 弱化；弹层配色跟**界面主题**走（面板底色，与 tooltip/菜单等浮层同惯例——深色界面下弹层恒为深色；2026-11-28 实机反馈否决了此前的「跟编辑器代码主题」方案：深界面配浅色代码主题（github-light 的 `--editor-bg:#fff`）时弹层白底刺眼，代码主题只应影响编辑器区与语法 token）；③ 「输入时自动弹出」**默认关**：live 路径在 vendored bundle 上实测不可靠（最小 completer + live 也复现渲染冻结、真实键入后 completer 未创建——非本项目代码问题，详见方案 §15.2），设置变更热生效到已开编辑器的接线保留（开关切换即时生效，生效后仍可尝试）；④ 编辑器折叠箭头对齐 JetBrains：展开态（向下）hover 行号区才显示、折叠态（向右）常显。
 - **护栏补充**：测试 36 → 41 例（normalize 默认值、热生效、弹层行图标装饰各一）；`braces` 图标先进注册表再用（icon-guard 合规路径）；JSON 错误托盘覆盖仅加 `.jsoneditor .jsoneditor-text-errors` 作用域，结构与跳行交互不动；折叠箭头为纯 CSS 作用域调整。
 
 ### 改进（数据库：从零建库建表，仅 SQLite）

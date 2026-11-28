@@ -909,7 +909,7 @@ function showExplorerMenu(info, x, y) {
                 items.push({
                     label: '插件：' + a.label,
                     icon: 'plugin',
-                    action: () => Promise.resolve(a.run({path: info.path, name: info.name, isDir}))
+                    action: () => Promise.resolve(a.run(a.ctx || {path: info.path, name: info.name, isDir}))
                         .catch((e) => deps.flash && deps.flash('插件动作失败：' + ((e && e.message) || e), true)),
                 });
             }
