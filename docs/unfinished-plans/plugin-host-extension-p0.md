@@ -1,14 +1,14 @@
-# CaDt 插件宿主扩展（P0）：技能注册、文本资产读取与子代理受控写（方案）
+# CaDt 插件宿主扩展（P0）：技能注册与文本资产读取（方案）
 
 > 状态：**未实施**（2026-11-28 完成代码现状核对与方案设计，同日评审后补正；仅文档，未改宿主代码）
-> 目标：补齐插件作为「能力供给方」最缺的三个通用接口——`registerSkill`（插件声明可被 `/技能名` 调用的技能）、`readTextAsset`（读随包文本资产）、**子代理受控写能力**。三者都不绑定具体业务：写作插件只是**首个验证场景**（v8 类插件移植后要能直接 `/webnovel-write 63`），翻译、批注、数据分析类插件同样受益。
+> 目标：补齐插件作为「能力供给方」最缺的两个通用接口——`registerSkill`（插件声明可被 `/技能名` 调用的技能）、`readTextAsset`（读随包文本资产）。两者都不绑定具体业务：写作插件只是**首个验证场景**（v8 类插件移植后要能直接 `/webnovel-write 63`），翻译、批注、数据分析类插件同样受益。
 > 定位：本文是 `plugin-platform-extension-catalog.md` 里 P0 各项的详细设计，不替代那份平台总览。
-> 结论先行：**不需要重做 Agent 平台**。宿主已有 DI、五模式钩子、Agent Preset/作用域、三协议 LLM、工具链、技能斜杠调用与子代理系统；本方案补三个缺口：①插件技能注册；②插件资产文本读取；③子代理受控写。
+> **子代理侧已迁出**：子代理能力/权限体系独立成文 → `docs/finished-plans/subagent-capabilities-redesign.md`（§3.3 只留指针）。
+> 结论先行：**不需要重做 Agent 平台**。宿主已有 DI、五模式钩子、Agent Preset/作用域、三协议 LLM、工具链与技能斜杠调用；本方案补两个缺口：①插件技能注册；②插件资产文本读取。
 >
-> **评审补正（2026-11-28，第二次代码核对 + DSH 源码调研）**：实施前必须以本节为准——
+> **评审补正（2026-11-28，第二次代码核对）**：实施前必须以本节为准——
 > ① `readAsset` 并非「只读图片」：Go 侧白名单已含文本扩展名，缺的是 API 形状（§1.2-2）；
-> ② 子代理写能力**重新纳入范围，但方案待重新设计**：初版 `capabilities: ['write']` 方案已作废，§3.3 改为「设计约束清单」——列出重新设计时必须同时满足的硬事实（DSH 模型、编排 owns、审批悬挂、命令通道漏闸、preset 接线），不预设具体实现；
-> ③ 技能 rank / 缓存失效 / `content` 求值方式三处口径（§3.1）。行号以符号名为准，正文标注的是核对时快照。
+> ② 技能 rank / 缓存失效 / `content` 求值方式三处口径（§3.1）。行号以符号名为准，正文标注的是核对时快照。
 
 ## 1. 背景与现状（代码事实，2026-11-28 核实）
 
@@ -17,7 +17,6 @@
 - **斜杠技能调用**：`frontend/src/ai/chat/ai-slash.js` 已实现 `/技能名` 与 `/技能名 参数`。`slashSkillInvocation` 会把技能作为附件注入本轮，参数作为用户消息发送；`handleSlashText` 对固定命令以外的 token 走技能发现。
 - **技能发现**：`frontend/src/ai/ai-panel.js:7733` `resolveSkillDirs` 扫描工作区 `.cadt/skills`、`.agents/skills`、应用数据 `ai-skills`、用户 `~/.agents/skills` 与内置目录；`:7863` `listSkillsRaw` 读取并解析 `SKILL.md` front matter，`:7935` 起按 rank 去重。
 - **Agent 循环**：`frontend/src/ai/ai-panel.js` 的 `executeTool`（快照 `:10853`）→ `startRound`（`:13856`）→ `handleToolRound`（`:14479`）→ 工具结果回灌 → 续轮。行号会随文件增长漂移，实施时按符号名定位。
-- **子代理**：`frontend/src/ai/agent/ai-subagents.js:802` `startSubAgent`；已有任务树、收件箱、并发/层级限制、worktree 隔离、OS 命令沙箱、轮次预算与显式续跑。
 - **平台原语**：`frontend/src/shell/plugins.js:299` 起已有 `provide/require/inject/effect` 与五模式钩子；`ai-agent-preset.js` 已有 Preset 与 agent scope 纯函数。
 - **插件生命周期**：`frontend/src/shell/plugins.js:395` `reloadPlugins` 在换代前先 dispose 容器与总线，再 `clear*` 各注册表；插件注册项随禁用/重载整体撤销。
 - **插件工具**：`plugins.js:207` `registerTool`，工具默认关闭，须用户在「设置 → AI → 权限 → 插件工具」逐层授权。
@@ -26,7 +25,8 @@
 
 1. **插件不能注册技能**：`plugins.js:126` `apiFor` 没有 `registerSkill`；`listSkillsRaw` 只读文件系统目录，不合并插件内存注册表。因此 `/webnovel-write` 无法作为插件技能出现。
 2. **缺文本资产读取出口（不是通路）**：`plugins.js:369` 的注释与 JS 实现面向图片 data URL，但 Go 侧白名单其实已含文本/数据扩展名——`internal/plugins/plugins.go:71-84`（`.md .txt .json .js .mjs .csv .yaml/.yml`），`ReadPluginAsset`（`:278`）返回 data URL、数据类上限 48 MB。也就是说插件**今天就能**读 `SKILL.md`，代价是自己剥 `data:…;base64,`、base64 解码、判 UTF-8、自己兜大小。缺的是**统一入口与文本级闸门**，不是文件通路。脚本类资产（`.py / .sh / .ps1`）确实不在白名单。
-3. **子代理写文件工具受限**：`ai-subagents.js:643` `subToolsForScope` 里只有带 `hasWorktree` 的子代理才挂 `write_file/edit_file`（`:673`）。这不是「天然只读」——DSH 的子代理权限是 preset / 委派继承 / toolFilter 三者组合、默认继承父工具集（§3.3 有源码核对）；CaDt 已有 preset 基础设施（`ai-agent-preset.js`）但 `subToolsForScope` 没接 `preset.tools`。**子代理受控写重新纳入范围、方案待设计**，约束见 §3.3。
+
+（原有第三条「子代理写文件工具受限」已迁出：子代理能力/权限体系归 `subagent-capabilities-redesign.md`，本文不再涉及，见 §3.3。）
 
 ### 1.3 首个验证场景：v8 侧需要适配（不属于本方案宿主改造范围）
 
@@ -41,8 +41,8 @@
 
 - 新增 `cadt.registerSkill(spec)`，让插件声明式注册可被 `/技能名` 调用的技能。
 - 新增 `cadt.readTextAsset(path)`，让插件读取随包文本资产（技能、脚本、模板）。
-- **子代理受控写能力**（待重新设计，见 §3.3 的约束清单）。
-- 保持现有文件系统技能、斜杠命令、插件工具授权与子代理工具表语义不回归（子代理写部分按新设计调整）。
+- 保持现有文件系统技能、斜杠命令与插件工具授权语义不回归。
+- （子代理侧不在本文：归 `subagent-capabilities-redesign.md`。）
 
 ### 非目标
 
@@ -139,63 +139,19 @@ const text = await cadt.readTextAsset('skills/webnovel-write/SKILL.md');
 - `../`、绝对路径、符号链接越界、非白名单扩展名、>1 MiB、非 UTF-8 五类输入均被拒绝，且错误信息说清是哪一类。
 - 读取失败不影响插件其他注册项。
 
-### 3.3 子代理受控写能力：**待重新设计**（2026-11-28 恢复范围）
+### 3.3 子代理受控写：**已迁出本文**
 
-#### 状态
+子代理能力/权限体系已独立成文：**`docs/finished-plans/subagent-capabilities-redesign.md`**（对齐 DSH 的能力快照模型，含编排 owns 阶段零、审批语义、Go 侧 symlink 防线、v2 快照等）。本文 §3.3 原有的「设计约束清单」与该文档重复，已删除以免两处真源；涉及 `subToolsForScope` / `applyWorkspaceWrite` / `ai-tool-defs.js` / `ai-agent-resume.js` / `orchestration-ui.js` 的改动全部归那份文档。
 
-**要做，但方案重来。** 初版 `capabilities: ['write']` + 派单期一次性授权 + 确定性写闸的方案**已作废**（它假设「子代理天然只读」，这个前提经 DSH 源码核对是错的）。本节不再给出具体设计，而是列出**重新设计时必须同时满足的硬事实与约束**——任何方案绕开其中任何一条都会出问题。设计由用户主导，定稿后再把本节替换为正式方案。
-
-#### 约束一：DSH 的真实模型（别再从错误前提出发）
-
-工作区 `D:\OraSkyC\Project\OpenSource\deepseek-harness` 源码核对（2026-11-28）：
-
-| 机制 | 证据 | 语义 |
-|---|---|---|
-| **preset** | `.agents/notes/implemented/simplification/2026-10-09-preset-owned-subagent-composition.md` | 「Persona and tools come from its plugin list」——子代理工具集来自它选的 preset |
-| **委派范围 / 继承** | `.agents/notes/archived/bug-fix/2026-08-10-child-agents-join-their-parent-preset.md` | 「A child's capabilities are exactly its parent's, minus whatever its own `toolFilter` removes」——**默认继承父的全部工具（含写工具）** |
-| **toolFilter** | `.agents/notes/implemented/feature/2026-07-12-subagent-persona-tool-filter-and-depth.md` | scoped restriction，`allow: []` 隐藏全部全局工具；明确「visibility is not authority」——它只控制可见/可执行，**不是安全边界** |
-
-结论：DSH 子代理**默认能写**，靠 preset / toolFilter 裁剪；「approval pin never」（审批从不弹）是审批策略，与工具权限是两件事。初版把两者混同，是错误推断。
-
-CaDt 对照：`ai-agent-preset.js` 已有 `normalizeAgentPreset` / `createAgentScope`（声明式 preset + 扁平作用域层），但 `ai-subagents.js:643` 的 `subToolsForScope` **不读 `preset.tools`**，写工具只看 `hasWorktree`（`:673`）；`createAgentScope`（`:884` 建）也没用作工具可见性层。**preset 基础设施在，工具白名单没接上**——重新设计时这是现成的抓手，不用另造一套。
-
-#### 约束二：编排 `owns` 写闸现在对子代理是 fail-open（必须先处理）
-
-- `orchestration.authorizeWrite`（`orchestration-ui.js:760-767`）：`if (!info || (info.role !== 'work' && info.role !== 'review')) return {allowed: true}`——子代理 session 没有 `orchestration` 字段，直接放行。
-- 全仓唯一调用点是 `ai-panel.js:9990`，位于 `applyWorkspaceWrite`（`write_file` / `edit_file`）内；**命令通道（`run_command` / `background_command`）不过这个闸**。
-- 后果（既有缺陷，不是新设计引入）：`auto` 档子代理命令沙箱是 `workspace-write`（`ai-subagents.js:260-265`），编排 Worker 的子代理**现在就能用 `run_command` 写 `owns` 之外的路径**。
-- 重新设计的写能力若走 `write_file`，同样会撞这个 fail-open；若走命令通道，则现状已经漏了。**两条路都要求先决定编排写闸怎么认子代理 session**（继承父批次 owns？fail-closed？），这是设计的前置项，不是可选项。
-
-#### 约束三：子代理没有审批通道，写判定里不能有 `ask`
-
-`requestApproval`（`ai-panel.js:8428`）把卡挂在 session 上，审批卡只渲染「当前查看会话」——子代理会话不可达，任何 `ask` 都是永久悬挂。`ai-subagents.js:258-259` 已把「edit 档只给 read-only」写成决策。重新设计的写判定必须是**确定性二元**（allow / deny），或者把「问」挪到有人能答的地方（如派单期、主会话），且要明确档位语义——但不要新增与现有档位平行的第二套授权概念。
-
-#### 约束四：visibility ≠ authority（DSH 的教训）
-
-DSH 明确「toolFilter 不是安全边界」。重新设计时：preset / 工具可见性解决「子代理能看到哪些工具」；权限档位、编排 owns、路径闸解决「能不能写」。两者是独立层，不能用前者绕过后者。CaDt 已有的 `isAutoWriteRisky`（`ai-panel.js:9831`）、`SaveFileChecked` 的 expectMtime（`:10009`）、脏文件检查（`:9882`）都要保留。
-
-#### 约束五：身份与归属
-
-- 子代理写的文件要记到**根会话**的 changes（`recordChange` 现记在子代理 session，`ai-panel.js:9839`），否则用户在父会话看不到「AI 改了哪些文件」。
-- 授权/能力若持久化，只存 `sub.session`（sessionstore 走它）；`sub` 本身是内存对象，重启从 artifact 重建，存 `sub` 上续跑即丢。
-- 并发写同一文件时 `SaveFileChecked` 会拒第二个，报错文案对子代理要自解释（重读后重试或汇报）。
-
-#### 重新设计的验收底线（无论最终方案是什么）
-
-- 子代理写路径**不得**产生 `pendingApprovals` 条目（否则悬挂）；
-- 编排 Worker 的子代理**不得**写 `owns` 之外（含命令通道）；
-- 危险路径（`.git` / `.cadt/` / `AGENTS.md`）、脏文件、项目规则 deny 一律拒；
-- worktree 隔离优先级高于任何写授权（只写隔离前缀，回灌走补丁审批）；
-- 续跑后能力/授权不丢失；撤销后新派子代理恢复受限。
+插件侧唯一相关的接口面是 `cadt.registerAgentPreset`（插件声明 drafting / review 等角色），**由 redesign 文档 §4 定义**，不在本文范围内。
 
 ## 4. 推荐实施顺序
 
 1. **阶段一（0.5–1 人日）**：`readTextAsset`（纯前端解码 + 可选 Go 白名单补行；无 AI 行为变化）。
 2. **阶段二（1–2 人日）**：`registerSkill` + AI 面板合并 + `invalidateSkillsCache` + 模型可见清单 + 测试。
-3. **阶段三：子代理受控写**——**方案待定**，见 §3.3 约束清单；定稿前不估时。前置阻塞项：编排 `owns` 写闸对子代理 fail-open 的处理。
-4. **阶段四（0.5 人日）**：文档、示例插件、端到端验收。
+3. **阶段三（0.5 人日）**：文档、示例插件、端到端验收。
 
-阶段一、二、四合计 **2–3.5 人日**；阶段三估时待方案定稿。不触及 Go agent loop，不改 `internal/aichat`，不重做平台原语。
+合计 **2–3.5 人日**；不触及 Go agent loop，不改 `internal/aichat`，不重做平台原语。（子代理侧改动不在本文，见 `subagent-capabilities-redesign.md`。）
 
 ## 5. 测试与验证
 
@@ -204,7 +160,6 @@ DSH 明确「toolFilter 不是安全边界」。重新设计时：preset / 工�
 - `frontend/test/shell/plugin-skills.test.mjs`：注册/撤销/上限/重名/条件/内容错误隔离/async 超时。
 - `frontend/test/shell/plugin-text-asset.test.mjs`：data URL 解码、UTF-8 校验、1 MiB 闸、非白名单扩展名、乱码拒绝。
 - `frontend/test/ai/ai-plugin-skills.test.mjs`：文件技能与插件技能合并、rank 300、缓存失效（含斜杠模块）、斜杠调用附件。
-- **子代理受控写的测试待方案定稿后补**：至少覆盖 §3.3 的「验收底线」五条；若方案改动 `subToolsForScope` / `authorizeWrite`，相关既有测试（`test/ai/agent/ai-subagents.test.mjs`、`test/orchestration/*`）须同步。
 - 新测试要**同时**登记进 `frontend/package.json` 的 `test:ai` / `test:ui-shell` 子脚本——`frontend/test/core/test-manifest.test.mjs` 是那条「漏登记就永远不会跑」的双向守卫，登记本身在 package.json，不是往这个守卫文件里加东西。
 
 ### 端到端
@@ -213,11 +168,6 @@ DSH 明确「toolFilter 不是安全边界」。重新设计时：preset / 工�
 2. 安装启用后，在 AI 面板输入 `/demo-write 63`，确认技能附件与参数正确发送。
 3. 禁用插件，确认技能与工具同时消失，缓存不残留。
 4. 回归现有 `/skill`、文件系统技能、spawn/wait/send、审批链。
-5. 子代理受控写的端到端场景待方案定稿后补。
-
-### 不回归的既有语义（改完要点一遍）
-
-- **子代理工具表 / 编排写闸**：阶段三会动这两处，届时按新设计逐条核对——尤其 `orchestration.authorizeWrite` 不能留 fail-open 给子代理。
 
 ### 构建
 
@@ -232,11 +182,10 @@ DSH 明确「toolFilter 不是安全边界」。重新设计时：preset / 工�
 - **重名冲突**：必须固定 rank 与诊断，不能静默覆盖作者技能。
 - **加载时限**：插件 `apply` 只有 5 秒，技能正文必须惰性读取，不能在加载时批量拉取。
 - **体积约束**：不引入新依赖，纯 JS 注册表 + 现有文件读取通道即可。
-- **子代理受控写是最高风险项**：编排 owns fail-open、审批悬挂、命令通道漏闸三条都集中在它（§3.3）。方案定稿前不要开工这一阶段。
 
 ## 7. 交付物
 
-- 宿主代码：`shell/plugin-skills.js`、`shell/plugin-text-asset.js`、`shell/plugins.js`、`ai/ai-panel.js`；（可选）`internal/plugins/plugins.go` 白名单两行 + 资产测试。子代理受控写涉及的文件待方案定稿后列。
+- 宿主代码：`shell/plugin-skills.js`、`shell/plugin-text-asset.js`、`shell/plugins.js`、`ai/ai-panel.js`；（可选）`internal/plugins/plugins.go` 白名单两行 + 资产测试。
 - 文档：`docs/plugins/README.md` 新增两节 API 说明；**`frontend/src/ai/core/ai-constants.js` 的 plugin-creator 技能正文同步**（模型唯一的 `cadt.*` 清单）。
-- 测试：上述三组单测 + 一个最小示例插件（并在 `package.json` 的 test 子脚本登记）；子代理受控写的测试待方案定稿后补。
+- 测试：上述三组单测 + 一个最小示例插件（并在 `package.json` 的 test 子脚本登记）。
 - 验收报告：端到端步骤结果与回归清单。

@@ -1,6 +1,6 @@
 # CaDt 通用插件供给接口设计（平台扩展面总览）
 
-> 状态：**设计草案，大部分未实施**（2026-11-28 基于现有插件 API 与宿主能力整理，同日评审后补正）——唯一已落地的是 **§5.2 的统一回调 ctx**（`shell/plugin-ctx.js` + 八个入口接线，2026-11-28）；§3 列出的新增接口（`registerSkill` / `readTextAsset` / 子代理受控写 / 写回契约 / 子代理可用插件工具 / `onWorkspaceEvent` / `registerPage` / `registerContextProvider` 等）**全部仍是待办**，其中 P0 三项有详细设计/约束见 `plugin-host-extension-p0.md`。
+> 状态：**设计草案，大部分未实施**（2026-11-28 基于现有插件 API 与宿主能力整理，同日评审后补正）——唯一已落地的是 **§5.2 的统一回调 ctx**（`shell/plugin-ctx.js` + 八个入口接线，2026-11-28）；§3 列出的新增接口（`registerSkill` / `readTextAsset` / 写回契约 / 子代理可用插件工具 / `onWorkspaceEvent` / `registerPage` / `registerContextProvider` 等）**全部仍是待办**。P0 前两项（`registerSkill` / `readTextAsset`）见 `plugin-host-extension-p0.md`；**子代理侧（能力快照 / preset / 受控写）已独立成文** `subagent-capabilities-redesign.md`。
 > 目标：定义 CaDt 作为通用插件平台，除写作外的各类场景可以供给哪些接口、按什么优先级补、哪些能力故意不开放。本文是平台级总览，不替代 `docs/plugins/README.md` 的具体 API 手册。
 > 结论先行：**现有接口已覆盖「文件格式 / 可视化 / 命令 / AI 工具 / 数据源 / 后台服务 / 导入导出 / 外观 / 设置」**。下一步最有价值的扩展不是继续加零散 API，而是补齐 **编辑器交互、AI 技能与工作流、工作区生命周期、侧栏面板、文件操作、任务与通知** 六类通用场景。
 >
@@ -67,7 +67,7 @@
 | **子代理可用插件工具**（不是新注册项，是拼装口径） | 子代理查设定库、角色卡、项目索引 | `subToolsForScope` 目前只拼内置工具表；把 `authorizedPluginToolDefs` 的同一份三层授权结果也拼进子代理表即可，用户勾过的授权天然继承 |
 | `registerContextProvider(spec)` | 「本章任务书」这类随会话变化的大块上下文 | 按轮惰性求值、宿主限长 + 来源标记，复用 `renderPluginContextBlocks` 渲染链；**不放大** `registerAIContext` 的 4/12 KiB 上限（那是稳定知识，语义不同） |
 | `registerAgentPreset(spec)` | 写作模式、审阅模式、数据分析模式 | 声明 persona、工具集、提示片段、变量；会话创建时可选并持久化 |
-| `registerSubagentRole(spec)` | 起草、审读、事实提取等专用子代理 | 声明角色提示、工具白名单、权限能力、模型偏好；复用现有子代理系统。**注意：不包含文件写能力**——子代理只做审查与调查，写入 / 编辑归主会话（与编排的 `owns` 契约一致，详见 `plugin-host-extension-p0.md` §3.3） |
+| `registerSubagentRole(spec)` | 起草、审读、事实提取等专用子代理 | 声明角色提示、工具白名单、权限能力、模型偏好；复用现有子代理系统。**归属子代理侧改造**：由 `subagent-capabilities-redesign.md` 的 `registerAgentPreset` 统一承载（preset 即角色组合），本文不单列 |
 | `registerWorkflow(spec)` | 多步骤流水线 | 声明步骤、依赖、输入输出、审批点；宿主负责调度/恢复/展示，插件负责每步实现 |
 | ~~`registerQuestionHandler(spec)`~~ | — | **不开**：宿主已有 `ask_user`（AI 侧）+ 审批卡（用户侧）两条通道，第三条只会分裂；插件要问就让模型调 `ask_user` |
 
@@ -122,7 +122,7 @@
 | --- | --- | --- |
 | **受控 `readWorkspaceFile` / `writeWorkspaceFile` / `watchWorkspace`** | 插件在 WebView 里已是应用同级权限（无沙箱），这层 API 不提高安全性，只增加要维护的语义：冲突检测、只读锁、审计、路径归一都要再做一遍，且与主会话审批链形成第二套口径 | `runCommandSync` / `registerViewer` 的 `ctx.requestSave` / `registerDocConverter` 的 `writeTextFile` / `getActiveFile` + `getActiveText` |
 | **`registerNotificationChannel`** | `flash` + 消息中心已覆盖 | 用 `flash(msg, isError)`；要留痕就 `openVirtualDoc` |
-| **~~本方案里给子代理开文件写能力~~ → 已恢复为待重新设计** | 约束很多（见专文 §3.3）：编排 `owns` 写闸对子代理 fail-open、命令通道不过闸、子代理无审批通道（`ask` 悬挂）、DSH 是 preset/toolFilter 组合而非「天然只读」。**不是不做，是旧方案作废、待新设计** | 现状下：隔离试改用 `spawn_agent(isolation: 'worktree')`（只写隔离前缀，回灌走补丁审批卡）；写正文由主代理做（走主会话审批链）。新方案定稿后再更新此行 |
+| **~~本方案里给子代理开文件写能力~~ → 已迁出** | 子代理能力/权限体系由 `subagent-capabilities-redesign.md` 整体重设计（能力快照 + preset + 编排 owns 阶段零），不再由插件方案局部打补丁 | 现状下：隔离试改用 `spawn_agent(isolation: 'worktree')`；写正文由主代理做。新模型落地后按那份文档为准 |
 | **`registerQuestionHandler`** | 宿主已有 `ask_user`（AI 侧）与审批卡（用户侧）两条通道，第三条分裂 | 让模型调 `ask_user`；插件自己的 UI 用 `registerViewer` / `registerPage` |
 | 任意改写主界面布局 | 破坏统一交互与可访问性 | `registerPage` / `registerSettingsPanel` |
 | 绕过审批直接写文件 | 破坏只读锁、冲突检测、审计 | 现有写工具（AI 侧）/ `runCommandSync`（插件侧，权限等同应用） |
@@ -196,15 +196,14 @@
 
 ## 6. 优先级路线图
 
-### P0：插件能力供给的硬门槛（前两项约 2–3.5 人日，第三项待方案定稿，详见专文）
+### P0：插件能力供给的硬门槛（约 2–3.5 人日，详见专文）
 
 - `registerSkill`（插件注册斜杠技能）
 - `readTextAsset`（文本资产读取——**零 Go 改动**，纯前端解码）
-- 子代理受控写能力（**待重新设计**，见下）
 
 详见 `docs/unfinished-plans/plugin-host-extension-p0.md`。
 
-**第三项「子代理的受控写能力」已恢复为待办，方案重新设计**（2026-11-28）：初版 `capabilities: ['write']` 方案作废；§3.3 现为「设计约束清单」，列出绕不开的硬事实——DSH 子代理权限是 preset / 委派继承 / toolFilter 组合、默认能写（CaDt 缺 `preset.tools` 接线）；`orchestration.authorizeWrite`（`orchestration-ui.js:760-767`）对子代理 session fail-open，且命令通道根本不过它；子代理无审批通道，写判定不能有 `ask`。方案定稿前不估时，详见专文 §3.3。
+**子代理侧已独立成文**（2026-11-28）：子代理能力快照 / `registerAgentPreset` / 受控写 / 编排 owns 阶段零，全部归 `subagent-capabilities-redesign.md`——那份文档整体推翻「子代理默认只读 + scope 同时代表权限与审批」的旧设计，能力由 preset × 派单参数 × 父级上限合成不可变快照，默认仍只读但角色可声明写。插件方案不再重复承载。
 
 ### P1：通用平台高价值扩展（约 2–4 周，按项拆分）
 

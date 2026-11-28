@@ -901,6 +901,21 @@ function showExplorerMenu(info, x, y) {
         }
     }
     items.push({sep: true});
+    // 插件文件树右键动作（按路径/扩展名命中）：宿主只拿菜单项数据，执行体在插件侧
+    if (typeof deps.pluginFileActionsFor === 'function') {
+        try {
+            const pluginActions = deps.pluginFileActionsFor(info.path) || [];
+            for (const a of pluginActions) {
+                items.push({
+                    label: '插件：' + a.label,
+                    icon: 'plugin',
+                    action: () => Promise.resolve(a.run({path: info.path, name: info.name, isDir}))
+                        .catch((e) => deps.flash && deps.flash('插件动作失败：' + ((e && e.message) || e), true)),
+                });
+            }
+            if (pluginActions.length) items.push({sep: true});
+        } catch (e) {}
+    }
     items.push({label: '复制', shortcut: 'Ctrl+C', icon: 'copy', action: () => setFileClipboard(targets, false)});
     items.push({
         label: '剪切',

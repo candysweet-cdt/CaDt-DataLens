@@ -52,7 +52,22 @@ export const APP_PAGES = [
  */
 export function appPageOf(id) {
     const key = String(id || '');
-    return APP_PAGES.find((page) => page.id === key) || null;
+    const builtin = APP_PAGES.find((page) => page.id === key);
+    if (builtin) return builtin;
+    // 插件页：由宿主经 setPluginPageResolver 注入，core 不 import shell（依赖单向）
+    return extraPageOf ? extraPageOf(key) || null : null;
+}
+
+// 插件页 resolver（由 main.js 启动时接上 shell/plugin-pages.js 的合并结果）。
+// 不写进 APP_PAGES 静态表：那会让 core 反向依赖 shell 域。
+/** @type {((id: string) => AppPage|undefined)|null} */
+let extraPageOf = null;
+/** @type {(() => AppPage[])|null} */
+let extraPageList = null;
+/** @param {(id: string) => AppPage|undefined} resolver @param {() => AppPage[]} list */
+export function setPluginPageResolver(resolver, list) {
+    extraPageOf = typeof resolver === 'function' ? resolver : null;
+    extraPageList = typeof list === 'function' ? list : null;
 }
 
 /**
@@ -80,7 +95,8 @@ export function appPageTabTitle(page, workspaceRoot, multi) {
  */
 export function appPageGroups(settings) {
     const out = [];
-    for (const page of APP_PAGES) {
+    const all = extraPageList ? [...APP_PAGES, ...extraPageList()] : APP_PAGES;
+    for (const page of all) {
         if (page.visibleWhen && !(settings && settings[page.visibleWhen] === true)) continue;
         const last = out[out.length - 1];
         if (last && last.group === page.group) last.pages.push(page);

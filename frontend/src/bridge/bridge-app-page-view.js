@@ -97,7 +97,11 @@ function createAppPageView(doc) {
     doc.pane = pane;
     doc.appPageRoot = root;
 
-    const mount = deps.appPageMounters ? deps.appPageMounters[doc.appPage] : null;
+    let mount = deps.appPageMounters ? deps.appPageMounters[doc.appPage] : null;
+    // 插件页在 loadPlugins 之后才注册，appPageMounters 建表时可能还没有——动态回落一次。
+    if (typeof mount !== 'function' && typeof deps.pluginPageMountOf === 'function') {
+        mount = deps.pluginPageMountOf(doc.appPage);
+    }
     if (typeof mount !== 'function') {
         root.textContent = '应用页面「' + (page ? page.label : doc.appPage) + '」不可用：界面尚未就绪。';
         root.classList.add('empty');

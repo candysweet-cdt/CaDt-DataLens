@@ -43,9 +43,9 @@ import {validateJsonSchema} from './core/jsonschema.js';
 import {getPluginCommands, getPluginCommandClassifiers, getPluginHookBus, getPluginLoadErrors, loadPlugins} from './shell/plugins.js';
 import {commandAppliesTo, commandCategoryLabel, evalCommandWhen, matchCommandShortcut} from './shell/plugin-commands-model.js';
 import * as pluginToolsMod from './shell/plugin-tools.js';
-import * as pluginContextMod from './shell/plugin-context.js';
+import * as pluginHostWiring from './shell/plugin-host-wiring.js';
 import {createPluginImporter} from './shell/plugin-importer.js';
-import {createPluginCommandEnv} from './shell/plugin-command-env.js';
+import {createPluginCommandHost} from './shell/plugin-command-host.js';
 import {createMarkdownRenderer} from './core/markdown.js';
 import {
     showPatchView, hidePatchView, disposePatchView, refreshPatchView,
@@ -115,6 +115,7 @@ import {createTitlebarPopovers} from './shell/titlebar-popovers.js';
 import {createSettingsUI} from './settings/settings-ui.js';
 import {CODE_STYLE_AUTO, migrateLegacyTheme} from './settings/code-styles.js';
 import {createWritingUI} from './writing/writing-ui.js';
+import {registerAgentPreset, unregisterAgentPresetsByOwner, revokeAllPluginAgentPresets, countPresetGrantsByOwner, revokePresetGrantsByOwner} from './ai/agent/ai-agent-preset-registry.js';
 import {createStructurePanelController} from './editor/structure-panel.js';
 import {createEditorMenus} from './editor/editor-menus.js';
 import {createExplorerOps} from './explorer/explorer-ops.js';
@@ -124,7 +125,7 @@ import {createBookmarkActions} from './editor/bookmark-actions.js';
 import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from './core/readonly.js';
 import {listScratchDrafts, isScratchPath, normalizeScratchExt, scratchDir} from './core/scratch.js';
 import {tabKindOf} from './core/tab-kinds.js';
-import {APP_PAGES, appPageGroups, appPageOf} from './core/app-pages.js';
+import {APP_PAGES, appPageGroups, appPageOf, setPluginPageResolver} from './core/app-pages.js';
 import {overlayStack} from './core/overlay-stack.js';
 import {createDialogDrag} from './core/dialog-drag.js';
 import {loadWailsRuntime, createRuntimeAdapter, createBackendProxy} from './core/wails-runtime.js';
@@ -2131,7 +2132,7 @@ const defaultSettings = {
     orchMaxAttempts: 2,
     orchBatchTimeoutSec: 1200,
     orchAuditIdleSec: 7200,
-    orchReview: true, orchFinalReview: false,
+    orchFinalReview: false,
     orchBudgetTokens: 0,
     aiShowUsage: true,
     // composer 状态栏额度胶囊（全局外显开关，默认关；需账号启用用量查询才有数据）
@@ -2496,6 +2497,13 @@ const writingUI = createWritingUI({
     get applyCsvTableZoom() { return applyCsvTableZoom; },
     get applyImageZoom() { return applyImageZoom; },
     get applyIntegration() { return applyIntegration; },
+    // Agent preset 注册表（能力快照方案 §4/§10.4）：shell/plugins.js 经 initPluginRuntime 钩子拿注册函数（shell 不直接 import ai/ 域）；
+    // agentPresetGrantCount / agentPresetRevokeGrants 是插件行「撤销写入确认」入口（§6.3）
+    get agentPresetRegister() { return (owner, spec) => registerAgentPreset(spec, owner); },
+    get agentPresetRevokeOwner() { return unregisterAgentPresetsByOwner; },
+    get agentPresetRevokeAll() { return revokeAllPluginAgentPresets; },
+    get agentPresetGrantCount() { return countPresetGrantsByOwner; },
+    get agentPresetRevokeGrants() { return revokePresetGrantsByOwner; },
     get applySettings() { return applySettings; },
     get reconcileThemes() { return reconcileThemes; },
     get refreshThemes() { return refreshThemes; },
@@ -2829,6 +2837,10 @@ const explorerOps = createExplorerOps({
     get actRel() { return actRel; },
     get activityLog() { return activityLog; },
     get aiReferenceFileMenuItems() { return aiReferenceFileMenuItems; },
+    // 插件文件树右键动作（按路径/扩展名命中）
+    get pluginFileActionsFor() {
+        return (path) => pluginHostWiring.actionsFor(path);
+    },
     get backend() { return backend; },
     get baseNameOf() { return baseNameOf; },
     get closeDocNow() { return closeDocNow; },
@@ -3391,6 +3403,8 @@ function openFolderWorkspace(dir) {
     workspaceFolder = dir;
     // 窗口注册表：本窗口可匹配工作区更新（fire-and-forget；失败由日志吸收）
     syncWindowRegRegistration(dir);
+    // 插件工作区事件：切换（含首次打开）转发进钩子总线
+    pluginHostWiring.emitEvent(getPluginHookBus(), 'opened', dir, null);
     // Maven 图标显隐随工作区重算（pom 探测 + 工具链惰性扫描在面板内做，见 maven-panel.js）
     if (mavenUi) mavenUi.syncTrigger();
     // 快捷便签：工作区变了，丢弃旧工作区的缓存并刷新打开中的面板
@@ -4086,11 +4100,13 @@ function initAIPanel() {
         // 插件 AI 工具注册表（shell/plugin-tools.js）：面板内部按三层授权过滤下发，
         // 宿主未注入时面板降级为「无插件工具」，不影响既有能力。
         pluginTools: pluginToolsMod,
+        pluginSkills: pluginHostWiring.pluginSkillsMod,
         // 插件钩子总线（S6 插桩点）：getter 延迟求值——总线在 loadPlugins 后才初始化。
         // agent/pre-step / agent/request / agent/request-error 三个 waterfall 点经此接线。
         hookBus: () => getPluginHookBus(),
         // 插件注入的 AI 上下文注册表（shell/plugin-context.js）
-        pluginContext: pluginContextMod,
+        pluginContext: pluginHostWiring.pluginContextMod,
+        pluginContextProviders: pluginHostWiring.pluginContextProviderMod,
         // 桌面授权单飞广播出口（desktop-grant-changed）：面板 grant/revoke 时经这里全窗广播，
         // 各窗口副本收敛（订阅在下方 onApp 区）。浏览器 mock（rt 为空）时静默降级为单窗口语义。
         emitAppEvent: (name, payload) => {
@@ -4133,7 +4149,7 @@ function initAIPanel() {
         enhanceSelect: (sel) => settingsUI.enhanceSelect(sel),
         getPluginLoadErrors,
         refreshPlugins: () => loadPlugins(backend),
-        openTermTab: (...args) => openBgTermTab(...args),
+        openTermTab: (...args) => openBgTermTab(...args), openOrchestrationTab: (...args) => openOrchestrationTab(...args),
         // AI 终端桥（terminal 工具）：延迟求值——terminal-ui 工厂在本模块后段创建，
         // 创建期直接引用会 TDZ；getter 在工具调用时才读。注意 terminalHostApi 挂在
         // terminalMod 模块返回面（sessMod 转发），不在 terminalUI（那只是 dock 状态对象）——
@@ -5535,7 +5551,9 @@ const cognitionPageInstances = new WeakMap();
 // AI 面板是惰性初始化的（initAIPanel 只在面板交互路径触发）：用户没开过面板就点开这两页
 // 时必须先兜底建面板（initAIPanel 自带 if (aiPanel) return 幂等），否则挂载器返回 null、
 // 标签页空白且再激活不自愈（doc.pane 守卫挡住重挂）——兜底与设置页 AI 子页、外部工具页同款。
+pluginHostWiring.initPluginPages(setPluginPageResolver);
 const appPageMounters = {
+    ...pluginHostWiring.pluginPageMounters(),
     'usage-stats': (root) => settingsPaneUsageStats.mount(root),
     // 编排看板：应用页面与独立标签页共用挂载器；域实例惰性创建。
     'orchestration': (root, workspace) => ensureOrchestrationHost().mountBoard(root, workspace || currentRoot() || ''),
@@ -6234,19 +6252,9 @@ const formatConvert = createFormatConvert({
 });
 const {convertMenuItems, repairJsonAction} = formatConvert;
 
-// ---- 插件命令的上下文环境 ----
-// 构造体拆到 shell/plugin-command-env.js（组合根只做接线）：传函数而不是值，
-// 因为 currentMode / editor / textArea / file / settings 都是本文件里会整体替换的绑定。
-const pluginCommandEnv = createPluginCommandEnv({
-    currentMode: () => currentMode,
-    editor: () => editor,
-    textArea: () => textArea,
-    file: () => file,
-    settings: () => settings,
-    workspace: () => currentRoot() || '',
-    isDocReadOnly,
-});
-
+// 插件命令 ctx + 执行/写回（执行体在 shell/plugin-command-*.js，组合根只留接线）
+const cmdHostDeps = {currentMode: () => currentMode, editor: () => editor, textArea: () => textArea, file: () => file, settings: () => settings, workspace: () => currentRoot() || '', isDocReadOnly, flash: (...a) => flash(...a), openVirtualDoc: (...a) => openVirtualDoc(...a), markDocDirty: (d) => markDocDirty(d), updateStatus: () => updateStatus()};
+const {pluginCommandEnv, runPluginCommand} = createPluginCommandHost(cmdHostDeps);
 // 编辑器右键菜单里的插件命令：本函数组装好菜单项交给 editor-menus.js 展开，
 // 保持 editor 域不依赖插件域。分隔线只在确有命令时插入。
 function pluginEditorMenuItems() {
@@ -6260,8 +6268,8 @@ function pluginEditorMenuItems() {
             label: cmd.label,
             description: cmd.description || undefined,
             icon: cmd.icon || undefined,
-            // run 时重算一次：菜单开着的时候选区 / 焦点可能已经变了
-            action: () => cmd.run(pluginCommandEnv(cmd)),
+            // run 时重算一次：菜单开着的时候选区 / 焦点可能已经变了；写回走统一包装
+            action: () => runPluginCommand(cmd),
         });
     }
     return items.length ? [{sep: true}, ...items] : [];
@@ -6326,7 +6334,7 @@ function paletteActions() {
             actions.push({
                 label: commandCategoryLabel(cmd) + '： ' + cmd.label,
                 shortcut: cmd.shortcut ? cmd.shortcut.label : '',
-                action: () => cmd.run(pluginCommandEnv(cmd)),
+                action: () => runPluginCommand(cmd),
             });
         }
     }
@@ -6583,7 +6591,7 @@ function menuItems(kind) {
                         // 标记来源：命令面板遍历菜单时据此跳过，改用插件自己的分组前缀
                         pluginCommand: true,
                         disabled: !evalCommandWhen(cmd, cmdEnv),
-                        action: () => cmd.run(pluginCommandEnv(cmd)),
+                        action: () => runPluginCommand(cmd),
                     };
                 }));
             }
@@ -7162,8 +7170,7 @@ window.addEventListener('keydown', (e) => {
         if (pluginCmd) {
             e.preventDefault();
             e.stopPropagation();
-            // 命中后再按该命令重算一份（基座里补上 plugin 身份）；匹配阶段还不知道会命中谁
-            pluginCmd.run(pluginCommandEnv(pluginCmd));
+            runPluginCommand(pluginCmd); // 写回意图由统一 runner 处理（含补 plugin 身份）
             return;
         }
     }
@@ -7206,6 +7213,8 @@ if (rt) {
         handleExternalDocChanges(payload);
         // 快捷便签：其他窗口/外部改了 .cadt/memo/memo.json 时重读（面板开着才生效）
         if (memoWorkspaceEventHook) memoWorkspaceEventHook(payload);
+        // 插件工作区事件转发进钩子总线（onWorkspaceEvent）
+        pluginHostWiring.emitEvent(getPluginHookBus(), 'changed', currentRoot(), payload);
     });
     // 工作区破坏防护的事件入口：**不能走 onWorkspace**——那按「payload.root === 本窗口
     // 工作区」过滤，多根 watcher 里旧根（切走后仍在防护）的事件会被桥直接丢掉，正好是
@@ -7597,6 +7606,7 @@ const bridgeUI = createBridgeUI({
     get boundWorkspaceFolder() { return () => workspaceFolder || ''; },
     // 应用页面标签页：pageId → mount(root)，各页内容渲染仍归原域
     get appPageMounters() { return appPageMounters; },
+    get pluginPageMountOf() { return pluginHostWiring.pluginPageMountOf; },
     // 数据库虚拟标签页（数据表 / 查询控制台 / Redis 键查看器）：doc → db 域视图根元素（bridge 挂载 pane 与卸载契约）
     get dbTabMounter() {
         return (doc) => {

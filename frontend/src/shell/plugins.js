@@ -22,6 +22,9 @@ import {clearPluginTools, registerPluginTool} from './plugin-tools.js';
 import {clearPluginAIContexts, registerPluginAIContext} from './plugin-context.js';
 import {clearPluginImporters, registerPluginImporter} from './plugin-importers.js';
 import {clearPluginViewers, registerPluginViewer} from './plugin-viewers.js';
+import {registerPluginSkill, getPluginSkillList, clearPluginSkills} from './plugin-skills.js';
+import {dataUrlToText} from './plugin-text-asset.js';
+import {platformApiFor, clearAllPlatformExtensions, revokePlatformOwner} from './plugin-host-wiring.js';
 
 const host = {
     flash: () => {},
@@ -31,6 +34,11 @@ const host = {
     onPluginsChanged: () => {},
     onThemesChanged: () => {},
     readPluginAsset: () => Promise.reject(new Error('当前版本不支持读取插件资产')),
+    // Agent preset 注册表（能力快照方案 §4 / §10.4）：经 main.js deps → settings-pane-plugins
+    // 的 initPluginRuntime 钩子注入（shell 不直接 import ai/ 域）；未接线时注册直接报错
+    registerAgentPreset: () => { throw new Error('Agent preset 注册未接线（宿主未注入注册表）'); },
+    revokeAgentPresetsOwner: () => 0,
+    revokeAllAgentPresets: () => 0,
 };
 
 let commands = [];
@@ -223,6 +231,25 @@ function apiFor(plugin) {
                 throw pluginError(plugin, (e && e.message) || e);
             }
         },
+        // 注册斜杠技能：{name, description, content(), when?}——可被 /技能名 调用。
+        // content 惰性求值（不在 apply 阶段预加载正文），单技能 ≤64 KiB。
+        registerSkill(spec) {
+            try {
+                return registerPluginSkill(plugin.id, plugin.name, spec);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || e);
+            }
+        },
+        // 平台扩展接口（ContextProvider / Page / 文件树 / 编辑器 / 任务）：实现与包错在统一模块
+        ...platformApiFor(plugin, (fn) => {
+            try { return fn(); } catch (e) { throw pluginError(plugin, (e && e.message) || e); }
+        }),
+        // 读取插件目录内的文本资产（UTF-8，≤1 MiB）：返回 Promise<string>。
+        // 与 readAsset（图片 data URL）并存；路径相对插件目录，越界由 Go 侧兜底。
+        readTextAsset(path) {
+            return Promise.resolve(host.readPluginAsset(plugin.id, String(path || '')))
+                .then((dataUrl) => dataUrlToText(dataUrl));
+        },
         // 注册 AI 上下文：{id, label?, stable?, text(ctx)}——注入系统提示词的领域知识。
         // 上限单条 4 KiB / 合计 12 KiB；内容按数据处理（docs/plugins/README.md）。
         registerAIContext(spec) {
@@ -310,6 +337,17 @@ function apiFor(plugin) {
                 convert: spec.convert,
             });
         },
+        // 注册 Agent preset（能力快照方案 §4）：插件声明业务角色（写作插件的 drafting / review
+        // 等），spawn_agent 按 preset 派单。归一化在 ai/agent（经宿主注入的注册表），宿主内置
+        // preset（host.default / host.read-only / host.full-write）不可覆盖。能力面的非法声明
+        // （danger-full-access、未知工具名）在派单合成时拒绝（§4.2），这里只拦结构问题。
+        registerAgentPreset(spec) {
+            try {
+                return host.registerAgentPreset(plugin.id, spec);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || e);
+            }
+        },
         // ── 依赖注入（S4）───────────────────────────────────────────────────
         // 服务名用点分稳定 key（约定：插件自己提供的服务用 `plugin.<插件id>.<名字>`，
         // 想替换核心服务则直接用核心的 key 并传 replace:true，冲突时有明确报错）。
@@ -358,6 +396,15 @@ function apiFor(plugin) {
         },
         bail(name, payload) {
             return requireHookBus().bail(name, payload);
+        },
+        // 工作区生命周期事件（稳定契约）：映射到钩子总线的固定事件名。
+        // name ∈ 'changed' | 'opened'；返回解绑函数，插件禁用时按 owner 整体撤销。
+        onWorkspaceEvent(name, fn) {
+            const allowed = {changed: 'workspace/changed', opened: 'workspace/opened'};
+            const event = allowed[String(name || '')];
+            if (!event) throw pluginError(plugin, `onWorkspaceEvent 的事件无效：${JSON.stringify(name)}（可用 changed / opened）`);
+            if (typeof fn !== 'function') throw pluginError(plugin, 'onWorkspaceEvent 需要一个函数');
+            return requireHookBus().on(event, fn, {owner: plugin.id});
         },
         getActiveFile() {
             return host.getActiveFile();
@@ -425,6 +472,10 @@ async function reloadPlugins(backend) {
     clearPluginAIContexts();
     clearPluginImporters();
     clearPluginViewers();
+    // Agent preset 重放清理：全部插件 preset 撤掉，宿主内置保留（注册表自持，§10.4）
+    host.revokeAllAgentPresets();
+    clearPluginSkills();
+    clearAllPlatformExtensions();
     bindServiceBackend(backend);
     commands = [];
     commandClassifiers.clear();
@@ -483,8 +534,12 @@ async function reloadPlugins(backend) {
             // 只撤本轮新增的平台侧注册（服务 / 钩子）。命令、分类器、转换器等「已成功的部分」
             // 按既有契约保留到下一次全局 clear*——plugin-commands 的集成测试钉住了这个语义
             // （半个插件失败时，先前那条命令仍可用），改它会静默改变用户可见行为。
+            // agent preset 是例外：按 owner 撤（能力面 fail-closed——半个插件失败时，它已
+            // 注册的 preset 不能再被派单，否则派单时才炸出更难排查的半声明状态）。
             if (pluginContainer) pluginContainer.disposeOwner(source.id);
             if (pluginHookBus) pluginHookBus.offOwner(source.id);
+            host.revokeAgentPresetsOwner(source.id);
+            revokePlatformOwner(source.id);
             const message = `${source.name || source.id}：${(e && e.message) || e}`;
             errors.push(message);
         }

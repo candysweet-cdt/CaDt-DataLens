@@ -98,6 +98,71 @@ module.exports = { apply(cadt) { /* 同脚本体内可用的一切 */ } };
 - **只加键，不改键。** `ctx.source` 在导入器 / 导出转换器上是**字符串场景名**，在自定义视图上是**文件对象**——历史包袱，不会再改（改了就是破坏性变更）。新代码请用 `ctx.origin`（场景）与 `ctx.doc`（视图里的文件对象），语义不再混。同理，旧键会一直保留：插件读旧键照常工作。
 - **有些回调刻意没有 ctx**：`registerFormat` 的 `parse(text)` / `stringify(value)`（纯函数，结构面板、表格、worker 都会调，可能不在主线程）、`registerDbDriver` 的 `connect(config)`（数据源配置）、`registerAIProvider` 的 `prepare(ctx)`（请求补丁上下文，只有 `accountId` 等请求侧字段）。给它们塞宿主能力等于开一条绕过脏标记 / 审批的通道。
 
+### `cadt.registerSkill(spec)`
+
+注册一个可被 `/技能名` 调用的斜杠技能。技能正文**惰性读取**（不在插件加载阶段预加载，避开 5 秒 `apply` 上限）：
+
+```js
+const off = cadt.registerSkill({
+  name: 'webnovel-write',                       // 必填；小写字母/数字/连字符
+  description: '执行完整写章流程',              // 必填；进补全副行与技能管理
+  content: () => cadt.readTextAsset('skills/webnovel-write/SKILL.md'),  // 必填；string 或 Promise<string>
+  when: (ctx) => !!ctx.workspace,               // 可选；同步布尔，不满足则不出现在补全/技能管理/skill_use
+});
+```
+
+- 约束：单插件 ≤64 个技能、总数 ≤200；正文 ≤64K 字符（超出截断并在描述尾部标「（已截断）」）；`content()` 允许 async，单点超时 1 s、并发读取，抛错/超时只跳过该技能不阻断对话。
+- 重名：与文件技能同名时**工作区技能优先**（rank 100/200），插件技能 rank 300，其次才是应用/用户/内置——插件不覆盖作者自带技能；插件之间同 rank 先注册先得。
+- 生命周期：返回撤销函数；插件禁用/重载由宿主按 owner 整体撤销；加载完成事件会立即失效技能缓存（补全不等 5 秒 TTL）。
+- ctx：`when` / `content` 收到统一回调基座（见上节），`origin` 为 `prompt`。
+
+### `cadt.readTextAsset(path)`
+
+读取插件目录内的**文本**资产（技能、脚本、模板），返回 `Promise<string>`：
+
+```js
+const text = await cadt.readTextAsset('skills/webnovel-write/SKILL.md');
+```
+
+- 路径相对插件目录；`..` 穿越 / 绝对路径 / 符号链接越界由 Go 侧 `ReadPluginAsset` 兜底拒绝。
+- UTF-8 解码（`TextDecoder` 的 fatal 模式，非 UTF-8 明确报错）；上限 1 MiB，超过抛错。
+- 扩展名白名单以 Go 侧为准：`.md .txt .json .js .mjs .csv .yaml/.yml`。脚本类 `.py / .sh / .ps1` 不在白名单（要读需先扩 Go 侧白名单）。
+- 与 `readAsset`（图片 data URL）并存，不改变旧语义；读图片仍走 `readAsset`。
+
+### 平台扩展接口（编辑器 / 工作区 / 导航 / 任务）
+
+以下接口都遵循 §5 契约（声明式、返回撤销函数、owner 整体撤销、上限校验、ctx 基座）。完整设计见 `docs/unfinished-plans/plugin-platform-extension-catalog.md`。
+
+> **实现状态**：`registerContextProvider` / `onWorkspaceEvent` / `registerPage` / `registerFileAction` 与命令写回已接宿主消费点，可直接使用。下表后四项（`registerFileDecorator` / `registerEditorDecoration` / `registerInlineSuggestProvider` / 任务与作业类）**注册表已就绪，但宿主消费点待 P2 立项**——现在注册不会报错、也不会产生可见效果，等真实插件需求再接 UI（见 catalog §6）。
+
+| API | 声明 | 作用 |
+| --- | --- | --- |
+| `registerContextProvider({id, label?, text(ctx)})` | 按轮求值的上下文 | 进系统提示词，与 `registerAIContext` 的稳定知识分开；单条默认 ≤8 KiB，内容按数据处理 |
+| `onWorkspaceEvent(name, fn)` | `name` ∈ `changed` / `opened` | 订阅工作区文件变化 / 打开切换；映射到钩子总线，返回解绑函数 |
+| `registerPage({id, label?, icon?, group?, desc?, mount(root, workspace), perWorkspace?})` | 应用页面标签页 | 插件声明独立功能页，进「应用页面」入口与标签页；id 自动加插件前缀；`perWorkspace` 页按工作区开多份 |
+| `registerFileAction({id, label?, extensions?, contexts?, run(ctx)})` | 文件树右键动作 | 按路径/扩展名出现在右键菜单（已接入） |
+| `registerFileDecorator({id, extensions?, decorate(ctx)})` | 文件树装饰（P2，待接 UI） | `decorate` 返回 `{badge?, icon?}` 等附加信息，不改文件本体；抛错跳过 |
+| `registerEditorDecoration({id, formats?, provide(ctx)})` | 编辑器装饰（P2，待接 UI） | `provide` 返回 marker 数组，宿主消费点待立项 |
+| `registerInlineSuggestProvider({id, formats?, debounceMs?, suggest(ctx)})` | 行内建议（P2，待接 UI） | `suggest` 异步返回建议文本，幽灵文本与采纳由宿主消费点待立项 |
+| `registerTaskProvider({id, label?, start(ctx), status?, cancel?})` | 任务提供者（P2，待接 UI） | 长耗时分析/批处理，调度与进度展示待立项 |
+| `registerProgressReporter({id, label?, progress(ctx)})` | 进度报告器（P2，待接 UI） | 流水线步骤进度，展示待立项 |
+| `registerBackgroundJob({id, label?, run(ctx), cron? / intervalMs?})` | 后台作业（P2，待接调度） | 需声明 `cron` 或 `intervalMs`；调度待立项 |
+| `registerWorkspaceInitializer({id, label?, initialize(ctx), when?})` | 工作区初始化器（P2，待接 UI） | 新建/打开工作区时的脚手架动作，触发点待立项 |
+
+`addCommand` 的 `run(env)` 现在可返回写回意图，由宿主走编辑器既有通道（脏标记 / undo / 只读判定都在宿主手里）：
+
+```js
+cadt.addCommand({
+  id: 'translate-selection', label: '翻译选区', contexts: ['editorContext'],
+  run(env) {
+    const translated = /* ... */;
+    return {replaceSelection: translated};   // 或 {insertText: text} / {openVirtualDoc: {name, content}}
+  },
+});
+```
+
+不返回写回意图（字符串 / undefined / 其它对象）一律当「命令已自行处理」，宿主不干预。
+
 ### 依赖声明与执行顺序
 
 清单里可以声明依赖的其他插件：
